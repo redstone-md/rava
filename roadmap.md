@@ -32,6 +32,22 @@ no snapshot, and no extra adaptation overrides. This is one launch, not an A/B;
 it misses <5 s by 19.1 s and does not certify the remaining name-routed
 policies as strict no-adapt.
 
+### 2026-09-28: current-product loaded-family profile
+
+A symbol-retaining `release-diag` build using the exact-source profile reached
+`Done` in 32.4 s under `perf`; this is a diagnostic run, not the 24.1 s
+production `release-fat` result. Its cycle profile had 5,785 samples and zero
+lost samples. Self-sample shares include 0.25% in
+`ClassLoader::cached_native_family`, 1.21% in `dispatch_owner_cascade`, and
+2.57% in the largest individual Cranelift symbol. The profile was captured
+until process stop at 41.5 s, about 9 s after `Done`, and report attribution
+was intentionally self-only because source/call-chain symbolization was broken.
+These data do not price aggregate inclusive work, but expose no safe multi-second
+loaded-family route; compiler samples remain distributed across backend
+functions rather than identifying a bounded replacement seam. No optimization
+is justified from this profile. Goal remains unmet; strict no-adapt is still
+uncertified.
+
 ## Objective
 
 Reduce Minecraft boot and warm-reload wall time through structural, workload-agnostic changes while preserving exact Java semantics.
