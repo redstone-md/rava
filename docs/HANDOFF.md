@@ -176,10 +176,12 @@ paid here was a **contract or representation change**, never a distribution atta
 
 ## 6. NO-ADAPT INVENTORY (6 agents, verified)
 
-**278 name-keyed routing sites** is the last verified pre-change census; re-count after the latest
-route edits. The two Minecraft buffered-stream suffix routes were first narrowed to one exact
-provider, then removed after bytecode inspection showed that native substitution skipped constructor
-field initialization and did not cover `skip`. `FastBufferedInputStream` retains guest bytecode
+**278 name-keyed routing sites** remains the last exhaustive pre-change census, not a current count.
+The 2026-09-28 decision-surface recount is in `roadmap.md`; it is not an exhaustive literal-site
+scan and does not certify strict no-adapt. The two Minecraft buffered-stream suffix routes were
+first narrowed to one exact provider, then removed after bytecode inspection showed that native
+substitution skipped constructor field initialization and did not cover `skip`.
+`FastBufferedInputStream` retains guest bytecode
 semantics. For streams without synthetic `$buf` state, the generic native adapters now invoke the
 resolved guest bulk-read body and propagate VM errors; Pushback bytes remain first.
 
@@ -187,8 +189,8 @@ The fresh pristine-world smoke passed both identical no-extra-flag arms: OFF wal
 0.362 s; ON wall 29.8 s / `Done` 0.368 s, with no `level.dat` fallback. This is correctness evidence
 only, not a timing result (the 2.76% wall difference is below the boot harness's resolution).
 `FastBufferedInputStream` is not a structural class-load fact or a speed result. The **246**
-production JDK / library names and **30** test-only sites remain to audit; 87 sites were classed
-"mechanical" to remove in the earlier census.
+production JDK/library names, **30** test-only sites, and 87 "mechanical" sites are all historical
+census counts, not verified current remainders. The full literal-route scan remains open.
 
 The one that matters is `opcodes/native_gate.rs:14` → `stream::is_collection` — a **substring** test
 on `List|Set|Queue|Deque|Collection|Vector|Stack` deciding **arena vs handle heap**. Adversarial

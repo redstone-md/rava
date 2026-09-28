@@ -92,6 +92,7 @@ pub struct LoadedClass {
     /// never the cost") was a claim about a landscape that has since moved: with the call path
     /// down to 177 ns, the PC profile puts `ref_site_ref` at 7.1% of the interpreted call, all of
     /// it the RwLock pair plus the hash. The replacement is 8 B a slot, not 16.
+    pub(crate) native_family: crate::owner_bits::NativeFamilyFact,
     pub(crate) native_state: crate::native_state::NativeStateFact,
     pub(crate) native_program_class: Option<crate::natives::NativeProgramClass>,
     pub site_slots: std::sync::OnceLock<Box<[std::sync::atomic::AtomicPtr<SiteRef>]>>,
@@ -119,6 +120,7 @@ impl LoadedClass {
     fn new(mut file: ClassFile) -> Arc<Self> {
         crate::structural_loop_eager::classify_loaded_methods(&mut file.methods);
         Arc::new(Self {
+            native_family: crate::owner_bits::NativeFamilyFact::for_owner_name(&file.this_class),
             native_program_class: crate::natives::NativeProgramClass::for_classfile_name(
                 &file.this_class,
             ),

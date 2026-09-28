@@ -555,9 +555,12 @@ separate, fail-closed JIT refusal filter and must not be reused as an allocation
 predicate. Keep these boundaries orthogonal until native-state ownership can
 be represented by a complete class-load contract.
 
-The source audit is a narrow current-path inventory, not a re-count of every
-historical environment gate. No route was relaxed and no strict no-adapt boot
-was run; both the complete inventory and no-adapt certification remain open.
+The current-source recount confirms that the fixed Tier-0 product bypasses the
+per-method warmup counter, dispatch compile requests are first-resolve, and
+dispatch-table promotion is count-free. This removes several historical
+count-gated policies, but it does not establish strict no-adapt: live
+name-keyed native, allocation, compile-refusal and inline-refusal decisions
+remain. No strict no-adapt boot was run.
 
 The current production-path count is by decision surface (not by every
 individual name literal):
@@ -573,13 +576,21 @@ individual name literal):
   `is_native_backed_alloc` contains seven collection-name substrings plus
   exact map, entry, and I/O class families. This is not just a JIT refusal:
   the allocation decision protects synthetic native state.
-- Native dispatch additionally has the `force_native_collection` tuple/family
-  router and exact method/class accelerators (including spline and fastutil
-  routes). These are static native execution contracts, but they remain
-  name-sensitive under the strict handoff invariant.
+- Native dispatch still has the `force_native_collection` family router and
+  exact method/class accelerators (including spline and fastutil routes).
+  Static/special `SiteRef`s and loaded classes cache `NativeFamilyFact`; generic
+  chain dispatch consumes the cached class fact and falls back to
+  `family_word(owner)` only for an owner not yet loaded. The classifier remains
+  name-derived, so this is a cached routing fact, not strict no-name proof.
+  JIT NativeProgram selection separately consumes the exact `LoadedClass`
+  binding in both native-plan and heap-leaf routes.
 - On the fixed Tier-0 product path, main-entry count thresholds are bypassed
   by first-entry compilation and dispatch-tier compilation is first-resolve;
   AOT hot counts and deopt recompile budgets are outside the plain boot path.
+
+The loaded-family fact test passes; the release build succeeds. `ConcSem` JIT
+output and `Collections` interpreter/JIT outputs match the previously verified
+oracle (`SUM=23109031176`). No full-boot timing was run for this route change.
 
 This inventory counts policy surfaces and the ten deep-refusal consumers; it
 does not claim an exhaustive count of all name literals or environment flags.

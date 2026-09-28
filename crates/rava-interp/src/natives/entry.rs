@@ -155,14 +155,11 @@ pub(crate) fn try_invoke(
     descriptor: &str,
     args: &[Value],
 ) -> Result<Option<Option<Value>>, VmError> {
-    try_invoke_with_family(
-        vm,
-        owner,
-        name,
-        descriptor,
-        args,
-        crate::owner_bits::NativeFamilyFact::Unknown,
-    )
+    let family_fact = vm
+        .loader
+        .cached_native_family(owner)
+        .unwrap_or(crate::owner_bits::NativeFamilyFact::Unknown);
+    try_invoke_with_family(vm, owner, name, descriptor, args, family_fact)
 }
 
 /// Invoke a constant-pool site using its already-resolved exact owner-family fact.
@@ -609,6 +606,10 @@ pub(crate) fn try_invoke_chain(
         chain_census::note_call(chain.len());
     }
     for (ci, cn) in chain.iter().enumerate() {
+        let family_fact = vm
+            .loader
+            .cached_native_family(cn)
+            .unwrap_or(crate::owner_bits::NativeFamilyFact::Unknown);
         if let Some(handled) = dispatch_owner(
             vm,
             gates,
@@ -616,7 +617,7 @@ pub(crate) fn try_invoke_chain(
             name,
             descriptor,
             args,
-            crate::owner_bits::NativeFamilyFact::Unknown,
+            family_fact,
         )? {
             if !census {
                 return Ok(Some(handled));
@@ -636,15 +637,13 @@ pub(crate) fn try_invoke_chain(
         chain_census::note_none();
     }
     match extra_owner {
-        Some(o) => dispatch_owner(
-            vm,
-            gates,
-            o,
-            name,
-            descriptor,
-            args,
-            crate::owner_bits::NativeFamilyFact::Unknown,
-        ),
+        Some(o) => {
+            let family_fact = vm
+                .loader
+                .cached_native_family(o)
+                .unwrap_or(crate::owner_bits::NativeFamilyFact::Unknown);
+            dispatch_owner(vm, gates, o, name, descriptor, args, family_fact)
+        }
         None => Ok(None),
     }
 }

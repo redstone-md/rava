@@ -1288,6 +1288,14 @@ impl ClassLoader {
         self.cache_r().get(name).map(Arc::clone)
     }
 
+    /// Family routing fact captured when the class was loaded; this never loads the class.
+    pub(crate) fn cached_native_family(
+        &self,
+        name: &str,
+    ) -> Option<crate::owner_bits::NativeFamilyFact> {
+        self.cache_r().get(name).map(|class| class.native_family)
+    }
+
     /// Whether `name` is already known absent — the negative half of the same read.
     /// Kept separate so a caller can tell "not loaded yet" from "proven missing".
     pub fn known_missing(&self, name: &str) -> bool {
@@ -2576,6 +2584,20 @@ mod netty_executor_family_tests {
             Vec::<MemberInfo>::new(),
         );
         loader.define_synthetic(file);
+    }
+
+    #[test]
+    fn loaded_class_carries_its_native_family_fact() {
+        let loader = ClassLoader::new();
+        define(&loader, "java/lang/Integer", None, &[]);
+
+        assert_eq!(
+            loader.cached_native_family("java/lang/Integer"),
+            Some(crate::owner_bits::NativeFamilyFact::for_owner_name(
+                "java/lang/Integer",
+            )),
+        );
+        assert_eq!(loader.cached_native_family("Synthetic/NotLoaded"), None);
     }
 
     #[test]
