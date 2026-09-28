@@ -636,8 +636,16 @@ the existing allocation adapters. Do not change JIT admission or remove legacy
 gates in this slice; the later policy migration needs its own focused
 parity/GC-root tests and strict no-adapt boot.
 
-The current source has no single resolved native storage contract to attach to
-class metadata, and the provider facts are still name-keyed `owner_bits`
-tables. This design therefore establishes a seam, not a completed
-no-adapt implementation or a performance claim. The <5 s measurement stays
-blocked until the policy consumers actually stop routing by names.
+The first implementation now attaches `NativeStateFact::{Unknown,
+SyntheticSlots}` to `LoadedClass`. It derives direct slots only from exact
+`owner_bits` provider facts; those provider tables remain name-keyed, the
+catalog is incomplete, and no `KnownAbsent` fact is claimed. Interpreter birth
+and the cached JIT site-route prefer a positive fact while preserving the
+legacy conservative gate for unknown or cold classes.
+
+The bridge passed the focused provider tests and the `Collections` parity
+scenario (`SUM=23109031176` in interpreter, JIT, and HotSpot); `RAVA_JIT_STATS`
+confirmed `Collections.hot` compiled and ran 14 times. This does not certify
+strict no-adapt: uncovered native allocation, JIT, and dispatch routes remain.
+The <5 s measurement stays blocked until policy consumers stop routing by
+names.
