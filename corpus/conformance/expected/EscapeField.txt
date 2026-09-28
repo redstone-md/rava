@@ -1,0 +1,3 @@
+field lit=[LIT] con=[C0] par=[P0] arr0=[AL] arr1=[A0]
+h=28000
+DONE

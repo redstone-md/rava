@@ -1,0 +1,19 @@
+# Isolated lab crate — detached from the rava workspace (own [workspace] table) so
+# `cargo build` of rava NEVER touches it and rava NEVER imports it. Run with:
+#   cargo run --release --manifest-path crates/sandbox-gc/Cargo.toml
+[package]
+name = "sandbox-gc"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[[bin]]
+name = "sandbox-gc"
+path = "src/main.rs"
+
+[profile.release]
+opt-level = 3
+codegen-units = 1
+
+# Detach from the parent rava workspace — this crate is its own world.
+[workspace]

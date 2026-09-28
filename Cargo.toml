@@ -1,0 +1,43 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/rava-jar",
+    "crates/rava-classfile",
+    "crates/rava-interp",
+    "crates/rava-cli",
+]
+
+[workspace.package]
+edition = "2021"
+license = "MIT"
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+# Strip debug symbols: smaller binary loads/maps faster → lower cold-start latency
+# (RAVA's competitive edge vs JVM on short programs). No runtime-behaviour change.
+strip = "symbols"
+# Production profile. Two-binary P-core A/B on 2026-09-09 measured thin release
+# at 26.6/26.1 s wall and fat release at 25.1/24.6 s: both pairs saved 1.5 s.
+# Existing release-fat callers remain valid through the alias below.
+[profile.release-fat]
+inherits = "release"
+
+# Faster iteration build with the former release settings. Never use its timing as
+# the production WALL: it deliberately trades generated-code quality for link speed.
+[profile.release-fast]
+inherits = "release"
+lto = "thin"
+codegen-units = 16
+
+# DIAGNOSTIC PROFILE for `diagnostics.pc_profile` (RAVA_PROFILE_PC). Sampling the guest
+# thread's instruction pointer only names a HOST address if dbghelp can find debug info for
+# it, and `release` strips it. Optimisation settings are inherited verbatim, so the machine
+# code — the thing being profiled — is the same as `release`; only the symbol table differs.
+# Lands in target/release-diag/. Never use it for a timing verdict: use it to find out WHERE
+# the time goes, then take the number from a `release` binary.
+[profile.release-diag]
+inherits = "release"
+strip = "none"
+debug = 1

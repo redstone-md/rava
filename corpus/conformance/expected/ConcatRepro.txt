@@ -1,0 +1,12 @@
+P(0)=[(0,0)] len=5 hash=38414621
+P(1)=[(1,7)] len=5 hash=38444629
+P(313)=[(313,165)] len=9 hash=1445521752
+P(996)=[(996,894)] len=9 hash=1908642868
+P(42)=[(42,294)] len=8 hash=1372126274
+P(100)=[(100,700)] len=9 hash=1281650069
+checkLen=45 checkHash=977755123
+indyConcat=[(313,331)] hash=1445578327
+sbConcat  =[(313,331)] hash=1445578327
+valueOfInt=[313] Integer.toString=[313]
+repeatHash=110480028
+DONE
