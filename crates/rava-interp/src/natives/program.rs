@@ -69,17 +69,6 @@ impl NativeProgramClass {
     }
 }
 
-/// Bind an exact native dispatch target to its implementation family.
-///
-/// Compatibility adapter for callers without loaded class metadata. Resolved callers should use
-/// `program_for_class` with the class-load binding instead.
-pub(crate) fn program_for(class: &str, name: &str, descriptor: &str) -> Option<NativeProgram> {
-    program_for_class(
-        NativeProgramClass::for_classfile_name(class)?,
-        name,
-        descriptor,
-    )
-}
 
 /// Resolve one method against a class-level provider identity.
 pub(crate) fn program_for_class(

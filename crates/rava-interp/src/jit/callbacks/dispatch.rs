@@ -994,8 +994,8 @@ pub(crate) mod pic_native {
     /// steady fraction of all calls. `ws_threadlocal` is absent for a different reason: its
     /// state is a side table keyed by HANDLE, so an arena receiver — the only kind this arm ever
     /// sees — can never match it, and the entry would refuse 100% of the time.
-    fn leaf_op(cls: &str, name: &str, desc: &str) -> Option<i64> {
-        let existing = match (cls, name, desc) {
+    fn leaf_op_existing(cls: &str, name: &str, desc: &str) -> Option<i64> {
+        match (cls, name, desc) {
             ("java/util/ArrayList", "get", "(I)Ljava/lang/Object;") => Some(OP_LIST_GET),
             ("java/util/concurrent/atomic/AtomicLong", "get", "()J") => {
                 Some(OP_ATOMIC_LONG_GET)
@@ -1005,19 +1005,30 @@ pub(crate) mod pic_native {
             | ("java/util/Optional", "get", "()Ljava/lang/Object;") => Some(OP_OPTIONAL),
             (_, "isEmpty", "()Z") if fu_isempty_leaf() => Some(OP_FU_ISEMPTY),
             _ => None,
-        };
-        existing.or_else(|| {
+        }
+    }
+
+    fn native_program_leaf(program: Option<crate::natives::NativeProgram>) -> Option<i64> {
+        match program? {
+            crate::natives::NativeProgram::BooleanValue => Some(OP_BOOLEAN_VALUE),
+            crate::natives::NativeProgram::NumberIntValue => Some(OP_NUMBER_INT_VALUE),
+            crate::natives::NativeProgram::NumberLongValue => Some(OP_NUMBER_LONG_VALUE),
+            crate::natives::NativeProgram::NumberFloatValue => Some(OP_NUMBER_FLOAT_VALUE),
+            crate::natives::NativeProgram::NumberDoubleValue => Some(OP_NUMBER_DOUBLE_VALUE),
+            _ => None,
+        }
+    }
+
+    #[cfg(test)]
+    fn leaf_op(cls: &str, name: &str, desc: &str) -> Option<i64> {
+        leaf_op_existing(cls, name, desc).or_else(|| {
             if !native_program_leaf_enabled() {
                 return None;
             }
-            match crate::natives::program_for(cls, name, desc)? {
-                crate::natives::NativeProgram::BooleanValue => Some(OP_BOOLEAN_VALUE),
-                crate::natives::NativeProgram::NumberIntValue => Some(OP_NUMBER_INT_VALUE),
-                crate::natives::NativeProgram::NumberLongValue => Some(OP_NUMBER_LONG_VALUE),
-                crate::natives::NativeProgram::NumberFloatValue => Some(OP_NUMBER_FLOAT_VALUE),
-                crate::natives::NativeProgram::NumberDoubleValue => Some(OP_NUMBER_DOUBLE_VALUE),
-                _ => None,
-            }
+            let binding = crate::natives::NativeProgramClass::for_classfile_name(cls);
+            native_program_leaf(
+                binding.and_then(|class| crate::natives::program_for_class(class, name, desc)),
+            )
         })
     }
 
@@ -1085,17 +1096,25 @@ pub(crate) mod pic_native {
     /// `frames::box_push`, a host table). A `get` that MISSES this thread's table returns `None`
     /// and takes the site's unchanged `miss` arm; if `tl_worker` is off it refuses and is
     /// demoted on the first miss rather than using a refusal-count cutoff.
-    fn leaf_op_ref(cls: &str, name: &str, desc: &str) -> Option<i64> {
-        if let Some(op) = leaf_op(cls, name, desc) {
-            return Some(op);
-        }
-        match (cls, name, desc) {
+    fn leaf_op_ref(
+        cls: &str,
+        binding: Option<crate::natives::NativeProgramClass>,
+        name: &str,
+        desc: &str,
+    ) -> Option<i64> {
+        let operation = leaf_op_existing(cls, name, desc).or_else(|| {
+            if !native_program_leaf_enabled() {
+                return None;
+            }
+            native_program_leaf(crate::natives::program_for_binding(binding, name, desc))
+        });
+        operation.or_else(|| match (cls, name, desc) {
             ("java/lang/ThreadLocal" | "java/lang/InheritableThreadLocal", "get", "()Ljava/lang/Object;")
             | ("java/lang/ThreadLocal" | "java/lang/InheritableThreadLocal", "set", "(Ljava/lang/Object;)V") => {
                 Some(OP_THREADLOCAL)
             }
             _ => None,
-        }
+        })
     }
 
     /// A leaf refusal falls back immediately to a rooted twin. This removes the history-based
@@ -1676,7 +1695,13 @@ pub(crate) mod pic_native {
         let leaf = if crate::pure_memo::armed() {
             None
         } else {
-            vm.heap.class_of(handle).and_then(|cls| leaf_op_ref(cls, m.name, m.descriptor))
+            vm.heap.class_of(handle).and_then(|cls| {
+                let binding = vm
+                    .loader
+                    .get_loaded(cls)
+                    .and_then(|class| class.native_program_class);
+                leaf_op_ref(cls, binding, m.name, m.descriptor)
+            })
         };
         let (idx, f): (usize, ThunkFn) = match leaf {
             Some(_) => {
@@ -1779,6 +1804,27 @@ pub(crate) mod pic_native {
                 assert_eq!(by_contract, by_name, "class {name} method {method}{descriptor}");
             }
             assert_eq!(crate::nextgen::leaf_class_of(u32::MAX), None);
+        }
+        #[test]
+        fn heap_native_program_leaf_requires_a_loaded_provider_binding() {
+            if std::env::var_os("RAVA_NO_NATIVE_PROGRAM").is_some()
+                || std::env::var_os("RAVA_NO_NATIVE_PROGRAM_LEAF").is_some()
+            {
+                return;
+            }
+            assert_eq!(
+                super::leaf_op_ref("java/lang/Integer", None, "intValue", "()I"),
+                None,
+            );
+            assert_eq!(
+                super::leaf_op_ref(
+                    "java/lang/Integer",
+                    Some(crate::natives::NativeProgramClass::Number),
+                    "intValue",
+                    "()I",
+                ),
+                Some(super::OP_NUMBER_INT_VALUE),
+            );
         }
     }
 }

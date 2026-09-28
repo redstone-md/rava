@@ -657,17 +657,19 @@ class-load time. The JIT native-plan builder consumes only that fact; if the
 class is absent or unbound, the optional native-program specialization declines
 and the ordinary native cascade remains authoritative. It no longer classifies
 an unloaded class by name. Per-method descriptor checks and opt-out gates
-remain unchanged. The interpreter native cascade and heap-handle PIC callback
-still have separate name-based routes.
+remain unchanged. The JIT heap-handle NativeProgram leaf also requires that
+loaded binding at fill time; other leaf tuples and the interpreter cascade
+still have name-based routes.
 
-The exact-name and missing-binding tests pass, and the release build succeeds.
-`Collections` returns `SUM=23109031176` under HotSpot, interpreter, JIT, and
-JIT with `RAVA_NO_NATIVE_PROGRAM=1`; the hot JIT method compiled and ran 14
-times. `ConcSem` output matches HotSpot in both interpreter and JIT modes,
-covering ByteBuffer, exceptions, atomics, and concurrent collections. The
-heap-handle PIC callback, native cascade, and namespace/ancestor refusal still
-have name-based paths, so these focused checks do not certify strict no-adapt
-or the fresh-boot gate.
+The exact-name, missing-binding, arena parity, and heap provider-binding tests
+pass. The release build succeeds. `Collections` returns
+`SUM=23109031176` under HotSpot, interpreter, JIT, and JIT with
+`RAVA_NO_NATIVE_PROGRAM=1`; the hot JIT method compiled and ran 14 times.
+`ConcSem` output matches HotSpot in both interpreter
+and JIT modes, covering ByteBuffer, exceptions, atomics, and concurrent
+collections. Other heap leaf tuples, the interpreter cascade, and the
+namespace/ancestor JIT refusal remain name-based; these checks do not certify
+strict no-adapt or measure full boot.
 
 The arena PIC leaf binder now reads a frozen `LeafClass` from the arena class
 mirror instead of converting each bound receiver class ID back to its name.
