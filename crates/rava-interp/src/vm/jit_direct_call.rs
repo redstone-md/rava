@@ -1614,12 +1614,13 @@ impl Vm {
         // the verdict was "no body", which a later classfile load for the dispatch class flips.
         let recheck = !forced && r.is_none();
         let iter_shape = kinds.is_empty() && (desc == "()Z" || desc == "()Ljava/lang/Object;");
-        let program = match self.loader.get_loaded(actual) {
-            Some(class) => class.native_program_class.and_then(|binding| {
-                crate::natives::program_for_class(binding, name, desc)
-            }),
-            None => crate::natives::program_for(actual, name, desc),
-        };
+        let program = crate::natives::program_for_binding(
+            self.loader
+                .get_loaded(actual)
+                .and_then(|class| class.native_program_class),
+            name,
+            desc,
+        );
         Some(std::sync::Arc::new(hr_synth::NativePlan {
             owner: std::sync::Arc::clone(&sr.owner),
             name: std::sync::Arc::clone(&sr.name),
