@@ -608,6 +608,25 @@ stays open and the rewrite carries no speedup claim.
   is not a multi-second optimization target; the measured work is spread
   across native, callback, dispatch, allocation, and compiled execution.
 
+- A later exact-current-product run tested that sampled total against a direct counter instead of
+  assuming the `perf report` estimate was the process total. In one fresh-world boot,
+  `perf stat -p <pid>` counted 259.63B `instructions:u`; concurrently,
+  `perf record -c 100000000 -e instructions:u -p <pid>` captured 1,397 fixed-period samples,
+  zero lost, estimated at 139.70B. Explicit `--inherit` reproduced the ~0.54 ratio. The mismatch
+  is not explained by frequency sampling; its PID/thread accounting cause remains unproven.
+  `perf stat` is the direct-counter result; sampled totals are profile metadata only and cannot
+  be compared as whole-process instruction counts. Do not infer an optimization ceiling from
+  the sampled shares.
+
+- The exact-current PGO product's symbolized instruction report identifies
+  `Reference2ObjectArrayMap.<init>(Reference2ObjectMap)` (4.82%) and
+  `StateHolder.lambda$populateNeighbours$0` (4.39%) as reachable sampled hot symbols. The
+  existing route census records ~460k copy-constructor arrivals during block-state neighbour-map
+  construction. These percentages are profile shares, not removable CPU bounds; no direct
+  per-method timing or op census proves a ≥7.6 CPU-s reduction. A class/descriptor-specific
+  native copy arm would also violate the still-uncertified strict no-adapt contract. No tracer
+  selected.
+
 ### Activation-owned cell-root registration slice (2026-09-28)
 
 `CellRootGuard` now owns the compiled activation's root-stack push/pop lifecycle

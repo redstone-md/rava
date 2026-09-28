@@ -148,6 +148,35 @@ One same-classpath fresh-world OpenJDK 25.0.4.1 launch reached `Done` in 5.629 s
 
 The two Rava PMU runs are internally stable (instructions differ by 0.11%, cache misses by 2.0%), but they do not identify which operations generated that traffic. These whole-process counters therefore neither confirm nor refute the 727 ns vs 142 ns per-event explanation. They expose no bounded, safe work-removal candidate; the per-operation discrepancy remains open, as do the <5 s and strict-no-adapt gates.
 
+### Process-count versus sample-count disagreement
+
+A fresh exact-current-product rerun tested whether the old `perf record` event totals could be
+treated as whole-process instruction totals. In one snapshot-free boot, `perf stat -p <pid>`
+counted **259.63 B** `instructions:u`. Concurrently, `perf record -c 100000000 -e instructions:u
+-p <pid>` captured 1,397 fixed-period samples with **zero lost samples**, which `perf report`
+estimated at **139.70 B**. An explicit `--inherit` run reproduced the same ~0.54 ratio. This is
+not frequency-mode extrapolation and the count difference is much larger than the attach/stop
+window.
+
+The cause of this same-PID disagreement is not established. Treat `perf stat` as the direct
+counter result and `perf record`/`perf report` as a sampling profile only; do not compare the
+profile's approximate event total with direct counters, nor use it to compute an instruction
+ratio. The older 136–181 B sampled totals in the roadmap therefore do not contradict or calibrate
+the ~260 B direct count. This still provides no operation-level ownership or bounded optimization
+ceiling.
+
+### Current-product hot-symbol check: no-go for this objective
+
+A symbolized report from the exact current PGO product found
+`Reference2ObjectArrayMap.<init>(Reference2ObjectMap)` at 4.82% and
+`StateHolder.lambda$populateNeighbours$0` at 4.39% of sampled instructions. The existing route
+census records about 460k copy-constructor arrivals; the guest path is block-state neighbour-map
+construction (`Stream.map`/`Map.get`/`put`). These are product-reachable hot methods, not a newly
+measured removable CPU ceiling. A class/descriptor-specific native copy shortcut would add
+another adaptation route, while the strict no-adapt surface is still uncertified. No operation
+counter or direct per-method timing demonstrates the ≥7.6 CPU-s reduction required by the current
+wall target. Do not build from sample share alone.
+
 ## Calibration: the instrument floor is ~8% today, not ±2.5%
 
 Ran `boot_ab_flag.ps1` against a flag that does not exist, so both arms are the same binary in
