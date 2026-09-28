@@ -70,6 +70,11 @@ with 29,671 states and the established hash
 Bootstrap is the largest measured step, but it alone exceeds the target by
 8.2 s; this locates the work and does not yet identify a safe removable path.
 
+Same classpath under the local JDK 25 HotSpot control produced
+`BootstrapBench=3.017 s` with the identical state count and hash. This
+comparison is adaptive HotSpot, not a strict no-adapt result; it shows the
+bootstrap's 4.4× runtime gap without making the 5 s acceptance claim.
+
 Focused bootstrap perf attribution used the symbol-retaining exact-source
 diagnostic build, not the shipping timing artifact: 5,000 `cycles:u` samples,
 0 lost, and the same 29,671-state reference hash. Its instrumented
