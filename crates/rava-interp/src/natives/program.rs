@@ -24,60 +24,106 @@ pub(crate) enum NativeProgram {
     NumberDoubleValue,
 }
 
-/// Bind an exact native dispatch target to its implementation family.
+/// Class-level provider identity resolved when the classfile enters the loader.
 ///
-/// Guest bytecode must be resolved before this function is called; a loadable override therefore
-/// cannot gain a native program by spelling its class like a bootstrap class. The environment
-/// switch exists for semantic/performance A/B and is read once per process.
-pub(crate) fn program_for(class: &str, name: &str, descriptor: &str) -> Option<NativeProgram> {
-    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    if !*ON.get_or_init(|| std::env::var_os("RAVA_NO_NATIVE_PROGRAM").is_none()) {
-        return None;
-    }
-    if crate::map::is_native_map(class) {
-        static MAP_ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-        if *MAP_ON.get_or_init(|| std::env::var_os("RAVA_NO_NATIVE_PROGRAM_MAP").is_none()) {
-            return Some(NativeProgram::Map);
+/// This moves class routing out of JIT plan construction. Method-specific checks and opt-out gates
+/// remain in `program_for_class`; an unrecognized class has no binding and fails closed.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum NativeProgramClass {
+    String,
+    StringBuilder,
+    BitSet,
+    Class,
+    Map,
+    ArrayList,
+    Stream,
+    Boolean,
+    Number,
+}
+
+impl NativeProgramClass {
+    /// Resolve only exact implementation providers; simple-name and package-shape guesses do not
+    /// create a binding.
+    pub(crate) fn for_classfile_name(class: &str) -> Option<Self> {
+        if crate::map::is_native_map(class) {
+            return Some(Self::Map);
         }
-    }
-    if class == "java/lang/Class"
-        && name == "cast"
-        && descriptor == "(Ljava/lang/Object;)Ljava/lang/Object;"
-    {
-        static CLASS_CAST_ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-        if *CLASS_CAST_ON
-            .get_or_init(|| std::env::var_os("RAVA_NO_NATIVE_PROGRAM_CLASS_CAST").is_none())
-        {
-            return Some(NativeProgram::ClassCast);
-        }
-    }
-    if matches!(class, "java/util/ArrayList" | "java/util/stream/Stream") {
-        static STREAM_ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-        if *STREAM_ON
-            .get_or_init(|| std::env::var_os("RAVA_NO_NATIVE_PROGRAM_STREAM").is_none())
-        {
-            return Some(if class == "java/util/ArrayList" {
-                NativeProgram::ArrayList
-            } else {
-                NativeProgram::Stream
-            });
-        }
-    }
-    if class == "java/lang/Boolean" && name == "booleanValue" && descriptor == "()Z" {
-        return Some(NativeProgram::BooleanValue);
-    }
-    if matches!(
-        class,
-        "java/lang/Integer"
+        match class {
+            "java/lang/String" => Some(Self::String),
+            "java/lang/StringBuilder" | "java/lang/StringBuffer" => Some(Self::StringBuilder),
+            "java/util/BitSet" => Some(Self::BitSet),
+            "java/lang/Class" => Some(Self::Class),
+            "java/util/ArrayList" => Some(Self::ArrayList),
+            "java/util/stream/Stream" => Some(Self::Stream),
+            "java/lang/Boolean" => Some(Self::Boolean),
+            "java/lang/Integer"
             | "java/lang/Long"
             | "java/lang/Short"
             | "java/lang/Byte"
             | "java/lang/Float"
             | "java/lang/Double"
             | "java/lang/Character"
-            | "java/lang/Number"
-    ) {
-        let value = match (name, descriptor) {
+            | "java/lang/Number" => Some(Self::Number),
+            _ => None,
+        }
+    }
+}
+
+/// Bind an exact native dispatch target to its implementation family.
+///
+/// Compatibility adapter for callers without loaded class metadata. Resolved callers should use
+/// `program_for_class` with the class-load binding instead.
+pub(crate) fn program_for(class: &str, name: &str, descriptor: &str) -> Option<NativeProgram> {
+    program_for_class(
+        NativeProgramClass::for_classfile_name(class)?,
+        name,
+        descriptor,
+    )
+}
+
+/// Resolve one method against a class-level provider identity.
+pub(crate) fn program_for_class(
+    class: NativeProgramClass,
+    name: &str,
+    descriptor: &str,
+) -> Option<NativeProgram> {
+    static ON: std::sync::LazyLock<bool> =
+        std::sync::LazyLock::new(|| std::env::var_os("RAVA_NO_NATIVE_PROGRAM").is_none());
+    if !*ON {
+        return None;
+    }
+    match class {
+        NativeProgramClass::Map => {
+            static MAP_ON: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| {
+                std::env::var_os("RAVA_NO_NATIVE_PROGRAM_MAP").is_none()
+            });
+            (*MAP_ON).then_some(NativeProgram::Map)
+        }
+        NativeProgramClass::Class
+            if name == "cast" && descriptor == "(Ljava/lang/Object;)Ljava/lang/Object;" =>
+        {
+            static CLASS_CAST_ON: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| {
+                std::env::var_os("RAVA_NO_NATIVE_PROGRAM_CLASS_CAST").is_none()
+            });
+            (*CLASS_CAST_ON).then_some(NativeProgram::ClassCast)
+        }
+        NativeProgramClass::ArrayList | NativeProgramClass::Stream => {
+            static STREAM_ON: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| {
+                std::env::var_os("RAVA_NO_NATIVE_PROGRAM_STREAM").is_none()
+            });
+            if !*STREAM_ON {
+                return None;
+            }
+            Some(if class == NativeProgramClass::ArrayList {
+                NativeProgram::ArrayList
+            } else {
+                NativeProgram::Stream
+            })
+        }
+        NativeProgramClass::Boolean if name == "booleanValue" && descriptor == "()Z" => {
+            Some(NativeProgram::BooleanValue)
+        }
+        NativeProgramClass::Number => match (name, descriptor) {
             ("intValue", "()I") | ("shortValue", "()S") | ("byteValue", "()B") => {
                 Some(NativeProgram::NumberIntValue)
             }
@@ -85,15 +131,10 @@ pub(crate) fn program_for(class: &str, name: &str, descriptor: &str) -> Option<N
             ("floatValue", "()F") => Some(NativeProgram::NumberFloatValue),
             ("doubleValue", "()D") => Some(NativeProgram::NumberDoubleValue),
             _ => None,
-        };
-        if value.is_some() {
-            return value;
-        }
-    }
-    match class {
-        "java/lang/String" => Some(NativeProgram::String),
-        "java/lang/StringBuilder" | "java/lang/StringBuffer" => Some(NativeProgram::StringBuilder),
-        "java/util/BitSet" => Some(NativeProgram::BitSet),
+        },
+        NativeProgramClass::String => Some(NativeProgram::String),
+        NativeProgramClass::StringBuilder => Some(NativeProgram::StringBuilder),
+        NativeProgramClass::BitSet => Some(NativeProgram::BitSet),
         _ => None,
     }
 }
@@ -271,4 +312,29 @@ fn verify_class_cast(vm: &mut Vm, args: &[Value], value: &Value) -> Result<(), V
         ));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod class_binding_tests {
+    use super::NativeProgramClass;
+
+    #[test]
+    fn class_binding_is_exact_and_does_not_infer_from_simple_names() {
+        assert_eq!(
+            NativeProgramClass::for_classfile_name("java/util/HashMap"),
+            Some(NativeProgramClass::Map),
+        );
+        assert_eq!(
+            NativeProgramClass::for_classfile_name("java/lang/Integer"),
+            Some(NativeProgramClass::Number),
+        );
+        assert_eq!(
+            NativeProgramClass::for_classfile_name("net/example/ArrayListish"),
+            None,
+        );
+        assert_eq!(
+            NativeProgramClass::for_classfile_name("java/util/Objects"),
+            None,
+        );
+    }
 }
