@@ -139,6 +139,55 @@ The same-classpath OpenJDK 25.0.4.1 comparator reached `Done` in **5.629 s** (ad
 
 The two Rava totals are internally stable (instructions differ by 0.11%, misses by 2.0%), but whole-process PMU counters identify no per-operation price or bounded safe tracer. The 727 ns vs 142 ns discrepancy remains unresolved; the <5 s goal and strict no-adapt gate remain unmet. Full details and caveats: `docs/the-arithmetic-does-not-close.md`.
 
+### 2026-09-29: current-source Linux sample profile finds no bounded wall lever
+
+Built a symbolized `release-diag` from source `9e0b9199` (SHA-256
+`041be03c61b6b79058a3eb77f70404d63a75d3b2a975ff1128a2a72050e17b80`) with
+the retained PGO-use profile generated from source `b5d7b83` (profile SHA-256
+`1b217a36acc68318fe9084c53bc97377d483bcb681362a7a35266f4ad4e5c3cc`). This
+is a diagnostic twin, not an exact-source timing artifact.
+
+Two isolated copies of `world_pristine` used the ordinary `rava.toml`, classpath,
+and base `RAVA_JIT=1 RAVA_JIT_TIER0=1 RAVA_HARD_MB=3584` environment. No
+snapshot, restore, prepared-AOT, or benchmark-specific policy flags were used;
+`RAVA_PERF_MAP=1` only published guest JIT code ranges for attribution. One
+`perf record -F 99 -e cycles:u --inherit` capture ended at `Environment:`;
+the other ran through ordinary `Done (0.381s)`. `Done` is the guest's internal
+timer, **not** external launch wall, and the diagnostic runs are not performance
+measurements.
+
+The full boot produced 3,230 flat user-cycle samples; 423 (13.1%) mapped to
+guest JIT code. The largest guest method was
+`Shapes.joinIsNotEmpty` at 27 samples (0.84% of all samples). The largest
+identified host function was `Vm::jit_call_body` at 115 (3.56%), followed by
+`fu_fastpath` at 2.66%, GC slot policy at 2.38%, and allocator zeroing at 2.32%.
+The initial 5.20% `[unknown]` bucket was refined by a second fresh `Done`
+capture: 144/3,033 samples (4.75%) were unresolved, of which 126 (4.16%)
+belonged to `libc.so.6`, six to the `/tmp/perf-<pid>.map` DSO, and 12 had no
+DSO. This identifies the largest unknown's image, **not its libc function or
+caller**; no `memchr` claim is made. The bootstrap-only capture was similarly
+diffuse: its hottest guest method was 22/1,952 samples (1.13%). No individual
+identified method supplies a credible multi-second removal ceiling.
+
+For classification, three collector leaves (`gc_with_object_slot_policy`,
+array-slot retirement, and object-slot retirement) account for 175/3,230
+samples (5.42%); identified mimalloc zero/allocation/free leaves are roughly
+4.6%. VM dispatch/bridge/fast-path leaves are distributed across
+`jit_call_body` (3.56%), `fu_fastpath` (2.66%), native-owner dispatch (2.01%),
+direct probing (1.58%), and smaller entry/bridge functions. Guest JIT is 13.1%
+of samples and led by shape construction. These are exclusive leaf samples,
+not causal wall-time shares or safe additive savings; they identify several
+systemic subsystems, but none gives a bounded single change worth seconds.
+
+These are flat leaf samples, not call stacks: processing the large debug binary
+with DWARF callchains exceeded the report/script timeouts, so that data was
+discarded. The diagnostic source also includes the unmeasured
+`Boolean.valueOf` name-keyed prelink from `9e0b9199`; it is not certified for
+the strict no-adapt gate. **Conclusion: no high-leverage structural change is
+licensed by this profile.** Reopen with resolved attribution of the unknown
+bucket or a backend/object-model design whose end-to-end semantic and wall-time
+ceiling is demonstrated before implementation.
+
 ## Objective
 
 Reduce Minecraft boot and warm-reload wall time through structural, workload-agnostic changes while preserving exact Java semantics.
