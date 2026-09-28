@@ -392,9 +392,8 @@ pub(crate) fn invokestatic(
         // dropped it (see `argbuf_recycle`).
         None => match {
             crate::vecgrow::event(3);
-            let r = crate::natives::try_invoke_site(
+            let r = crate::natives::try_invoke_with_family(
                 vm_mut(vm),
-                site_ref.native_program,
                 &owner,
                 &name,
                 &desc,

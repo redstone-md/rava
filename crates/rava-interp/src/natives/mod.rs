@@ -721,7 +721,7 @@ pub(crate) use buffers::*;
 mod program;
 pub(crate) use program::{
     invoke as invoke_program, invoke_cells as invoke_program_cells, program_for_binding,
-    program_for_class, program_for_static_site, NativeProgram, NativeProgramClass,
+    program_for_class, NativeProgram, NativeProgramClass,
 };
 mod time;
 pub(crate) use time::*;
