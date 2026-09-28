@@ -139,7 +139,7 @@ The same-classpath OpenJDK 25.0.4.1 comparator reached `Done` in **5.629 s** (ad
 
 The two Rava totals are internally stable (instructions differ by 0.11%, misses by 2.0%), but whole-process PMU counters identify no per-operation price or bounded safe tracer. The 727 ns vs 142 ns discrepancy remains unresolved; the <5 s goal and strict no-adapt gate remain unmet. Full details and caveats: `docs/the-arithmetic-does-not-close.md`.
 
-### 2026-09-29: current-source Linux sample profile finds no bounded wall lever
+### 2026-09-29: near-current Linux sample profile finds no bounded wall lever
 
 Built a symbolized `release-diag` from source `9e0b9199` (SHA-256
 `041be03c61b6b79058a3eb77f70404d63a75d3b2a975ff1128a2a72050e17b80`) with
@@ -181,12 +181,36 @@ systemic subsystems, but none gives a bounded single change worth seconds.
 
 These are flat leaf samples, not call stacks: processing the large debug binary
 with DWARF callchains exceeded the report/script timeouts, so that data was
-discarded. The diagnostic source also includes the unmeasured
-`Boolean.valueOf` name-keyed prelink from `9e0b9199`; it is not certified for
-the strict no-adapt gate. **Conclusion: no high-leverage structural change is
-licensed by this profile.** Reopen with resolved attribution of the unknown
-bucket or a backend/object-model design whose end-to-end semantic and wall-time
-ceiling is demonstrated before implementation.
+discarded. The sampled source included the unmeasured `Boolean.valueOf`
+name-keyed prelink from `9e0b9199`. That change was reverted in `424f7cb1` to
+avoid carrying a name-selected optimization into the strict no-adapt path.
+Consequently this profile is near-current, not a post-revert product profile;
+use it for broad cost attribution only, not to certify the gate or make timing
+claims. **Conclusion: no high-leverage structural change is licensed by this
+profile.** Reopen with resolved per-call attribution or a backend/object-model
+design whose end-to-end semantic and wall-time ceiling is demonstrated before
+implementation.
+
+
+### 2026-09-29: shared-execution interface gate finds no implementable wall candidate
+
+Compared three different deep-Module Interfaces around off-thread guest execution:
+two-entry `SharedExec` with opaque commit tickets; one-call `SealedTask` with
+`Committed`/`Refused`/`Poisoned`; and a flexible versioned session owning write
+journals, class-init coordination, loader work, and GC roots. They agree on the
+same seam and the same failure: the minimal designs preserve today's lock and
+serial retry, so they do not remove work. The flexible design could clear the
+7.6 CPU-s floor only under an unverified near-total worker-coverage assumption.
+
+The measured basis does not support that assumption: the worker proof census is
+0/79, the first registry batch completes 0/2, shared-field reads have no
+transaction barrier, and the G1.4 worker gate correctly refuses cold
+`<clinit>`. The measured reload-window parallel ceiling is at most 1.55 s, and
+the individual remaining VM/GC/allocation paths are diffuse. None of the three
+Interfaces has a source-backed >7.6 CPU-s removal ceiling; no new runtime
+Module or adapter is justified. Reopen only with new measured eligible work
+and a proof that preserves §5.5, shared-heap ownership, write barriers, and
+moving-GC roots. The `<5 s`, strict no-adapt, no-snapshot target remains open.
 
 ## Objective
 
