@@ -761,6 +761,19 @@ valid; `Unknown` must retain the ordinary cascade. `NativeProgramClass` only
 selects an optional provider and does not prove that other native arms cannot
 serve the class. No such complete route fact exists yet.
 
+The follow-up route-selection pass found no single name gate with both bounded scope and a
+parity-provable structural replacement. The shared refusal serves five semantically distinct
+consumers; native coverage varies by exact method and receiver representation, so a class-level
+boolean is not sufficient. The existing per-method `native_claimed` observation is history-based
+and inadmissible. A resolved-method coverage fact with `Unknown` fail-closed remains the viable
+seam, but no complete route contract currently exists. No runtime code changed, and strict
+no-adapt remains uncertified.
+
+This is not a measured performance lever either: the opt-in served-namespace bytecode experiment
+turned roughly 790,000 interpreted method entries into compiled entries, preserved its output
+hash, and measured overlapping boot times (10.663/10.788 s versus 10.801/10.760 s). Do not use
+coverage growth as a proxy for CPU savings.
+
 ### Structural native-state fact seam (design, 2026-09-28)
 
 Three read-only interface alternatives were compared. A single
