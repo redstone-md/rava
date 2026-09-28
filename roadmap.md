@@ -20,6 +20,18 @@ many profile function-hash mismatch warnings, so this is not exact-source PGO
 evidence and is not comparable to row 740's 21.43 s product. It is a current
 source smoke only; no strict no-adapt certification or <5 s result follows.
 
+Exact-source real-boot PGO cycle, 2026-09-28: profile-generation source
+`b5d7b83` reached Minecraft `Done` on a fresh world before the 120 s counter
+dump (`rc=0`). The merged profile contains 19,658 functions, 377,154 blocks,
+and 113,183,229,053 counts (SHA-256
+`1b217a36acc68318fe9084c53bc97377d483bcb681362a7a35266f4ad4e5c3cc`). Its
+`release-fat` profile-use product (SHA-256
+`a35dfa1a2634a0a2a3445c22439f23118841fb61703a4b8e47b8f79c6cd7e0da`) reached
+`Done` in 24.1 s on a separate fresh world with canonical fixed Tier-0 settings,
+no snapshot, and no extra adaptation overrides. This is one launch, not an A/B;
+it misses <5 s by 19.1 s and does not certify the remaining name-routed
+policies as strict no-adapt.
+
 ## Objective
 
 Reduce Minecraft boot and warm-reload wall time through structural, workload-agnostic changes while preserving exact Java semantics.
