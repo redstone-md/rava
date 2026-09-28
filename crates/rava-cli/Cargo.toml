@@ -1,0 +1,37 @@
+[package]
+name = "rava-cli"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "rava"
+path = "src/main.rs"
+
+[features]
+# Population census for the collection-contract paths (docs/boot-speed-ledger.md
+# rows 261-262). Off by default: the counters sit on paths that run millions of
+# times a boot, so the product must not pay for an instrument it is not reading.
+contract-stat = ["rava-interp/contract-stat"]
+default = ["shrink-header"]
+# Forwards to rava-interp's experimental arena/moving-GC object model. Default
+# build is byte-identical without this; pass `--features next-gen-gc` to test.
+next-gen-gc = ["rava-interp/next-gen-gc"]
+# Builds the diagnostic wall/PC sampler into rava-interp. Production releases omit
+# the inactive sampler hooks; use this only when collecting a profile.
+wall-profile = ["rava-interp/wall-profile"]
+# Forwards the 24B → 16B arena object header layout (see rava-interp).
+shrink-header = ["rava-interp/shrink-header"]
+# PGO TRAINING ONLY, and only meaningful in a `-C profile-generate` build: links
+# `__llvm_profile_write_file` and exposes RAVA_PGO_DUMP_AFTER_MS, which writes the
+# counters and exits mid-run. This is what lets the REAL server boot be the training
+# workload — it has no clean exit (docs/pgo-build.md trap 2), so training has had to
+# use BootPhaseC + ChunkFill as a proxy for it. Never enable in a shipped build: the
+# symbol does not exist outside an instrumented build and the link would fail.
+pgo-dump = []
+
+[dependencies]
+rava-jar = { path = "../rava-jar" }
+rava-classfile = { path = "../rava-classfile" }
+rava-interp = { path = "../rava-interp" }
+mimalloc = "0.1"

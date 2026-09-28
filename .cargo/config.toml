@@ -1,0 +1,6 @@
+# Build rava for THIS machine's CPU — unlocks AVX2/BMI/etc the generic baseline
+# can't use, which speeds the hot interpreter op-loop + Cranelift. The binary is
+# then host-specific (not portable to an older CPU); rava runs locally, so that's
+# the right trade. Remove this file (or set a specific target-cpu) for a portable build.
+[build]
+rustflags = ["-C", "target-cpu=native"]

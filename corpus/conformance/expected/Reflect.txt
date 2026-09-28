@@ -1,0 +1,3 @@
+refl=97500
+expectedThrow=NullPointerException
+DONE

@@ -1,0 +1,8 @@
+A_range_sum=199990000
+B_mapToObj_count=20000
+C_filter_count=19900
+D_mapToLong_sum=483413894320
+E_full=483413741200
+F_map_chain=0!,1!,2!,3!,4!
+G_mapToInt=88890
+DONE
