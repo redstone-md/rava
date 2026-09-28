@@ -11,6 +11,15 @@ paired wall deltas +0.163/+0.893 seconds. Runtime restored; further work must
 address execution coverage rather than pursue this refusal-cache experiment.
 See docs/handler-direct-refusal.md. Full no-adapt and wall below five seconds remain unmet.
 
+Current-source fixed-profile smoke, 2026-09-28: source `b5d7b83` built as
+`release-fat` with `target-cpu=native` and the existing
+`target/pgo-current-head.profdata` reached guest `Done` in 25.0 s in an
+isolated fresh-world directory under the canonical JIT/Tier-0/hard-memory
+environment, with no snapshot or runtime-adaptation override. The build emitted
+many profile function-hash mismatch warnings, so this is not exact-source PGO
+evidence and is not comparable to row 740's 21.43 s product. It is a current
+source smoke only; no strict no-adapt certification or <5 s result follows.
+
 ## Objective
 
 Reduce Minecraft boot and warm-reload wall time through structural, workload-agnostic changes while preserving exact Java semantics.
