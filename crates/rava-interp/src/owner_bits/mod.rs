@@ -352,6 +352,20 @@ const FAMILIES: [&[Pat]; 24] = [
     &[Pat::Eq("java/lang/Long")],
 ];
 
+/// Family membership resolved once from an immutable symbolic owner.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum NativeFamilyFact {
+    Unknown,
+    Known(u32),
+}
+
+impl NativeFamilyFact {
+    /// Resolve the authoritative family table once; callers without a fixed site remain Unknown.
+    pub(crate) fn for_owner_name(owner: &str) -> Self {
+        Self::Known(compute_families(owner))
+    }
+}
+
 /// Set when the owner lives in a namespace that some dispatcher names by literal.
 /// Not a needle (it is a prefix disjunction, not a substring), so it is computed
 /// separately and lives above the needle bits.
@@ -798,6 +812,30 @@ mod family_tests {
         assert_eq!(std::mem::size_of::<Option<(usize, Box<str>, u32)>>(), 32);
         assert_eq!(std::mem::size_of::<Option<(usize, Box<str>, u32, u32)>>(), 32);
         assert_eq!(DIRECT * 32, 8192);
+    }
+    #[test]
+    fn family_facts_match_the_authoritative_table_for_exact_and_shape_names() {
+        for family in FAMILIES {
+            for pattern in family {
+                let Pat::Eq(owner) = *pattern else { continue };
+                assert_eq!(
+                    NativeFamilyFact::for_owner_name(owner),
+                    NativeFamilyFact::Known(compute_families(owner)),
+                    "{owner}",
+                );
+            }
+        }
+        for owner in [
+            "java/util/ArrayList",
+            "pkg/WrappedByteBuffer",
+            "pkg/ReportedException",
+        ] {
+            assert_eq!(
+                NativeFamilyFact::for_owner_name(owner),
+                NativeFamilyFact::Known(compute_families(owner)),
+                "{owner}",
+            );
+        }
     }
 }
 

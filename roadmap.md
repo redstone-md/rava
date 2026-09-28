@@ -674,3 +674,17 @@ name-based because handle classes do not use the arena class registry and the
 ThreadLocal leaf is handle-only. A focused parity test compares old name routing
 with the frozen contract across ArrayList, AtomicLong, Optional, wrappers,
 HashMap, and a synthetic class.
+
+### Precomputed native-family facts at constant-pool sites (2026-09-28)
+
+`SiteRef` carries the complete family word resolved once from its immutable
+symbolic owner. Static and special native fallbacks thread that fact into the
+family dispatcher; exact and `Has`/`Ends` families all bypass the per-thread
+owner-name family memo. Non-site entry points and super-chain walks retain the
+existing memo route. `RAVA_NO_ID_RESOLVE=1` continues to use the table scan.
+
+The family-fact classifier test and release build pass. `Collections` matches
+under HotSpot, Rava interpreter, interpreter with `RAVA_NO_ID_RESOLVE=1`, and
+Rava JIT. `ConcSem` also matches HotSpot across its ByteBuffer `Has`-pattern and
+BufferUnderflowException `Ends`-pattern paths, both with the fact route and the
+scan opt-out. These checks do not certify strict no-adapt or measure full boot.

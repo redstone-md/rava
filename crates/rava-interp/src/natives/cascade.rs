@@ -16,6 +16,7 @@ pub(crate) fn dispatch_owner_cascade(
     name: &str,
     descriptor: &str,
     args: &[Value],
+    family_fact: crate::owner_bits::NativeFamilyFact,
 ) -> Result<Option<Option<Value>>, VmError> {
     use crate::owner_bits as ob;
     // ── ONE GATE WORD, ONE FINGERPRINT (RAVA_NO_FAST_CASCADE2) ────────────────────────────────
@@ -953,7 +954,7 @@ pub(crate) fn dispatch_owner_cascade(
             _ => {}
         }
     }
-    if let Some(h) = owner_families(vm, plan, verify, owner, name, descriptor, args)? {
+    if let Some(h) = owner_families(vm, plan, verify, owner, name, descriptor, args, family_fact)? {
         return Ok(Some(h));
     }
     // ── THE TAIL IS A DISPATCH NOW, NOT A WALK (RAVA_NO_FAST_CASCADE) ──────────────────────
