@@ -758,3 +758,30 @@ under HotSpot, Rava interpreter, interpreter with `RAVA_NO_ID_RESOLVE=1`, and
 Rava JIT. `ConcSem` also matches HotSpot across its ByteBuffer `Has`-pattern and
 BufferUnderflowException `Ends`-pattern paths, both with the fact route and the
 scan opt-out. These checks do not certify strict no-adapt or measure full boot.
+
+### Allocation name-route structuralization: no-go (2026-09-28)
+
+Audited the proposed `NativeStateFact` extension against every allocation,
+layout, JIT, statics, and native-dispatch consumer. Do not replace the
+`is_native_backed_alloc` name route with one additional class-load fact:
+
+- `NativeStateFact` attaches only to loaded classfiles, while synthetic and
+  unloadable JDK owners have no `LoadedClass` to carry a fact.
+- `stream::is_collection` is an intentional substring superset with explicit
+  exclusions, not an exact provider catalog. The residual names are
+  representation-policy decisions; treating `Unknown` as absence can route
+  receivers away from synthetic `$elems`/`$map`/entry storage.
+- Ancestor policy spans unloadable superclass names; layout safety also walks
+  interfaces, and value-computer admission can exempt selected subclasses.
+  Replacing the shared predicate therefore needs a complete provider and
+  hierarchy contract, not a local bit.
+- The allocation call sites already prefer positive exact storage facts before
+  falling back to the cached predicate. `owner_bits`, the map-owner sketch,
+  and the ancestor memo already amortize the name work; no measured launch-wall
+  saving justifies a new fact or broader migration.
+
+No runtime change is authorized by this audit. The required evidence before
+revisiting is a full-boot fallback-population/served census, followed by
+focused representation tests for exact providers, synthetic-only owners,
+name collisions, inherited state, and interface-backed entries. Current
+fresh-boot acceptance remains 21.9 s and strict no-adapt remains uncertified.
