@@ -997,27 +997,67 @@ pub(crate) mod pic_native {
     fn leaf_op(cls: &str, name: &str, desc: &str) -> Option<i64> {
         let existing = match (cls, name, desc) {
             ("java/util/ArrayList", "get", "(I)Ljava/lang/Object;") => Some(OP_LIST_GET),
-            ("java/util/concurrent/atomic/AtomicLong", "get", "()J") => Some(OP_ATOMIC_LONG_GET),
+            ("java/util/concurrent/atomic/AtomicLong", "get", "()J") => {
+                Some(OP_ATOMIC_LONG_GET)
+            }
             ("java/util/Optional", "isPresent", "()Z")
             | ("java/util/Optional", "isEmpty", "()Z")
             | ("java/util/Optional", "get", "()Ljava/lang/Object;") => Some(OP_OPTIONAL),
-            // ⭐THE CENSUS LEAF, (name,desc)-keyed and CLASS-NAME-FREE on purpose: the four
-            // fastutil classes of the 8.39 M census are bound by their site descriptor, not by
-            // a hardcoded owner list — the same structural-admission discipline the ring arm
-            // uses. `fu_isempty_leaf_serve` re-reads `member_ref(cp)` and the receiver's own
-            // class key, and answers ONLY off a site-row `ring_size_fastpath` derived for
-            // exactly that (caller, cp, receiver-class) pair; unsupported shapes refuse safely
-            // and immediately demote through `note_refusal`. Placement follows the Optional
-            // triples so a `java/util/Optional` receiver keeps `OP_OPTIONAL`.
             (_, "isEmpty", "()Z") if fu_isempty_leaf() => Some(OP_FU_ISEMPTY),
             _ => None,
         };
         existing.or_else(|| {
-            static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-            if !*ON.get_or_init(|| std::env::var_os("RAVA_NO_NATIVE_PROGRAM_LEAF").is_none()) {
+            if !native_program_leaf_enabled() {
                 return None;
             }
             match crate::natives::program_for(cls, name, desc)? {
+                crate::natives::NativeProgram::BooleanValue => Some(OP_BOOLEAN_VALUE),
+                crate::natives::NativeProgram::NumberIntValue => Some(OP_NUMBER_INT_VALUE),
+                crate::natives::NativeProgram::NumberLongValue => Some(OP_NUMBER_LONG_VALUE),
+                crate::natives::NativeProgram::NumberFloatValue => Some(OP_NUMBER_FLOAT_VALUE),
+                crate::natives::NativeProgram::NumberDoubleValue => Some(OP_NUMBER_DOUBLE_VALUE),
+                _ => None,
+            }
+        })
+    }
+
+    fn native_program_leaf_enabled() -> bool {
+        static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        *ON.get_or_init(|| std::env::var_os("RAVA_NO_NATIVE_PROGRAM_LEAF").is_none())
+    }
+
+    fn leaf_op_class(
+        cls: crate::nextgen::LeafClass,
+        name: &str,
+        desc: &str,
+    ) -> Option<i64> {
+        let existing = match (cls, name, desc) {
+            (crate::nextgen::LeafClass::ArrayList, "get", "(I)Ljava/lang/Object;") => {
+                Some(OP_LIST_GET)
+            }
+            (crate::nextgen::LeafClass::AtomicLong, "get", "()J") => {
+                Some(OP_ATOMIC_LONG_GET)
+            }
+            (crate::nextgen::LeafClass::Optional, "isPresent", "()Z")
+            | (crate::nextgen::LeafClass::Optional, "isEmpty", "()Z")
+            | (crate::nextgen::LeafClass::Optional, "get", "()Ljava/lang/Object;") => {
+                Some(OP_OPTIONAL)
+            }
+            // The receiver class is deliberately irrelevant: the binder validates the site row
+            // against the actual class key before serving.
+            (_, "isEmpty", "()Z") if fu_isempty_leaf() => Some(OP_FU_ISEMPTY),
+            _ => None,
+        };
+        existing.or_else(|| {
+            if !native_program_leaf_enabled() {
+                return None;
+            }
+            let provider = match cls {
+                crate::nextgen::LeafClass::Boolean => crate::natives::NativeProgramClass::Boolean,
+                crate::nextgen::LeafClass::Number => crate::natives::NativeProgramClass::Number,
+                _ => return None,
+            };
+            match crate::natives::program_for_class(provider, name, desc)? {
                 crate::natives::NativeProgram::BooleanValue => Some(OP_BOOLEAN_VALUE),
                 crate::natives::NativeProgram::NumberIntValue => Some(OP_NUMBER_INT_VALUE),
                 crate::natives::NativeProgram::NumberLongValue => Some(OP_NUMBER_LONG_VALUE),
@@ -1371,7 +1411,8 @@ pub(crate) mod pic_native {
         let leaf = if crate::pure_memo::armed() {
             None
         } else {
-            crate::nextgen::class_name(class_id).and_then(|cls| leaf_op(&cls, m.name, m.descriptor))
+            crate::nextgen::leaf_class_of(class_id)
+                .and_then(|class| leaf_op_class(class, m.name, m.descriptor))
         };
         let (idx, f): (usize, ThunkFn) = match leaf {
             Some(_) => {
@@ -1704,6 +1745,40 @@ pub(crate) mod pic_native {
             let entry = NativeEntry::blank();
             assert!(claim_retirement(&entry));
             assert!(!claim_retirement(&entry));
+        }
+        #[test]
+        fn arena_leaf_binding_matches_name_route() {
+            use std::sync::Arc;
+
+            let cases = [
+                ("java/util/ArrayList", "get", "(I)Ljava/lang/Object;"),
+                ("java/util/concurrent/atomic/AtomicLong", "get", "()J"),
+                ("java/util/Optional", "isPresent", "()Z"),
+                ("java/util/Optional", "isEmpty", "()Z"),
+                ("java/util/Optional", "get", "()Ljava/lang/Object;"),
+                ("java/lang/Boolean", "booleanValue", "()Z"),
+                ("java/lang/Integer", "intValue", "()I"),
+                ("java/lang/Long", "longValue", "()J"),
+                ("java/lang/Float", "floatValue", "()F"),
+                ("java/lang/Double", "doubleValue", "()D"),
+                ("java/util/HashMap", "isEmpty", "()Z"),
+                ("java/util/Optional", "get", "()Z"),
+                ("java/lang/Boolean", "intValue", "()I"),
+                ("net/example/ArrayListish", "get", "(I)Ljava/lang/Object;"),
+                ("[arena-string]", "get", "(I)Ljava/lang/Object;"),
+            ];
+            for (name, method, descriptor) in cases {
+                let class_id = crate::nextgen::register_class(
+                    &Arc::<str>::from(name),
+                    &Arc::<[(u32, u8)]>::from([]),
+                );
+                let by_name = crate::nextgen::class_name(class_id)
+                    .and_then(|class| super::leaf_op(&class, method, descriptor));
+                let by_contract = crate::nextgen::leaf_class_of(class_id)
+                    .and_then(|class| super::leaf_op_class(class, method, descriptor));
+                assert_eq!(by_contract, by_name, "class {name} method {method}{descriptor}");
+            }
+            assert_eq!(crate::nextgen::leaf_class_of(u32::MAX), None);
         }
     }
 }

@@ -657,10 +657,20 @@ class-load time. The JIT native-plan builder consumes that binding instead of
 re-deriving the class provider from its name; class-unloaded plans retain the
 compatibility resolver, and per-method descriptor checks and opt-out gates
 remain unchanged. This is only a class-provider migration: the interpreter
-native cascade and JIT leaf callback still use name-based routing.
+native cascade and heap-handle PIC leaf callback still use name-based routing.
 
 The exact-name classifier test passes. `Collections` returns
 `SUM=23109031176` under HotSpot, the interpreter, JIT, and JIT with
 `RAVA_NO_NATIVE_PROGRAM=1`; JIT stats confirm the hot method compiled and ran
-14 times. This is a focused parity check, not strict no-adapt certification;
-the fresh-boot gate remains blocked on the remaining name-based consumers.
+14 times. The frozen arena-leaf route's focused parity test also passes. These
+checks do not certify strict no-adapt; the fresh-boot gate remains blocked on
+the remaining name-based consumers.
+
+The arena PIC leaf binder now reads a frozen `LeafClass` from the arena class
+mirror instead of converting each bound receiver class ID back to its name.
+Registration and snapshot restore derive the same enum from the canonical class
+name; unknown class IDs still fail closed. The heap-handle binder remains
+name-based because handle classes do not use the arena class registry and the
+ThreadLocal leaf is handle-only. A focused parity test compares old name routing
+with the frozen contract across ArrayList, AtomicLong, Optional, wrappers,
+HashMap, and a synthetic class.
