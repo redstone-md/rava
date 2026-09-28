@@ -58,6 +58,27 @@ a repeatability check, not an A/B. It directly confirms the current artifact
 misses the five-second gate by 16.9 s; name/count-based runtime routes still
 mean this does not certify strict no-adapt. Full results: boot-ledger row 743.
 
+Current-source phase replay, 2026-09-28: the exact profile-use artifact
+(`a35dfa1a2634a0a2a3445c22439f23118841fb61703a4b8e47b8f79c6cd7e0da`) ran
+`BootPhaseC` against an isolated copy of `world_pristine`. It attributed 13.035 s
+to `Bootstrap.bootStrap`, 7.485 s to `WorldLoader.load`, and only 3 ms each to
+the Yggdrasil service constructor and `Services.create`. The replay printed
+through `STEM=ok` but exited 139 afterward, so it is diagnostic attribution,
+not a clean boot result. A separate `BootstrapBench` run exited 0 at 13.227 s
+with 29,671 states and the established hash
+`b9e7debe631b42b6`, confirming the bootstrap computation's semantic result.
+Bootstrap is the largest measured step, but it alone exceeds the target by
+8.2 s; this locates the work and does not yet identify a safe removable path.
+
+Focused bootstrap perf attribution used the symbol-retaining exact-source
+diagnostic build, not the shipping timing artifact: 5,000 `cycles:u` samples,
+0 lost, and the same 29,671-state reference hash. Its instrumented
+`BootstrapBench` time was 18.686 s, so do not compare it to the 13.2 s product
+measurement. The largest native samples were diffuse: Cranelift regalloc
+2.82%, egraph 2.45%, liveness 2.29%, `Heap::retire_array_slot` 1.90%, and
+`Vm::jit_call_body` 1.77%. No single no-adapt-safe runtime seam can explain the
+8.2 s target deficit; a smaller optimization is not justified by this profile.
+
 ## Objective
 
 Reduce Minecraft boot and warm-reload wall time through structural, workload-agnostic changes while preserving exact Java semantics.
