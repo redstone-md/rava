@@ -177,6 +177,18 @@ another adaptation route, while the strict no-adapt surface is still uncertified
 counter or direct per-method timing demonstrates the ≥7.6 CPU-s reduction required by the current
 wall target. Do not build from sample share alone.
 
+### Symbolized exact-source diagnostic profile
+
+The matching debug-enabled diagnostic artifact (`50f1899e1020feace65cee2da1c4903f35795362ebca58c8d2db93cbf6e6bcab`,
+runtime source `b5d7b83`) reached `Done` in 32.005 s on a disposable world copy. It is not a
+product timing. A low-overhead `perf record -F 49 -e instructions:u` capture through `Done`
+retained 1,455 samples with zero loss. The largest named Rava-host symbols were `Heap::get_field_by_id`
+(2.68%), `Vm::jit_call_body` (2.67%), `Vm::fu_fastpath` (2.49%), `Vm::jit_direct_probe` (2.10%),
+`run_hot` (1.98%), and `invokevirtual` (1.82%); allocation, key-fold, and native dispatch followed
+at 1.78%, 1.62%, and 1.59%. No single host method dominates this source-matched diagnostic
+profile. These shares cannot be converted into process CPU savings, and they do not identify a
+multi-second no-adapt-safe cut.
+
 ## Calibration: the instrument floor is ~8% today, not ±2.5%
 
 Ran `boot_ab_flag.ps1` against a flag that does not exist, so both arms are the same binary in

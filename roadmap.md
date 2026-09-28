@@ -627,6 +627,15 @@ stays open and the rewrite carries no speedup claim.
   native copy arm would also violate the still-uncertified strict no-adapt contract. No tracer
   selected.
 
+- A low-overhead symbolized profile of the debug-enabled exact-source diagnostic artifact
+  (`50f1899e1020feace65cee2da1c4903f35795362ebca58c8d2db93cbf6e6bcab`, source `b5d7b83`)
+  reached `Done` in 32.005s on a disposable world; this is not product timing. `perf record -F 49
+  -e instructions:u` captured 1,455 samples, zero loss. Top named host symbols were
+  `Heap::get_field_by_id` 2.68%, `Vm::jit_call_body` 2.67%, `Vm::fu_fastpath` 2.49%,
+  `Vm::jit_direct_probe` 2.10%, `run_hot` 1.98%, and `invokevirtual` 1.82%. No single host
+  method dominates this source-matched diagnostic profile; sample shares are not CPU-s savings
+  or a multi-second no-adapt-safe cut.
+
 ### Activation-owned cell-root registration slice (2026-09-28)
 
 `CellRootGuard` now owns the compiled activation's root-stack push/pop lifecycle
