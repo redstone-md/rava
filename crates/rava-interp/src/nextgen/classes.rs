@@ -38,7 +38,40 @@ pub(crate) struct ArenaClass {
     pub(crate) all_refs: bool,
     /// Exact guest component descriptor for a reference-array class. Immutable after CID publish.
     pub(crate) array_component: Option<Arc<str>>,
+    pub(crate) leaf: LeafClass,
 }
+
+/// Exact receiver family needed by the arena JIT leaf binder.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum LeafClass {
+    ArrayList,
+    AtomicLong,
+    Optional,
+    Boolean,
+    Number,
+    Other,
+}
+impl LeafClass {
+
+    pub(crate) fn for_class_name(name: &str) -> Self {
+        match name {
+            "java/util/ArrayList" => Self::ArrayList,
+            "java/util/concurrent/atomic/AtomicLong" => Self::AtomicLong,
+            "java/util/Optional" => Self::Optional,
+            "java/lang/Boolean" => Self::Boolean,
+            "java/lang/Integer"
+            | "java/lang/Long"
+            | "java/lang/Short"
+            | "java/lang/Byte"
+            | "java/lang/Float"
+            | "java/lang/Double"
+            | "java/lang/Character"
+            | "java/lang/Number" => Self::Number,
+            _ => Self::Other,
+        }
+    }
+}
+
 
 /// ⭐**FAST LAYOUT** (`RAVA_NO_FAST_LAYOUT=1` opts out, and the whole rewrite block opts out
 /// through `flags::emit_more_disabled()` so it prices as ONE A/B).
@@ -361,6 +394,7 @@ pub fn register_class(name: &Arc<str>, layout: &Arc<[(u32, u8)]>) -> u32 {
         ref_mask: ref_mask.into(),
         all_refs: false,
         array_component: None,
+        leaf: LeafClass::for_class_name(name),
     });
     id
 }
@@ -382,6 +416,7 @@ pub fn register_uniform_ref_class(name: &str) -> u32 {
         ref_mask: Arc::from(Vec::<u64>::new()),
         all_refs: true,
         array_component: None,
+        leaf: LeafClass::for_class_name(name),
     });
     id
 }
@@ -421,6 +456,7 @@ pub(crate) fn register_ref_array_class_with_descriptor(
         ref_mask: Arc::from(Vec::<u64>::new()),
         all_refs: true,
         array_component: Some(Arc::from(component_descriptor)),
+        leaf: LeafClass::for_class_name(descriptor),
     });
     id
 }
@@ -524,6 +560,10 @@ pub fn ref_mask_of(class_id: u32) -> Arc<[u64]> {
 pub fn class_name(class_id: u32) -> Option<Arc<str>> {
     with_class(class_id, |name, _| name.clone())
 }
+/// Immutable leaf dispatch category for a registered arena class; unknown class ids return `None`.
+pub(crate) fn leaf_class_of(class_id: u32) -> Option<LeafClass> {
+    with_mirror(class_id, |class| class.leaf)
+}
 
 /// LOCK-FREE READ of a registered class, through a per-thread mirror.
 ///
@@ -558,6 +598,7 @@ pub(crate) struct ClassMirror {
     pub(crate) ref_mask: Arc<[u64]>,
     pub(crate) all_refs: bool,
     pub(crate) array_component: Option<Arc<str>>,
+    pub(crate) leaf: LeafClass,
     /// FIELD INDEX — open-addressed `field_id → (slot << 8 | kind)`, capacity a power of two
     /// at load factor ≤ 0.5, so the usual lookup is ONE probe on ONE cache line. Empty when the
     /// kill switch is off, when the layout is empty, or when the builder refused it — `find`
@@ -654,7 +695,7 @@ fn build_mirror(class_id: u32) -> Option<Arc<ClassMirror>> {
             return Some(c.clone());
         }
     }
-    let (name, layout, ref_mask, all_refs, array_component) = {
+    let (name, layout, ref_mask, all_refs, array_component, leaf) = {
         let r = registry().lock().ok()?;
         let c = r.get(i)?;
         (
@@ -663,10 +704,19 @@ fn build_mirror(class_id: u32) -> Option<Arc<ClassMirror>> {
             c.ref_mask.clone(),
             c.all_refs,
             c.array_component.clone(),
+            c.leaf,
         )
     };
     let fx = build_fx(&layout);
-    let built = Arc::new(ClassMirror { name, layout, ref_mask, all_refs, array_component, fx });
+    let built = Arc::new(ClassMirror {
+        name,
+        layout,
+        ref_mask,
+        all_refs,
+        array_component,
+        leaf,
+        fx,
+    });
     let mut g = mirror_store().lock().ok()?;
     if g.len() <= i {
         g.resize(i + 1, None);

@@ -19,6 +19,7 @@ pub struct ArenaSnapshot {
     /// The class registry in id order (name, layout, uniform-ref marker, optional array component)
     /// — ids are positions, so re-registering in order reproduces every id the object headers
     /// reference, including exact reference-array metadata.
+    /// JIT leaf-class metadata is deterministically re-derived from each stored class name.
     pub(crate) classes: Vec<(String, Vec<(u32, u8)>, bool, Option<String>)>,
     pub(crate) boxes: Vec<crate::value::Value>,
     pub(crate) gc_epoch: u64,
@@ -112,6 +113,7 @@ pub fn restore_arena(s: &ArenaSnapshot) -> Result<(), String> {
                 array_component: component
                     .as_deref()
                     .map(|s| Arc::from(s)),
+                leaf: LeafClass::for_class_name(name),
             });
         }
         if r.len() > s.classes.len() {
