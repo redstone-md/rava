@@ -392,7 +392,14 @@ pub(crate) fn invokestatic(
         // dropped it (see `argbuf_recycle`).
         None => match {
             crate::vecgrow::event(3);
-            let r = crate::natives::try_invoke(vm_mut(vm), &owner, &name, &desc, &args);
+            let r = crate::natives::try_invoke_with_family(
+                vm_mut(vm),
+                &owner,
+                &name,
+                &desc,
+                &args,
+                site_ref.native_family,
+            );
             if argbuf_recycle() {
                 let mut a = args;
                 a.clear();
@@ -640,7 +647,14 @@ pub(crate) fn invokespecial(
             }
             match {
             crate::vecgrow::event(4);
-            let r = crate::natives::try_invoke(vm_mut(vm), &owner, &name, &desc, &locals);
+            let r = crate::natives::try_invoke_with_family(
+                vm_mut(vm),
+                &owner,
+                &name,
+                &desc,
+                &locals,
+                site_ref.native_family,
+            );
             if argbuf_recycle() {
                 let mut a = locals;
                 a.clear();

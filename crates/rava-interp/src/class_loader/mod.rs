@@ -149,6 +149,8 @@ pub struct SiteRef {
     pub owner: Arc<str>,
     pub name: Arc<str>,
     pub descriptor: Arc<str>,
+    /// Precomputed native-family word resolved once from this constant-pool owner.
+    pub native_family: crate::owner_bits::NativeFamilyFact,
     pub argc: u32,
     pub slots: u32,
     /// The callee this site resolves to: (declaring-class pointer, index into its `methods`).

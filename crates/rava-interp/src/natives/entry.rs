@@ -155,7 +155,26 @@ pub(crate) fn try_invoke(
     descriptor: &str,
     args: &[Value],
 ) -> Result<Option<Option<Value>>, VmError> {
-    let r = try_invoke_marked(vm, owner, name, descriptor, args);
+    try_invoke_with_family(
+        vm,
+        owner,
+        name,
+        descriptor,
+        args,
+        crate::owner_bits::NativeFamilyFact::Unknown,
+    )
+}
+
+/// Invoke a constant-pool site using its already-resolved exact owner-family fact.
+pub(crate) fn try_invoke_with_family(
+    vm: &mut Vm,
+    owner: &str,
+    name: &str,
+    descriptor: &str,
+    args: &[Value],
+    family_fact: crate::owner_bits::NativeFamilyFact,
+) -> Result<Option<Option<Value>>, VmError> {
+    let r = try_invoke_marked(vm, owner, name, descriptor, args, family_fact);
     // Record the FACT that the natives answered — see `native_claimed`. Inert (one relaxed load)
     // unless the namespace-compile relaxation armed the table.
     if matches!(r, Ok(Some(_))) && crate::native_claimed::armed() {
@@ -266,6 +285,7 @@ fn try_invoke_marked(
     name: &str,
     descriptor: &str,
     args: &[Value],
+    family_fact: crate::owner_bits::NativeFamilyFact,
 ) -> Result<Option<Option<Value>>, VmError> {
     // ⭐**EVERY PROCESS CONSTANT OF THE NATIVE ENTRY, ONE READ** — see `bridge_gates`. This word
     // is read here, at the top of the prologue, and then THREADED DOWN to `try_invoke_inner`,
@@ -280,9 +300,9 @@ fn try_invoke_marked(
     // is charged HERE and not to the frame — which is the split the 87.6% figure needs.
     let _reg = crate::alloc_sites::RegionGuard::enter(crate::alloc_sites::Region::Native);
     if dbg & G_HIST != 0 {
-        return try_invoke_hist(vm, dbg, owner, name, descriptor, args);
+        return try_invoke_hist(vm, dbg, owner, name, descriptor, args, family_fact);
     }
-    try_invoke_inner(vm, dbg, owner, name, descriptor, args)
+    try_invoke_inner(vm, dbg, owner, name, descriptor, args, family_fact)
 }
 
 /// `RAVA_NATIVE_HIST`'s body, lifted OUT of [`try_invoke_marked`] verbatim.
@@ -307,13 +327,14 @@ fn try_invoke_hist(
     name: &str,
     descriptor: &str,
     args: &[Value],
+    family_fact: crate::owner_bits::NativeFamilyFact,
 ) -> Result<Option<Option<Value>>, VmError> {
     // ⚠**ONLY THE OUTERMOST CALL IS TIMED.** These natives re-enter the guest (`String.valueOf`
     // runs the object's `toString`), which calls natives again — so an inclusive timer at
     // every level bills every child to every ancestor. Depth-gating makes the totals a real
     // partition of wall time: each nanosecond is attributed to exactly one call.
     if HIST_DEPTH.with(|d| d.get()) != 0 {
-        return try_invoke_inner(vm, dbg, owner, name, descriptor, args);
+        return try_invoke_inner(vm, dbg, owner, name, descriptor, args, family_fact);
     }
     HIST_DEPTH.with(|d| d.set(1));
     // What IS 3.96 ms of work for a sub-64-byte string? Snapshot the two populations that
@@ -323,7 +344,7 @@ fn try_invoke_hist(
     let ops0 = crate::opcodes::checkpoint::ops_all();
     let nat0 = NATIVE_CALLS.load(std::sync::atomic::Ordering::Relaxed);
     let t0 = std::time::Instant::now();
-    let r = try_invoke_inner(vm, dbg, owner, name, descriptor, args);
+    let r = try_invoke_inner(vm, dbg, owner, name, descriptor, args, family_fact);
     let ns = t0.elapsed().as_nanos().max(1) as u64;
     let b = (63 - ns.leading_zeros() as usize).min(31);
     NATIVE_HIST[b].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -388,6 +409,7 @@ fn try_invoke_inner(
     name: &str,
     descriptor: &str,
     args: &[Value],
+    family_fact: crate::owner_bits::NativeFamilyFact,
 ) -> Result<Option<Option<Value>>, VmError> {
     // 20.3 wall-profile: time spent inside the native/JDK bridge layer (collections, string ops,
     // IO, math, reflection). Nested guest re-entry (a native that calls back a guest lambda) pushes
@@ -417,7 +439,7 @@ fn try_invoke_inner(
     let args: &[Value] = _canon.as_deref().unwrap_or(args);
     #[cfg(feature = "next-gen-gc")]
     let _na_guard = NativeArgsGuard::new(args);
-    dispatch_owner(vm, gates, owner, name, descriptor, args)
+    dispatch_owner(vm, gates, owner, name, descriptor, args, family_fact)
 }
 
 /// How many NATIVE invocations does a boot make, from every caller — compiled code, the
@@ -587,7 +609,15 @@ pub(crate) fn try_invoke_chain(
         chain_census::note_call(chain.len());
     }
     for (ci, cn) in chain.iter().enumerate() {
-        if let Some(handled) = dispatch_owner(vm, gates, cn, name, descriptor, args)? {
+        if let Some(handled) = dispatch_owner(
+            vm,
+            gates,
+            cn,
+            name,
+            descriptor,
+            args,
+            crate::owner_bits::NativeFamilyFact::Unknown,
+        )? {
             if !census {
                 return Ok(Some(handled));
             }
@@ -606,7 +636,15 @@ pub(crate) fn try_invoke_chain(
         chain_census::note_none();
     }
     match extra_owner {
-        Some(o) => dispatch_owner(vm, gates, o, name, descriptor, args),
+        Some(o) => dispatch_owner(
+            vm,
+            gates,
+            o,
+            name,
+            descriptor,
+            args,
+            crate::owner_bits::NativeFamilyFact::Unknown,
+        ),
         None => Ok(None),
     }
 }
@@ -643,6 +681,7 @@ pub(crate) fn dispatch_owner(
     name: &str,
     descriptor: &str,
     args: &[Value],
+    family_fact: crate::owner_bits::NativeFamilyFact,
 ) -> Result<Option<Option<Value>>, VmError> {
     // OWNER PLAN (fix:block-c-dispatch-owner). Everything below is one linear
     // cascade: five sub-dispatchers, each with its own `match owner`, then ~40
@@ -679,7 +718,17 @@ pub(crate) fn dispatch_owner(
     // kill switch the historic read happens here again.
     let mode = if gates & G_LEGACY5 != 0 { gate_mode_bits() } else { gates };
     if mode & (G_GATE | G_GATEV) == 0 {
-        return dispatch_owner_cascade(vm, gates, u32::MAX, false, owner, name, descriptor, args);
+        return dispatch_owner_cascade(
+            vm,
+            gates,
+            u32::MAX,
+            false,
+            owner,
+            name,
+            descriptor,
+            args,
+            family_fact,
+        );
     }
     let on = mode & G_GATE != 0;
     let verify = mode & G_GATEV != 0;
@@ -701,14 +750,24 @@ pub(crate) fn dispatch_owner(
             return Ok(None);
         }
         GATE_SKIPPED.fetch_add(1, Relaxed);
-        if let Some(handled) = dispatch_owner_cascade(vm, gates, u32::MAX, false, owner, name, descriptor, args)? {
+        if let Some(handled) = dispatch_owner_cascade(
+            vm,
+            gates,
+            u32::MAX,
+            false,
+            owner,
+            name,
+            descriptor,
+            args,
+            family_fact,
+        )? {
             GATE_SERVED.fetch_add(1, Relaxed);
             eprintln!("[DISPATCH-GATE] MISS: {owner}.{name}{descriptor} was served after all");
             return Ok(Some(handled));
         }
         return Ok(None);
     }
-    dispatch_owner_cascade(vm, gates, plan, verify, owner, name, descriptor, args)
+    dispatch_owner_cascade(vm, gates, plan, verify, owner, name, descriptor, args, family_fact)
 }
 
 /// Report a stage that served an owner its plan bit had excluded. Only reachable

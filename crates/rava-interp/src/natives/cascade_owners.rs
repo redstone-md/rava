@@ -21,21 +21,21 @@ pub(crate) fn owner_families(
     name: &str,
     descriptor: &str,
     args: &[Value],
+    family_fact: crate::owner_bits::NativeFamilyFact,
 ) -> Result<Option<Option<Value>>, VmError> {
     use crate::owner_bits as ob;
     let stage = |bit: u32| plan & bit != 0 || verify;
     let _ = stage;
-    // ONE memo probe answers every owner question in this function.
+    // ONE precomputed family word answers every owner question in this function.
     //
     // What it replaces: ~50 exact `owner == "java/..."` compares, an `owner.contains
     // ("ByteBuffer")` that built a fresh `memchr` searcher over a 40-60 byte package path, and
     // two `ends_with` — run in full, per call, for every owner that ends up declining. A PC
     // profile of `bench/CtorBench.java` puts `owner_families` at 3.4% of the constructor path
     // with bare `memchr` at 4.2% beside it, and `memchr` is 3.35% of the compiled profile.
-    // The answers are a pure function of the name, so `owner_bits` computes them once per
-    // distinct owner into the SAME memo entry the stage plan already came from (no extra
-    // memory: the family word lands in the direct slot's existing padding), and every arm
-    // below is a bit test on a register.
+    // The answers are a pure function of the name. Constant-pool sites carry the complete
+    // immutable table result, including Has/Ends families; non-site callers retain the
+    // existing owner_bits memo route.
     //
     // The bits are EXACT, not the superset the stage bits are, because the arms no longer
     // re-test the owner themselves — so `verify` deliberately does NOT widen them the way it
@@ -49,17 +49,22 @@ pub(crate) fn owner_families(
     // cascade entries). Both are folded into `nat_gates()`, so the default path is ONE load and
     // a predicted bit test. **PER-ENTRY ACQUIRE LOADS HERE: 2 → 1.**
     //
-    // `ob::family_word` below is the gate-free sibling of `plan()`/`bits()` for the OTHER
-    // word of the SAME memo entry: it adds ZERO gate reads (it runs only inside the
-    // `by_id` arm above, the same `enabled() && id_resolve()` question already answered
-    // there), and the memo lookup itself is unchanged.
+    // The site fact adds no gate or memo lookup. Unknown facts use `ob::family_word` only inside
+    // the `by_id` arm, where `enabled() && id_resolve()` is already established.
     let ngates = nat_gates();
     let by_id = if ngates & NG_LEGACY != 0 {
         ob::enabled() && ob::id_resolve()
     } else {
         ngates & NG_FAM_BY_ID != 0
     };
-    let word = if by_id { ob::family_word(owner) } else { 0 };
+    let word = if by_id {
+        match family_fact {
+            crate::owner_bits::NativeFamilyFact::Known(word) => word,
+            crate::owner_bits::NativeFamilyFact::Unknown => ob::family_word(owner),
+        }
+    } else {
+        0
+    };
     let fam = |bit: u32| if by_id { word & bit != 0 } else { ob::family_scan(owner, bit) };
     if fam(ob::F_CODER_RESULT) {
         let under = match args.first() {
