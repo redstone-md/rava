@@ -652,19 +652,22 @@ names.
 
 ### JIT native-program class binding (2026-09-28)
 
-`LoadedClass` now records an exact `NativeProgramClass` provider binding at
-class-load time. The JIT native-plan builder consumes that binding instead of
-re-deriving the class provider from its name; class-unloaded plans retain the
-compatibility resolver, and per-method descriptor checks and opt-out gates
-remain unchanged. This is only a class-provider migration: the interpreter
-native cascade and heap-handle PIC leaf callback still use name-based routing.
+`LoadedClass` records an exact `NativeProgramClass` provider binding at
+class-load time. The JIT native-plan builder consumes only that fact; if the
+class is absent or unbound, the optional native-program specialization declines
+and the ordinary native cascade remains authoritative. It no longer classifies
+an unloaded class by name. Per-method descriptor checks and opt-out gates
+remain unchanged. The interpreter native cascade and heap-handle PIC callback
+still have separate name-based routes.
 
-The exact-name classifier test passes. `Collections` returns
-`SUM=23109031176` under HotSpot, the interpreter, JIT, and JIT with
-`RAVA_NO_NATIVE_PROGRAM=1`; JIT stats confirm the hot method compiled and ran
-14 times. The frozen arena-leaf route's focused parity test also passes. These
-checks do not certify strict no-adapt; the fresh-boot gate remains blocked on
-the remaining name-based consumers.
+The exact-name and missing-binding tests pass, and the release build succeeds.
+`Collections` returns `SUM=23109031176` under HotSpot, interpreter, JIT, and
+JIT with `RAVA_NO_NATIVE_PROGRAM=1`; the hot JIT method compiled and ran 14
+times. `ConcSem` output matches HotSpot in both interpreter and JIT modes,
+covering ByteBuffer, exceptions, atomics, and concurrent collections. The
+heap-handle PIC callback, native cascade, and namespace/ancestor refusal still
+have name-based paths, so these focused checks do not certify strict no-adapt
+or the fresh-boot gate.
 
 The arena PIC leaf binder now reads a frozen `LeafClass` from the arena class
 mirror instead of converting each bound receiver class ID back to its name.

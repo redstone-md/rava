@@ -139,6 +139,15 @@ pub(crate) fn program_for_class(
     }
 }
 
+/// Resolve only from a class-load binding; absence means the specialization declines.
+pub(crate) fn program_for_binding(
+    binding: Option<NativeProgramClass>,
+    name: &str,
+    descriptor: &str,
+) -> Option<NativeProgram> {
+    binding.and_then(|class| program_for_class(class, name, descriptor))
+}
+
 /// Execute one resolved native family without walking the owner cascade.
 ///
 /// `None` is a normal refusal: the family did not implement this member or receiver shape, so the
@@ -336,5 +345,10 @@ mod class_binding_tests {
             NativeProgramClass::for_classfile_name("java/util/Objects"),
             None,
         );
+    }
+
+    #[test]
+    fn missing_loaded_binding_fails_closed() {
+        assert_eq!(super::program_for_binding(None, "append", "()V"), None);
     }
 }
