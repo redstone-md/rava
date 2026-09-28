@@ -180,6 +180,83 @@ pub(crate) fn try_invoke_with_family(
     r
 }
 
+/// Invoke a prelinked constant-pool native provider, preserving the general cascade as fallback.
+///
+/// A handled `None` is a void result and must not fall through; only a provider refusal retries.
+pub(crate) fn try_invoke_site(
+    vm: &mut Vm,
+    binding: Option<crate::natives::NativeProgram>,
+    owner: &str,
+    name: &str,
+    descriptor: &str,
+    args: &[Value],
+    family_fact: crate::owner_bits::NativeFamilyFact,
+) -> Result<Option<Option<Value>>, VmError> {
+    if let Some(program) = binding {
+        if let Some(handled) =
+            crate::natives::invoke_program(program, vm, name, descriptor, args)?
+        {
+            return Ok(Some(handled));
+        }
+    }
+    try_invoke_with_family(vm, owner, name, descriptor, args, family_fact)
+}
+
+#[cfg(test)]
+mod linked_site_tests {
+    use super::*;
+
+    #[test]
+    fn boolean_factory_binding_matches_the_legacy_native_cascade() {
+        let mut vm = Vm::new(crate::ClassLoader::new());
+        let binding = crate::natives::program_for_static_site(
+            "java/lang/Boolean",
+            "valueOf",
+            "(Z)Ljava/lang/Boolean;",
+        );
+        let family = crate::owner_bits::NativeFamilyFact::Unknown;
+
+        for input in [0, 1] {
+            let args = [Value::Int(input)];
+            let linked = try_invoke_site(
+                &mut vm,
+                binding,
+                "java/lang/Boolean",
+                "valueOf",
+                "(Z)Ljava/lang/Boolean;",
+                &args,
+                family,
+            )
+            .expect("linked provider succeeds");
+            let cascade = try_invoke_with_family(
+                &mut vm,
+                "java/lang/Boolean",
+                "valueOf",
+                "(Z)Ljava/lang/Boolean;",
+                &args,
+                family,
+            )
+            .expect("legacy cascade succeeds");
+            assert_eq!(
+                boolean_payload(&vm, &linked),
+                boolean_payload(&vm, &cascade),
+            );
+            assert_eq!(boolean_payload(&vm, &linked), input);
+        }
+    }
+
+    fn boolean_payload(vm: &Vm, result: &Option<Option<Value>>) -> i32 {
+        let Some(Some(Value::Ref(handle))) = result else {
+            panic!("expected a handled Boolean object");
+        };
+        assert_eq!(vm.heap.class_of(*handle), Some("java/lang/Boolean"));
+        vm.heap
+            .get_field(*handle, "$value")
+            .as_int()
+            .expect("Boolean payload")
+    }
+}
+
 /// ⭐**ONE READ FOR THE WHOLE NATIVE-ENTRY PROLOGUE.**
 ///
 /// ⭐**AND SINCE `RAVA_NO_FAST_CASCADE5`, NOT A PER-CALL READ AT ALL.** The bits this builds

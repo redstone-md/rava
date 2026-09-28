@@ -18,6 +18,7 @@ pub(crate) enum NativeProgram {
     ArrayList,
     Stream,
     BooleanValue,
+    BooleanValueOf,
     NumberIntValue,
     NumberLongValue,
     NumberFloatValue,
@@ -112,6 +113,11 @@ pub(crate) fn program_for_class(
         NativeProgramClass::Boolean if name == "booleanValue" && descriptor == "()Z" => {
             Some(NativeProgram::BooleanValue)
         }
+        NativeProgramClass::Boolean
+            if name == "valueOf" && descriptor == "(Z)Ljava/lang/Boolean;" =>
+        {
+            Some(NativeProgram::BooleanValueOf)
+        }
         NativeProgramClass::Number => match (name, descriptor) {
             ("intValue", "()I") | ("shortValue", "()S") | ("byteValue", "()B") => {
                 Some(NativeProgram::NumberIntValue)
@@ -135,6 +141,24 @@ pub(crate) fn program_for_binding(
     descriptor: &str,
 ) -> Option<NativeProgram> {
     binding.and_then(|class| program_for_class(class, name, descriptor))
+}
+
+/// Link the non-virtual Boolean factory directly from a constant-pool method reference.
+///
+/// The receiver-free signature makes this binding independent of runtime receiver classes.
+/// Guest bytecode still wins because callers consult it only after `resolve_method` returns None.
+pub(crate) fn program_for_static_site(
+    owner: &str,
+    name: &str,
+    descriptor: &str,
+) -> Option<NativeProgram> {
+    if owner != "java/lang/Boolean" {
+        return None;
+    }
+    match program_for_class(NativeProgramClass::Boolean, name, descriptor) {
+        Some(program @ NativeProgram::BooleanValueOf) => Some(program),
+        _ => None,
+    }
 }
 
 /// Execute one resolved native family without walking the owner cascade.
@@ -172,8 +196,10 @@ pub(crate) fn invoke(
             crate::frames::native_depth_dec();
             result
         }
-        NativeProgram::ClassCast => Ok(Some(Some(class_cast(vm, args)?))),
         NativeProgram::BooleanValue => Ok(Some(Some(Value::Int(super::bool_of(vm, args.first()))))),
+        NativeProgram::BooleanValueOf => Ok(Some(Some(
+            vm.boolean_obj(super::bool_of(vm, args.first()) != 0),
+        ))),
         NativeProgram::NumberIntValue => Ok(Some(Some(Value::Int(number_value(vm, args) as i32)))),
         NativeProgram::NumberLongValue => {
             Ok(Some(Some(Value::Long(number_value(vm, args) as i64))))
@@ -182,6 +208,7 @@ pub(crate) fn invoke(
             Ok(Some(Some(Value::Float(number_value(vm, args) as f32))))
         }
         NativeProgram::NumberDoubleValue => Ok(Some(Some(Value::Double(number_value(vm, args))))),
+        NativeProgram::ClassCast => Ok(Some(Some(class_cast(vm, args)?))),
     }
 }
 
@@ -233,6 +260,7 @@ pub(crate) fn invoke_cells(program: NativeProgram, vm: &Vm, cells: &[i64]) -> Op
         | NativeProgram::StringBuilder
         | NativeProgram::BitSet
         | NativeProgram::ClassCast
+        | NativeProgram::BooleanValueOf
         | NativeProgram::ArrayList
         | NativeProgram::Stream
         | NativeProgram::Map => return None,
@@ -339,5 +367,35 @@ mod class_binding_tests {
     #[test]
     fn missing_loaded_binding_fails_closed() {
         assert_eq!(super::program_for_binding(None, "append", "()V"), None);
+    }
+}
+#[cfg(test)]
+mod static_site_binding_tests {
+    #[test]
+    fn static_boolean_factory_binding_requires_exact_provider_signature() {
+        assert_eq!(
+            super::program_for_static_site(
+                "java/lang/Boolean",
+                "valueOf",
+                "(Z)Ljava/lang/Boolean;",
+            ),
+            Some(super::NativeProgram::BooleanValueOf),
+        );
+        assert_eq!(
+            super::program_for_static_site(
+                "java/lang/Boolean",
+                "valueOf",
+                "(Ljava/lang/String;)Ljava/lang/Boolean;",
+            ),
+            None,
+        );
+        assert_eq!(
+            super::program_for_static_site(
+                "example/Boolean",
+                "valueOf",
+                "(Z)Ljava/lang/Boolean;",
+            ),
+            None,
+        );
     }
 }

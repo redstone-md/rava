@@ -907,3 +907,32 @@ revisiting is a full-boot fallback-population/served census, followed by
 focused representation tests for exact providers, synthetic-only owners,
 name collisions, inherited state, and interface-backed entries. Current
 fresh-boot acceptance remains 21.9 s and strict no-adapt remains uncertified.
+
+### Prelinked static Boolean factory provider (2026-09-28)
+
+The narrow native-binding tracer compares the remaining seam options: a
+`LoadedClass` capability fact cannot represent a JDK class with no loadable
+classfile, while a `SiteRoute` that merely caches a fill-time name verdict does
+not remove that decision. The selected seam is the constant-pool site, using an
+exact static provider binding for `java/lang/Boolean.valueOf(Z)Ljava/lang/Boolean;`.
+
+`classkey::build_site` stores the `NativeProgram::BooleanValueOf` id on the
+`SiteRef`. `invokestatic` consumes it only after `resolve_method` found no
+guest body. Therefore a loaded bytecode implementation still wins; an
+unregistered signature keeps the native cascade. The bound handler reuses the
+existing `bool_of` and `boolean_obj` semantics, and only a provider refusal
+falls back to the cascade.
+
+The exact-signature and direct-versus-cascade parity tests pass (2 tests), and
+the current release build succeeds. One isolated fresh `world_pristine` boot
+under an `env -i` baseline, with no snapshot/restore/prepared-AOT or added
+policy flags, reached Minecraft `Done (0.405s)` at 31.078 s launch-to-Done;
+1,470 recipes and 1,584 advancements loaded. This is a non-PGO single-run
+correctness smoke, not a timing comparison or speed claim. The run also
+reproduced the existing GIL-free registry batch abort (0/2); the server still
+reached `Done`.
+
+This binds one exact static call-site provider; it does not remove the general
+owner cascade, native-backed allocation policy, JIT/inline refusal routes, or
+their name decisions. Strict no-adapt remains uncertified and the <5 s
+acceptance is still open.
