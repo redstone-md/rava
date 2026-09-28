@@ -127,8 +127,26 @@ flat profile remain, and the instruments available here cannot separate them:
 3. per-operation cost is unstable (GC and allocation interference), and averages over a boot are
    not comparable to a warm microbenchmark at all.
 
-**What would settle it:** cache-miss and IPC counters, which this box does not provide, or a
-per-operation timing histogram inside the boot rather than an average.
+**What would settle it:** cache-miss/IPC counters or per-operation timing histograms. Those counters were unavailable in the original Windows runs; a Debian follow-up with process-scoped PMU counters is recorded below.
+
+## Linux PMU follow-up (2026-09-29)
+
+The current Debian host does expose `cycles`, `instructions`, `cache-references`, and
+`cache-misses` through `perf stat`. Two fresh-world launches of the exact current-source
+profile-use product (`a35dfa1a2634a0a2a3445c22439f23118841fb61703a4b8e47b8f79c6cd7e0da`,
+runtime source `b5d7b83`) used only the canonical `RAVA_JIT=1`,
+`RAVA_JIT_TIER0=1`, `RAVA_HARD_MB=3584` environment. Both reached ordinary `Done`.
+`perf stat -p <pid>` was attached immediately after process launch and counted through
+termination just after `Done`:
+
+| Run | Launch → Done | Cycles | Instructions | IPC | Cache refs | Cache misses | Miss rate |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Rava 1 | 22.806 s | 165.91 B | 259.87 B | 1.57 | 17.90 B | 3.78 B | 21.10% |
+| Rava 2 | 22.307 s | 163.89 B | 259.59 B | 1.58 | 17.73 B | 3.70 B | 20.87% |
+
+One same-classpath fresh-world OpenJDK 25.0.4.1 launch reached `Done` in 5.629 s. This adaptive JVM is not an acceptance configuration. Its PMU totals are not a reliable cross-runtime comparator and varied materially with the stopping protocol: a SIGTERM after `Done` produced a 7.007 s interval and 81.32 B instructions, while a second fresh launch terminated by SIGKILL as soon as `Done` was observed produced a 6.006 s interval and 30.88 B instructions. Neither Java counter total is used to claim an instruction or cache-miss ratio.
+
+The two Rava PMU runs are internally stable (instructions differ by 0.11%, cache misses by 2.0%), but they do not identify which operations generated that traffic. These whole-process counters therefore neither confirm nor refute the 727 ns vs 142 ns per-event explanation. They expose no bounded, safe work-removal candidate; the per-operation discrepancy remains open, as do the <5 s and strict-no-adapt gates.
 
 ## Calibration: the instrument floor is ~8% today, not ±2.5%
 

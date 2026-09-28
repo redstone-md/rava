@@ -125,6 +125,20 @@ semantics-preserving replaceable work or a new sound proof that crosses the
 existing dispatch-closure wall; HotSpot's adaptive 3.017 s result is not
 strict-no-adapt acceptance evidence.
 
+### 2026-09-29: fresh Linux PMU traffic comparison
+
+The current Debian host supports `perf stat` hardware events. Two isolated fresh-world
+launches of the exact current-source PGO product (`a35dfa1a2634a0a2a3445c22439f23118841fb61703a4b8e47b8f79c6cd7e0da`, runtime source `b5d7b83`) used only `RAVA_JIT=1`, `RAVA_JIT_TIER0=1`, and `RAVA_HARD_MB=3584`; both reached `Done` at **22.806 / 22.307 s**. Process-scoped counters were attached at launch and collected through the immediate post-`Done` termination:
+
+| Run | Cycles | Instructions | IPC | Cache refs | Cache misses | Miss rate |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Rava 1 | 165.91 B | 259.87 B | 1.57 | 17.90 B | 3.78 B | 21.10% |
+| Rava 2 | 163.89 B | 259.59 B | 1.58 | 17.73 B | 3.70 B | 20.87% |
+
+The same-classpath OpenJDK 25.0.4.1 comparator reached `Done` in **5.629 s** (adaptive tiering; not a strict-no-adapt comparison). Its PMU totals varied materially with the stopping protocol: a post-`Done` SIGTERM run measured **81.32 B instructions / 7.007 s**, while a second fresh launch terminated by SIGKILL as soon as `Done` was observed measured **30.88 B / 6.006 s**. Do not use either to state a cross-runtime instruction or cache-miss ratio.
+
+The two Rava totals are internally stable (instructions differ by 0.11%, misses by 2.0%), but whole-process PMU counters identify no per-operation price or bounded safe tracer. The 727 ns vs 142 ns discrepancy remains unresolved; the <5 s goal and strict no-adapt gate remain unmet. Full details and caveats: `docs/the-arithmetic-does-not-close.md`.
+
 ## Objective
 
 Reduce Minecraft boot and warm-reload wall time through structural, workload-agnostic changes while preserving exact Java semantics.
