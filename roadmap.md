@@ -84,6 +84,29 @@ measurement. The largest native samples were diffuse: Cranelift regalloc
 `Vm::jit_call_body` 1.77%. No single no-adapt-safe runtime seam can explain the
 8.2 s target deficit; a smaller optimization is not justified by this profile.
 
+### 2026-09-29: native-body boundary audit
+
+Source audit of `jit_run`, `ExecKernel::enter_jit`, `jit_direct_invoke`,
+`emit_dispatch_pic`, and `rava_dispatch_miss` confirms that compiled bodies
+already have direct native entry paths: static/special cache hits and eligible
+PIC hits invoke a compiled function pointer with the established cell ABI.
+Misses cross into Rust to resolve and dispatch; `jit_call_body` retains operand
+rooting, moving-GC forwarding, and the pending-exception contract. There is no
+missing generic guest-to-guest trampoline to remove, and broadening cache
+admission is not a safe strict-no-adapt optimization.
+
+The measured same-engine guest-to-guest call is already about 0.6–0.67 ns
+(boot-speed-ledger rows 171 and 173). The exact-source bootstrap profile's
+largest individual sampled regions were diffuse (2.82% regalloc, 2.45% egraph,
+2.29% liveness, 1.90% array-slot retirement, 1.77% `jit_call_body`) and cannot
+explain its 8.2 s deficit; previous isolated native-bridge wins also produced
+no boot-wall movement (rows 175–177). No bounded, semantics-preserving
+native-body tracer has a source-backed multi-second ceiling. Do not add a
+duplicate call layer or extract wrappers as a proxy for progress. Reopen this
+direction only with a fresh product profile that isolates multi-second
+replaceable work, or a full backend/object-model design with an end-to-end
+semantic and performance tracer.
+
 ## Objective
 
 Reduce Minecraft boot and warm-reload wall time through structural, workload-agnostic changes while preserving exact Java semantics.
