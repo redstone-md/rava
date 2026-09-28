@@ -107,6 +107,24 @@ direction only with a fresh product profile that isolates multi-second
 replaceable work, or a full backend/object-model design with an end-to-end
 semantic and performance tracer.
 
+### 2026-09-29: bootstrap algorithm search closes
+
+`BootstrapBench` times one fresh-process `Bootstrap.bootStrap()` call; its
+29,671-state FNV fold runs after the timed interval. The exact-source state
+count/hash therefore validates the measured work but does not expose a
+benchmark-only operation to remove. The follow-up search found no new generic
+algorithmic reduction with a multi-second ceiling. The parallel `initCache`
+route remains proof-closed by unloadable `Comparable`/`List` interface owners
+(`docs/runtime-gap-register.md`, GAP-A01); the flow-sensitive receiver-typing
+tracer was built and still admitted zero bootstrap sites
+(`docs/gilfree-boot-rearch.md`, Brick 1). The last priced map-key derivation
+funnel is only 1.529 s total on the exact PGO product (ledger row 746), while
+the current bootstrap profile remains diffuse. No code change is justified.
+Reopen only with a fresh exact-source profile isolating substantial,
+semantics-preserving replaceable work or a new sound proof that crosses the
+existing dispatch-closure wall; HotSpot's adaptive 3.017 s result is not
+strict-no-adapt acceptance evidence.
+
 ## Objective
 
 Reduce Minecraft boot and warm-reload wall time through structural, workload-agnostic changes while preserving exact Java semantics.
