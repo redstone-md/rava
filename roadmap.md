@@ -48,6 +48,16 @@ functions rather than identifying a bounded replacement seam. No optimization
 is justified from this profile. Goal remains unmet; strict no-adapt is still
 uncertified.
 
+Exact current-artifact acceptance check, 2026-09-28: the verified profile-use
+product (SHA-256 `a35dfa1a2634a0a2a3445c22439f23118841fb61703a4b8e47b8f79c6cd7e0da`)
+ran once after a discarded warm-up and then four alternating launches from fresh
+`world_pristine` copies under the isolated `env -i` JIT/Tier-0/hard-memory
+environment. All four reached `Done`; launch-to-Done was 21.7–22.1 s (pooled
+median 21.9 s). Both harness arms used the same binary and no flags, so this is
+a repeatability check, not an A/B. It directly confirms the current artifact
+misses the five-second gate by 16.9 s; name/count-based runtime routes still
+mean this does not certify strict no-adapt. Full results: boot-ledger row 743.
+
 ## Objective
 
 Reduce Minecraft boot and warm-reload wall time through structural, workload-agnostic changes while preserving exact Java semantics.
