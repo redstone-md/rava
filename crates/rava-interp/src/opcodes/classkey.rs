@@ -64,6 +64,7 @@ fn build_site<'a>(cls: &'a crate::class_loader::LoadedClass, index: u16) -> Resu
         owner: Arc::from(r.owner),
         name: Arc::from(r.name),
         descriptor: Arc::from(r.descriptor),
+        native_program: crate::natives::program_for_static_site(r.owner, r.name, r.descriptor),
         native_family: crate::owner_bits::NativeFamilyFact::for_owner_name(r.owner),
         argc: crate::descriptor::arg_count(r.descriptor) as u32,
         slots: crate::descriptor::arg_slots(r.descriptor) as u32,
