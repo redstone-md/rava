@@ -598,6 +598,13 @@ No evidence supports removing these semantic native-state/dispatch contracts
 by toggling flags, and no strict no-adapt build/run configuration is currently
 certified.
 
+The remaining native-serving refusal cannot be a class-level boolean: native
+coverage varies by exact method and receiver representation. The safe seam is a
+resolved-method route fact that proves whether skipping the native cascade is
+valid; `Unknown` must retain the ordinary cascade. `NativeProgramClass` only
+selects an optional provider and does not prove that other native arms cannot
+serve the class. No such complete route fact exists yet.
+
 ### Structural native-state fact seam (design, 2026-09-28)
 
 Three read-only interface alternatives were compared. A single
