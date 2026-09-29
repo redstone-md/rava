@@ -66,6 +66,44 @@ virtual methods. No priced compiled-method self-time approaches the required
 fixed-policy/no-snapshot acceptance gates remain open. No runtime change is
 justified.
 
+### 2026-09-29: the untested fixed-policy control is C1, not C2
+
+Rows 725/753 priced fixed first-use HotSpot with **C2 only**
+(`-XX:-TieredCompilation`). A slow optimising compiler run on every method is
+the wrong control for a no-adapt baseline tier; the right one is the fast
+single-pass compiler with the same fixed policy and no CDS archive (CDS is a
+heap/class snapshot, so the default `java` 5 s reference violates no-snapshot
+as well as no-adapt).
+
+Proxy only (`bench/BootLike.java`, a registry/block-state-shaped collections
+workload, same `H=189720856431` on every arm), Linux 4-core container, two
+runs each, wall seconds:
+
+| arm | wall |
+|---|---:|
+| `java` default (adaptive + CDS) | 0.49-0.61 |
+| `java -Xshare:off` (adaptive, no CDS) | 0.49-0.64 |
+| `java -Xshare:off -Xint` | 14.2-14.6 |
+| fixed first-use **C2** (row 753 flags) `-Xshare:off` | 7.6-7.8 |
+| fixed first-use **C1** `-Xshare:off -Xcomp -XX:TieredStopAtLevel=1 -XX:-UseOnStackReplacement -XX:-ProfileInterpreter` | 1.8-2.0 |
+| rava `RAVA_JIT=1 RAVA_JIT_TIER0=1` | 3.8-4.1 |
+
+Reading: on this proxy rava is already ~2x faster than the fixed-C2 control
+(consistent with 22 s vs 47-57 s on the real boot) and ~2x slower than fixed
+C1; the adaptive JVM is a further ~3x ahead of fixed C1. The ratio does not
+transfer to the Minecraft boot without measurement. The decisive, one-command
+control still missing on the real jar is:
+
+```
+java -Xshare:off -Xcomp -XX:TieredStopAtLevel=1 -XX:-UseOnStackReplacement \
+     -XX:-ProfileInterpreter -jar server.jar nogui
+```
+
+Its `Done` time is the evidence-backed ceiling for a no-adapt, no-snapshot
+baseline-compiler substrate (direct object layout, JDK library as compiled
+bytecode, compiled-to-compiled calls). If it lands far above 5 s, the <5 s
+acceptance has no known existence proof under these rules on any JVM.
+
 ### 2026-09-29: fixed-policy execution is not a <5 s escape hatch
 
 A fresh isolated copy of `world_pristine` ran the same server JAR under
