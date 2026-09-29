@@ -293,6 +293,40 @@ pub fn annotation_types(body: &[u8]) -> Vec<u16> {
     out
 }
 
+/// The constant-valued elements of a `RuntimeVisibleAnnotations` body's annotations: (type
+/// descriptor index, element name index, value tag, constant index) for each.
+pub fn annotation_constants(body: &[u8]) -> Vec<(u16, u16, u8, u16)> {
+    fn u2(b: &[u8], p: usize) -> u16 {
+        u16::from_be_bytes([b[p], b[p + 1]])
+    }
+    fn skip_value(b: &[u8], p: usize) -> usize {
+        match b[p] {
+            b'e' => p + 5,
+            b'@' => (0..u2(b, p + 3)).fold(p + 5, |q, _| skip_value(b, q + 2)),
+            b'[' => (0..u2(b, p + 1)).fold(p + 3, |q, _| skip_value(b, q)),
+            _ => p + 3,
+        }
+    }
+    let mut out = Vec::new();
+    if body.len() < 2 {
+        return out;
+    }
+    let mut p = 2;
+    for _ in 0..u2(body, 0) {
+        let ty = u2(body, p);
+        let pairs = u2(body, p + 2);
+        p += 4;
+        for _ in 0..pairs {
+            let (name, tag) = (u2(body, p), body[p + 2]);
+            if !matches!(tag, b'e' | b'@' | b'[' | b'c') {
+                out.push((ty, name, tag, u2(body, p + 3)));
+            }
+            p = skip_value(body, p + 2);
+        }
+    }
+    out
+}
+
 fn parse_pool(r: &mut Reader) -> Result<Vec<Cp>> {
     let count = r.u2()? as usize;
     let mut pool = Vec::with_capacity(count);

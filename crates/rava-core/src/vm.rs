@@ -123,6 +123,7 @@ impl Vm {
         crate::interp::indy::for_each_root(precise);
         crate::natives::thread::for_each_starting(precise);
         crate::natives::module_roots(precise);
+        crate::natives::jfr_roots(precise);
     }
 
     pub(crate) fn record_class(&self, k: &'static Klass) {
