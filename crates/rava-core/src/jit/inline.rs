@@ -31,10 +31,10 @@ pub(super) struct InlineCtx {
     pub result: i32,
     /// For framed bodies, the absolute slot of their frame header.
     pub frame: Option<i32>,
-    /// Whether that frame is linked into `Thread::top`. Hidden frames (method-handle plumbing,
-    /// which stack traces and walks leave out anyway) are not: calls made from them link to
-    /// the nearest visible frame, and their slow paths still run on their memory frame.
-    pub linked: bool,
+    /// Whether that frame is visible. Visible inlined frames are linked into `Thread::top`
+    /// only around the points that can observe frames (`link_scopes`); hidden frames
+    /// (method-handle plumbing, which stack traces and walks leave out) never are.
+    pub visible: bool,
 }
 
 /// The per-body state swapped while emitting a callee in place.
@@ -125,12 +125,14 @@ impl Emitter {
             Kind::Framed => {
                 let hdr = result + info.max_locals as i32;
                 if !callee.is_hidden_frame() {
-                    self.link_frame(callee, hdr);
+                    self.a.mov_ri(R::Rax, callee as *const Method as i64);
+                    self.a.store(true, mem(R::R13, 8 * (hdr + header::METHOD as i32)), R::Rax);
+                    self.a.store_imm(mem(R::R13, 8 * (hdr + header::BCI as i32)), 0);
                 }
                 (result, Some(hdr))
             }
         };
-        let linked = frame.is_some() && !callee.is_hidden_frame();
+        let visible = frame.is_some() && !callee.is_hidden_frame();
         let stack_base = local_base + info.max_locals as i32 + if frame.is_some() { header::SLOTS as i32 } else { 0 };
         self.extent = self.extent.max(stack_base + info.max_stack as i32 + 2);
         let body = Body {
@@ -144,7 +146,7 @@ impl Emitter {
             stack_base,
             scratch_base: stack_base + info.max_stack as i32 + 2,
             exc: self.a.new_label(),
-            inl: Some(InlineCtx { restart, done, result, frame, linked }),
+            inl: Some(InlineCtx { restart, done, result, frame, visible }),
             vs: Vec::new(),
             lregs: Vec::new(),
             slow: Vec::new(),
@@ -154,15 +156,18 @@ impl Emitter {
         self.inlined_bytes += info.code.len();
         let caller = self.swap_body(body);
         self.chain.push((callee, consts.first().copied().flatten()));
+        if let (Some(hdr), true) = (frame, visible) {
+            self.vis_scopes.push(hdr);
+        }
         let ok = self.emit_body(None);
+        if visible {
+            self.vis_scopes.pop();
+        }
         self.chain.pop();
         if ok.is_some() && frame.is_some() {
             self.emit_slow_paths();
             // Exceptions leave the inlined frame and continue in the caller's dispatch.
             self.a.bind(self.exc);
-            if linked {
-                self.unlink_frame(frame.unwrap());
-            }
             self.a.jmp(caller.exc);
         }
         self.swap_body(caller);
@@ -173,22 +178,26 @@ impl Emitter {
         Some(done)
     }
 
-    /// Writes an inlined frame's header at absolute slot `hdr` and makes it the innermost frame.
-    fn link_frame(&mut self, m: &'static Method, hdr: i32) {
-        let h = |f: usize| mem(R::R13, 8 * (hdr + f as i32));
-        self.a.mov_ri(R::Rax, m as *const Method as i64);
-        self.a.store(true, h(header::METHOD), R::Rax);
-        self.a.store_imm(h(header::BCI), 0);
+    /// Links the visible inlined frames around the current point into `Thread::top`, outermost
+    /// first (before anything that may walk the stack: a call, a deferred instruction, an
+    /// allocation that may throw). Their headers already hold method and bci.
+    pub(super) fn link_scopes(&mut self) {
+        if self.vis_scopes.is_empty() {
+            return;
+        }
         self.a.load(true, R::Rcx, mem(R::R12, offsets::TOP));
-        self.a.store(true, h(header::CALLER), R::Rcx);
-        self.a.load(true, R::Rcx, mem(R::R12, offsets::SP));
-        self.a.store(true, h(header::SAVED_SP), R::Rcx);
-        self.a.lea(R::Rcx, h(header::METHOD));
+        for i in 0..self.vis_scopes.len() {
+            let hdr = self.vis_scopes[i];
+            self.a.store(true, mem(R::R13, 8 * (hdr + header::CALLER as i32)), R::Rcx);
+            self.a.lea(R::Rcx, mem(R::R13, 8 * (hdr + header::METHOD as i32)));
+        }
         self.a.store(true, mem(R::R12, offsets::TOP), R::Rcx);
     }
 
-    fn unlink_frame(&mut self, hdr: i32) {
-        self.a.load(true, R::Rcx, mem(R::R13, 8 * (hdr + header::CALLER as i32)));
+    /// Undoes `link_scopes` (preserves rax).
+    pub(super) fn unlink_scopes(&mut self) {
+        let Some(&outer) = self.vis_scopes.first() else { return };
+        self.a.load(true, R::Rcx, mem(R::R13, 8 * (outer + header::CALLER as i32)));
         self.a.store(true, mem(R::R12, offsets::TOP), R::Rcx);
     }
 
@@ -221,9 +230,6 @@ impl Emitter {
             Some(ctx) => {
                 if value {
                     self.a.store(true, mem(R::R13, 8 * ctx.result), R::Rax);
-                }
-                if let (Some(hdr), true) = (ctx.frame, ctx.linked) {
-                    self.unlink_frame(hdr);
                 }
                 self.a.jmp(ctx.done);
             }

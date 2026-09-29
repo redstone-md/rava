@@ -43,6 +43,8 @@ pub(super) struct Emitter {
     pub tier: u8,
     /// Bytecode inlined so far (bounded per compilation).
     pub inlined_bytes: usize,
+    /// Header slots of the visible inlined frames around the current point, outermost first.
+    pub vis_scopes: Vec<i32>,
     /// Constant operand-stack values at the current call site, captured before the stack is
     /// written back (they become constant locals of an inlined callee).
     pub site_consts: Vec<Option<i64>>,
@@ -88,6 +90,7 @@ pub fn compile(m: &'static Method, tier: u8) -> Option<CompiledMethod> {
         failed: false,
         tier,
         inlined_bytes: 0,
+        vis_scopes: Vec::new(),
         site_consts: Vec::new(),
         lconst_base: vec![None; info.max_locals as usize],
         lconst: vec![None; info.max_locals as usize],
@@ -186,8 +189,8 @@ impl Emitter {
     /// Records `bci` as the frame's current instruction (before calls and slow paths).
     pub fn set_bci(&mut self, bci: usize) {
         debug_assert!(!self.in_leaf(), "leaf bodies never record a bci");
-        if self.inl.is_some_and(|c| !c.linked) {
-            // An unlinked frame is invisible; its caller's bci already names the call site.
+        if self.inl.is_some_and(|c| !c.visible) {
+            // A hidden frame is never walked; its caller's bci already names the call site.
             return;
         }
         let at = self.hdr(header::BCI);
@@ -228,8 +231,10 @@ impl Emitter {
         self.a.mov_rr(true, R::Rdi, R::R12);
         self.a.mov_ri(R::Rsi, self.m as *const Method as i64);
         self.a.lea(R::Rdx, self.local(0));
+        self.link_scopes();
         self.a.mov_ri(R::Rcx, (bci as i64) | (depth as i64) << 32);
         self.a.call_abs(helper);
+        self.unlink_scopes();
         self.a.test_rr(true, R::Rax, R::Rax);
         self.a.jcc(Cond::Ne, self.exc);
     }

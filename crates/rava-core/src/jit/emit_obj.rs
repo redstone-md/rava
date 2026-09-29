@@ -125,7 +125,9 @@ impl Emitter {
         self.set_bci(pc);
         self.a.mov_rr(true, R::Rdi, R::R12);
         self.a.mov_ri(R::Rsi, k as *const Klass as i64);
+        self.link_scopes();
         self.a.call_abs(runtime::new_instance as *const () as usize);
+        self.unlink_scopes();
         self.check_pending();
         self.a.bind(done);
         self.a.store(true, self.stk(depth as i32), R::Rax);
@@ -162,7 +164,9 @@ impl Emitter {
         self.set_bci(pc);
         self.a.mov_rr(true, R::Rdi, R::R12);
         self.a.mov_ri(R::Rsi, k as *const Klass as i64);
+        self.link_scopes();
         self.a.call_abs(runtime::new_array as *const () as usize);
+        self.unlink_scopes();
         self.check_pending();
         self.a.store(true, slot, R::Rax);
     }
