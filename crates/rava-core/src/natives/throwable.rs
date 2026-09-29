@@ -17,6 +17,11 @@ vm_field!(ste_class, "java/lang/StackTraceElement", "declaringClass", "Ljava/lan
 vm_field!(ste_method, "java/lang/StackTraceElement", "methodName", "Ljava/lang/String;");
 vm_field!(ste_file, "java/lang/StackTraceElement", "fileName", "Ljava/lang/String;");
 vm_field!(ste_line, "java/lang/StackTraceElement", "lineNumber", "I");
+vm_field!(ste_class_object, "java/lang/StackTraceElement", "declaringClassObject", "Ljava/lang/Class;");
+vm_field!(ste_module, "java/lang/StackTraceElement", "moduleName", "Ljava/lang/String;");
+vm_field!(ste_loader, "java/lang/StackTraceElement", "classLoaderName", "Ljava/lang/String;");
+vm_field!(module_name, "java/lang/Module", "name", "Ljava/lang/String;");
+vm_field!(loader_name, "java/lang/ClassLoader", "name", "Ljava/lang/String;");
 
 pub(super) fn register(r: &mut NativeRegistry) {
     r.add("java/lang/Throwable", "fillInStackTrace", "(I)Ljava/lang/Throwable;", fill_in_stack_trace);
@@ -99,6 +104,21 @@ fn fill_element(t: &mut Thread, e: Oop, m: &'static Method, bci: i32) -> JResult
         unsafe { obj::write::<Oop>(e, ste_file(), file) };
     }
     unsafe { obj::write::<i32>(e, ste_line(), if m.is_native() { -2 } else { line_number(m, bci) }) };
+    // As HotSpot's fill_in: the class (StackTraceElement.computeFormat reads, then clears it),
+    // its named module and its class loader's name.
+    let mirror = rt::mirror_of(t, m.holder)?;
+    // SAFETY: live objects; the module and loader fields hold strings or null.
+    unsafe {
+        obj::write::<Oop>(e, ste_class_object(), mirror);
+        let module = obj::read::<Oop>(mirror, super::module::class_module());
+        if !module.is_null() {
+            obj::write::<Oop>(e, ste_module(), obj::read::<Oop>(module, module_name()));
+        }
+        let loader = m.holder.loader.load(std::sync::atomic::Ordering::Acquire);
+        if !loader.is_null() {
+            obj::write::<Oop>(e, ste_loader(), obj::read::<Oop>(loader, loader_name()));
+        }
+    }
     Ok(())
 }
 
