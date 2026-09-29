@@ -29,6 +29,15 @@ pub extern "sysv64" fn interp_one(t: *mut Thread, m: *const Method, locals: *mut
     }
 }
 
+/// `interp_one` for a site compiled before its constant was resolved: counts toward
+/// recompiling the method with the (now resolved) fast path.
+pub extern "sysv64" fn interp_one_unresolved(t: *mut Thread, m: *const Method, locals: *mut u64, bci_depth: u64) -> u64 {
+    let r = interp_one(t, m, locals, bci_depth);
+    // SAFETY: a live method.
+    super::note_unresolved_deferral(unsafe { &*m });
+    r
+}
+
 /// Finds the handler for `Thread::pending` in the innermost (compiled) frame. Returns the native
 /// address to resume at, with the exception stored in operand slot 0, or 0 to unwind.
 pub extern "sysv64" fn handle_exception(t: *mut Thread, locals: *mut u64) -> usize {
@@ -44,7 +53,7 @@ pub extern "sysv64" fn handle_exception(t: *mut Thread, locals: *mut u64) -> usi
         t.pending = ex;
         return 0;
     };
-    let address = m.compiled.get().and_then(|cm| cm.address_of(handler as u32));
+    let address = m.compiled().and_then(|cm| cm.address_of(handler as u32));
     match address {
         Some(a) => {
             // SAFETY: operand slot 0 of this frame.

@@ -53,7 +53,7 @@ impl Emitter {
                     self.a.store(true, mem(R::Rcx, 0), R::Rdx);
                 }
             }
-            _ => self.defer(pc, depth),
+            _ => self.defer_unresolved(pc, depth),
         }
     }
 
@@ -86,7 +86,7 @@ impl Emitter {
     }
 
     pub(super) fn checkcast(&mut self, pc: usize, depth: u16) {
-        let Some(k) = self.resolved_class(pc) else { return self.defer(pc, depth) };
+        let Some(k) = self.resolved_class(pc) else { return self.defer_unresolved(pc, depth) };
         let (done, slow) = (self.a.new_label(), self.slow_path(pc, depth));
         self.a.load(true, R::Rax, self.stk(depth as i32 - 1));
         self.a.test_rr(true, R::Rax, R::Rax);
@@ -99,7 +99,7 @@ impl Emitter {
     }
 
     pub(super) fn instanceof(&mut self, pc: usize, depth: u16) {
-        let Some(k) = self.resolved_class(pc) else { return self.defer(pc, depth) };
+        let Some(k) = self.resolved_class(pc) else { return self.defer_unresolved(pc, depth) };
         let slot = self.stk(depth as i32 - 1);
         let done = self.a.new_label();
         self.a.load(true, R::Rax, slot);
@@ -114,7 +114,7 @@ impl Emitter {
     pub(super) fn new_object(&mut self, pc: usize, depth: u16) {
         let k = match self.resolved_class(pc) {
             Some(k) if k.access & (ACC_ABSTRACT | ACC_INTERFACE) == 0 => k,
-            _ => return self.defer(pc, depth),
+            _ => return self.defer_unresolved(pc, depth),
         };
         let slow = self.slow_path(pc, depth);
         self.init_check(k, slow);
@@ -134,7 +134,7 @@ impl Emitter {
         } else {
             self.resolved_class(pc).and_then(|e| vm.array_class_of(e).ok())
         };
-        let Some(k) = k else { return self.defer(pc, depth) };
+        let Some(k) = k else { return self.defer_unresolved(pc, depth) };
         let slot = self.stk(depth as i32 - 1);
         let slow = self.slow_path(pc, depth);
         self.a.load(false, R::Rdx, slot);

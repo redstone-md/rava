@@ -61,7 +61,7 @@ impl Emitter {
         let d = depth as i32;
         let index = u16::from_be_bytes([self.code[pc + 1], self.code[pc + 2]]);
         let Some(Resolved::Method(m)) = self.m.holder.resolved[index as usize].get().copied() else {
-            return self.defer(pc, depth);
+            return self.defer_unresolved(pc, depth);
         };
         if m.is_signature_polymorphic() {
             let (_, _, desc) = self.cf.member_ref(index).unwrap();
@@ -103,7 +103,7 @@ impl Emitter {
 
     /// A site the interpreter already linked: call its invoker with the appendix appended.
     fn linked_site(&mut self, pc: usize, depth: u16, sig: &'static MethodSig, receiver: i32) {
-        let Some((invoker, appendix)) = indy::linked(self.m, pc) else { return self.defer(pc, depth) };
+        let Some((invoker, appendix)) = indy::linked(self.m, pc) else { return self.defer_unresolved(pc, depth) };
         let d = depth as i32;
         let args = d - sig.arg_slots as i32 - receiver;
         if receiver == 1 {
