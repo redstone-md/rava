@@ -23,6 +23,8 @@ next-gen-gc = ["dep:crossbeam-deque"]
 # The default module is an inlined no-op API; enable this feature to build an artifact
 # that honours RAVA_PROFILE_WALL / RAVA_PROFILE_PC and emits sampler reports.
 wall-profile = []
+# Opt-in initializer CPU attribution. Both the VM callsite and reporter are absent from default builds.
+clinit-census = []
 # shrink-header: DEFAULT ON since 2026-07-25 — measured on the real MC boot, paired and
 # interleaved, EVERY 16B run beating EVERY 24B run: Done 106.033/107.669s vs 109.070/118.900s
 # (−6.3%) and peak working set 963-965 MiB vs 1030-1034 MiB (−68 MiB, −6.6%, reproducible to

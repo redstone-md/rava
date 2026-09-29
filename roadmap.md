@@ -1065,3 +1065,72 @@ revisiting is a full-boot fallback-population/served census, followed by
 focused representation tests for exact providers, synthetic-only owners,
 name collisions, inherited state, and interface-backed entries. Current
 fresh-boot acceptance remains 21.9 s and strict no-adapt remains uncertified.
+
+### 2026-09-29: define a no-routing clinit attribution tracer before any prefix rewrite
+
+Two independent source audits found no currently eligible implementation: the
+safe loader/linking ceiling is 0.24 CPU-s, the measured worker lane is
+readiness-bounded, and the remaining fixed-policy residual does not reach the
+>7.6 CPU-s needed for a sub-five-second boot. Do not turn either audit into a
+speculative runtime change.
+
+One quantity is still unmeasured: CPU spent inside the launch-to-`Environment:`
+class-initialization cascades, including the guest methods they invoke. This
+does not itself license parallel initialization; JVMS §5.5 ordering, exceptions,
+and shared statics remain load-bearing. It is a necessary bound before deciding
+whether class initialization contains enough work to justify effect analysis.
+
+The first justified tracer is diagnostic-only `RAVA_CLINIT_CENSUS`:
+
+- Measure per-thread CPU around each `ensure_init` activation, keyed by stable
+  loaded-class identity; maintain a nested TLS stack to report disjoint root
+  activation time, per-class inclusive time, and time excluding nested
+  initializers. Class names may label diagnostics only.
+- Emit bounded periodic/milestone summaries because the server does not exit.
+  Use a Linux thread-CPU clock for this acceptance lane; do not substitute wall
+  time or sum overlapping inclusive intervals as work.
+- The flag must not change admission, scheduling, class-init order, or any
+  production decision. Treat its build/run as instrumented attribution, never
+  as acceptance wall timing.
+- If total disjoint activation CPU is below 7.6 CPU-s, reject this surface as
+  insufficient by itself. If it is above that bound, this is only a necessary
+  condition: a separate bytecode/CFG/resolved-dispatch/effect-summary proof
+  must establish a name-free, exception-safe, write-disjoint subset before a
+  performance tracer or worker scheduling change is proposed.
+
+No runtime instrumentation or policy change is made in this design step. The
+<5 s, strict no-adapt, no-snapshot goal remains open.
+
+### 2026-09-29: fresh-world clinit census clears raw-work floor, not safety proof
+
+The diagnostic tracer is behind non-default `clinit-census` (forwarded by
+`rava-cli`) plus `RAVA_CLINIT_CENSUS=1`. Its callsite and reporter are absent
+from default builds; it starts after the GIL-free worker refusal and wraps
+first-time `ensure_init` activations. Linux per-thread CPU is attributed by
+loaded-class identity. Root intervals are non-overlapping on the guest thread;
+per-class inclusive totals overlap nested activations and must not be summed.
+
+Two disposable fresh-world ON captures reached `Done`, each with a discarded
+warm-up and a matched no-census OFF boot. Both used the PGO diagnostic binary
+`7db2bccd972581c17d31e3d541d335a7749f1a59fc488e7b15d2fdb18c5fe156` and
+`RAVA_JIT=1 RAVA_JIT_TIER0=1`; these runs are attribution, not acceptance wall
+timing or strict no-adapt evidence.
+
+- Run 1: root CPU was 18.204 s immediately before `Environment:` and 18.627 s
+  by `Done`; clock failures 0. `Blocks` inclusive 17.715 s, excluding nested
+  initializers 14.328 s.
+- Run 2: root CPU was 19.791 s immediately before `Environment:` and 20.432 s
+  by `Done`; clock failures 0. `Blocks` inclusive 19.514 s, excluding nested
+  initializers 16.160 s.
+
+Thus class-initialization activations contain >7.6 CPU-s of raw work in both
+fresh captures, enough to justify an effect-summary investigation. This is not
+evidence that the work is independent or safely parallelizable: `Blocks`
+accounts for most of it in one ordered `<clinit>`. Offline bytecode inspection
+of that initializer finds 12,934 instructions / 40,094 bytes, 1,147 `putstatic`,
+1,029 `invokedynamic`, 1,059 calls to `register`, and 4,054 virtual calls.
+Those are a large effect surface, not a ready-made execution plan.
+
+The next question is whether a generic structural effect summary can identify
+enough order-safe work in that surface. The <5 s, strict no-adapt, no-snapshot
+objective remains unmet and none of its gates are relaxed.

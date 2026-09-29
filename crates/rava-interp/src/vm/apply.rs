@@ -544,6 +544,8 @@ impl Vm {
             }
             return Ok(()); // leave uninitialised; the serial path initialises it on main
         }
+        #[cfg(feature = "clinit-census")]
+        let _clinit_census = crate::vm::clinit_census::Scope::begin(class);
         class.initialized.store(true, std::sync::atomic::Ordering::Relaxed); // set first to break init cycles
         // Claim the initialization for THIS thread (JVMS §5.5). Read by the wait above; the
         // release store below publishes every static this `<clinit>` writes.
