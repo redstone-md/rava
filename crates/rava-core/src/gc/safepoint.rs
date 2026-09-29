@@ -1,0 +1,196 @@
+//! Thread registry and stop-the-world coordination.
+//!
+//! A thread is `RUNNING` (must stop at the next poll), `NATIVE` (blocked outside Java; the
+//! collector may run) or `STOPPED` (parked at a poll). Before a thread stops or blocks it spills
+//! its callee-saved registers and records its stack pointer, so the collector can scan
+//! `[rsp, stack_top)` conservatively. Transitions use sequentially consistent operations
+//! (Dekker-style with `REQUESTED`).
+
+use crate::thread::Thread;
+use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU8, AtomicUsize, Ordering::SeqCst};
+use std::sync::{Condvar, Mutex};
+
+pub const RUNNING: u8 = 0;
+pub const NATIVE: u8 = 1;
+pub const STOPPED: u8 = 2;
+
+/// Set while a collection wants (or holds) the world stopped. Read by every poll.
+pub static REQUESTED: AtomicBool = AtomicBool::new(false);
+
+pub struct Record {
+    pub thread: AtomicPtr<Thread>,
+    pub stack_top: usize,
+    pub rsp: AtomicUsize,
+    pub state: AtomicU8,
+    /// `LockSupport.park` permit and its wakeup.
+    pub permit: Mutex<bool>,
+    pub unparked: Condvar,
+}
+
+struct Registry {
+    threads: Mutex<Vec<&'static Record>>,
+    /// Collection epoch; waiters sleep on `resumed` until it advances.
+    epoch: Mutex<u64>,
+    resumed: Condvar,
+    collecting: Mutex<()>,
+}
+
+fn registry() -> &'static Registry {
+    static R: std::sync::OnceLock<Registry> = std::sync::OnceLock::new();
+    R.get_or_init(|| Registry { threads: Mutex::new(Vec::new()), epoch: Mutex::new(0), resumed: Condvar::new(), collecting: Mutex::new(()) })
+}
+
+/// The top (highest address) of the calling OS thread's stack.
+fn current_stack_top() -> usize {
+    // SAFETY: queries the attributes of the calling thread.
+    unsafe {
+        let mut attr: libc::pthread_attr_t = std::mem::zeroed();
+        libc::pthread_getattr_np(libc::pthread_self(), &mut attr);
+        let (mut addr, mut size) = (std::ptr::null_mut(), 0usize);
+        libc::pthread_attr_getstack(&attr, &mut addr, &mut size);
+        libc::pthread_attr_destroy(&mut attr);
+        addr as usize + size
+    }
+}
+
+/// Registers `t` (at its final address) as a Java thread of this OS thread.
+pub fn attach(t: &mut Thread) {
+    let rec: &'static Record = Box::leak(Box::new(Record {
+        thread: AtomicPtr::new(t),
+        stack_top: current_stack_top(),
+        rsp: AtomicUsize::new(0),
+        state: AtomicU8::new(RUNNING),
+        permit: Mutex::new(false),
+        unparked: Condvar::new(),
+    }));
+    t.gc_record = Some(rec);
+    registry().threads.lock().unwrap().push(rec);
+    // A collection may be in progress: do not start running Java code under it.
+    poll(t);
+}
+
+pub fn detach(t: &mut Thread) {
+    if let Some(rec) = t.gc_record.take() {
+        enter_native(rec);
+        registry().threads.lock().unwrap().retain(|r| !std::ptr::eq(*r, rec));
+    }
+}
+
+pub fn all_threads() -> Vec<&'static Record> {
+    registry().threads.lock().unwrap().clone()
+}
+
+/// Calls `f` with the stack pointer after spilling callee-saved registers onto the stack, so a
+/// conservative scan from that pointer sees every register-held reference of outer frames.
+#[inline(never)]
+pub fn with_spilled_registers<R>(f: impl FnOnce(usize) -> R) -> R {
+    let mut regs = [0usize; 6];
+    // SAFETY: stores registers into a local array.
+    unsafe {
+        std::arch::asm!(
+            "mov [{0}], rbx", "mov [{0} + 8], rbp", "mov [{0} + 16], r12",
+            "mov [{0} + 24], r13", "mov [{0} + 32], r14", "mov [{0} + 40], r15",
+            in(reg) regs.as_mut_ptr(),
+        )
+    };
+    let r = f(regs.as_ptr() as usize);
+    std::hint::black_box(&regs);
+    r
+}
+
+#[inline(always)]
+pub fn poll(t: &Thread) {
+    if REQUESTED.load(std::sync::atomic::Ordering::Relaxed) {
+        stop_at_poll(t);
+    }
+}
+
+#[cold]
+#[inline(never)]
+fn stop_at_poll(t: &Thread) {
+    let Some(rec) = t.gc_record else { return };
+    with_spilled_registers(|rsp| {
+        rec.rsp.store(rsp, SeqCst);
+        rec.state.store(STOPPED, SeqCst);
+        wait_for_resume();
+        rec.state.store(RUNNING, SeqCst);
+    });
+    // Another collection may have started between the wakeup and the state change.
+    poll(t);
+}
+
+fn wait_for_resume() {
+    let reg = registry();
+    let mut epoch = reg.epoch.lock().unwrap();
+    while REQUESTED.load(SeqCst) {
+        epoch = reg.resumed.wait(epoch).unwrap();
+    }
+}
+
+/// Marks the thread as blocked outside Java (the collector may run meanwhile).
+pub fn enter_native(rec: &'static Record) {
+    with_spilled_registers(|rsp| {
+        rec.rsp.store(rsp, SeqCst);
+        rec.state.store(NATIVE, SeqCst);
+    });
+}
+
+/// Returns to Java after `enter_native`, waiting out any collection in progress.
+pub fn leave_native(rec: &'static Record) {
+    loop {
+        rec.state.store(RUNNING, SeqCst);
+        if !REQUESTED.load(SeqCst) {
+            return;
+        }
+        rec.state.store(NATIVE, SeqCst);
+        wait_for_resume();
+    }
+}
+
+/// Runs a blocking operation with the thread in the native state. `f` runs below the recorded
+/// stack pointer, so it must not be the only holder of a reference it needs afterwards.
+pub fn blocking<R>(t: &Thread, f: impl FnOnce() -> R) -> R {
+    let Some(rec) = t.gc_record else { return f() };
+    with_spilled_registers(|rsp| {
+        rec.rsp.store(rsp, SeqCst);
+        rec.state.store(NATIVE, SeqCst);
+        let r = f();
+        leave_native(rec);
+        r
+    })
+}
+
+/// Stops every other Java thread and runs `f` (with the initiator's own spilled stack pointer).
+/// Returns `None` when another thread was collecting; the caller stopped for that collection
+/// instead and should retry whatever needed memory.
+pub fn stop_the_world<R>(t: &Thread, f: impl FnOnce(usize) -> R) -> Option<R> {
+    let reg = registry();
+    let guard = loop {
+        if let Ok(g) = reg.collecting.try_lock() {
+            break g;
+        }
+        if REQUESTED.load(SeqCst) {
+            poll(t);
+            return None;
+        }
+        std::thread::yield_now();
+    };
+    REQUESTED.store(true, SeqCst);
+    let me = t.gc_record.map(|r| r as *const Record);
+    while all_threads().into_iter().any(|r| Some(r as *const Record) != me && r.state.load(SeqCst) == RUNNING) {
+        std::thread::yield_now();
+    }
+    let result = with_spilled_registers(|rsp| {
+        if let Some(rec) = t.gc_record {
+            rec.rsp.store(rsp, SeqCst);
+        }
+        f(rsp)
+    });
+    let mut epoch = reg.epoch.lock().unwrap();
+    *epoch += 1;
+    REQUESTED.store(false, SeqCst);
+    reg.resumed.notify_all();
+    drop(epoch);
+    drop(guard);
+    Some(result)
+}

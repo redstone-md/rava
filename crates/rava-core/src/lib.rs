@@ -2,6 +2,7 @@
 
 pub mod boot;
 pub mod classfile;
+pub mod gc;
 pub mod heap;
 pub mod interp;
 pub mod jit;

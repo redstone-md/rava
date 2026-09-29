@@ -43,8 +43,9 @@ macro_rules! vm_field {
 pub(crate) use vm_field;
 
 pub fn alloc_instance(t: &mut Thread, k: &'static Klass) -> JResult<Oop> {
-    match vm().heap.alloc_instance(k) {
-        Some(o) => Ok(o),
+    match vm().heap.allocate(t, k.instance_size() as usize) {
+        // SAFETY: fresh zeroed memory of the instance size.
+        Some(mem) => Ok(unsafe { crate::heap::init_instance(mem, k) }),
         None => Err(out_of_memory(t)),
     }
 }
@@ -53,8 +54,9 @@ pub fn alloc_array(t: &mut Thread, k: &'static Klass, length: i32) -> JResult<Oo
     if length < 0 {
         return Err(throw_new(t, "java/lang/NegativeArraySizeException", &length.to_string()));
     }
-    match vm().heap.alloc_array(k, k.elem_size(), length) {
-        Some(o) => Ok(o),
+    match vm().heap.allocate(t, crate::heap::array_bytes(k.elem_size(), length)) {
+        // SAFETY: fresh zeroed memory sized for `length` elements.
+        Some(mem) => Ok(unsafe { crate::heap::init_array(mem, k, length) }),
         None => Err(out_of_memory(t)),
     }
 }

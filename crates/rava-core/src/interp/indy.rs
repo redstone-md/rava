@@ -35,6 +35,13 @@ fn sites() -> &'static Mutex<HashMap<(usize, usize), Linkage>> {
     S.get_or_init(Default::default)
 }
 
+/// Appendix objects of linked call sites (collector roots).
+pub(crate) fn for_each_root(f: &mut dyn FnMut(Oop)) {
+    for l in sites().lock().unwrap().values() {
+        f(l.appendix as Oop);
+    }
+}
+
 /// The invoker and appendix of an already linked call site (for compiled code).
 pub(crate) fn linked(m: &'static Method, bci: usize) -> Option<(&'static Method, usize)> {
     sites().lock().unwrap().get(&(m as *const Method as usize, bci)).map(|l| (l.invoker, l.appendix))

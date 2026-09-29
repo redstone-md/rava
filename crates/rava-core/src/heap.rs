@@ -5,12 +5,10 @@
 //! as an `i32` at offset 16 and elements from offset 24. A reference is a raw pointer to the
 //! header; null is 0.
 //!
-//! Allocation is a bump in one reserved region. The collector (non-moving mark-sweep with
-//! conservative stack roots, see `docs/core/README.md`) is a later tracer bullet; this interface
-//! is what it will sit behind.
+//! Memory comes from the collector (`gc`), which never moves objects.
 
 use crate::klass::Klass;
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::AtomicU64;
 
 pub const HEADER_SIZE: u32 = 16;
 pub const ARRAY_LENGTH_OFFSET: u32 = 16;
@@ -68,68 +66,26 @@ pub mod obj {
     }
 }
 
-/// Reserved address range, bump-allocated. Memory comes zeroed from the kernel.
-pub struct Heap {
-    base: usize,
-    end: usize,
-    top: AtomicUsize,
+/// Writes the header of a new instance into zeroed memory `mem`.
+///
+/// # Safety
+/// `mem` must be zeroed, 8-aligned and at least `klass.instance_size()` bytes.
+pub unsafe fn init_instance(mem: *mut u8, klass: &'static Klass) -> Oop {
+    std::ptr::write(mem as *mut *const Klass, klass);
+    mem as Oop
 }
 
-// The heap hands out disjoint ranges atomically.
-unsafe impl Send for Heap {}
-unsafe impl Sync for Heap {}
+/// Writes the header of a new array into zeroed memory `mem`.
+///
+/// # Safety
+/// `mem` must be zeroed, 8-aligned and large enough for `length` elements.
+pub unsafe fn init_array(mem: *mut u8, klass: &'static Klass, length: i32) -> Oop {
+    std::ptr::write(mem as *mut *const Klass, klass);
+    obj::write::<i32>(mem as Oop, ARRAY_LENGTH_OFFSET, length);
+    mem as Oop
+}
 
-impl Heap {
-    pub fn new(reserve_bytes: usize) -> Heap {
-        // SAFETY: anonymous, private, lazily committed reservation.
-        let base = unsafe {
-            libc::mmap(
-                std::ptr::null_mut(),
-                reserve_bytes,
-                libc::PROT_READ | libc::PROT_WRITE,
-                libc::MAP_PRIVATE | libc::MAP_ANONYMOUS | libc::MAP_NORESERVE,
-                -1,
-                0,
-            )
-        };
-        assert!(base != libc::MAP_FAILED, "cannot reserve {reserve_bytes} bytes of heap");
-        let base = base as usize;
-        Heap { base, end: base + reserve_bytes, top: AtomicUsize::new(base) }
-    }
-
-    /// `bytes` of zeroed, 8-aligned memory, or `None` when the heap is exhausted.
-    #[inline]
-    pub fn allocate(&self, bytes: usize) -> Option<*mut u8> {
-        let size = (bytes + 7) & !7;
-        let at = self.top.fetch_add(size, Ordering::Relaxed);
-        (at + size <= self.end).then_some(at as *mut u8)
-    }
-
-    /// Allocates an instance of `klass` with its header written.
-    pub fn alloc_instance(&self, klass: &'static Klass) -> Option<Oop> {
-        let obj = self.allocate(klass.instance_size() as usize)? as Oop;
-        // SAFETY: fresh, zeroed, large enough for the header.
-        unsafe { std::ptr::write(obj as *mut *const Klass, klass) };
-        Some(obj)
-    }
-
-    /// Allocates an array of `length` elements of `elem_size` bytes described by `klass`.
-    pub fn alloc_array(&self, klass: &'static Klass, elem_size: u32, length: i32) -> Option<Oop> {
-        let bytes = ARRAY_BASE_OFFSET as usize + elem_size as usize * length as usize;
-        let obj = self.allocate(bytes)? as Oop;
-        // SAFETY: fresh, zeroed, large enough for the array header.
-        unsafe {
-            std::ptr::write(obj as *mut *const Klass, klass);
-            obj::write::<i32>(obj, ARRAY_LENGTH_OFFSET, length);
-        }
-        Some(obj)
-    }
-
-    pub fn used_bytes(&self) -> usize {
-        self.top.load(Ordering::Relaxed) - self.base
-    }
-
-    pub fn contains(&self, addr: usize) -> bool {
-        addr >= self.base && addr < self.top.load(Ordering::Relaxed)
-    }
+/// Bytes of an array with `length` elements of `elem_size` bytes.
+pub fn array_bytes(elem_size: u32, length: i32) -> usize {
+    ARRAY_BASE_OFFSET as usize + elem_size as usize * length as usize
 }

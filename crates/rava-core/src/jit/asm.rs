@@ -230,6 +230,11 @@ impl Asm {
             self.d32(imm);
         }
     }
+    /// `cmp byte [m], imm8`.
+    pub fn cmp8_mi(&mut self, m: M, imm: u8) {
+        self.op_rm(false, &[0x80], 7, m);
+        self.b(imm);
+    }
     pub fn test_rr(&mut self, w: bool, a: R, b: R) {
         self.op_rr(w, &[0x85], b as u8, a as u8);
     }

@@ -94,8 +94,24 @@ Wall clock, three alternating runs, same container:
 | `java` (adaptive + CDS) | 214 ms | 188 ms | 186 ms |
 | `rava-core` (no snapshot) | 204 ms | 152 ms | 191 ms |
 
+## 2026-09-29 — garbage collector
+
+Non-moving mark-sweep (`gc/`): 256 KiB pages of 44 segregated size classes up to 32 KiB,
+individual mappings above; per-thread allocation caches (free list + bump range per class).
+A cell is live iff its class word is non-zero, so no allocation bitmap is maintained.
+
+- Roots: every thread's native stack (conservatively, after spilling callee-saved registers)
+  and value stack, thread fields and native handles, all class statics (conservatively),
+  mirrors, loaders, resolved constants, interned strings, linked call-site appendices,
+  primitive mirrors and module records. The heap is traced precisely from class layouts.
+- Stop-the-world at safepoints: interpreter and compiled code poll at method entry and on
+  taken backward branches; monitor entry, `wait`, `sleep`, `park` (now real, with per-thread
+  permits), class-initialization waits and blocking reads run in the native state.
+- Natives never keep references in Rust collections: arrays are allocated first and filled in
+  place (found by stress-testing Maven at a 1 MiB trigger: 291 collections, correct output).
+
 ### Next
 
 1. Code quality: register-cached operand stack, cheaper calls (the profile is now flat over
    compiled Java code, led by method-handle chains).
-2. Garbage collector (BootLike allocates 258 MiB with no collection).
+2. Weak/soft/phantom reference processing; parallel marking; JIT allocation fast path.

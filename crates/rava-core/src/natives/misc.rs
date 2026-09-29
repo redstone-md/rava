@@ -42,9 +42,11 @@ pub(super) fn register(r: &mut NativeRegistry) {
         ret_ref(std::ptr::null_mut())
     });
     r.add("java/lang/ref/Reference", "hasReferencePendingList", "()Z", |_, _| ret_bool(false));
-    r.add("java/lang/ref/Reference", "waitForReferencePendingList", "()V", |_, _| loop {
+    r.add("java/lang/ref/Reference", "waitForReferencePendingList", "()V", |t, _| {
         // The collector does not discover references yet; the handler thread sleeps.
-        std::thread::park();
+        crate::gc::safepoint::blocking(t, || loop {
+            std::thread::park();
+        })
     });
     r.add("java/lang/ref/Reference", "refersTo0", "(Ljava/lang/Object;)Z", refers_to);
     r.add("java/lang/ref/PhantomReference", "refersTo0", "(Ljava/lang/Object;)Z", refers_to);

@@ -25,6 +25,8 @@ pub(super) struct Emitter {
     pub epilogue: Label,
     /// Deferred slow paths: (entry label, bci, depth).
     pub slow: Vec<(Label, usize, u16)>,
+    /// Safepoint-poll stubs: (entry label, label to resume at).
+    pub polls: Vec<(Label, Label)>,
 }
 
 pub fn compile(m: &'static Method) -> Option<CompiledMethod> {
@@ -47,6 +49,7 @@ pub fn compile(m: &'static Method) -> Option<CompiledMethod> {
         exc,
         epilogue,
         slow: Vec::new(),
+        polls: Vec::new(),
     };
     let frame_slots = info.max_locals as i32 + header::SLOTS as i32 + info.max_stack as i32 + 2;
     let overflow = e.a.new_label();
@@ -66,6 +69,7 @@ pub fn compile(m: &'static Method) -> Option<CompiledMethod> {
     }
     e.a.bind(e.labels[e.code.len()]);
     e.emit_slow_paths();
+    e.emit_poll_stubs();
     e.emit_exception_dispatch();
     e.emit_epilogue(overflow);
     let code = e.a.finish();
@@ -132,6 +136,26 @@ impl Emitter {
         self.a.jcc(Cond::Ne, self.exc);
     }
 
+    /// Polls for a stop-the-world request (method entry and loop back-edges): frames are fully in
+    /// memory at every instruction boundary, so the collector sees everything.
+    pub fn poll(&mut self) {
+        let (stub, back) = (self.a.new_label(), self.a.new_label());
+        self.a.mov_ri(R::Rax, &crate::gc::safepoint::REQUESTED as *const _ as i64);
+        self.a.cmp8_mi(mem(R::Rax, 0), 0);
+        self.a.jcc(Cond::Ne, stub);
+        self.a.bind(back);
+        self.polls.push((stub, back));
+    }
+
+    fn emit_poll_stubs(&mut self) {
+        for (stub, back) in std::mem::take(&mut self.polls) {
+            self.a.bind(stub);
+            self.a.mov_rr(true, R::Rdi, R::R12);
+            self.a.call_abs(runtime::safepoint as *const () as usize);
+            self.a.jmp(back);
+        }
+    }
+
     /// Jumps to exception dispatch if a call left an exception pending.
     pub fn check_pending(&mut self) {
         self.a.alu_mi(true, super::asm::Alu::Cmp, mem(R::R12, offsets::PENDING), 0);
@@ -160,6 +184,7 @@ impl Emitter {
         a.lea(R::Rcx, h(header::METHOD));
         a.store(true, mem(R::R12, offsets::TOP), R::Rcx);
         a.store(true, mem(R::R12, offsets::SP), R::Rax);
+        self.poll();
     }
 
     fn emit_slow_paths(&mut self) {

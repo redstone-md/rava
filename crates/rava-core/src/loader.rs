@@ -167,6 +167,7 @@ impl Vm {
             cf: Some(cf),
         })));
         klass.loader.store(loader, std::sync::atomic::Ordering::Release);
+        self.record_class(klass);
         let cf = klass.cf.as_ref().unwrap();
         let methods: Box<[Method]> =
             cf.methods.iter().map(|m| Method::new(klass, m.name, m.desc, m.access, m.code.as_ref())).collect();
@@ -227,6 +228,7 @@ impl Vm {
             hidden: false,
         })));
         klass.loader.store(loader, std::sync::atomic::Ordering::Release);
+        self.record_class(klass);
         let _ = klass.methods.set(Box::new([]));
         klass.set_vtable(object.vtable().to_vec().into_boxed_slice());
         Ok(self.publish(loader, klass))

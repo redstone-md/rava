@@ -52,6 +52,7 @@ fn run_main(options: VmOptions, rest: &[String]) -> ExitCode {
     let started = std::time::Instant::now();
     let vm = Vm::create(options).expect("create VM");
     let mut t = Thread::new();
+    t.attach();
     let result = rava_core::boot::boot(&mut t).and_then(|_| {
         if std::env::var_os("RAVA_CORE_TIMING").is_some() {
             eprintln!("[rava-core] JDK booted in {:.1} ms, {} classes", started.elapsed().as_secs_f64() * 1e3, vm.loaded_class_count());
@@ -69,6 +70,7 @@ fn run_call(options: VmOptions, rest: &[String]) -> ExitCode {
     let started = std::time::Instant::now();
     let vm = Vm::create(options).expect("create VM");
     let mut t = Thread::new();
+    t.attach();
     let k = match vm.load_boot_class(Symbol::intern(&class.replace('.', "/"))) {
         Ok(k) => k,
         Err(e) => {

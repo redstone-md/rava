@@ -25,7 +25,9 @@ fn initialize_slow(t: &mut Thread, k: &'static Klass) -> JResult<()> {
             match k.init.state() {
                 InitState::Initialized => return Ok(()),
                 InitState::BeingInitialized if *owner == Some(me) => return Ok(()),
-                InitState::BeingInitialized => owner = k.init.cv.wait(owner).unwrap(),
+                InitState::BeingInitialized => {
+                    owner = crate::gc::safepoint::blocking(t, || k.init.cv.wait(owner).unwrap())
+                }
                 InitState::Erroneous => {
                     let msg = format!("Could not initialize class {}", k.name.as_str().replace('/', "."));
                     drop(owner);
