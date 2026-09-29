@@ -2,11 +2,21 @@
 //! descriptor) exactly as `JNI` would bind them. These are the VM's own natives (the set HotSpot
 //! implements in libjvm plus the few libjava ones the boot needs), not library replacements.
 
+mod classloader;
+mod fs;
+mod io;
 mod lang;
+mod misc;
+mod module;
+pub(crate) mod props;
 mod reflect;
+mod reflect_class;
+pub(crate) mod thread;
 mod unsafe_mem;
 mod throwable;
 
+pub(crate) use module::{set_mirror_module, set_primitive_mirror_module};
+pub use props::string_array;
 pub use throwable::{backtrace_of, describe as describe_throwable};
 
 use crate::method::Method;
@@ -27,6 +37,14 @@ impl NativeRegistry {
         lang::register(&mut r);
         reflect::register(&mut r);
         unsafe_mem::register(&mut r);
+        props::register(&mut r);
+        thread::register(&mut r);
+        io::register(&mut r);
+        fs::register(&mut r);
+        module::register(&mut r);
+        classloader::register(&mut r);
+        reflect_class::register(&mut r);
+        misc::register(&mut r);
         r
     }
 

@@ -13,6 +13,10 @@ pub struct VmOptions {
     pub java_home: PathBuf,
     /// Directories searched by the boot loader after the runtime image (`-Xbootclasspath/a`).
     pub boot_append: Vec<PathBuf>,
+    /// `java.class.path` for the system class loader.
+    pub class_path: String,
+    /// `-Dkey=value` properties.
+    pub properties: Vec<(String, String)>,
     pub heap_reserve: usize,
 }
 
@@ -21,6 +25,8 @@ impl Default for VmOptions {
         VmOptions {
             java_home: crate::java_home().expect("no JDK found: set JAVA_HOME"),
             boot_append: Vec::new(),
+            class_path: String::new(),
+            properties: Vec::new(),
             heap_reserve: 64 << 30,
         }
     }

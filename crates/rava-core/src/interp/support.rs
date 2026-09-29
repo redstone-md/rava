@@ -212,7 +212,7 @@ fn normalize(ty: BasicType, v: u64) -> u64 {
 }
 
 pub(super) fn getstatic(t: &mut Thread, f: &mut Frame) -> JResult<()> {
-    let r = f.holder().resolve_field(f.u2(f.pc + 1)).map_err(|e| link_error(t, e))?;
+    let r = f.holder().resolve_field(t, f.u2(f.pc + 1)).map_err(|e| link_error(t, e))?;
     let Resolved::StaticField { holder, slot, ty } = r else {
         return Err(throw_new(t, "java/lang/IncompatibleClassChangeError", "expected a static field"));
     };
@@ -223,7 +223,7 @@ pub(super) fn getstatic(t: &mut Thread, f: &mut Frame) -> JResult<()> {
 }
 
 pub(super) fn putstatic(t: &mut Thread, f: &mut Frame) -> JResult<()> {
-    let r = f.holder().resolve_field(f.u2(f.pc + 1)).map_err(|e| link_error(t, e))?;
+    let r = f.holder().resolve_field(t, f.u2(f.pc + 1)).map_err(|e| link_error(t, e))?;
     let Resolved::StaticField { holder, slot, ty } = r else {
         return Err(throw_new(t, "java/lang/IncompatibleClassChangeError", "expected a static field"));
     };
@@ -234,7 +234,7 @@ pub(super) fn putstatic(t: &mut Thread, f: &mut Frame) -> JResult<()> {
 }
 
 pub(super) fn getfield(t: &mut Thread, f: &mut Frame) -> JResult<()> {
-    let r = f.holder().resolve_field(f.u2(f.pc + 1)).map_err(|e| link_error(t, e))?;
+    let r = f.holder().resolve_field(t, f.u2(f.pc + 1)).map_err(|e| link_error(t, e))?;
     let Resolved::InstanceField { offset, ty } = r else {
         return Err(throw_new(t, "java/lang/IncompatibleClassChangeError", "expected an instance field"));
     };
@@ -249,7 +249,7 @@ pub(super) fn getfield(t: &mut Thread, f: &mut Frame) -> JResult<()> {
 }
 
 pub(super) fn putfield(t: &mut Thread, f: &mut Frame) -> JResult<()> {
-    let r = f.holder().resolve_field(f.u2(f.pc + 1)).map_err(|e| link_error(t, e))?;
+    let r = f.holder().resolve_field(t, f.u2(f.pc + 1)).map_err(|e| link_error(t, e))?;
     let Resolved::InstanceField { offset, ty } = r else {
         return Err(throw_new(t, "java/lang/IncompatibleClassChangeError", "expected an instance field"));
     };
@@ -304,7 +304,7 @@ pub(super) fn ldc(t: &mut Thread, f: &mut Frame, index: u16) -> JResult<()> {
             f.push_ref(o);
         }
         Cp::Class(_) => {
-            let c = k.resolve_class(index).map_err(|e| link_error(t, e))?;
+            let c = k.resolve_class(t, index).map_err(|e| link_error(t, e))?;
             let m = rt::mirror_of(t, c)?;
             f.push_ref(m);
         }
@@ -315,7 +315,7 @@ pub(super) fn ldc(t: &mut Thread, f: &mut Frame, index: u16) -> JResult<()> {
 
 /// invokevirtual / invokespecial / invokestatic / invokeinterface.
 pub(super) fn invoke(t: &mut Thread, f: &mut Frame, op: u8) -> JResult<()> {
-    let m = f.holder().resolve_method(f.u2(f.pc + 1)).map_err(|e| link_error(t, e))?;
+    let m = f.holder().resolve_method(t, f.u2(f.pc + 1)).map_err(|e| link_error(t, e))?;
     if m.access & 0x0080 != 0 && m.is_native() && !m.is_static() {
         return Err(throw_new(t, "java/lang/UnsupportedOperationException", "signature-polymorphic call"));
     }
@@ -376,7 +376,7 @@ pub(super) fn invokedynamic(t: &mut Thread, f: &mut Frame) -> JResult<()> {
 }
 
 pub(super) fn new_object(t: &mut Thread, f: &mut Frame) -> JResult<()> {
-    let k = f.holder().resolve_class(f.u2(f.pc + 1)).map_err(|e| link_error(t, e))?;
+    let k = f.holder().resolve_class(t, f.u2(f.pc + 1)).map_err(|e| link_error(t, e))?;
     if k.access & (ACC_ABSTRACT | ACC_INTERFACE) != 0 {
         return Err(throw_new(t, "java/lang/InstantiationError", &k.name.as_str().replace('/', ".")));
     }
@@ -397,7 +397,7 @@ pub(super) fn newarray(t: &mut Thread, f: &mut Frame) -> JResult<()> {
 }
 
 pub(super) fn anewarray(t: &mut Thread, f: &mut Frame) -> JResult<()> {
-    let elem = f.holder().resolve_class(f.u2(f.pc + 1)).map_err(|e| link_error(t, e))?;
+    let elem = f.holder().resolve_class(t, f.u2(f.pc + 1)).map_err(|e| link_error(t, e))?;
     let k = vm().array_class_of(elem).map_err(|e| link_error(t, e.into()))?;
     let len = f.pop_i();
     let a = rt::alloc_array(t, k, len)?;
@@ -406,7 +406,7 @@ pub(super) fn anewarray(t: &mut Thread, f: &mut Frame) -> JResult<()> {
 }
 
 pub(super) fn multianewarray(t: &mut Thread, f: &mut Frame) -> JResult<()> {
-    let k = f.holder().resolve_class(f.u2(f.pc + 1)).map_err(|e| link_error(t, e))?;
+    let k = f.holder().resolve_class(t, f.u2(f.pc + 1)).map_err(|e| link_error(t, e))?;
     let dims = f.code[f.pc + 3] as usize;
     let mut counts = vec![0i32; dims];
     for c in counts.iter_mut().rev() {
@@ -442,7 +442,7 @@ pub(super) fn checkcast(t: &mut Thread, f: &mut Frame) -> JResult<()> {
     if o.is_null() {
         return Ok(());
     }
-    let k = f.holder().resolve_class(f.u2(f.pc + 1)).map_err(|e| link_error(t, e))?;
+    let k = f.holder().resolve_class(t, f.u2(f.pc + 1)).map_err(|e| link_error(t, e))?;
     // SAFETY: live object.
     if unsafe { obj::klass(o) }.is_subtype_of(k) {
         return Ok(());
@@ -457,7 +457,7 @@ pub(super) fn instanceof(t: &mut Thread, f: &mut Frame) -> JResult<()> {
         f.push_i(0);
         return Ok(());
     }
-    let k = f.holder().resolve_class(f.u2(f.pc + 1)).map_err(|e| link_error(t, e))?;
+    let k = f.holder().resolve_class(t, f.u2(f.pc + 1)).map_err(|e| link_error(t, e))?;
     // SAFETY: live object.
     f.push_i(unsafe { obj::klass(o) }.is_subtype_of(k) as i32);
     Ok(())
@@ -465,7 +465,6 @@ pub(super) fn instanceof(t: &mut Thread, f: &mut Frame) -> JResult<()> {
 
 /// The handler pc for an exception thrown at `f.op_pc`, if this method catches it.
 pub(super) fn find_handler(t: &mut Thread, f: &Frame, ex: Oop) -> Option<usize> {
-    let _ = t;
     // SAFETY: live exception object.
     let ek = unsafe { obj::klass(ex) };
     let pc = f.op_pc as u16;
@@ -473,7 +472,7 @@ pub(super) fn find_handler(t: &mut Thread, f: &Frame, ex: Oop) -> Option<usize> 
         if h.catch_type == 0 {
             return Some(h.handler as usize);
         }
-        match f.holder().resolve_class(h.catch_type) {
+        match f.holder().resolve_class(t, h.catch_type) {
             Ok(c) if ek.is_subtype_of(c) => return Some(h.handler as usize),
             _ => {}
         }

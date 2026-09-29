@@ -58,6 +58,13 @@ impl Method {
         self.sig.arg_slots + if self.is_static() { 0 } else { 1 }
     }
 
+    /// Position of this method in its holder's method table (the reflection "slot").
+    pub fn index(&self) -> usize {
+        let base = self.holder.methods().as_ptr();
+        // SAFETY: `self` is an element of the holder's method slice.
+        unsafe { (self as *const Method).offset_from(base) as usize }
+    }
+
     pub fn vtable_index(&self) -> i32 {
         self.vtable_index.load(Ordering::Relaxed)
     }

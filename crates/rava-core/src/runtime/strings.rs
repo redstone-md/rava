@@ -76,6 +76,16 @@ pub fn intern(_t: &mut Thread, s: Oop) -> JResult<Oop> {
     Ok(insert(units.into_boxed_slice(), s))
 }
 
+/// The interned String with the content of `s`.
+pub fn intern_str(t: &mut Thread, s: &str) -> JResult<Oop> {
+    let units: Vec<u16> = s.encode_utf16().collect();
+    if let Some(&hit) = vm().strings.lock().unwrap().get(units.as_slice()) {
+        return Ok(hit as Oop);
+    }
+    let o = new_string_utf16(t, &units)?;
+    Ok(insert(units.into_boxed_slice(), o))
+}
+
 /// The interned String for a class-file literal (modified UTF-8).
 pub fn intern_modified_utf8(t: &mut Thread, bytes: &[u8]) -> JResult<Oop> {
     let units = decode_modified_utf8(bytes);

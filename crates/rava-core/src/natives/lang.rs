@@ -15,8 +15,6 @@ pub(super) fn register(r: &mut NativeRegistry) {
         ret_ref(rt::mirror_of(t, k)?)
     });
     r.add("java/lang/Object", "clone", "()Ljava/lang/Object;", object_clone);
-    r.add("java/lang/Object", "notify", "()V", |_, _| ret_void());
-    r.add("java/lang/Object", "notifyAll", "()V", |_, _| ret_void());
     r.add("java/lang/System", "registerNatives", "()V", |_, _| ret_void());
     r.add("java/lang/System", "identityHashCode", "(Ljava/lang/Object;)I", |_, a| {
         let o = a[0] as Oop;
@@ -193,8 +191,7 @@ fn class_init_name(t: &mut Thread, a: &[u64]) -> JResult<u64> {
         Some(k) => k.name.as_str().replace('/', "."),
         None => primitive_name(rt::primitive_type_of_mirror(mirror)),
     };
-    let s = rt::new_string(t, &name)?;
-    let s = rt::intern(t, s)?;
+    let s = rt::intern_str(t, &name)?;
     static NAME: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
     let off = rt::field_offset(&NAME, "java/lang/Class", "name", "Ljava/lang/String;");
     // SAFETY: live Class mirror.

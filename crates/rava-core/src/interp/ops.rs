@@ -189,8 +189,15 @@ fn step(t: &mut Thread, f: &mut Frame) -> JResult<Option<u64>> {
             0xbf => { let ex = f.pop_ref(); return Err(s::athrow(t, ex)) }
             0xc0 => { s::checkcast(t, f)?; f.pc += 3 }
             0xc1 => { s::instanceof(t, f)?; f.pc += 3 }
-            0xc2 | 0xc3 => {
-                if f.pop_ref().is_null() { return Err(crate::runtime::null_pointer(t)) }
+            0xc2 => {
+                let o = f.pop_ref();
+                if o.is_null() { return Err(crate::runtime::null_pointer(t)) }
+                crate::sync::enter(o); f.pc += 1
+            }
+            0xc3 => {
+                let o = f.pop_ref();
+                if o.is_null() { return Err(crate::runtime::null_pointer(t)) }
+                if !crate::sync::exit(o) { return Err(throw_new(t, "java/lang/IllegalMonitorStateException", "")) }
                 f.pc += 1
             }
             0xc4 => s::wide(f),
