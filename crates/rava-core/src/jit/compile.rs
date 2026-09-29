@@ -8,10 +8,8 @@
 use super::analysis::{analyze, insn_len, Analysis};
 use super::asm::{mem, Asm, Cond, Label, M, R};
 use super::inline::InlineCtx;
-use super::inline_plan::{plan, Plan};
 use super::vstack::{plan_local_regs, Slot};
 use super::{code_cache, runtime, CompiledMethod};
-use std::rc::Rc;
 use crate::classfile::{ClassFile, CodeInfo};
 use crate::method::Method;
 use crate::thread::{header, offsets};
@@ -36,8 +34,12 @@ pub(super) struct Emitter {
     pub stack_base: i32,
     /// Scratch slots for leaf callees, above this body's operand stack.
     pub scratch_base: i32,
-    /// Call sites of this body compiled in place (`inline_plan.rs`).
-    pub plan: Rc<Plan>,
+    /// The methods whose bodies are being emitted, outermost first (inlining decisions).
+    pub chain: Vec<&'static Method>,
+    /// The highest frame slot any emitted body uses (the frame size, patched into the prologue).
+    pub extent: i32,
+    /// An inlined body could not be compiled: the method is refused.
+    pub failed: bool,
     /// Set while emitting an inlined body.
     pub inl: Option<InlineCtx>,
     /// The virtual operand stack and the registers pinned to locals (`vstack.rs`).
@@ -52,7 +54,6 @@ pub fn compile(m: &'static Method) -> Option<CompiledMethod> {
     let info: &'static CodeInfo = m.code?;
     let an = analyze(m)?;
     let stack_base = info.max_locals as i32 + header::SLOTS as i32;
-    let plan = Rc::new(plan(m, &an, stack_base, &mut Vec::new()));
     let mut a = Asm::default();
     let labels = (0..=info.code.len()).map(|_| a.new_label()).collect();
     let (exc, epilogue) = (a.new_label(), a.new_label());
@@ -71,7 +72,9 @@ pub fn compile(m: &'static Method) -> Option<CompiledMethod> {
         local_base: 0,
         stack_base,
         scratch_base: stack_base + info.max_stack as i32 + 2,
-        plan: plan.clone(),
+        chain: vec![m],
+        extent: stack_base + info.max_stack as i32 + 2,
+        failed: false,
         inl: None,
         vs: Vec::new(),
         lregs: Vec::new(),
@@ -79,11 +82,15 @@ pub fn compile(m: &'static Method) -> Option<CompiledMethod> {
     if std::env::var_os("RAVA_CORE_NO_LOCAL_REGS").is_none() {
         e.lregs = plan_local_regs(e.code, info.max_locals as usize, &e.an);
     }
-    let frame_slots = plan.extent;
     let overflow = e.a.new_label();
-    e.prologue(frame_slots, overflow);
+    let frame_patch = e.prologue(overflow);
     let mut leaders = Vec::new();
     e.emit_body(Some(&mut leaders))?;
+    if e.failed {
+        return None;
+    }
+    let frame_slots = e.extent;
+    e.a.patch_i32(frame_patch, 8 * frame_slots);
     let leaders = e.emit_entry_stubs(leaders, frame_slots);
     e.emit_slow_paths();
     e.emit_poll_stubs();
@@ -122,6 +129,9 @@ impl Emitter {
             self.a.bind(self.labels[pc]);
             let first_slow = self.slow.len();
             self.emit(pc, depth)?;
+            if self.failed {
+                return None;
+            }
             let live = self.live_regs();
             self.slow[first_slow..].iter_mut().for_each(|s| s.3 = live.clone());
             pc += len;
@@ -216,12 +226,13 @@ impl Emitter {
         self.a.jcc(Cond::Ne, self.exc);
     }
 
-    fn prologue(&mut self, frame_slots: i32, overflow: Label) {
+    /// Frame setup; returns the position of the frame size, known once every body is emitted.
+    fn prologue(&mut self, overflow: Label) -> u32 {
         let a = &mut self.a;
         save_registers(a);
         a.mov_rr(true, R::R12, R::Rdi);
         a.mov_rr(true, R::R13, R::Rsi);
-        a.lea(R::Rax, mem(R::R13, 8 * frame_slots));
+        let frame_patch = a.lea_patchable(R::Rax, R::R13);
         a.alu_rm(true, super::asm::Alu::Cmp, R::Rax, mem(R::R12, offsets::LIMIT));
         a.jcc(Cond::A, overflow);
         let h = |f: usize| mem(R::R13, 8 * (self.max_locals + f as i32));
@@ -236,6 +247,7 @@ impl Emitter {
         a.store(true, mem(R::R12, offsets::SP), R::Rax);
         self.poll();
         self.load_local_regs();
+        frame_patch
     }
 
     /// Loads the registers pinned to locals from their slots.

@@ -3,6 +3,7 @@
 
 use super::asm::{mem, Cond, R};
 use super::compile::Emitter;
+use super::inline_plan::{bound_target, decide};
 use super::runtime;
 use crate::classfile::Cp;
 use crate::interp::indy;
@@ -79,12 +80,13 @@ impl Emitter {
         if (op == 0xb8 || op == 0xb6) && self.try_intrinsic(pc, depth, m, args) {
             return;
         }
-        let inlined = match self.plan.clone().sites.get(&pc) {
-            Some(site) if !self.in_leaf() => {
+        let decision = if self.in_leaf() { None } else { bound_target(self.m, self.code, pc).and_then(|t| Some((t, decide(t, &self.chain)?))) };
+        let inlined = match decision {
+            Some((target, kind)) => {
                 self.set_bci(pc);
-                self.inline_call(args, site.target, &site.kind, op != 0xb8, m.holder)
+                self.inline_call(args, target, kind, op != 0xb8, m.holder)
             }
-            _ => None,
+            None => None,
         };
         let slow = self.slow_path(pc, depth);
         if op == 0xb8 {
