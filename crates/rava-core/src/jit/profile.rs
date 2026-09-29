@@ -1,6 +1,6 @@
 //! Receiver-type profiles for tier 2, read from tier-1 inline caches (per method and bytecode
-//! index, as HotSpot's method data is): a call site whose cache only ever held one class is
-//! inlined for that class behind an exact class check.
+//! index, as HotSpot's method data is): a call site whose cache held one class (or two, for the
+//! optimizing tier) is inlined for those classes behind exact class checks.
 
 use super::runtime::IcCell;
 use crate::klass::Klass;
@@ -16,6 +16,13 @@ fn sites() -> &'static Mutex<HashMap<(usize, u32), &'static IcCell>> {
 /// Remembers the inline cache of `m`'s call at `bci`.
 pub(super) fn record(m: &'static Method, bci: usize, cell: &'static IcCell) {
     sites().lock().unwrap().insert((m as *const Method as usize, bci as u32), cell);
+}
+
+/// The receiver classes seen at `m`'s call at `bci`, when there were one or two.
+pub(super) fn receivers(m: &'static Method, bci: usize) -> Vec<&'static Klass> {
+    let Some(cell) = sites().lock().unwrap().get(&(m as *const Method as usize, bci as u32)).copied() else { return Vec::new() };
+    // SAFETY: cached classes are immortal.
+    cell.receivers().unwrap_or_default().into_iter().map(|k| unsafe { &*(k as *const Klass) }).collect()
 }
 
 /// The only receiver class seen at `m`'s call at `bci`, if exactly one was.

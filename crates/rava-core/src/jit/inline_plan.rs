@@ -43,10 +43,13 @@ pub(super) type Chain = [(&'static Method, Option<i64>)];
 const HOT_INLINE_SIZE: usize = 325;
 const HOT_INVOCATIONS: u32 = 2000;
 const TIER2_BUDGET: usize = 6000;
+/// A callee whose optimized code is larger than this is called rather than inlined again
+/// (HotSpot's `InlineSmallCode`): its own compilation already inlined what it calls.
+const INLINE_SMALL_CODE: usize = 3000;
 const TIER1_BUDGET: usize = 2000;
 
-/// How to inline `target` (first argument `first`) into `chain` at `tier`, having inlined
-/// `spent` bytes of bytecode already, if at all.
+/// How to inline `target` (first argument `first`) into `chain` at `tier` (1 and 2 baseline, 3
+/// optimized), having inlined `spent` bytes of bytecode already, if at all.
 pub(super) fn decide(target: &'static Method, first: Option<i64>, chain: &Chain, tier: u8, spent: usize) -> Option<Kind> {
     let size = target.code.map_or(0, |c| c.code.len());
     if spent + size > if tier >= 2 { TIER2_BUDGET } else { TIER1_BUDGET } {
@@ -55,10 +58,15 @@ pub(super) fn decide(target: &'static Method, first: Option<i64>, chain: &Chain,
     if std::env::var_os("RAVA_CORE_NO_INLINE").is_some() || target.is_abstract() || target.is_native() || intrinsic(target).is_some() {
         return None;
     }
+    if tier >= 3 && target.compiled().is_some_and(|c| c.tier >= 2 && c.size > INLINE_SMALL_CODE) {
+        return None;
+    }
     if is_leaf(target) {
         return Some(Kind::Leaf);
     }
-    let hot = tier >= 2 && target.invocations.load(Ordering::Relaxed) >= HOT_INVOCATIONS;
+    // Tier 3 (the optimizing tier) compiles a method because it is hot, so its call sites are:
+    // counting the callee's own invocations misses calls inlined into baseline code.
+    let hot = tier >= 3 || (tier >= 2 && target.invocations.load(Ordering::Relaxed) >= HOT_INVOCATIONS);
     framed_ok(target, first, chain, hot).then_some(Kind::Framed)
 }
 

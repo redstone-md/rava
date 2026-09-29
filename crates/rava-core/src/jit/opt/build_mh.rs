@@ -50,7 +50,7 @@ impl Builder {
         if appendix != 0 {
             args.push(self.konst(Ty::A, appendix as i64));
         }
-        Some(self.emit_call(Some((invoker, Guard::None)), Callee::Direct(invoker), args, s, sig.ret))
+        Some(self.emit_call(vec![(invoker, Guard::None)], Callee::Direct(invoker), args, s, sig.ret))
     }
 
     /// `MethodHandle.invokeBasic`: the receiver's `form.vmentry` target, with the handle as its
@@ -58,13 +58,13 @@ impl Builder {
     fn invoke_basic(&mut self, sig: &'static MethodSig) -> bool {
         let (args, pre, s) = self.pop_args(sig.params.len() + 1);
         if let Some(target) = self.g.constant(args[0]).and_then(|h| fold::handle_target(h as usize)) {
-            return self.emit_call(Some((target, Guard::None)), Callee::Direct(target), args, s, sig.ret);
+            return self.emit_call(vec![(target, Guard::None)], Callee::Direct(target), args, s, sig.ret);
         }
         self.null_check(args[0], pre);
         let form = self.add(Inst::LoadField(args[0], indy::mh_form(), BasicType::Reference), Ty::A);
         let entry = self.add(Inst::LoadField(form, indy::lf_vmentry(), BasicType::Reference), Ty::A);
         let target = self.member_method(entry);
-        self.emit_call(None, Callee::Method(target), args, s, sig.ret)
+        self.emit_call(Vec::new(), Callee::Method(target), args, s, sig.ret)
     }
 
     /// The `Method*` of the `MemberName` value `mn`.
@@ -92,11 +92,11 @@ impl Builder {
                 _ if target.vtable_index() >= 0 && !target.holder.is_interface() => Callee::Virtual(target),
                 _ => Callee::Interface(target),
             };
-            let plan = bound.then_some((target, Guard::None));
+            let plan = if bound { vec![(target, Guard::None)] } else { Vec::new() };
             return Some(self.emit_call(plan, callee, args, s, sig.ret));
         }
         let target = self.member_method(mn);
         let callee = if is_static || kind == "linkToSpecial" { Callee::Method(target) } else { Callee::Select(target) };
-        Some(self.emit_call(None, callee, args, s, sig.ret))
+        Some(self.emit_call(Vec::new(), callee, args, s, sig.ret))
     }
 }

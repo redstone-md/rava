@@ -87,6 +87,9 @@ pub struct IcEntry {
 pub struct IcCell {
     pub entry: std::sync::atomic::AtomicPtr<IcEntry>,
     misses: std::sync::atomic::AtomicU32,
+    /// The first two receiver classes the site saw, and whether it saw more (type profile).
+    seen: [std::sync::atomic::AtomicUsize; 2],
+    more: std::sync::atomic::AtomicBool,
 }
 
 pub(super) const IC_MAX_UPDATES: u32 = 4;
@@ -100,6 +103,27 @@ impl IcCell {
         (k != 0 && self.misses.load(Ordering::Relaxed) <= 1).then_some(k)
     }
 
+    /// The receiver classes seen, when there were at most two.
+    pub(super) fn receivers(&self) -> Option<Vec<usize>> {
+        use std::sync::atomic::Ordering;
+        if self.more.load(Ordering::Relaxed) {
+            return None;
+        }
+        Some(self.seen.iter().map(|s| s.load(Ordering::Relaxed)).filter(|&k| k != 0).collect())
+    }
+
+    fn note(&self, k: usize) {
+        use std::sync::atomic::Ordering;
+        for s in &self.seen {
+            match s.compare_exchange(0, k, Ordering::Relaxed, Ordering::Relaxed) {
+                Ok(_) => return,
+                Err(cur) if cur == k => return,
+                Err(_) => {}
+            }
+        }
+        self.more.store(true, Ordering::Relaxed);
+    }
+
     pub(super) fn misses_offset() -> i32 {
         std::mem::offset_of!(IcCell, misses) as i32
     }
@@ -109,6 +133,8 @@ impl IcCell {
         Box::leak(Box::new(IcCell {
             entry: std::sync::atomic::AtomicPtr::new(&EMPTY as *const IcEntry as *mut IcEntry),
             misses: std::sync::atomic::AtomicU32::new(0),
+            seen: Default::default(),
+            more: Default::default(),
         }))
     }
 }
@@ -118,6 +144,7 @@ pub extern "sysv64" fn ic_miss(k: *const Klass, m: *const Method, cell: *const I
     let target = select(k, m);
     // SAFETY: the cell is leaked and owned by one call site.
     let cell = unsafe { &*cell };
+    cell.note(k as usize);
     use std::sync::atomic::Ordering;
     // Megamorphic sites stop counting, so they do not keep writing a shared line.
     if !target.is_null() && cell.misses.load(Ordering::Relaxed) < IC_MAX_UPDATES && cell.misses.fetch_add(1, Ordering::Relaxed) < IC_MAX_UPDATES {
