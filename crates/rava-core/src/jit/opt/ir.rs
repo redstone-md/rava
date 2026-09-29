@@ -6,6 +6,7 @@
 //! the values of every local and operand-stack slot of each scope (the method and the callers
 //! inlined around it).
 
+use crate::jit::intrinsics::Intrinsic;
 use crate::klass::Klass;
 use crate::method::Method;
 use crate::types::BasicType;
@@ -116,6 +117,9 @@ pub enum Inst {
     InstanceOf(V, &'static Klass),
     /// `aastore`'s check that the value fits the array's element type.
     StoreCheck(V, V, Rc<State>),
+    /// A JDK method compiled in place, with the state to deoptimize to (at the call) when it
+    /// has cases it does not handle.
+    Intrinsic(Intrinsic, Vec<V>, Option<Rc<State>>),
 }
 
 impl Inst {
@@ -124,7 +128,7 @@ impl Inst {
         match self {
             Inst::NullCheck(_, s) | Inst::ZeroCheck(_, s) | Inst::BoundsCheck(_, _, s) | Inst::InitCheck(_, s) => Some(s),
             Inst::Call(_, _, s) | Inst::New(_, s) | Inst::NewArray(_, _, s) => Some(s),
-            Inst::CheckCast(_, _, s) | Inst::StoreCheck(_, _, s) => Some(s),
+            Inst::CheckCast(_, _, s) | Inst::StoreCheck(_, _, s) | Inst::Intrinsic(_, _, Some(s)) => Some(s),
             _ => None,
         }
     }
@@ -133,7 +137,7 @@ impl Inst {
     pub fn inputs(&self) -> Vec<V> {
         match self {
             Inst::Param(_) | Inst::Const(_) | Inst::LoadStatic(..) | Inst::InitCheck(..) | Inst::New(..) => vec![],
-            Inst::Phi(v) | Inst::Call(_, v, _) => v.clone(),
+            Inst::Phi(v) | Inst::Call(_, v, _) | Inst::Intrinsic(_, v, _) => v.clone(),
             Inst::Neg(a) | Inst::Convert(_, a) | Inst::NullCheck(a, _) | Inst::ZeroCheck(a, _) | Inst::ArrayLength(a) => vec![*a],
             Inst::LoadField(a, ..) | Inst::StoreStatic(_, _, a) | Inst::NewArray(_, a, _) => vec![*a],
             Inst::CheckCast(a, ..) | Inst::InstanceOf(a, _) => vec![*a],
@@ -195,10 +199,12 @@ pub struct Block {
     pub insts: Vec<V>,
     pub term: Term,
     pub preds: Vec<B>,
-    /// The first bytecode index of the block (for OSR and handler entry: -1 for none).
+    /// The first bytecode index of the block in its method (-1 for none).
     pub bci: i32,
     /// Loop header: some predecessor comes later in bytecode order.
     pub loop_header: bool,
+    /// Position in code order (blocks are laid out in the order they are built).
+    pub order: u32,
 }
 
 pub struct Value {
@@ -214,7 +220,7 @@ pub struct Graph {
 
 impl Graph {
     pub fn new_block(&mut self, bci: i32) -> B {
-        self.blocks.push(Block { insts: Vec::new(), term: Term::None, preds: Vec::new(), bci, loop_header: false });
+        self.blocks.push(Block { insts: Vec::new(), term: Term::None, preds: Vec::new(), bci, loop_header: false, order: u32::MAX });
         self.blocks.len() as B - 1
     }
 

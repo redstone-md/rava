@@ -12,7 +12,7 @@ use crate::method::Method;
 use crate::types::BasicType;
 use std::mem::offset_of;
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub(super) enum Intrinsic {
     /// `roundsd` with the given rounding mode (floor 1, ceil 2, rint 0).
     Round(u8),

@@ -14,17 +14,17 @@ const ARRAY_ELEMS: [BasicType; 8] =
 
 impl Builder {
     fn u2(&self, pc: usize) -> u16 {
-        u16::from_be_bytes([self.code[pc + 1], self.code[pc + 2]])
+        u16::from_be_bytes([self.sc.code[pc + 1], self.sc.code[pc + 2]])
     }
 
     fn resolved(&self, index: u16) -> Option<Resolved> {
-        self.m.holder.resolved[index as usize].get().copied()
+        self.sc.m.holder.resolved[index as usize].get().copied()
     }
 
     /// Builds the instruction at `pc`: `Some(true)` to continue with the next one, `Some(false)`
     /// once it ended the block, `None` if it is not supported.
     pub(super) fn build_insn(&mut self, pc: usize) -> Option<bool> {
-        let op = self.code[pc];
+        let op = self.sc.code[pc];
         match op {
             0x00 => {}
             0x01 => self.push_const(Ty::A, 0),
@@ -32,10 +32,10 @@ impl Builder {
             0x09 | 0x0a => self.push_const(Ty::J, (op - 0x09) as i64),
             0x0b..=0x0d => self.push_const(Ty::F, ((op - 0x0b) as f32).to_bits() as i64),
             0x0e | 0x0f => self.push_const(Ty::D, ((op - 0x0e) as f64).to_bits() as i64),
-            0x10 => self.push_const(Ty::I, self.code[pc + 1] as i8 as i64),
-            0x11 => self.push_const(Ty::I, i2(self.code, pc + 1) as i64),
+            0x10 => self.push_const(Ty::I, self.sc.code[pc + 1] as i8 as i64),
+            0x11 => self.push_const(Ty::I, i2(self.sc.code, pc + 1) as i64),
             0x12..=0x14 => self.ldc(pc)?,
-            0x15..=0x19 => self.load_local(self.code[pc + 1] as usize),
+            0x15..=0x19 => self.load_local(self.sc.code[pc + 1] as usize),
             0x1a..=0x2d => self.load_local(((op - 0x1a) % 4) as usize),
             0x2e..=0x35 => {
                 let s = self.state();
@@ -46,20 +46,20 @@ impl Builder {
                 let v = self.add(Inst::LoadIndexed(arr, idx, bt), Ty::of(bt));
                 self.push(v);
             }
-            0x36..=0x3a => self.store_local(self.code[pc + 1] as usize),
+            0x36..=0x3a => self.store_local(self.sc.code[pc + 1] as usize),
             0x3b..=0x4e => self.store_local(((op - 0x3b) % 4) as usize),
             0x4f..=0x56 => self.array_store(op),
             0x57 => {
-                self.stack.pop();
+                self.sc.stack.pop();
             }
             0x58 => {
-                self.stack.pop();
-                self.stack.pop();
+                self.sc.stack.pop();
+                self.sc.stack.pop();
             }
             0x59..=0x5f => self.shuffle(op),
             0x60..=0x83 => self.arith(op)?,
             0x84 => {
-                let (n, delta) = (self.code[pc + 1] as usize, self.code[pc + 2] as i8 as i64);
+                let (n, delta) = (self.sc.code[pc + 1] as usize, self.sc.code[pc + 2] as i8 as i64);
                 self.iinc(n, delta);
             }
             0x85..=0x93 => {
@@ -83,7 +83,7 @@ impl Builder {
                 return Some(false);
             }
             0xa7 | 0xc8 => {
-                let off = if op == 0xa7 { i2(self.code, pc + 1) as i32 } else { i4(self.code, pc + 1) };
+                let off = if op == 0xa7 { i2(self.sc.code, pc + 1) as i32 } else { i4(self.sc.code, pc + 1) };
                 self.goto((pc as i64 + off as i64) as usize);
                 return Some(false);
             }
@@ -91,17 +91,20 @@ impl Builder {
                 self.switch(pc, op);
                 return Some(false);
             }
-            0xac..=0xb0 => {
-                let v = self.pop();
-                self.g.blocks[self.cur as usize].term = Term::Return(Some(v));
-                return Some(false);
-            }
-            0xb1 => {
-                self.g.blocks[self.cur as usize].term = Term::Return(None);
+            0xac..=0xb1 => {
+                let v = (op != 0xb1).then(|| self.pop());
+                match self.sc.cont {
+                    Some(k) => self.inline_return(k, v),
+                    None => self.g.blocks[self.cur as usize].term = Term::Return(v),
+                }
                 return Some(false);
             }
             0xb2..=0xb5 => self.field(pc, op)?,
-            0xb6..=0xb9 => self.invoke(pc, op)?,
+            0xb6..=0xb9 => {
+                if !self.invoke(pc, op)? {
+                    return Some(false);
+                }
+            }
             0xbb => {
                 let Some(Resolved::Class(k)) = self.resolved(self.u2(pc)) else { return None };
                 if k.access & (ACC_ABSTRACT | ACC_INTERFACE) != 0 {
@@ -115,7 +118,7 @@ impl Builder {
             0xbc | 0xbd => {
                 let vm = crate::vm::vm();
                 let k = if op == 0xbc {
-                    BasicType::from_newarray_code(self.code[pc + 1]).and_then(|t| vm.primitive_array_class(t).ok())?
+                    BasicType::from_newarray_code(self.sc.code[pc + 1]).and_then(|t| vm.primitive_array_class(t).ok())?
                 } else {
                     let Some(Resolved::Class(e)) = self.resolved(self.u2(pc)) else { return None };
                     vm.array_class_of(e).ok()?
@@ -144,11 +147,11 @@ impl Builder {
                 self.push(r);
             }
             0xc4 => {
-                let n = u16::from_be_bytes([self.code[pc + 2], self.code[pc + 3]]) as usize;
-                match self.code[pc + 1] {
+                let n = u16::from_be_bytes([self.sc.code[pc + 2], self.sc.code[pc + 3]]) as usize;
+                match self.sc.code[pc + 1] {
                     0x15..=0x19 => self.load_local(n),
                     0x36..=0x3a => self.store_local(n),
-                    0x84 => self.iinc(n, i2(self.code, pc + 4) as i64),
+                    0x84 => self.iinc(n, i2(self.sc.code, pc + 4) as i64),
                     _ => return None,
                 }
             }
@@ -163,8 +166,8 @@ impl Builder {
     }
 
     fn ldc(&mut self, pc: usize) -> Option<()> {
-        let index = if self.code[pc] == 0x12 { self.code[pc + 1] as u16 } else { self.u2(pc) };
-        let (ty, bits) = match self.cf.pool[index as usize] {
+        let index = if self.sc.code[pc] == 0x12 { self.sc.code[pc + 1] as u16 } else { self.u2(pc) };
+        let (ty, bits) = match self.sc.cf.pool[index as usize] {
             Cp::Int(v) => (Ty::I, v as i64),
             Cp::Float(v) => (Ty::F, v.to_bits() as i64),
             Cp::Long(v) => (Ty::J, v),
@@ -184,9 +187,9 @@ impl Builder {
     }
 
     fn iinc(&mut self, n: usize, delta: i64) {
-        let v = self.locals[n].expect("iinc of an assigned local");
+        let v = self.sc.locals[n].expect("iinc of an assigned local");
         let c = self.konst(Ty::I, delta);
-        self.locals[n] = Some(self.add(Inst::Bin(BinOp::Add, v, c), Ty::I));
+        self.sc.locals[n] = Some(self.add(Inst::Bin(BinOp::Add, v, c), Ty::I));
     }
 
     fn array_store(&mut self, op: u8) {
@@ -213,9 +216,9 @@ impl Builder {
             0x5e => (4, &[2, 3, 0, 1, 2, 3]),
             _ => (2, &[1, 0]),
         };
-        let top: Vec<Option<V>> = self.stack.split_off(self.stack.len() - take);
+        let top: Vec<Option<V>> = self.sc.stack.split_off(self.sc.stack.len() - take);
         for &i in order {
-            self.stack.push(top[i]);
+            self.sc.stack.push(top[i]);
         }
     }
 
@@ -256,8 +259,8 @@ impl Builder {
     }
 
     fn branch(&mut self, pc: usize, op: u8) {
-        let target = (pc as i64 + i2(self.code, pc + 1) as i64) as usize;
-        let next = pc + insn_len(self.code, pc);
+        let target = (pc as i64 + i2(self.sc.code, pc + 1) as i64) as usize;
+        let next = pc + insn_len(self.sc.code, pc);
         let (cmp, ty, a, b) = match op {
             0x99..=0x9e => {
                 let a = self.pop();
@@ -290,16 +293,16 @@ impl Builder {
         let rel = |off: i32| (pc as i64 + off as i64) as usize;
         let mut cases = Vec::new();
         if op == 0xaa {
-            let (low, high) = (i4(self.code, p + 4), i4(self.code, p + 8));
+            let (low, high) = (i4(self.sc.code, p + 4), i4(self.sc.code, p + 8));
             for (i, k) in (low..=high).enumerate() {
-                cases.push((k, rel(i4(self.code, p + 12 + 4 * i))));
+                cases.push((k, rel(i4(self.sc.code, p + 12 + 4 * i))));
             }
         } else {
-            for i in 0..i4(self.code, p + 4) as usize {
-                cases.push((i4(self.code, p + 8 + 8 * i), rel(i4(self.code, p + 12 + 8 * i))));
+            for i in 0..i4(self.sc.code, p + 4) as usize {
+                cases.push((i4(self.sc.code, p + 8 + 8 * i), rel(i4(self.sc.code, p + 12 + 8 * i))));
             }
         }
-        let default = self.block_at(rel(i4(self.code, p)));
+        let default = self.block_at(rel(i4(self.sc.code, p)));
         let mut targets: Vec<B> = cases.iter().map(|c| self.block_at(c.1)).chain(std::iter::once(default)).collect();
         targets.sort_unstable();
         targets.dedup();
@@ -349,7 +352,8 @@ impl Builder {
         Some(())
     }
 
-    fn invoke(&mut self, pc: usize, op: u8) -> Option<()> {
+    /// Returns whether the current block continues after the call.
+    fn invoke(&mut self, pc: usize, op: u8) -> Option<bool> {
         let Resolved::Method(m) = self.resolved(self.u2(pc))? else { return None };
         if m.is_signature_polymorphic() || (op == 0xb8) != m.is_static() {
             return None;
@@ -366,20 +370,24 @@ impl Builder {
                 self.init_check(m.holder, &pre);
                 Callee::Direct(m)
             }
-            0xb7 => Callee::Direct(crate::interp::special_target(self.m.holder, m)),
+            0xb7 => Callee::Direct(crate::interp::special_target(self.sc.m.holder, m)),
             _ if m.is_private() || m.access & ACC_FINAL != 0 || m.holder.access & ACC_FINAL != 0 => Callee::Direct(m),
             0xb6 if m.vtable_index() >= 0 && !m.holder.is_interface() => Callee::Virtual(m),
             _ => Callee::Interface(m),
         };
         if op != 0xb8 {
-            self.add(Inst::NullCheck(args[0], pre), Ty::A);
+            self.add(Inst::NullCheck(args[0], pre.clone()), Ty::A);
         }
-        let ret = m.sig.ret;
-        let v = self.add(Inst::Call(callee, args, s), if ret == BasicType::Void { Ty::I } else { Ty::of(ret) });
-        if ret != BasicType::Void {
-            self.push(v);
+        if let (0xb6 | 0xb8, Some(k)) = (op, crate::jit::intrinsics::intrinsic(m)) {
+            let ret = m.sig.ret;
+            let s = matches!(k, crate::jit::intrinsics::Intrinsic::GetClass).then_some(pre);
+            let v = self.add(Inst::Intrinsic(k, args, s), if ret == BasicType::Void { Ty::I } else { Ty::of(ret) });
+            if ret != BasicType::Void {
+                self.push(v);
+            }
+            return Some(true);
         }
-        Some(())
+        Some(self.call_or_inline(pc, op, m, callee, args, s))
     }
 }
 

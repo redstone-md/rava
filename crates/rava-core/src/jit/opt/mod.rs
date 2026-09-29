@@ -5,9 +5,11 @@
 mod build;
 mod build_ops;
 mod codegen;
+mod codegen_intr;
 mod codegen_obj;
 mod codegen_ops;
 mod deopt;
+mod inline;
 mod ir;
 mod moves;
 mod regalloc;
@@ -36,14 +38,14 @@ pub fn compile(m: &'static Method) -> Option<CompiledMethod> {
         return None;
     }
     let log = std::env::var_os("RAVA_CORE_OPT_LOG").is_some();
-    let Some(g) = build::build(m) else {
+    let Some((g, extent)) = build::build(m) else {
         if log {
             eprintln!("[opt] refused {m}");
         }
         return None;
     };
     let al = regalloc::allocate(&g);
-    let (code, frame_slots) = codegen::generate(&g, &al, m);
+    let code = codegen::generate(&g, &al, m, extent);
     let entry = code_cache::install(&code);
     code_cache::perf_map(entry, code.len(), &m.to_string());
     if log {
@@ -54,5 +56,5 @@ pub fn compile(m: &'static Method) -> Option<CompiledMethod> {
         let _ = std::fs::write(&file, &code);
         eprintln!("[opt-dump] {m} -> {file}");
     }
-    Some(CompiledMethod { entry, unresolved_deferrals: Default::default(), size: code.len(), blocks: Vec::new(), frame_slots, tier: 2 })
+    Some(CompiledMethod { entry, unresolved_deferrals: Default::default(), size: code.len(), blocks: Vec::new(), frame_slots: extent as usize, tier: 2 })
 }
