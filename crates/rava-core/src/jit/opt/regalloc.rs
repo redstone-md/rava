@@ -50,25 +50,31 @@ impl Set {
     }
 }
 
-/// Every value a state reads, callers included.
-pub fn state_values(s: &State, out: &mut Vec<V>) {
-    out.extend(s.locals.iter().chain(s.stack.iter()).flatten());
+/// Every value a state reads, callers included (aliases resolved).
+pub fn state_values(g: &Graph, s: &State, out: &mut Vec<V>) {
+    out.extend(s.locals.iter().chain(s.stack.iter()).flatten().map(|&v| g.resolve(v)));
     if let Some(c) = &s.caller {
-        state_values(c, out);
+        state_values(g, c, out);
     }
 }
 
-/// The input phi `p` of block `to` takes along the edge from `from`.
+/// The values an instruction reads, aliases resolved.
+fn inputs(g: &Graph, inst: &Inst) -> Vec<V> {
+    inst.inputs().into_iter().map(|v| g.resolve(v)).collect()
+}
+
+/// The input phi `p` of block `to` takes along the edge from `from` (alias resolved).
 pub fn phi_input(g: &Graph, p: V, from: B, to: B) -> V {
     let i = g.blocks[to as usize].preds.iter().position(|&b| b == from).expect("edge into the phi's block");
     match g.inst(p) {
-        Inst::Phi(inputs) => inputs[i],
+        Inst::Phi(inputs) => g.resolve(inputs[i]),
         _ => unreachable!("not a phi"),
     }
 }
 
+/// The phis of block `b` that are not aliases of another value.
 pub fn phis(g: &Graph, b: B) -> impl Iterator<Item = V> + '_ {
-    g.blocks[b as usize].insts.iter().copied().take_while(move |&v| matches!(g.inst(v), Inst::Phi(_)))
+    g.blocks[b as usize].insts.iter().copied().take_while(move |&v| matches!(g.inst(v), Inst::Phi(_))).filter(move |&v| g.resolve(v) == v)
 }
 
 struct Intervals {
@@ -131,14 +137,17 @@ pub fn allocate(g: &Graph) -> Allocation {
         let mut sv = Vec::new();
         for &v in &blk.insts {
             let p = pos[v as usize];
+            if g.resolve(v) != v {
+                continue;
+            }
             iv.touch(v, if matches!(g.inst(v), Inst::Phi(_)) { from } else { p });
             let inst = g.inst(v);
             if !matches!(inst, Inst::Phi(_)) {
-                inst.inputs().into_iter().for_each(|u| iv.used_at(u, p));
+                inputs(g, inst).into_iter().for_each(|u| iv.used_at(u, p));
             }
             if let Some(s) = inst.state() {
                 sv.clear();
-                state_values(s, &mut sv);
+                state_values(g, s, &mut sv);
                 let at = if matches!(inst, Inst::Call(..)) { p + 1 } else { p };
                 sv.iter().for_each(|&u| iv.used_at(u, at));
             }
@@ -146,15 +155,18 @@ pub fn allocate(g: &Graph) -> Allocation {
                 iv.calls.push(p);
             }
         }
-        blk.term.inputs().into_iter().for_each(|u| iv.used_at(u, to - 1));
+        blk.term.inputs().into_iter().for_each(|u| iv.used_at(g.resolve(u), to - 1));
         if let Term::Deopt(s) = &blk.term {
             sv.clear();
-            state_values(s, &mut sv);
+            state_values(g, s, &mut sv);
             sv.iter().for_each(|&u| iv.used_at(u, to - 1));
         }
     }
     iv.calls.sort_unstable();
-    let (loc, spill_slots) = scan(g, &iv);
+    let (mut loc, spill_slots) = scan(g, &iv);
+    for v in 0..g.values.len() as V {
+        loc[v as usize] = loc[g.resolve(v) as usize];
+    }
     Allocation { loc, order, spill_slots }
 }
 
@@ -174,22 +186,22 @@ fn liveness(g: &Graph, order: &[B]) -> Vec<Set> {
                     live.insert(phi_input(g, ph, b, s));
                 }
             }
-            blk.term.inputs().into_iter().for_each(|u| live.insert(u));
+            blk.term.inputs().into_iter().for_each(|u| live.insert(g.resolve(u)));
             if let Term::Deopt(s) = &blk.term {
                 sv.clear();
-                state_values(s, &mut sv);
+                state_values(g, s, &mut sv);
                 sv.iter().for_each(|&u| live.insert(u));
             }
             for &v in blk.insts.iter().rev() {
                 live.remove(v);
                 let inst = g.inst(v);
-                if matches!(inst, Inst::Phi(_)) {
+                if matches!(inst, Inst::Phi(_)) || g.resolve(v) != v {
                     continue;
                 }
-                inst.inputs().into_iter().for_each(|u| live.insert(u));
+                inputs(g, inst).into_iter().for_each(|u| live.insert(u));
                 if let Some(s) = inst.state() {
                     sv.clear();
-                    state_values(s, &mut sv);
+                    state_values(g, s, &mut sv);
                     sv.iter().for_each(|&u| live.insert(u));
                 }
             }
