@@ -19,25 +19,31 @@ pub fn initialize(t: &mut Thread, k: &'static Klass) -> JResult<()> {
 
 fn initialize_slow(t: &mut Thread, k: &'static Klass) -> JResult<()> {
     let me = std::thread::current().id();
-    {
+    loop {
         let mut owner = k.init.owner.lock().unwrap();
-        loop {
-            match k.init.state() {
-                InitState::Initialized => return Ok(()),
-                InitState::BeingInitialized if *owner == Some(me) => return Ok(()),
-                InitState::BeingInitialized => {
-                    owner = crate::gc::safepoint::blocking(t, || k.init.cv.wait(owner).unwrap())
-                }
-                InitState::Erroneous => {
-                    let msg = format!("Could not initialize class {}", k.name.as_str().replace('/', "."));
-                    drop(owner);
-                    return Err(throw_new(t, "java/lang/NoClassDefFoundError", &msg));
-                }
-                InitState::Linked => {
-                    k.init.set(InitState::BeingInitialized);
-                    *owner = Some(me);
-                    break;
-                }
+        match k.init.state() {
+            InitState::Initialized => return Ok(()),
+            InitState::BeingInitialized if *owner == Some(me) => return Ok(()),
+            InitState::BeingInitialized => {
+                // Wait in the native state, and without the lock once back: a thread stopped at a
+                // safepoint must not hold a lock a running thread could be waiting for.
+                drop(owner);
+                crate::gc::safepoint::blocking(t, || {
+                    let mut owner = k.init.owner.lock().unwrap();
+                    while k.init.state() == InitState::BeingInitialized && *owner != Some(me) {
+                        owner = k.init.cv.wait(owner).unwrap();
+                    }
+                });
+            }
+            InitState::Erroneous => {
+                let msg = format!("Could not initialize class {}", k.name.as_str().replace('/', "."));
+                drop(owner);
+                return Err(throw_new(t, "java/lang/NoClassDefFoundError", &msg));
+            }
+            InitState::Linked => {
+                k.init.set(InitState::BeingInitialized);
+                *owner = Some(me);
+                break;
             }
         }
     }
