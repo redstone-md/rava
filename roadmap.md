@@ -29,6 +29,19 @@ exception order therefore remains unproved, and the builder subgraph's CPU share
 is unmeasured. Do not implement speculative parallel initialization. No
 qualifying full-boot path has been found under the retained constraints.
 
+### 2026-09-29: focused builder attribution does not license a runtime change
+
+Added opt-in `RAVA_PROF_FOCUS_CLASS` and `RAVA_PROF_DUMP_OPS` reporting;
+periodic output remains gated by `RAVA_HEARTBEAT`, leaving the default
+safepoint path untouched. A fresh normal-JIT diagnostic boot with heartbeat
+armed produced no interpreted samples for
+`BlockBehaviour$Properties`; a fixed-interpreter probe saw only 13 ms
+(0.06% of sampled time) for that class, but timed out before `Environment:`
+after 180 s. This is not a current-PGO CPU bound or a launch comparison. It
+does not establish a builder optimization ceiling; keep the initializer
+parallelization refusal and strict no-adapt/<5 s gates unchanged.
+
+
 ### 2026-09-29: method-level PMU pricing rejects `initCache` as a wall-sized lever
 
 A fresh isolated boot of the hash-verified current PGO product reached `Done`

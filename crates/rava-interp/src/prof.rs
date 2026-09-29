@@ -77,6 +77,38 @@ pub fn tree_enabled() -> bool {
     *ON.get_or_init(|| std::env::var_os("RAVA_PROF_TREE").is_some())
 }
 
+const DEFAULT_DUMP_EVERY_OPS: u64 = 40_000_000;
+
+fn parse_dump_every_ops(raw: Option<&str>) -> u64 {
+    raw.and_then(|value| value.parse::<u64>().ok())
+        .filter(|&ops| ops >= crate::opcodes::CHECK_INTERVAL as u64)
+        .unwrap_or(DEFAULT_DUMP_EVERY_OPS)
+}
+
+/// Configure diagnostic profile reports without changing execution policy.
+pub fn dump_every_ops() -> u64 {
+    static OPS: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+    *OPS.get_or_init(|| parse_dump_every_ops(std::env::var("RAVA_PROF_DUMP_OPS").ok().as_deref()))
+}
+
+fn focus_class() -> Option<&'static str> {
+    static CLASS: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+    CLASS
+        .get_or_init(|| std::env::var("RAVA_PROF_FOCUS_CLASS").ok())
+        .as_deref()
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn profile_dump_interval_requires_at_least_one_checkpoint() {
+        assert_eq!(super::parse_dump_every_ops(Some("2000000")), 2_000_000);
+        assert_eq!(super::parse_dump_every_ops(Some("99999")), 40_000_000);
+        assert_eq!(super::parse_dump_every_ops(Some("bad")), 40_000_000);
+        assert_eq!(super::parse_dump_every_ops(None), 40_000_000);
+    }
+}
+
 // ======================================================================
 // COMPILED-AWARE WALL-CLOCK SAMPLER (fills the interp-only blind spot).
 //
@@ -377,6 +409,15 @@ pub fn dump() {
         }
         let name = st.names.get(*id as usize).map(|s| s.as_str()).unwrap_or("?");
         eprintln!("[PROF]   {:5.1}%  {}", p, name);
+    }
+    if let Some(class) = focus_class() {
+        let ns = st
+            .ids
+            .get(class)
+            .and_then(|id| st.self_by_class.get(id))
+            .copied()
+            .unwrap_or(0);
+        eprintln!("[PROF] FOCUS {class} {:.2}% ({})", pct(ns), fmt_ns(ns));
     }
 
     // ---- compiled-code wall-clock breakdown (background sampler) ----
