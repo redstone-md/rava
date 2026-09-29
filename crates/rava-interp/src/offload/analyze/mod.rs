@@ -6,6 +6,35 @@ mod arith;
 use crate::offload::*;
 pub(crate) use arith::*;
 
+#[cfg(test)]
+pub(super) fn analyze_with_effects(
+    code: &Code,
+    pool: &ConstantPool,
+    bsm: Option<&[BootstrapMethod]>,
+    relaxed: bool,
+    txn: bool,
+    is_init: bool,
+    receiver_private: bool,
+    self_class: Option<&str>,
+    iv_local: Option<usize>,
+    callee_offloadable: &mut dyn FnMut(CalleeQuery) -> bool,
+    effects: &mut dyn FnMut(crate::offload::effect_summary::EffectFact),
+) -> Result<(), OffReject> {
+    analyze(
+        code,
+        pool,
+        bsm,
+        relaxed,
+        txn,
+        is_init,
+        receiver_private,
+        self_class,
+        iv_local,
+        callee_offloadable,
+        Some(effects),
+    )
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn analyze(
     code: &Code,
@@ -18,6 +47,7 @@ pub(crate) fn analyze(
     self_class: Option<&str>,
     iv_local: Option<usize>,
     callee_offloadable: &mut dyn FnMut(CalleeQuery) -> bool,
+    #[cfg(test)] mut effects: Option<&mut dyn FnMut(crate::offload::effect_summary::EffectFact)>,
 ) -> Result<(), OffReject> {
     // `this` (local 0) is a writable-private slot when this is a constructor (the object is
     // under construction) OR the fork context guarantees a distinct per-iteration receiver.
@@ -273,6 +303,14 @@ pub(crate) fn analyze(
                 pop!(); // value
                 let idx = pop!(); // index
                 let arr = pop!();
+                #[cfg(test)]
+                if let Some(observer) = effects.as_deref_mut() {
+                    observer(crate::offload::effect_summary::EffectFact::ArrayStore {
+                        pc,
+                        target: crate::offload::effect_summary::target_freshness(arr),
+                        index_partitioned: matches!(idx, F::Iv),
+                    });
+                }
                 // An `arr[iv]` write is index-partitioned — distinct across the counted loop's
                 // distinct iv values → disjoint → safe even on a SHARED array. Otherwise the
                 // array must be private (Fresh/This).
@@ -284,6 +322,14 @@ pub(crate) fn analyze(
                 popn!(2); // wide value
                 let idx = pop!(); // index
                 let arr = pop!();
+                #[cfg(test)]
+                if let Some(observer) = effects.as_deref_mut() {
+                    observer(crate::offload::effect_summary::EffectFact::ArrayStore {
+                        pc,
+                        target: crate::offload::effect_summary::target_freshness(arr),
+                        index_partitioned: matches!(idx, F::Iv),
+                    });
+                }
                 if !relaxed && !matches!(idx, F::Iv) && !matches!(arr, F::Fresh(_) | F::This) {
                     return Err(OffReject::SharedWrite(pc, op));
                 }
@@ -338,6 +384,8 @@ pub(crate) fn analyze(
                     txn,
                     self_class,
                     callee_offloadable,
+                    #[cfg(test)]
+                    &mut effects,
                 )?;
             }
         }

@@ -170,6 +170,8 @@ pub(crate) fn method_offloadable_given(
         None,
         None,
         callee_offloadable,
+        #[cfg(test)]
+        None,
     )
     .is_ok()
 }
@@ -203,6 +205,8 @@ pub(crate) fn method_offloadable_forked(
         self_class,
         None,
         callee_offloadable,
+        #[cfg(test)]
+        None,
     )
     .is_ok()
 }
@@ -228,6 +232,8 @@ pub(crate) fn method_offloadable_reason(
         None,
         None,
         callee_offloadable,
+        #[cfg(test)]
+        None,
     )
     .err()
 }
@@ -254,6 +260,8 @@ pub(crate) fn method_offloadable_reason_forked(
         self_class,
         None,
         callee_offloadable,
+        #[cfg(test)]
+        None,
     )
     .err()
 }
@@ -301,6 +309,8 @@ pub(crate) fn method_field_txn_safe_given(
         None,
         None,
         callee_offloadable,
+        #[cfg(test)]
+        None,
     )
     .is_ok()
 }
@@ -325,6 +335,8 @@ pub(crate) fn method_field_txn_safe_reason(
         None,
         None,
         callee_offloadable,
+        #[cfg(test)]
+        None,
     )
     .err()
 }
@@ -356,6 +368,8 @@ pub(crate) fn counted_loop_offloadable(
         None,
         Some(iv_local),
         callee_offloadable,
+        #[cfg(test)]
+        None,
     )
     .is_ok()
 }
@@ -380,6 +394,8 @@ pub(crate) fn counted_loop_offloadable_reason(
         None,
         Some(iv_local),
         &mut |_: CalleeQuery| true,
+        #[cfg(test)]
+        None,
     ) {
         Ok(()) => "ok".to_string(),
         Err(e) => e.to_string(),

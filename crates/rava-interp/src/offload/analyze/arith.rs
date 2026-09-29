@@ -20,6 +20,7 @@ pub(crate) fn arith_or_reject(
     txn: bool,
     self_class: Option<&str>,
     callee: &mut dyn FnMut(CalleeQuery) -> bool,
+    #[cfg(test)] effects: &mut Option<&mut dyn FnMut(crate::offload::effect_summary::EffectFact)>,
 ) -> Result<(), OffReject> {
     macro_rules! pop1 {
         () => {
@@ -34,6 +35,20 @@ pub(crate) fn arith_or_reject(
             for _ in 0..$n {
                 stack.push(F::Shared);
             }
+        };
+    }
+    #[cfg(test)]
+    macro_rules! check_callee {
+        ($query:expr) => {{
+            let query = $query;
+            crate::offload::effect_summary::observe_query(effects, pc, query);
+            callee(query)
+        }};
+    }
+    #[cfg(not(test))]
+    macro_rules! check_callee {
+        ($query:expr) => {
+            callee($query)
         };
     }
     match op {
@@ -147,6 +162,8 @@ pub(crate) fn arith_or_reject(
         // fields
         0xb2 => {
             // getstatic: push the field width (Shared).
+            #[cfg(test)]
+            crate::offload::effect_summary::observe_field(effects, bc, pc, op, pool, None);
             let w = field_width(pool, u16be(bc, pc + 1));
             if txn {
                 // FieldTxn mode: a static read reads state the txn cannot journal
@@ -156,10 +173,16 @@ pub(crate) fn arith_or_reject(
             }
             push_shared!(w);
         }
-        0xb3 => return Err(OffReject::Opcode(pc, op)), // putstatic — always shared
+        0xb3 => {
+            #[cfg(test)]
+            crate::offload::effect_summary::observe_field(effects, bc, pc, op, pool, None);
+            return Err(OffReject::Opcode(pc, op)); // putstatic — always shared
+        }
         0xb4 => {
             // getfield: pop objref, push field width (Shared).
             let recv = pop1!();
+            #[cfg(test)]
+            crate::offload::effect_summary::observe_field(effects, bc, pc, op, pool, Some(recv));
             if txn && !matches!(recv, F::Fresh(_) | F::This) {
                 // FieldTxn mode: reading a SHARED object's field is a shared
                 // read the txn cannot journal. Fresh/owned `this` receivers
@@ -177,6 +200,8 @@ pub(crate) fn arith_or_reject(
                 pop1!();
             }
             let obj = pop1!();
+            #[cfg(test)]
+            crate::offload::effect_summary::observe_field(effects, bc, pc, op, pool, Some(obj));
             // M3 COW RELAX: under RAVA_FORK_COW a putfield to a SHARED object is no longer
             // a hopeless publish — the compiled/interp field hooks redirect the worker's
             // write to its thread-local shadow (inc 1/2), so it neither races nor escapes.
@@ -215,6 +240,8 @@ pub(crate) fn arith_or_reject(
             }
             let recv = if is_static { F::Shared } else { pop1!() };
             let recv_private = matches!(recv, F::Fresh(_) | F::This);
+            #[cfg(test)]
+            crate::offload::effect_summary::observe_call(effects, pc, op, &m, recv);
             // GILFREE-RINGS: a SAM invoke on a STILL-FRESH lambda dispatches to
             // exactly the indy site's impl handle (rava's indy service links that
             // handle) — query the impl instead of the unenumerable functional-
@@ -225,8 +252,8 @@ pub(crate) fn arith_or_reject(
                 if let F::Lambda(site_idx) = recv {
                     if let Some((kind, io, inm, id)) = lmf_indy_impl(pool, bsm, site_idx) {
                         let ok = match kind {
-                            6 | 7 => callee(CalleeQuery::exact(io, inm, id)),
-                            _ => callee(CalleeQuery::closure(io, inm, id)),
+                            6 | 7 => check_callee!(CalleeQuery::exact(io, inm, id)),
+                            _ => check_callee!(CalleeQuery::closure(io, inm, id)),
                         };
                         if !ok {
                             return Err(OffReject::Callee(format!("{io}.{inm} (lambda impl)")));
@@ -279,18 +306,19 @@ pub(crate) fn arith_or_reject(
                 !txn && crate::native_contract::receiver_mut_contract(o, m.name).is_some()
             };
             let ok = if is_static {
-                callee(CalleeQuery::exact(m.owner, m.name, m.descriptor))
+                check_callee!(CalleeQuery::exact(m.owner, m.name, m.descriptor))
             } else if is_special {
-                (recv_mut_ok(m.owner) && (relaxed || recv_private)) || callee(exact_q(m.owner))
+                (recv_mut_ok(m.owner) && (relaxed || recv_private))
+                    || check_callee!(exact_q(m.owner))
             } else if let Some(c) = devirt {
-                (recv_mut_ok(c) && (relaxed || recv_private)) || callee(exact_q(c))
+                (recv_mut_ok(c) && (relaxed || recv_private)) || check_callee!(exact_q(c))
             } else if relaxed && !txn {
                 // Ceiling probe (diagnostic upper bound only): keep the historical
                 // owner-based acceptance so the GAP metric stays comparable.
                 crate::native_contract::receiver_mut_contract(m.owner, m.name).is_some()
-                    || callee(CalleeQuery::exact(m.owner, m.name, m.descriptor))
+                    || check_callee!(CalleeQuery::exact(m.owner, m.name, m.descriptor))
             } else {
-                callee(CalleeQuery::closure(m.owner, m.name, m.descriptor))
+                check_callee!(CalleeQuery::closure(m.owner, m.name, m.descriptor))
             };
             if !ok {
                 // Carry the DESCRIPTOR too: the diagnostic walker re-resolves this
@@ -327,6 +355,8 @@ pub(crate) fn arith_or_reject(
             // natively (no guest re-entry). The value is tracked as F::Lambda(idx)
             // so a SAM invoke on it devirtualises to the site's exact impl handle.
             if lmf_indy_impl(pool, bsm, idx).is_some() {
+                #[cfg(test)]
+                crate::offload::effect_summary::observe_dynamic(effects, pc, true);
                 let (_b, _n, site_desc) =
                     pool.invoke_dynamic(idx).ok_or(OffReject::Opcode(pc, op))?;
                 let (arg_slots, _ret) = desc_slots(site_desc);
@@ -337,11 +367,15 @@ pub(crate) fn arith_or_reject(
                 return Ok(());
             }
             let Some(site_desc) = concat_indy_desc(pool, bsm, idx) else {
+                #[cfg(test)]
+                crate::offload::effect_summary::observe_dynamic(effects, pc, false);
                 return Err(OffReject::Opcode(pc, op)); // non-concat / unresolvable indy
             };
+            #[cfg(test)]
+            crate::offload::effect_summary::observe_dynamic(effects, pc, true);
             for t in ref_param_types(site_desc) {
                 if t != "java/lang/String"
-                    && !callee(CalleeQuery::closure(t, "toString", "()Ljava/lang/String;"))
+                    && !check_callee!(CalleeQuery::closure(t, "toString", "()Ljava/lang/String;"))
                 {
                     return Err(OffReject::Callee(format!("{t}.toString (concat arg)")));
                 }
@@ -369,6 +403,13 @@ pub(crate) fn arith_or_reject(
         // heights into the next block).
         0xbf => {
             let thrown = pop1!();
+            #[cfg(test)]
+            if let Some(observer) = effects.as_deref_mut() {
+                observer(crate::offload::effect_summary::EffectFact::Throw {
+                    pc,
+                    target: crate::offload::effect_summary::target_freshness(thrown),
+                });
+            }
             if !relaxed && !matches!(thrown, F::Fresh(_)) {
                 return Err(OffReject::Opcode(pc, op)); // shared-athrow
             }
