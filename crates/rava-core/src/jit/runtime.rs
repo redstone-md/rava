@@ -53,7 +53,7 @@ pub extern "sysv64" fn handle_exception(t: *mut Thread, locals: *mut u64) -> usi
         t.pending = ex;
         return 0;
     };
-    let address = m.compiled().and_then(|cm| cm.address_of(handler as u32));
+    let address = m.baseline().and_then(|cm| cm.address_of(handler as u32));
     match address {
         Some(a) => {
             // SAFETY: operand slot 0 of this frame.

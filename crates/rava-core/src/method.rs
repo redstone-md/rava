@@ -28,6 +28,9 @@ pub struct Method {
     /// Current compiled code (replaced on recompilation; old code stays valid for frames still
     /// running it, since every version shares the frame layout).
     compiled: std::sync::atomic::AtomicPtr<crate::jit::CompiledMethod>,
+    /// The latest baseline-compiled code (with block entry points), which frames already
+    /// running it keep using after optimized code is installed.
+    baseline: std::sync::atomic::AtomicPtr<crate::jit::CompiledMethod>,
     pub(crate) recompiles: AtomicU32,
     /// Recompilations of optimized code after deoptimizations (`jit/opt`).
     pub(crate) deopt_recompiles: AtomicU32,
@@ -53,6 +56,7 @@ impl Method {
             backedges: AtomicU32::new(0),
             entry: AtomicUsize::new(crate::jit::interpreter_entry()),
             compiled: std::sync::atomic::AtomicPtr::new(std::ptr::null_mut()),
+            baseline: std::sync::atomic::AtomicPtr::new(std::ptr::null_mut()),
             recompiles: AtomicU32::new(0),
             deopt_recompiles: AtomicU32::new(0),
             not_compilable: std::sync::atomic::AtomicBool::new(false),
@@ -90,9 +94,18 @@ impl Method {
         unsafe { self.compiled.load(Ordering::Acquire).as_ref() }
     }
 
+    /// The latest baseline code: block entries for exception handlers and on-stack replacement.
+    pub(crate) fn baseline(&self) -> Option<&'static crate::jit::CompiledMethod> {
+        // SAFETY: published compiled methods are leaked and never freed.
+        unsafe { self.baseline.load(Ordering::Acquire).as_ref() }
+    }
+
     /// Publishes new machine code for this method.
     pub(crate) fn install(&self, cm: crate::jit::CompiledMethod) -> &'static crate::jit::CompiledMethod {
         let cm: &'static crate::jit::CompiledMethod = Box::leak(Box::new(cm));
+        if !cm.blocks.is_empty() {
+            self.baseline.store(cm as *const _ as *mut _, Ordering::Release);
+        }
         self.compiled.store(cm as *const _ as *mut _, Ordering::Release);
         self.entry.store(cm.entry, Ordering::Release);
         cm

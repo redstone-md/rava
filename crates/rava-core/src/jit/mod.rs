@@ -120,9 +120,11 @@ pub(crate) fn on_backedge(m: &'static Method, target: usize) -> Option<usize> {
     if n < OSR_THRESHOLD {
         return None;
     }
-    let cm = match m.compiled() {
-        Some(cm) => cm,
-        None => compile_now(m)?,
+    // Loops enter baseline code (optimized code has no block entries).
+    let cm = match (m.baseline(), m.compiled()) {
+        (Some(cm), _) => cm,
+        (None, None) => compile_now(m)?,
+        (None, Some(_)) => return None,
     };
     cm.address_of(target as u32)
 }
@@ -159,7 +161,8 @@ const RECOMPILE_AFTER: u32 = 64;
 const MAX_RECOMPILES: u32 = 3;
 
 pub(crate) fn note_unresolved_deferral(m: &'static Method) {
-    let Some(cm) = m.compiled() else { return };
+    // Optimized code handles such sites itself (deoptimization and recompilation).
+    let Some(cm) = m.compiled().filter(|cm| m.baseline().is_some_and(|b| std::ptr::eq(*cm, b))) else { return };
     if cm.unresolved_deferrals.fetch_add(1, Ordering::Relaxed) + 1 != RECOMPILE_AFTER {
         return;
     }
