@@ -21,10 +21,10 @@ next to `rava-interp`; the old engine stays the product until the new core boots
 | class library | the real `java.base` (and friends) bytecode, read from the JDK's `lib/modules` jimage | HotSpot's compiled code is self-contained because `java.util` is ordinary bytecode it compiles and inlines. The old engine's JDK-as-Rust design is the seam that cannot be closed. |
 | values | untyped 64-bit slots; a reference is a raw pointer | no handle table, no tag decoding on the hot path |
 | objects | 16-byte header (`klass*`, mark word), fields at fixed offsets packed by size; arrays add a 32-bit length at 16 and elements at 24 | field access is one load at a constant offset |
-| memory | non-moving heap, bump allocation in thread-local buffers, mark-sweep with **conservative** stack scanning and precise heap scanning | raw pointers stay valid across GC, so Rust natives, the interpreter and compiled code need no handles or stack maps (the JavaScriptCore approach) |
+| memory | non-moving heap of size-class pages; threads bump through runs of free cells (inline in compiled code); stop-the-world mark-sweep with **conservative** stack scanning and precise heap scanning; sweeping swaps per-page allocation/mark bitmaps and never touches dead cells | raw pointers stay valid across GC, so Rust natives, the interpreter and compiled code need no handles or stack maps (the JavaScriptCore approach) |
 | metadata | `Klass`/`Method` are immortal (boot classes never unload) and addressed by `&'static` | compiled code can embed metadata addresses |
 | natives | Rust implementations registered by `(class, name, descriptor)`, the HotSpot native set | these are VM natives, not library replacements |
-| execution | interpreter (tier 0) → baseline compiler emitting x86-64 directly (tier 1) → optimising tier driven by type profiles (tier 2) | a boot is compile-latency bound (row 182: C1 alone is 8.3x over the interpreter); Cranelift is too slow as the first tier |
+| execution | interpreter (tier 0) → template compiler emitting x86-64 directly with register caching, inlining and method-handle folding (tier 1) → the same compiler recompiling hot methods with receiver profiles and larger inlining budgets (tier 2, `docs/core/opt-tier.md`) | a boot is compile-latency bound (row 182: C1 alone is 8.3x over the interpreter); Cranelift is too slow as the first tier |
 
 ## Tracer bullets
 
