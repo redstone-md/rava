@@ -1,8 +1,9 @@
 //! Call templates: `invoke*` with vtable dispatch, and the method-handle machinery compiled
 //! directly — linked `invokedynamic` / signature-polymorphic sites, `invokeBasic`, `linkTo*`.
 
-use super::asm::{mem, Cond, R};
+use super::asm::{mem, Cond, Label, R};
 use super::compile::Emitter;
+use super::inline::Entry;
 use super::inline_plan::{bound_target, decide};
 use super::runtime;
 use crate::classfile::Cp;
@@ -15,6 +16,30 @@ use crate::types::{BasicType, MethodSig};
 use std::mem::offset_of;
 
 impl Emitter {
+    /// Compiles the call at `pc` to the known `target` in place when it qualifies. Returns the
+    /// label to bind after the ordinary call sequence the caller emits next (the restart path).
+    /// `consts` overrides the site's constant arguments.
+    fn try_inline(&mut self, pc: usize, args: i32, target: &'static Method, entry: Entry, consts: Option<Vec<Option<i64>>>) -> Option<Label> {
+        if self.in_leaf() {
+            return None;
+        }
+        let n = target.param_slots() as usize;
+        let consts = consts.unwrap_or_else(|| (0..n).map(|i| self.site_consts.get(args as usize + i).copied().flatten()).collect());
+        let kind = decide(target, consts.first().copied().flatten(), &self.chain);
+        if std::env::var_os("RAVA_CORE_INLINE_LOG").is_some() {
+            let indent = "  ".repeat(self.chain.len());
+            eprintln!("[inline] {indent}{} @{pc} -> {target} {}", self.m, if kind.is_some() { "inlined" } else { "call" });
+        }
+        let kind = kind?;
+        self.set_bci(pc);
+        self.inline_call(args, target, kind, entry, &consts)
+    }
+
+    /// The constant at operand slot `i` of the current call site, if any.
+    fn site_const(&self, i: i32) -> Option<i64> {
+        self.site_consts.get(i as usize).copied().flatten()
+    }
+
     /// Calls the Method* in rdx with arguments from operand slot `args`; stores the result.
     fn call_rdx(&mut self, pc: usize, args: i32, ret: BasicType) {
         self.set_bci(pc);
@@ -80,11 +105,13 @@ impl Emitter {
         if (op == 0xb8 || op == 0xb6) && self.try_intrinsic(pc, depth, m, args) {
             return;
         }
-        let decision = if self.in_leaf() { None } else { bound_target(self.m, self.code, pc).and_then(|t| Some((t, decide(t, &self.chain)?))) };
-        let inlined = match decision {
-            Some((target, kind)) => {
-                self.set_bci(pc);
-                self.inline_call(args, target, kind, op != 0xb8, m.holder)
+        let entry = if op == 0xb8 { Entry::Static(m.holder) } else { Entry::Receiver };
+        let inlined = match bound_target(self.m, self.code, pc) {
+            Some(t) => self.try_inline(pc, args, t, entry, None),
+            // A virtual call to a concrete method: inline it for receivers that still dispatch
+            // to it (checked on the vtable, so later subclasses stay correct).
+            None if op == 0xb6 && m.vtable_index() >= 0 && !m.is_abstract() && !m.holder.is_interface() => {
+                self.try_inline(pc, args, m, Entry::Vtable(m.vtable_index()), None)
             }
             None => None,
         };
@@ -116,7 +143,9 @@ impl Emitter {
         self.linked_site(pc, depth, indy::site_sig(desc), 0);
     }
 
-    /// A site the interpreter already linked: call its invoker with the appendix appended.
+    /// A site the interpreter already linked: call its invoker with the appendix appended. The
+    /// invoker and appendix are constants, so the invoker is inlined like any known callee, with
+    /// the appendix as a constant argument.
     fn linked_site(&mut self, pc: usize, depth: u16, sig: &'static MethodSig, receiver: i32) {
         let Some((invoker, appendix)) = indy::linked(self.m, pc) else { return self.defer_unresolved(pc, depth) };
         let d = depth as i32;
@@ -131,13 +160,31 @@ impl Emitter {
             self.a.mov_ri(R::Rax, appendix as i64);
             self.a.store(true, self.stk(d), R::Rax);
         }
+        let mut consts: Vec<Option<i64>> = (args..d).map(|i| self.site_const(i)).collect();
+        if appendix != 0 {
+            consts.push(Some(appendix as i64));
+        }
+        let inlined = self.try_inline(pc, args, invoker, Entry::Static(invoker.holder), Some(consts));
         self.a.mov_ri(R::Rdx, invoker as *const Method as i64);
         self.call_rdx(pc, args, sig.ret);
+        if let Some(done) = inlined {
+            self.a.bind(done);
+        }
     }
 
-    /// `MethodHandle.invokeBasic`: call the receiver's `form.vmentry` target.
+    /// `MethodHandle.invokeBasic`: call the receiver's `form.vmentry` target. A constant
+    /// receiver names its target now (fold.rs), which is then called directly or inlined.
     fn invoke_basic(&mut self, pc: usize, depth: u16, sig: &'static MethodSig) {
         let args = depth as i32 - sig.arg_slots as i32 - 1;
+        if let Some(target) = self.site_const(args).and_then(|h| super::fold::handle_target(h as usize)) {
+            let inlined = self.try_inline(pc, args, target, Entry::Static(target.holder), None);
+            self.a.mov_ri(R::Rdx, target as *const Method as i64);
+            self.call_rdx(pc, args, sig.ret);
+            if let Some(done) = inlined {
+                self.a.bind(done);
+            }
+            return;
+        }
         let slow = self.slow_path(pc, depth);
         self.a.load(true, R::Rcx, self.stk(args));
         self.a.test_rr(true, R::Rcx, R::Rcx);
@@ -155,12 +202,16 @@ impl Emitter {
     }
 
     /// `MethodHandle.linkTo*(args..., MemberName)`: call the MemberName's target (dispatched on
-    /// the receiver for virtual/interface) with the arguments before it.
+    /// the receiver for virtual/interface) with the arguments before it. A constant MemberName
+    /// makes this an ordinary static, special or virtual call.
     fn link_to(&mut self, pc: usize, depth: u16, m: &'static Method, sig: &'static MethodSig) {
         let d = depth as i32;
         let args = d - sig.arg_slots as i32;
-        let slow = self.slow_path(pc, depth);
         let kind = m.name.as_str();
+        if let Some(target) = self.site_const(d - 1).and_then(|mn| super::fold::member_target(mn as usize)) {
+            return self.link_to_known(pc, depth, args, kind, target, sig);
+        }
+        let slow = self.slow_path(pc, depth);
         if kind != "linkToStatic" {
             self.a.load(true, R::Rcx, self.stk(args));
             self.a.test_rr(true, R::Rcx, R::Rcx);
@@ -178,5 +229,26 @@ impl Emitter {
             self.a.mov_rr(true, R::Rdx, R::Rax);
         }
         self.call_rdx(pc, args, sig.ret);
+    }
+
+    fn link_to_known(&mut self, pc: usize, depth: u16, args: i32, kind: &str, target: &'static Method, sig: &'static MethodSig) {
+        let bound = kind == "linkToStatic" || kind == "linkToSpecial" || target.is_private() || target.access & ACC_FINAL != 0;
+        let entry = if kind == "linkToStatic" { Entry::Static(target.holder) } else { Entry::Receiver };
+        let inlined = if bound { self.try_inline(pc, args, target, entry, None) } else { None };
+        let slow = self.slow_path(pc, depth);
+        if kind != "linkToStatic" {
+            self.a.load(true, R::Rcx, self.stk(args));
+            self.a.test_rr(true, R::Rcx, R::Rcx);
+            self.a.jcc(Cond::E, slow);
+        }
+        if bound {
+            self.a.mov_ri(R::Rdx, target as *const Method as i64);
+        } else {
+            self.dispatch(pc, target, slow);
+        }
+        self.call_rdx(pc, args, sig.ret);
+        if let Some(done) = inlined {
+            self.a.bind(done);
+        }
     }
 }

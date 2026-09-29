@@ -35,11 +35,18 @@ pub(super) struct Emitter {
     /// Scratch slots for leaf callees, above this body's operand stack.
     pub scratch_base: i32,
     /// The methods whose bodies are being emitted, outermost first (inlining decisions).
-    pub chain: Vec<&'static Method>,
+    pub chain: Vec<(&'static Method, Option<i64>)>,
     /// The highest frame slot any emitted body uses (the frame size, patched into the prologue).
     pub extent: i32,
     /// An inlined body could not be compiled: the method is refused.
     pub failed: bool,
+    /// Constant operand-stack values at the current call site, captured before the stack is
+    /// written back (they become constant locals of an inlined callee).
+    pub site_consts: Vec<Option<i64>>,
+    /// Locals of this body known to hold a constant: for the whole body (`lconst_base`: parameters
+    /// it never writes) and at the current point (`lconst`: also constants stored in this block).
+    pub lconst_base: Vec<Option<i64>>,
+    pub lconst: Vec<Option<i64>>,
     /// Set while emitting an inlined body.
     pub inl: Option<InlineCtx>,
     /// The virtual operand stack and the registers pinned to locals (`vstack.rs`).
@@ -72,9 +79,12 @@ pub fn compile(m: &'static Method) -> Option<CompiledMethod> {
         local_base: 0,
         stack_base,
         scratch_base: stack_base + info.max_stack as i32 + 2,
-        chain: vec![m],
+        chain: vec![(m, None)],
         extent: stack_base + info.max_stack as i32 + 2,
         failed: false,
+        site_consts: Vec::new(),
+        lconst_base: vec![None; info.max_locals as usize],
+        lconst: vec![None; info.max_locals as usize],
         inl: None,
         vs: Vec::new(),
         lregs: Vec::new(),
@@ -100,6 +110,15 @@ pub fn compile(m: &'static Method) -> Option<CompiledMethod> {
     let entry = code_cache::install(&code);
     let blocks = leaders.into_iter().map(|(bci, off)| (bci, entry + off as usize)).collect();
     super::code_cache::perf_map(entry, code.len(), &m.to_string());
+    if let Some(filter) = std::env::var_os("RAVA_CORE_JIT_DUMP") {
+        // Raw code for `objdump -D -b binary -mi386:x86-64 --adjust-vma=<entry>`.
+        let name = m.to_string();
+        if name.contains(filter.to_str().unwrap_or("")) {
+            let file = format!("/tmp/rava-jit-{:x}.bin", entry);
+            let _ = std::fs::write(&file, &code);
+            eprintln!("[jit-dump] {name} -> {file} (entry {entry:#x})");
+        }
+    }
     if std::env::var_os("RAVA_CORE_JIT_LOG").is_some() {
         eprintln!("[jit] {m} {} bytes of bytecode -> {} bytes", info.code.len(), code.len());
     }
@@ -110,6 +129,8 @@ impl Emitter {
     /// Emits the current body; block starts are collected into `leaders` (the method's own
     /// body, for OSR and handler entry).
     pub(super) fn emit_body(&mut self, mut leaders: Option<&mut Vec<u32>>) -> Option<()> {
+        // The entry state (constant arguments) holds at bci 0 unless a branch comes back there.
+        let reentered = super::analysis::targets_start(self.m);
         let mut pc = 0;
         while pc < self.code.len() {
             let len = insn_len(self.code, pc);
@@ -119,9 +140,12 @@ impl Emitter {
                 continue;
             };
             if self.an.leader[pc] {
-                // Blocks start with the operand stack in memory.
+                // Blocks start with the operand stack in memory and only whole-body constants.
                 self.flush_to_mem();
                 self.vs_reset(depth);
+                if pc != 0 || reentered {
+                    self.lconst.clone_from(&self.lconst_base);
+                }
                 if let Some(l) = leaders.as_deref_mut() {
                     l.push(pc as u32);
                 }
@@ -156,6 +180,10 @@ impl Emitter {
     /// Records `bci` as the frame's current instruction (before calls and slow paths).
     pub fn set_bci(&mut self, bci: usize) {
         debug_assert!(!self.in_leaf(), "leaf bodies never record a bci");
+        if self.inl.is_some_and(|c| !c.linked) {
+            // An unlinked frame is invisible; its caller's bci already names the call site.
+            return;
+        }
         let at = self.hdr(header::BCI);
         self.a.store_imm(at, (bci as i32) << 1);
     }

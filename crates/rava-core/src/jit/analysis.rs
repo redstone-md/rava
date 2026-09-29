@@ -153,6 +153,25 @@ fn successors(code: &[u8], pc: usize, len: usize) -> Vec<usize> {
     }
 }
 
+/// Whether any branch or exception handler leads to bci 0.
+pub fn targets_start(m: &Method) -> bool {
+    let Some(info) = m.code else { return false };
+    let code = info.code;
+    if info.handlers.iter().any(|h| h.handler == 0) {
+        return true;
+    }
+    let mut pc = 0;
+    while pc < code.len() {
+        let len = insn_len(code, pc);
+        let s = successors(code, pc, len);
+        if s.contains(&0) {
+            return true;
+        }
+        pc += len;
+    }
+    false
+}
+
 pub fn analyze(m: &Method) -> Option<Analysis> {
     let code_info = m.code?;
     let code = code_info.code;

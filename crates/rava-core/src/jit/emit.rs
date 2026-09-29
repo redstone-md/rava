@@ -19,6 +19,9 @@ impl Emitter {
         if self.emit_reg(pc, depth)? {
             return Some(());
         }
+        if matches!(self.code[pc], 0xb6..=0xba) {
+            self.site_consts = self.vs.iter().map(|s| if let super::vstack::Loc::Imm(v) = s.loc { Some(v) } else { None }).collect();
+        }
         self.flush_to_mem();
         self.emit_memory(pc, depth)?;
         let next = pc + super::analysis::insn_len(self.code, pc);

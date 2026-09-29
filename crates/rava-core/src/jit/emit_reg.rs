@@ -63,9 +63,26 @@ impl Emitter {
                 self.ret(true);
             }
             0xb1 => self.ret(false),
+            0xc0 | 0xc1 => return Some(self.fold_type_check(pc, op)),
             _ => return Some(self.emit_reg_mem(pc, depth, op)),
         }
         Some(true)
+    }
+
+    /// `checkcast` / `instanceof` on a constant object, decided now.
+    fn fold_type_check(&mut self, pc: usize, op: u8) -> bool {
+        let Some(Loc::Imm(o)) = self.vs.last().map(|s| s.loc) else { return false };
+        let Some(Resolved::Class(k)) = self.m.holder.resolved[self.cp_index(pc) as usize].get().copied() else { return false };
+        let is = o != 0 && super::fold::class_of(o as usize).is_subtype_of(k);
+        match op {
+            0xc0 if o == 0 || is => {}
+            0xc0 => return false,
+            _ => {
+                self.pop();
+                self.push(Loc::Imm(is as i64));
+            }
+        }
+        true
     }
 
     /// Moves `o` into rax.
@@ -94,6 +111,9 @@ impl Emitter {
     }
 
     fn load_local(&mut self, n: usize, wide: bool) {
+        if let Some(v) = self.lconst.get(n).copied().flatten() {
+            return self.push_w(wide, Loc::Imm(v));
+        }
         if self.lreg(n).is_some() {
             return self.push_w(wide, Loc::Local(n as u16));
         }
@@ -104,6 +124,9 @@ impl Emitter {
 
     fn store_local(&mut self, n: usize, wide: bool) {
         let v = self.pop_w(wide);
+        if let Some(c) = self.lconst.get_mut(n) {
+            *c = if let Loc::Imm(x) = v.loc { Some(x) } else { None };
+        }
         let excl: Vec<R> = Self::reg_of(v).into_iter().collect();
         self.kill_aliases(n, &excl);
         match self.lreg(n) {
@@ -131,6 +154,9 @@ impl Emitter {
     }
 
     fn iinc_reg(&mut self, n: usize, delta: i32) {
+        if let Some(c) = self.lconst.get_mut(n) {
+            *c = None;
+        }
         self.kill_aliases(n, &[]);
         let r = self.lreg(n).unwrap_or(R::Rax);
         if r == R::Rax {

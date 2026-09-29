@@ -17,6 +17,7 @@ mod emit_call;
 mod emit_obj;
 mod emit_reg;
 mod emit_reg_mem;
+mod fold;
 mod inline;
 mod inline_plan;
 mod intrinsics;
