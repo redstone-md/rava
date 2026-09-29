@@ -13,10 +13,16 @@ stray `rava.exe` you started, by PID. Port **25565 is the user's server**; bench
 **⛔ SNAPSHOTS ARE FORBIDDEN as a speed path.** Checkpoint/restore does not count as booting fast.
 `RAVA_RESTORE`, `RAVA_CHECKPOINT_*` are unset by every harness on purpose.
 
-**⛔ NO-ADAPT.** Production eligibility must never be routed by: class/method/package **names**,
-workload names, body hashes, inputs, outputs, expected hashes, **timings**, or prior aborts.
-Permitted evidence: **bytecode, CFG, descriptors, resolved dispatch, effect summaries, structural
-facts established at class load.** A census keyed by name is fine — a *decision* keyed by name is not.
+**⛔ NO-ADAPT = no workload-specific tuning** (user clarification, 2026-09-29). Forbidden: any
+route, fast path, threshold or policy keyed to a particular application or its classes — e.g.
+Minecraft class/method/package names, workload names, body hashes, expected outputs/hashes.
+**Allowed: every generic adaptive mechanism a production JVM uses** — invocation/back-edge
+counters, tiered compilation, OSR, interpreter and receiver-type profiles, inline caches,
+speculative inlining with deoptimization, CHA with invalidation. Rule of thumb: *if HotSpot does
+it for every program, rava may do it too.* JDK intrinsics keyed to `java/*` names are allowed
+(HotSpot intrinsifies by name too); a route keyed to one application's classes is not.
+Earlier notes in this tree that reject counters, profiles or "history" as no-adapt violations
+used a stricter reading than the user's and are superseded by this paragraph.
 
 **Talk to the user in Russian.** Commit messages and code comments in English.
 
