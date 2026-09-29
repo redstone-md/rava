@@ -72,6 +72,21 @@ pub extern "sysv64" fn deopt(t: *mut Thread, base: *mut u64, desc: *const Desc, 
         };
         eprintln!("[deopt] {} pending={pending}", scopes.join(" <- "));
     }
+    // The inlined scopes get their interpreter frames linked first, outermost first and each at
+    // its call site, so every scope running (and stack traces taken in it) sees its callers.
+    let hdr = |f: &Frame| {
+        let code = f.method.code.expect("compiled scope has code");
+        // SAFETY: the header of this scope's frame, within the compiled frame.
+        unsafe { base.add(f.frame as usize + code.max_locals as usize) }
+    };
+    for f in frames[..n - 1].iter().rev() {
+        let code = f.method.code.expect("compiled scope has code");
+        // SAFETY: header and operand stack of this scope's frame, within the compiled frame.
+        unsafe {
+            t.push_frame(hdr(f), f.method, (f.bci as u64) << 1);
+            t.sp = hdr(f).add(header::SLOTS + code.max_stack as usize + 2);
+        }
+    }
     for (i, f) in frames.iter().enumerate() {
         let code = f.method.code.expect("compiled scope has code");
         // SAFETY: the scope's frame lies within the compiled frame.
@@ -87,20 +102,11 @@ pub extern "sysv64" fn deopt(t: *mut Thread, base: *mut u64, desc: *const Desc, 
                 (f.bci as usize + insn_len(code.code, f.bci as usize), f.depth as usize + slots, None)
             }
         };
-        outcome = if i + 1 == frames.len() {
-            crate::interp::resume(t, f.method, locals, bci, depth, pending)
-        } else {
-            // An inlined scope gets its own linked frame for the interpreter.
-            // SAFETY: header and operand stack of this scope's frame, within the compiled frame.
-            unsafe {
-                let hdr = locals.add(code.max_locals as usize);
-                t.push_frame(hdr, f.method, 0);
-                t.sp = hdr.add(header::SLOTS + code.max_stack as usize + 2);
-                let r = crate::interp::resume(t, f.method, locals, bci, depth, pending);
-                t.pop_frame(hdr);
-                r
-            }
-        };
+        outcome = crate::interp::resume(t, f.method, locals, bci, depth, pending);
+        if i + 1 < n {
+            // SAFETY: this scope's frame is the innermost linked one.
+            unsafe { t.pop_frame(hdr(f)) };
+        }
     }
     match outcome {
         Ok(v) => v,
