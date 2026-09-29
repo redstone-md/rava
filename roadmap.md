@@ -241,6 +241,36 @@ priced near 1% CPU. No representation patch is justified. Meeting the target
 while keeping both gates would require a fundamental VM/substrate redesign not
 yet supported by a measured tracer or success estimate.
 
+### 2026-09-29: authorized VM-substrate rewrite contract
+
+The user authorized a fundamental execution-substrate rewrite while retaining
+both hard gates: a fresh canonical Minecraft boot below five seconds, with no
+runtime adaptation and no snapshots/restores. Runtime routing/admission may use
+only bytecode, CFGs, descriptors, resolved dispatch, effect summaries, and
+structural facts fixed at class load. Invocation counts, class/workload names,
+body hashes, timing, inputs/outputs, and prior aborts are not runtime decision
+inputs. Static engine-level PGO is distinct from runtime adaptation.
+
+The replacement must preserve current runtime-visible loading, class identity,
+initialization, dispatch, exception, native, reflection, thread, and moving-GC
+semantics for the canonical product and dynamically supplied classes. Existing
+product hashes and 49 differential probes are necessary but insufficient:
+the differential suite has no dynamic-class loading or failed-initialization
+retry coverage. A substrate contract is not complete until a differential
+probe exercises those paths and identifies current-VM behavior.
+
+Open-world AOT, fixed compile-all, compile-at-load, existing Cranelift JIT,
+prepared AOT, and maintained external substrates have no measured path to the
+required >7.6 CPU-second reduction under these constraints. Prepared AOT is
+slower end-to-end; existing class-load/link and code-cache work are bounded
+below the deficit. Therefore this authorization does not justify a speculative
+backend or a <5 s claim. The first justified vertical tracer is dynamic-class
+conformance (separate URLClassLoader path, init failure, reflection, dispatch,
+and exception behavior); it is a semantic prerequisite, not a performance
+tracer. No substrate implementation starts until a separate end-to-end
+performance tracer has an evidence-backed removal ceiling and a fresh-boot
+measurement protocol.
+
 ## Objective
 
 Reduce Minecraft boot and warm-reload wall time through structural, workload-agnostic changes while preserving exact Java semantics.
