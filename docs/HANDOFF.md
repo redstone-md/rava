@@ -26,10 +26,14 @@ cargo build --release -p rava-cli --features next-gen-gc              # the prod
 cargo build --profile release-diag -p rava-cli --features next-gen-gc,wall-profile   # symbols for profiling
 ```
 
-**Base environment** for every product run:
+**Canonical environment for comparable product benchmarks** (not a strict no-adapt acceptance configuration):
 ```
 RAVA_JIT=1 RAVA_JIT_TIER0=1 RAVA_PROC_CAP_MB=4096 RAVA_HARD_MB=3584
 ```
+`RAVA_JIT_TIER0=1` enables first-entry compilation, and the runtime still contains live
+name-routed policies. No boot with this baseline may be called strict no-adapt; no strict
+no-adapt build/run configuration is currently certified. See the strict no-adapt route audit
+in `roadmap.md`.
 
 `RAVA_GSON_NATIVE=1` is a name-specific route and must remain unset for strict
 no-adapt runs. The former `RAVA_M3_BITSTORAGE` shortcut has been removed from
