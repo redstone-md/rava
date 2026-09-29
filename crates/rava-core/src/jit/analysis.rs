@@ -128,7 +128,7 @@ fn effect(cf: &ClassFile, code: &[u8], pc: usize) -> Option<(i32, i32)> {
 }
 
 /// Control successors of the instruction at `pc` (excluding exception edges).
-fn successors(code: &[u8], pc: usize, len: usize) -> Vec<usize> {
+pub(super) fn successors(code: &[u8], pc: usize, len: usize) -> Vec<usize> {
     let rel = |off: i32| (pc as i64 + off as i64) as usize;
     match code[pc] {
         0x99..=0xa6 | 0xc6 | 0xc7 => vec![pc + len, rel(i2(code, pc + 1) as i32)],
