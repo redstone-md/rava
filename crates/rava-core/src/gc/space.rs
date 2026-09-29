@@ -1,9 +1,12 @@
 //! Heap memory: 256 KiB pages of equal-size cells (segregated size classes) for small objects,
 //! and individual mappings for large ones. Nothing moves.
 //!
-//! A cell holds an object iff its first word (the class pointer) is non-zero; a free cell has a
-//! zero first word and the next free cell in its second word. Fresh pages come zeroed from the
-//! kernel; recycled cells are zeroed when handed out.
+//! Each page keeps two bitmaps: `alloc` (cells handed out since the page was last swept, or that
+//! survived it) and `marks` (reached by the current collection). A cell holds an object iff its
+//! `alloc` bit is set and its first word (the class pointer) is non-zero. Sweeping only swaps and
+//! counts bitmaps; dead cells are never touched until they are handed out again, as part of a
+//! run of free cells that is zeroed then and bump-allocated (so compiled code allocates from any
+//! run the same way). Fresh and recycled pages are handed out whole.
 
 use std::collections::BTreeMap;
 
@@ -33,9 +36,15 @@ pub fn class_of(bytes: usize) -> usize {
 pub struct PageMeta {
     pub class: u8,
     pub cell_size: u32,
+    /// `ceil(2^40 / cell_size)`: `offset * recip >> 40` is the cell index of any page offset
+    /// (exact for offsets below 2^18), without a division on the marking path.
+    pub recip: u64,
+    pub alloc: Box<[u64]>,
     pub marks: Box<[u64]>,
-    /// Head of the free-cell list built by the last sweep (0 = none).
-    pub free: usize,
+    /// Next cell to look for a free run from.
+    pub cursor: usize,
+    /// Free cells are known to be zero (a fresh or recycled page), so runs need no clearing.
+    pub zeroed: bool,
     /// Owned by a thread's allocation cache.
     pub owned: bool,
 }
@@ -43,6 +52,45 @@ pub struct PageMeta {
 impl PageMeta {
     pub fn cells(&self) -> usize {
         PAGE_SIZE / self.cell_size as usize
+    }
+
+    #[inline]
+    pub fn cell_of(&self, offset: usize) -> usize {
+        ((offset as u64 * self.recip) >> 40) as usize
+    }
+
+    fn allocated(&self, cell: usize) -> bool {
+        self.alloc[cell / 64] & (1 << (cell % 64)) != 0
+    }
+
+    /// The first cell at or after `from` (below `cells`) whose allocation bit equals `set`.
+    fn find_bit(&self, from: usize, cells: usize, set: bool) -> Option<usize> {
+        let word = |w: usize| self.alloc.get(w).map(|&x| if set { x } else { !x });
+        let mut w = from / 64;
+        let mut bits = word(w)? & (!0u64 << (from % 64));
+        loop {
+            if bits != 0 {
+                let i = w * 64 + bits.trailing_zeros() as usize;
+                return (i < cells).then_some(i);
+            }
+            w += 1;
+            bits = word(w)?;
+        }
+    }
+
+    /// The next run of free cells at or after the cursor, marked allocated: `(first, end)`.
+    fn next_free_run(&mut self) -> Option<(usize, usize)> {
+        let cells = self.cells();
+        let Some(first) = self.find_bit(self.cursor, cells, false) else {
+            self.cursor = cells;
+            return None;
+        };
+        let end = self.find_bit(first, cells, true).unwrap_or(cells);
+        for i in first..end {
+            self.alloc[i / 64] |= 1 << (i % 64);
+        }
+        self.cursor = end;
+        Some((first, end))
     }
 }
 
@@ -104,8 +152,8 @@ impl Space {
         self.base + (index << PAGE_SHIFT)
     }
 
-    /// A page for size class `class` with its free list and bump range, owned by the caller.
-    pub fn take_page(&mut self, class: usize) -> Option<(usize, usize, usize, usize)> {
+    /// A page of size class `class` with free cells, owned by the caller from now on.
+    pub fn take_page(&mut self, class: usize) -> Option<usize> {
         let cell = CLASS_SIZES[class] as usize;
         while let Some(p) = self.partial[class].pop() {
             let meta = self.pages[p].as_mut().expect("partial page");
@@ -113,10 +161,7 @@ impl Space {
                 continue;
             }
             meta.owned = true;
-            let free = std::mem::replace(&mut meta.free, 0);
-            self.allocated_since_gc += PAGE_SIZE / 2;
-            let addr = self.page_addr(p);
-            return Some((p, free, addr, addr));
+            return Some(p);
         }
         let addr = match self.empty.pop() {
             Some(a) => {
@@ -135,15 +180,31 @@ impl Space {
         let index = self.page_index(addr).unwrap();
         let cells = PAGE_SIZE / cell;
         self.pages[index] = Some(PageMeta {
+            recip: ((1u64 << 40) + cell as u64 - 1) / cell as u64,
             class: class as u8,
             cell_size: cell as u32,
+            alloc: vec![0u64; cells.div_ceil(64)].into_boxed_slice(),
             marks: vec![0u64; cells.div_ceil(64)].into_boxed_slice(),
-            free: 0,
+            cursor: 0,
+            zeroed: true,
             owned: true,
         });
-        self.allocated_since_gc += PAGE_SIZE;
-        // Bump through the whole page; only whole cells are handed out.
-        Some((index, 0, addr, addr + cells * cell))
+        Some(index)
+    }
+
+    /// The next run of free cells of owned page `index` as a zeroed bump range `(start, end)`.
+    pub fn next_run(&mut self, index: usize) -> Option<(usize, usize)> {
+        let page = self.page_addr(index);
+        let meta = self.pages[index].as_mut().expect("owned page");
+        let (first, end) = meta.next_free_run()?;
+        let cell = meta.cell_size as usize;
+        let (start, stop) = (page + first * cell, page + end * cell);
+        if !meta.zeroed {
+            // SAFETY: free cells of a page in use, handed to the caller only now.
+            unsafe { std::ptr::write_bytes(start as *mut u8, 0, stop - start) };
+        }
+        self.allocated_since_gc += stop - start;
+        Some((start, stop))
     }
 
     pub fn alloc_large(&mut self, bytes: usize) -> Option<usize> {
@@ -165,8 +226,11 @@ impl Space {
         if let Some(index) = self.page_index(addr) {
             let meta = self.pages[index].as_ref()?;
             let page = self.page_addr(index);
-            let cell = (addr - page) / meta.cell_size as usize;
+            let cell = meta.cell_of(addr - page);
             if cell >= meta.cells() {
+                return None;
+            }
+            if !meta.allocated(cell) {
                 return None;
             }
             let start = page + cell * meta.cell_size as usize;
@@ -176,5 +240,49 @@ impl Space {
         }
         let (&start, l) = self.large.range(..=addr).next_back()?;
         (addr < start + l.size).then_some(start)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn free_runs_skip_allocated_cells() {
+        // 128 cells of 2 KiB: cells 0, 1, 5 and 64..=69 allocated.
+        let mut meta = PageMeta {
+            recip: 0,
+            class: 0,
+            cell_size: 2048,
+            alloc: vec![0b10_0011, 0b11_1111].into_boxed_slice(),
+            marks: vec![0, 0].into_boxed_slice(),
+            cursor: 0,
+            zeroed: false,
+            owned: true,
+        };
+        assert_eq!(meta.next_free_run(), Some((2, 5)));
+        assert_eq!(meta.next_free_run(), Some((6, 64)));
+        assert_eq!(meta.next_free_run(), Some((70, 128)));
+        assert_eq!(meta.next_free_run(), None);
+        assert!(meta.alloc.iter().all(|&w| w == !0));
+    }
+
+    #[test]
+    fn reciprocal_cell_index_is_exact() {
+        for &size in CLASS_SIZES.iter() {
+            let meta = PageMeta {
+                recip: ((1u64 << 40) + size as u64 - 1) / size as u64,
+                class: 0,
+                cell_size: size,
+                alloc: Box::new([]),
+                marks: Box::new([]),
+                cursor: 0,
+                zeroed: true,
+                owned: false,
+            };
+            for offset in (0..PAGE_SIZE).step_by(8) {
+                assert_eq!(meta.cell_of(offset), offset / size as usize, "size {size} offset {offset}");
+            }
+        }
     }
 }

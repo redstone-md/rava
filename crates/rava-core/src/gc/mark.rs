@@ -19,7 +19,7 @@ impl Marker<'_> {
         if let Some(index) = self.space.page_index(start) {
             let page = self.space.page_addr(index);
             let Some(meta) = self.space.pages[index].as_mut() else { return };
-            let cell = (start - page) / meta.cell_size as usize;
+            let cell = meta.cell_of(start - page);
             let (w, b) = (cell / 64, 1u64 << (cell % 64));
             if meta.marks[w] & b != 0 {
                 return;

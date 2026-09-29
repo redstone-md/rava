@@ -1,8 +1,9 @@
 //! Non-moving mark-sweep collector (design: `docs/core/README.md`).
 //!
-//! Allocation goes through per-thread caches (one page per size class); a collection stops the
-//! world at safepoints, marks from conservative stack roots and precise VM roots, and sweeps
-//! pages into free lists. Objects never move, so raw references held anywhere stay valid.
+//! Allocation bumps through per-thread runs of free cells (one owned page per size class); a
+//! collection stops the world at safepoints, marks from conservative stack roots and precise VM
+//! roots, and sweeps by swapping page bitmaps (`space.rs`). Objects never move, so raw
+//! references held anywhere stay valid.
 
 mod mark;
 pub mod safepoint;
@@ -12,12 +13,13 @@ use crate::thread::Thread;
 use space::{class_of, Space, CLASSES, CLASS_SIZES, LARGE_THRESHOLD, PAGE_SIZE};
 use std::sync::Mutex;
 
-/// A thread's allocation cache for one size class: a free list and a bump range in an owned page.
+/// A thread's allocation cache for one size class: a zeroed bump range (a run of free cells) in
+/// an owned page, `page` being that page's index + 1 (0 = none yet).
 #[derive(Clone, Copy, Default)]
 pub struct ClassCache {
-    free: usize,
     bump: usize,
     end: usize,
+    page: usize,
 }
 
 pub struct AllocCache {
@@ -72,15 +74,6 @@ impl Heap {
         let size = CLASS_SIZES[class] as usize;
         loop {
             let c = &mut t.alloc.classes[class];
-            if c.free != 0 {
-                let cell = c.free;
-                // SAFETY: a free cell of this class: word 1 links the next free cell.
-                unsafe {
-                    c.free = *((cell + 8) as *const usize);
-                    std::ptr::write_bytes(cell as *mut u8, 0, size);
-                }
-                return Some(cell as *mut u8);
-            }
             if c.bump + size <= c.end {
                 let cell = c.bump;
                 c.bump += size;
@@ -90,19 +83,29 @@ impl Heap {
         }
     }
 
+    /// The next run of free cells for `t`'s `class` cache: the rest of its page, else a new page.
     #[cold]
     fn refill(&self, t: &mut Thread, class: usize) -> Option<()> {
+        let owned = t.alloc.classes[class].page;
+        if owned != 0 {
+            if let Some((bump, end)) = self.space.lock().unwrap().next_run(owned - 1) {
+                t.alloc.classes[class] = ClassCache { bump, end, page: owned };
+                return Some(());
+            }
+        }
         self.maybe_collect(t);
         let mut space = self.space.lock().unwrap();
-        let (_, free, bump, end) = match space.take_page(class) {
+        let page = match space.take_page(class) {
             Some(p) => p,
             None => {
                 drop(space);
                 self.collect(t);
-                self.space.lock().unwrap().take_page(class)?
+                space = self.space.lock().unwrap();
+                space.take_page(class)?
             }
         };
-        t.alloc.classes[class] = ClassCache { free, bump, end };
+        let (bump, end) = space.next_run(page).expect("a taken page has free cells");
+        t.alloc.classes[class] = ClassCache { bump, end, page: page + 1 };
         Some(())
     }
 
@@ -129,7 +132,10 @@ impl Heap {
             return;
         }
         let started = std::time::Instant::now();
+        let mut phases = [0f64; 3];
         let done = safepoint::stop_the_world(t, |_| {
+            let stopped = std::time::Instant::now();
+            phases[0] = (stopped - started).as_secs_f64() * 1e3;
             let mut space = self.space.lock().unwrap();
             for rec in safepoint::all_threads() {
                 // SAFETY: every registered thread is stopped (or is us); its cache is ours to reset.
@@ -141,14 +147,25 @@ impl Heap {
                 m.marks.iter_mut().for_each(|w| *w = 0);
             }
             space.large.values_mut().for_each(|l| l.marked = false);
+            let before_mark = std::time::Instant::now();
             let marked = mark::mark(&mut space);
+            let before_sweep = std::time::Instant::now();
             let live = sweep(&mut space);
+            phases[1] = (before_sweep - before_mark).as_secs_f64() * 1e3;
+            phases[2] = before_sweep.elapsed().as_secs_f64() * 1e3;
             space.live_after_gc = live;
             space.allocated_since_gc = 0;
             (marked, live)
         });
         if let (Some((marked, live)), true) = (done, std::env::var_os("RAVA_CORE_GC_LOG").is_some()) {
-            eprintln!("[gc] marked {marked} objects, {} MiB live, {:.1} ms", live >> 20, started.elapsed().as_secs_f64() * 1e3);
+            eprintln!(
+                "[gc] marked {marked} objects, {} MiB live, {:.1} ms (stop {:.1}, mark {:.1}, sweep {:.1})",
+                live >> 20,
+                started.elapsed().as_secs_f64() * 1e3,
+                phases[0],
+                phases[1],
+                phases[2]
+            );
         }
     }
 
@@ -162,8 +179,9 @@ impl Heap {
     }
 }
 
-/// Frees unmarked objects; rebuilds page free lists; returns live bytes (page granularity for
-/// partially live pages).
+/// Frees unmarked objects by bitmap alone: the marks become the pages' allocation bitmaps (dead
+/// cells are left untouched until handed out again). Pages without survivors are released
+/// whole. Returns live bytes.
 fn sweep(space: &mut Space) -> usize {
     let mut live = 0;
     for list in space.partial.iter_mut() {
@@ -172,40 +190,19 @@ fn sweep(space: &mut Space) -> usize {
     for index in 0..space.pages.len() {
         let page = space.page_addr(index);
         let Some(meta) = space.pages[index].as_mut() else { continue };
-        if meta.marks.iter().all(|&w| w == 0) {
-            // Nothing survived: the page is freed whole without touching its cells (it is
-            // zeroed again when reused, and without metadata no reference resolves into it).
-            space.pages[index] = None;
-            space.empty.push(page);
-            continue;
-        }
-        let cell = meta.cell_size as usize;
-        let mut free_head = 0usize;
-        let mut live_cells = 0;
-        for i in (0..meta.cells()).rev() {
-            let addr = page + i * cell;
-            // SAFETY: cells of a page in use.
-            let klass = unsafe { *(addr as *const usize) };
-            let marked = meta.marks[i / 64] & (1 << (i % 64)) != 0;
-            if klass != 0 && marked {
-                live_cells += 1;
-                continue;
-            }
-            // SAFETY: a dead or free cell: clear the class word, link it into the free list.
-            unsafe {
-                *(addr as *mut usize) = 0;
-                *((addr + 8) as *mut usize) = free_head;
-            }
-            free_head = addr;
-        }
+        let live_cells: usize = meta.marks.iter().map(|w| w.count_ones() as usize).sum();
         if live_cells == 0 {
+            // Without metadata no reference resolves into the page; it is zeroed when reused.
             space.pages[index] = None;
             space.empty.push(page);
             continue;
         }
-        live += live_cells * cell;
-        meta.free = free_head;
-        if free_head != 0 {
+        std::mem::swap(&mut meta.alloc, &mut meta.marks);
+        meta.marks.iter_mut().for_each(|w| *w = 0);
+        meta.cursor = 0;
+        meta.zeroed = false;
+        live += live_cells * meta.cell_size as usize;
+        if live_cells < meta.cells() {
             let class = meta.class as usize;
             space.partial[class].push(index);
         }
