@@ -77,6 +77,23 @@ Policy: compile after 100 invocations or 2000 loop back-edges (generic counters)
 
 Every test also passes with `RAVA_CORE_JIT_THRESHOLD=1` (the whole JDK boot compiled).
 
+## 2026-09-29 — a real application: Maven
+
+`mvn --version` (Apache Maven 3.9.11 launched through plexus-classworlds: 50+ jars on custom
+class loaders, Guice/Sisu, SLF4J, jansi, reflection through method handles) runs on rava-core
+with output identical to HotSpot's. New natives: `sun.nio.fs.UnixNativeDispatcher`,
+`sun.nio.ch` file channels, `RandomAccessFile`, `java.util.zip` (inflate/deflate, CRC-32,
+Adler-32), module resources through the mapped image (`NativeImageBuffer`), `Perf` counters,
+process environment. Third-party JNI libraries (here jansi's) are not loaded; jansi falls back
+exactly as it does when its library is absent.
+
+Wall clock, three alternating runs, same container:
+
+| | run 1 | run 2 | run 3 |
+|---|---:|---:|---:|
+| `java` (adaptive + CDS) | 214 ms | 188 ms | 186 ms |
+| `rava-core` (no snapshot) | 204 ms | 152 ms | 191 ms |
+
 ### Next
 
 1. Code quality: register-cached operand stack, cheaper calls (the profile is now flat over

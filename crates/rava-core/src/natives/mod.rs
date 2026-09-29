@@ -5,9 +5,10 @@
 mod array;
 mod classloader;
 mod fs;
-mod io;
+pub(crate) mod io;
 mod lang;
 mod misc;
+mod nio_ch;
 pub(crate) mod mh;
 mod module;
 pub(crate) mod props;
@@ -15,6 +16,8 @@ mod reflect;
 mod reflect_class;
 pub(crate) mod thread;
 pub(crate) mod unsafe_mem;
+mod unixfs;
+mod zip;
 mod throwable;
 
 pub(crate) use module::{set_mirror_module, set_primitive_mirror_module};
@@ -48,6 +51,9 @@ impl NativeRegistry {
         reflect_class::register(&mut r);
         mh::register(&mut r);
         array::register(&mut r);
+        unixfs::register(&mut r);
+        zip::register(&mut r);
+        nio_ch::register(&mut r);
         misc::register(&mut r);
         r
     }

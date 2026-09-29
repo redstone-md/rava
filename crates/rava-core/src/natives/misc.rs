@@ -75,6 +75,38 @@ pub(super) fn register(r: &mut NativeRegistry) {
     });
     r.add("java/security/AccessController", "ensureMaterializedForStackWalk", "(Ljava/lang/Object;)V", |_, _| ret_void());
     r.add("jdk/internal/misc/ScopedMemoryAccess", "registerNatives", "()V", |_, _| ret_void());
+    r.add("java/lang/ProcessEnvironment", "environ", "()[[B", environ);
+    r.add("java/lang/ProcessImpl", "init", "()V", |_, _| ret_void());
+    r.add("java/lang/ProcessHandleImpl", "initNative", "()V", |_, _| ret_void());
+    r.add("java/lang/ProcessHandleImpl", "getCurrentPid0", "()J", |_, _| ret_long(std::process::id() as i64));
+    r.add("java/lang/ProcessHandleImpl", "isAlive0", "(J)J", |_, a| {
+        ret_long(if unsafe { libc::kill(a[0] as i32, 0) } == 0 { 0 } else { -1 })
+    });
+    r.add("java/lang/ProcessHandleImpl$Info", "initIDs", "()V", |_, _| ret_void());
+    const PERF: &str = "jdk/internal/perf/Perf";
+    r.add(PERF, "registerNatives", "()V", |_, _| ret_void());
+    r.add(PERF, "createLong", "(Ljava/lang/String;IIJ)Ljava/nio/ByteBuffer;", |t, a| {
+        // Performance counters live in leaked native memory, like HotSpot's instrumentation area.
+        let cell: &'static mut i64 = Box::leak(Box::new(a[4] as i64));
+        let bb = crate::boot::construct(t, "java/nio/DirectByteBuffer", "(JJ)V", &[cell as *mut i64 as u64, 0, 8, 0])?;
+        ret_ref(bb)
+    });
+    r.add(PERF, "createByteArray", "(Ljava/lang/String;II[BI)Ljava/nio/ByteBuffer;", |t, a| {
+        let len = (a[5] as i32).max(0) as usize;
+        let mem: &'static mut [u8] = Box::leak(vec![0u8; len.max(1)].into_boxed_slice());
+        if a[4] != 0 {
+            // SAFETY: the initial-value byte[].
+            let init = unsafe { crate::heap::obj::array_slice::<u8>(a[4] as Oop) };
+            let n = init.len().min(len);
+            mem[..n].copy_from_slice(&init[..n]);
+        }
+        let bb = crate::boot::construct(t, "java/nio/DirectByteBuffer", "(JJ)V", &[mem.as_mut_ptr() as u64, 0, len as u64, 0])?;
+        ret_ref(bb)
+    });
+    r.add(PERF, "highResCounter", "()J", |_, _| {
+        ret_long(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos() as i64))
+    });
+    r.add(PERF, "highResFrequency", "()J", |_, _| ret_long(1_000_000_000));
 }
 
 crate::runtime::vm_field!(referent_offset, "java/lang/ref/Reference", "referent", "Ljava/lang/Object;");
@@ -100,4 +132,22 @@ fn latest_user_defined_loader(t: &mut Thread, _: &[u64]) -> JResult<u64> {
         .find(|l| !l.is_null())
         .unwrap_or(std::ptr::null_mut());
     ret_ref(loader)
+}
+
+/// `ProcessEnvironment.environ`: `byte[][]` of alternating names and values.
+fn environ(t: &mut Thread, _: &[u64]) -> JResult<u64> {
+    use std::os::unix::ffi::OsStrExt;
+    let bytes_class = vm().primitive_array_class(crate::types::BasicType::Byte).expect("[B");
+    let outer = vm().array_class_of(bytes_class).expect("[[B");
+    let vars: Vec<(std::ffi::OsString, std::ffi::OsString)> = std::env::vars_os().collect();
+    let arr = rt::alloc_array(t, outer, (vars.len() * 2) as i32)?;
+    for (i, part) in vars.iter().flat_map(|(k, v)| [k.as_bytes(), v.as_bytes()]).enumerate() {
+        let b = rt::alloc_array(t, bytes_class, part.len() as i32)?;
+        // SAFETY: fresh arrays of matching lengths.
+        unsafe {
+            crate::heap::obj::array_slice::<u8>(b).copy_from_slice(part);
+            *crate::heap::obj::array_data::<Oop>(arr).add(i) = b;
+        }
+    }
+    ret_ref(arr)
 }

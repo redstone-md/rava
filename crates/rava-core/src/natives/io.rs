@@ -8,12 +8,16 @@ use crate::thread::{JResult, Thread, Throw};
 vm_field!(fd_int, "java/io/FileDescriptor", "fd", "I");
 vm_field!(fis_fd, "java/io/FileInputStream", "fd", "Ljava/io/FileDescriptor;");
 vm_field!(fos_fd, "java/io/FileOutputStream", "fd", "Ljava/io/FileDescriptor;");
+vm_field!(raf_fd, "java/io/RandomAccessFile", "fd", "Ljava/io/FileDescriptor;");
 
 const FD: &str = "java/io/FileDescriptor";
 const FIS: &str = "java/io/FileInputStream";
 const FOS: &str = "java/io/FileOutputStream";
 
+const RAF: &str = "java/io/RandomAccessFile";
+
 pub(super) fn register(r: &mut NativeRegistry) {
+    register_raf(r);
     for c in [FD, FIS, FOS] {
         r.add(c, "initIDs", "()V", |_, _| ret_void());
     }
@@ -124,7 +128,7 @@ fn stream_fd(stream: Oop, field: u32) -> i32 {
 }
 
 /// The `[off, off+len)` byte range of a Java `byte[]`, with Java's exceptions.
-fn checked_range<'a>(t: &mut Thread, arr: Oop, off: i32, len: i32) -> JResult<&'a mut [u8]> {
+pub(super) fn checked_range<'a>(t: &mut Thread, arr: Oop, off: i32, len: i32) -> JResult<&'a mut [u8]> {
     if arr.is_null() {
         return Err(rt::null_pointer(t));
     }
@@ -136,7 +140,7 @@ fn checked_range<'a>(t: &mut Thread, arr: Oop, off: i32, len: i32) -> JResult<&'
     Ok(&mut data[off as usize..off as usize + len as usize])
 }
 
-fn write_all(t: &mut Thread, fd: i32, mut bytes: &[u8]) -> JResult<()> {
+pub(super) fn write_all(t: &mut Thread, fd: i32, mut bytes: &[u8]) -> JResult<()> {
     while !bytes.is_empty() {
         // SAFETY: valid byte range.
         let n = unsafe { libc::write(fd, bytes.as_ptr() as *const libc::c_void, bytes.len()) };
@@ -151,7 +155,7 @@ fn write_all(t: &mut Thread, fd: i32, mut bytes: &[u8]) -> JResult<()> {
     Ok(())
 }
 
-fn open_into(t: &mut Thread, stream: Oop, field: u32, path: Oop, flags: i32) -> JResult<u64> {
+pub(super) fn open_into(t: &mut Thread, stream: Oop, field: u32, path: Oop, flags: i32) -> JResult<u64> {
     let name = rt::java_string_to_rust(path);
     let c = std::ffi::CString::new(name.clone()).map_err(|_| throw_new(t, "java/io/FileNotFoundException", &name))?;
     // SAFETY: NUL-terminated path.
@@ -177,4 +181,70 @@ pub(crate) fn errno_text() -> String {
 pub(crate) fn io_error(t: &mut Thread, what: &str) -> Throw {
     let msg = format!("{what}: {}", errno_text());
     throw_new(t, "java/io/IOException", &msg)
+}
+
+fn register_raf(r: &mut NativeRegistry) {
+    r.add(RAF, "initIDs", "()V", |_, _| ret_void());
+    r.add(RAF, "open0", "(Ljava/lang/String;I)V", |t, a| {
+        let mode = a[2] as i32;
+        let flags = if mode & 2 != 0 { libc::O_RDWR | libc::O_CREAT } else { libc::O_RDONLY }
+            | if mode & 4 != 0 { libc::O_SYNC } else { 0 }
+            | if mode & 8 != 0 { libc::O_DSYNC } else { 0 };
+        open_into(t, a[0] as Oop, raf_fd(), a[1] as Oop, flags)
+    });
+    r.add(RAF, "read0", "()I", |t, a| {
+        let fd = stream_fd(a[0] as Oop, raf_fd());
+        let mut b = 0u8;
+        match unsafe { libc::read(fd, &mut b as *mut u8 as *mut libc::c_void, 1) } {
+            0 => ret_int(-1),
+            n if n < 0 => Err(io_error(t, "Read error")),
+            _ => ret_int(b as i32),
+        }
+    });
+    r.add(RAF, "readBytes0", "([BII)I", |t, a| {
+        let fd = stream_fd(a[0] as Oop, raf_fd());
+        let buf = checked_range(t, a[1] as Oop, a[2] as i32, a[3] as i32)?;
+        if buf.is_empty() {
+            return ret_int(0);
+        }
+        match unsafe { libc::read(fd, buf.as_ptr() as *mut libc::c_void, buf.len()) } {
+            0 => ret_int(-1),
+            n if n < 0 => Err(io_error(t, "Read error")),
+            n => ret_int(n as i32),
+        }
+    });
+    r.add(RAF, "write0", "(I)V", |t, a| {
+        write_all(t, stream_fd(a[0] as Oop, raf_fd()), &[a[1] as u8])?;
+        ret_void()
+    });
+    r.add(RAF, "writeBytes0", "([BII)V", |t, a| {
+        let bytes = checked_range(t, a[1] as Oop, a[2] as i32, a[3] as i32)?;
+        write_all(t, stream_fd(a[0] as Oop, raf_fd()), bytes)?;
+        ret_void()
+    });
+    r.add(RAF, "getFilePointer", "()J", |t, a| {
+        match unsafe { libc::lseek(stream_fd(a[0] as Oop, raf_fd()), 0, libc::SEEK_CUR) } {
+            -1 => Err(io_error(t, "Seek failed")),
+            p => ret_long(p),
+        }
+    });
+    r.add(RAF, "seek0", "(J)V", |t, a| {
+        match unsafe { libc::lseek(stream_fd(a[0] as Oop, raf_fd()), a[1] as i64, libc::SEEK_SET) } {
+            -1 => Err(io_error(t, "Seek failed")),
+            _ => ret_void(),
+        }
+    });
+    r.add(RAF, "length0", "()J", |t, a| {
+        let mut st: libc::stat = unsafe { std::mem::zeroed() };
+        if unsafe { libc::fstat(stream_fd(a[0] as Oop, raf_fd()), &mut st) } != 0 {
+            return Err(io_error(t, "fstat failed"));
+        }
+        ret_long(st.st_size)
+    });
+    r.add(RAF, "setLength0", "(J)V", |t, a| {
+        if unsafe { libc::ftruncate(stream_fd(a[0] as Oop, raf_fd()), a[1] as i64) } != 0 {
+            return Err(io_error(t, "setLength failed"));
+        }
+        ret_void()
+    });
 }
