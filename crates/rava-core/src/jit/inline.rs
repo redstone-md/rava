@@ -14,13 +14,12 @@
 use super::analysis::{analyze, Analysis};
 use super::asm::{mem, Label, R};
 use super::compile::Emitter;
-use super::inline_plan::{Kind, Plan};
+use super::inline_plan::{leaf_slots, Kind};
 use super::vstack::Slot;
 use crate::classfile::ClassFile;
 use crate::klass::Klass;
 use crate::method::Method;
 use crate::thread::{header, offsets};
-use std::rc::Rc;
 
 /// Where an inlined body returns to.
 #[derive(Clone, Copy)]
@@ -50,7 +49,6 @@ pub(super) struct Body {
     pub vs: Vec<Slot>,
     pub lregs: Vec<Option<R>>,
     pub slow: Vec<(Label, usize, u16, Vec<(R, i32)>)>,
-    pub plan: Rc<Plan>,
 }
 
 impl Emitter {
@@ -62,7 +60,7 @@ impl Emitter {
     /// Emits `callee` in place for the call at operand slot `args`, after the entry checks (a
     /// null receiver, an uninitialized class) that branch to the ordinary call sequence, which
     /// the caller emits next. Returns the label to bind after that sequence.
-    pub(super) fn inline_call(&mut self, args: i32, callee: &'static Method, kind: &Kind, receiver: bool, holder: &'static Klass) -> Option<Label> {
+    pub(super) fn inline_call(&mut self, args: i32, callee: &'static Method, kind: Kind, receiver: bool, holder: &'static Klass) -> Option<Label> {
         let an = analyze(callee)?;
         let info = callee.code?;
         let (restart, done) = (self.a.new_label(), self.a.new_label());
@@ -74,22 +72,24 @@ impl Emitter {
             self.init_check(holder, restart);
         }
         let result = self.stack_base + args;
-        let (local_base, frame, plan) = match kind {
+        let (local_base, frame) = match kind {
             Kind::Leaf => {
                 let base = self.scratch_base;
+                self.extent = self.extent.max(base + leaf_slots(callee));
                 for i in 0..callee.param_slots() as i32 {
                     self.a.load(true, R::Rax, self.stk(args + i));
                     self.a.store(true, mem(R::R13, 8 * (base + i)), R::Rax);
                 }
-                (base, None, Rc::new(Plan::default()))
+                (base, None)
             }
-            Kind::Framed(plan) => {
+            Kind::Framed => {
                 let hdr = result + info.max_locals as i32;
                 self.link_frame(callee, hdr);
-                (result, Some(hdr), plan.clone())
+                (result, Some(hdr))
             }
         };
         let stack_base = local_base + info.max_locals as i32 + if frame.is_some() { header::SLOTS as i32 } else { 0 };
+        self.extent = self.extent.max(stack_base + info.max_stack as i32 + 2);
         let body = Body {
             m: callee,
             cf: callee.holder.cf.as_ref()?,
@@ -105,10 +105,11 @@ impl Emitter {
             vs: Vec::new(),
             lregs: Vec::new(),
             slow: Vec::new(),
-            plan,
         };
         let caller = self.swap_body(body);
+        self.chain.push(callee);
         let ok = self.emit_body(None);
+        self.chain.pop();
         if ok.is_some() && frame.is_some() {
             self.emit_slow_paths();
             // Exceptions leave the inlined frame and continue in the caller's dispatch.
@@ -117,8 +118,10 @@ impl Emitter {
             self.a.jmp(caller.exc);
         }
         self.swap_body(caller);
-        ok?;
         self.a.bind(restart);
+        if ok.is_none() {
+            self.failed = true;
+        }
         Some(done)
     }
 
@@ -158,7 +161,6 @@ impl Emitter {
             vs: replace(&mut self.vs, b.vs),
             lregs: replace(&mut self.lregs, b.lregs),
             slow: replace(&mut self.slow, b.slow),
-            plan: replace(&mut self.plan, b.plan),
         }
     }
 

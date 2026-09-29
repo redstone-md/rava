@@ -201,6 +201,14 @@ impl Asm {
         self.op_rm(true, &[0xC7], 0, m);
         self.d32(imm);
     }
+    /// `lea dst, [base + disp32]` with a displacement patched later; returns its position.
+    pub fn lea_patchable(&mut self, dst: R, base: R) -> u32 {
+        self.lea(dst, mem(base, 0x7fff_0000));
+        self.pos() - 4
+    }
+    pub fn patch_i32(&mut self, at: u32, v: i32) {
+        self.buf[at as usize..at as usize + 4].copy_from_slice(&v.to_le_bytes());
+    }
     /// `mov dword [m], imm32`.
     pub fn store_imm32(&mut self, m: M, imm: i32) {
         self.op_rm(false, &[0xC7], 0, m);

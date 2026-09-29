@@ -1,24 +1,20 @@
-//! Inlining decisions, made once per compilation before any code is emitted (resolution may
-//! progress concurrently, and the frame size must be known for the prologue).
+//! Inlining decisions, made at each call site as the body is emitted (so targets that only
+//! become known through constants, such as method-handle chains, can be inlined too).
 //!
-//! A call site is inlined when its target is statically bound (static, private, final,
-//! `invokespecial`, or a final class) and small (HotSpot's C1 limits: 35 bytecodes, or any size
-//! for `@ForceInline`; never `@DontInline`, recursive, synchronized or with handlers). Two
-//! strategies (`inline.rs`):
+//! A callee is inlined when it is small: HotSpot's C1 limit of 35 bytecodes, or any size up to a
+//! cap for `@ForceInline`. It must not be `@DontInline`, recursive, synchronized or have exception
+//! handlers. Two strategies (`inline.rs`):
 //! - **Leaf**: a side-effect-free body with no calls or loops runs in a scratch area; any slow
 //!   path restarts the call as an ordinary one.
 //! - **Framed**: any other small body runs in a real interpreter frame placed at the arguments,
 //!   as a call would place it, without a native call.
 
-use super::analysis::{analyze, i2, i4, insn_len, Analysis};
+use super::analysis::{i2, i4, insn_len};
 use super::intrinsics::intrinsic;
 use crate::classfile::Cp;
 use crate::klass::ACC_FINAL;
 use crate::link::Resolved;
 use crate::method::Method;
-use crate::thread::header;
-use std::collections::HashMap;
-use std::rc::Rc;
 use std::sync::atomic::Ordering;
 
 /// HotSpot's `MaxInlineSize` / `C1MaxInlineSize`.
@@ -29,99 +25,62 @@ const HOT_CALLEE: u32 = 1000;
 /// Scratch slots one leaf body may use.
 const MAX_LEAF_SLOTS: usize = 48;
 /// Nesting of inlined frames (cf. `C1MaxInlineLevel`).
-const MAX_DEPTH: usize = 6;
+const MAX_DEPTH: usize = 9;
 /// `@ForceInline` bodies above this size are still left as calls.
 const MAX_FORCED_SIZE: usize = 400;
 
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum Kind {
     Leaf,
-    Framed(Rc<Plan>),
+    Framed,
 }
 
-pub(super) struct Site {
-    pub target: &'static Method,
-    pub kind: Kind,
-}
-
-/// The inlined call sites of one method body, keyed by bci, and the highest frame slot (from
-/// the frame base) the body and everything inlined into it may touch.
-#[derive(Default)]
-pub(super) struct Plan {
-    pub sites: HashMap<usize, Site>,
-    pub extent: i32,
-}
-
-/// Plans `m`'s body whose operand stack starts at frame slot `stack_base`.
-pub(super) fn plan(m: &'static Method, an: &Analysis, stack_base: i32, chain: &mut Vec<&'static Method>) -> Plan {
-    let info = m.code.expect("planned method has code");
-    let scratch = stack_base + info.max_stack as i32 + 2;
-    let mut out = Plan { sites: HashMap::new(), extent: scratch };
-    if std::env::var_os("RAVA_CORE_NO_INLINE").is_some() {
-        return out;
+/// How to inline `target` into the scope chain `chain` (outermost first), if at all.
+pub(super) fn decide(target: &'static Method, chain: &[&'static Method]) -> Option<Kind> {
+    if std::env::var_os("RAVA_CORE_NO_INLINE").is_some() || target.is_abstract() || target.is_native() || intrinsic(target).is_some() {
+        return None;
     }
-    chain.push(m);
-    let code = info.code;
-    let mut pc = 0;
-    while pc < code.len() {
-        if let (Some(depth), 0xb6..=0xb8) = (an.depth[pc], code[pc]) {
-            if let Some(t) = bound_target(m, code, pc) {
-                if is_leaf(t) {
-                    out.extent = out.extent.max(scratch + leaf_slots(t));
-                    out.sites.insert(pc, Site { target: t, kind: Kind::Leaf });
-                } else if let Some(callee_an) = framed_ok(t, chain) {
-                    let base = stack_base + depth as i32 - t.param_slots() as i32;
-                    let callee_stack = base + t.code.unwrap().max_locals as i32 + header::SLOTS as i32;
-                    let nested = plan(t, &callee_an, callee_stack, chain);
-                    out.extent = out.extent.max(nested.extent);
-                    out.sites.insert(pc, Site { target: t, kind: Kind::Framed(Rc::new(nested)) });
-                }
-            }
-        }
-        pc += insn_len(code, pc);
+    if is_leaf(target) {
+        return Some(Kind::Leaf);
     }
-    chain.pop();
-    out
+    framed_ok(target, chain).then_some(Kind::Framed)
 }
 
-/// The statically bound target of the call at `pc`, excluding method-handle invokers and
-/// intrinsics (compiled separately).
-fn bound_target(caller: &'static Method, code: &[u8], pc: usize) -> Option<&'static Method> {
+/// The statically bound target of the call at `pc`, excluding method-handle invokers.
+pub(super) fn bound_target(caller: &'static Method, code: &[u8], pc: usize) -> Option<&'static Method> {
     let index = u16::from_be_bytes([code[pc + 1], code[pc + 2]]);
     let Some(Resolved::Method(m)) = caller.holder.resolved[index as usize].get().copied() else { return None };
-    if m.is_signature_polymorphic() || m.is_abstract() || intrinsic(m).is_some() {
+    if m.is_signature_polymorphic() {
         return None;
     }
-    let target = match code[pc] {
-        0xb8 if m.is_static() => m,
-        0xb7 if !m.is_static() => crate::interp::special_target(caller.holder, m),
-        0xb6 if !m.is_static() && (m.is_private() || m.access & ACC_FINAL != 0 || m.holder.access & ACC_FINAL != 0) => m,
-        _ => return None,
-    };
-    (!target.is_abstract() && !target.is_native()).then_some(target)
+    match code[pc] {
+        0xb8 if m.is_static() => Some(m),
+        0xb7 if !m.is_static() => Some(crate::interp::special_target(caller.holder, m)),
+        0xb6 if !m.is_static() && (m.is_private() || m.access & ACC_FINAL != 0 || m.holder.access & ACC_FINAL != 0) => Some(m),
+        _ => None,
+    }
 }
 
-fn framed_ok(t: &'static Method, chain: &[&'static Method]) -> Option<Analysis> {
-    let info = t.code?;
+fn framed_ok(t: &'static Method, chain: &[&'static Method]) -> bool {
+    let Some(info) = t.code else { return false };
     if chain.len() > MAX_DEPTH || chain.iter().any(|c| std::ptr::eq(*c, t)) || t.is_synchronized() || !info.handlers.is_empty() {
-        return None;
+        return false;
     }
     if t.has_annotation("Ljdk/internal/vm/annotation/DontInline;") {
-        return None;
+        return false;
     }
     let forced = t.has_annotation("Ljdk/internal/vm/annotation/ForceInline;");
-    let limit = if forced { MAX_FORCED_SIZE } else { MAX_INLINE_SIZE };
-    if info.code.len() > limit {
-        return None;
+    if info.code.len() > if forced { MAX_FORCED_SIZE } else { MAX_INLINE_SIZE } {
+        return false;
     }
-    let an = analyze(t)?;
     let mut pc = 0;
     while pc < info.code.len() {
         if matches!(info.code[pc], 0xa8 | 0xa9 | 0xc9) {
-            return None;
+            return false;
         }
         pc += insn_len(info.code, pc);
     }
-    Some(an)
+    true
 }
 
 /// Scratch slots a leaf body needs.
