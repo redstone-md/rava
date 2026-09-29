@@ -134,3 +134,15 @@ work inside `main` is ~2x slower than HotSpot's optimizing tiers.
 1. Code quality: register-cached operand stack, cheaper calls (the profile is now flat over
    compiled Java code, led by method-handle chains).
 2. Weak/soft/phantom reference processing; parallel marking; JIT allocation fast path.
+
+## 2026-09-29 — class-loading throughput
+
+Thin locks (CAS on the mark word; inflation only under contention or `wait`), a 32-way sharded
+FxHash symbol table with an ASCII fast path, swept pages recycled with `memset` instead of
+`MADV_DONTNEED` (page faults had dominated the profile), and a 64 MiB default GC trigger.
+
+| | `java` | `rava-core` |
+|---|---:|---:|
+| LoadAll (15,978 classes from the McLike class path) | 2.64-2.82 s | **2.36-2.53 s** |
+| McLike wall | 1.73-1.80 s | **~1.0 s** |
+| McLike inside `main` | 463-529 ms | 700-750 ms |
