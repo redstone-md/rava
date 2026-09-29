@@ -63,18 +63,32 @@ impl Emitter {
         } else {
             // Inline cache: compare the receiver class with the cached pair, else miss handler.
             let cell = runtime::IcCell::new();
-            let (hit, done) = (self.a.new_label(), self.a.new_label());
+            let (hit, done, found) = (self.a.new_label(), self.a.new_label(), self.a.new_label());
             self.a.load(true, R::Rdi, mem(R::Rcx, 0));
             self.a.mov_ri(R::Rax, cell as *const runtime::IcCell as i64);
             self.a.load(true, R::Rax, mem(R::Rax, 0));
             self.a.alu_rm(true, super::asm::Alu::Cmp, R::Rdi, mem(R::Rax, 0));
             self.a.jcc(Cond::E, hit);
+            if m.holder.is_interface() {
+                // Megamorphic interface sites scan the itable in generated code.
+                let learn = self.a.new_label();
+                self.a.mov_ri(R::Rax, cell as *const runtime::IcCell as i64);
+                self.a.alu_mi(false, super::asm::Alu::Cmp, mem(R::Rax, runtime::IcCell::misses_offset()), runtime::IC_MAX_UPDATES as i32);
+                self.a.jcc(Cond::B, learn);
+                self.a.mov_ri(R::Rsi, m.holder as *const Klass as i64);
+                self.a.mov_ri(R::Rdx, m.index() as i64);
+                self.a.call_abs(super::stubs::itable_lookup());
+                self.a.test_rr(true, R::Rax, R::Rax);
+                self.a.jcc(Cond::Ne, found);
+                self.a.bind(learn);
+            }
             self.set_bci(pc);
             self.a.mov_ri(R::Rsi, m as *const Method as i64);
             self.a.mov_ri(R::Rdx, cell as *const runtime::IcCell as i64);
             self.a.call_abs(runtime::ic_miss as *const () as usize);
             self.a.test_rr(true, R::Rax, R::Rax);
             self.a.jcc(Cond::E, slow);
+            self.a.bind(found);
             self.a.mov_rr(true, R::Rdx, R::Rax);
             self.a.jmp(done);
             self.a.bind(hit);

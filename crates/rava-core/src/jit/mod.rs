@@ -21,6 +21,7 @@ mod fold;
 mod inline;
 mod inline_plan;
 mod intrinsics;
+mod stubs;
 mod vstack;
 mod runtime;
 pub mod stats;

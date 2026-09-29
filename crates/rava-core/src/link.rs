@@ -163,13 +163,27 @@ pub fn select_method(recv: &'static Klass, m: &'static Method) -> Option<&'stati
         return recv.vtable().get(vi as usize).copied();
     }
     if m.holder.is_interface() && !recv.is_interface() {
-        let itable = recv.itable.get_or_init(|| build_itable(recv));
+        let itable = itable_of(recv);
         let iface = m.holder as *const Klass as usize;
         if let Some((_, block)) = itable.iter().find(|e| e.0 == iface) {
             return block[m.index()];
         }
     }
     find_implementation(recv, m)
+}
+
+/// `k`'s itable, built on first use and then also published flat for generated code.
+pub(crate) fn itable_of(k: &'static Klass) -> &'static [crate::klass::Itable] {
+    let itable = k.itable.get_or_init(|| build_itable(k));
+    if k.itable_raw.load(std::sync::atomic::Ordering::Acquire).is_null() {
+        let mut raw = vec![itable.len()];
+        for (iface, block) in itable.iter() {
+            raw.extend([*iface, block.as_ptr() as usize]);
+        }
+        let raw = Box::leak(raw.into_boxed_slice());
+        k.itable_raw.store(raw.as_mut_ptr(), std::sync::atomic::Ordering::Release);
+    }
+    itable
 }
 
 /// For every interface `k` implements, the implementation of each of its methods (`None` for

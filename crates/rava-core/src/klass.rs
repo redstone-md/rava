@@ -114,6 +114,9 @@ pub struct Klass {
     /// Per implemented interface: its class and, by the interface method's index, the
     /// implementation (as HotSpot's itable: a short scan, then an indexed load).
     pub(crate) itable: OnceLock<Box<[Itable]>>,
+    /// The same itable flattened for generated code: `[count, (interface, block pointer)...]`,
+    /// or null until first built (`jit/stubs.rs` scans it).
+    pub(crate) itable_raw: AtomicPtr<usize>,
     /// Defined by `Lookup.defineHiddenClass` (not findable by name).
     hidden: bool,
     /// Nest host fixed at definition (hidden nestmates); otherwise from `NestHost`.
@@ -169,6 +172,7 @@ impl Klass {
             resolved: (0..pool_len).map(|_| OnceLock::new()).collect(),
             array_klass: OnceLock::new(),
             itable: OnceLock::new(),
+            itable_raw: AtomicPtr::new(std::ptr::null_mut()),
             hidden: p.hidden,
             nest_host: OnceLock::new(),
             vtable_ptr: AtomicPtr::new(std::ptr::null_mut()),

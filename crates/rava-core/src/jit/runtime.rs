@@ -89,9 +89,13 @@ pub struct IcCell {
     misses: std::sync::atomic::AtomicU32,
 }
 
-const IC_MAX_UPDATES: u32 = 4;
+pub(super) const IC_MAX_UPDATES: u32 = 4;
 
 impl IcCell {
+    pub(super) fn misses_offset() -> i32 {
+        std::mem::offset_of!(IcCell, misses) as i32
+    }
+
     pub fn new() -> &'static IcCell {
         static EMPTY: IcEntry = IcEntry { klass: 0, target: 0 };
         Box::leak(Box::new(IcCell {
