@@ -82,8 +82,9 @@ pub(crate) fn field_of(field: Oop) -> (&'static Klass, usize) {
 /// (frame 0 is this native, 1 the @CallerSensitive method, 2 its caller), skipping reflection
 /// and method-handle plumbing frames.
 fn caller_class(t: &mut Thread, _: &[u64]) -> JResult<u64> {
-    let caller = (2..t.frame_count())
-        .filter_map(|n| t.caller_frame(n))
+    let caller = t
+        .frames()
+        .skip(2)
         .map(|(m, _)| m)
         .find(|m| !is_reflection_frame(m.holder));
     match caller {

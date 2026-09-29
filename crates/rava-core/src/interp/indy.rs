@@ -35,8 +35,13 @@ fn sites() -> &'static Mutex<HashMap<(usize, usize), Linkage>> {
     S.get_or_init(Default::default)
 }
 
+/// The invoker and appendix of an already linked call site (for compiled code).
+pub(crate) fn linked(m: &'static Method, bci: usize) -> Option<(&'static Method, usize)> {
+    sites().lock().unwrap().get(&(m as *const Method as usize, bci)).map(|l| (l.invoker, l.appendix))
+}
+
 /// Call-site signatures, parsed once per descriptor.
-fn site_sig(desc: Symbol) -> &'static MethodSig {
+pub(crate) fn site_sig(desc: Symbol) -> &'static MethodSig {
     static SIGS: OnceLock<Mutex<HashMap<Symbol, &'static MethodSig>>> = OnceLock::new();
     let mut map = SIGS.get_or_init(Default::default).lock().unwrap();
     map.entry(desc).or_insert_with(|| Box::leak(Box::new(MethodSig::parse(desc))))
@@ -195,10 +200,7 @@ pub(super) fn invoke_link_to(t: &mut Thread, f: &mut Frame, m: &'static Method) 
             }
             target
         }
-        _ => {
-            rt::initialize(t, target.holder)?;
-            target
-        }
+        _ => target,
     };
     let ret = super::invoke(t, target, args)?;
     finish(f, args, sig, ret)

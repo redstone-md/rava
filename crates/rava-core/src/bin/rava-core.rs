@@ -92,6 +92,9 @@ fn run_call(options: VmOptions, rest: &[String]) -> ExitCode {
 }
 
 fn report(result: Result<u64, rava_core::thread::Throw>, started: std::time::Instant, vm: &Vm) -> ExitCode {
+    if let Some(s) = rava_core::jit::stats::get() {
+        s.report();
+    }
     if std::env::var_os("RAVA_CORE_TIMING").is_some() {
         eprintln!(
             "[rava-core] {:.1} ms, {} classes, {} KiB heap",

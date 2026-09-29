@@ -162,17 +162,38 @@ pub fn select_method(recv: &'static Klass, m: &'static Method) -> Option<&'stati
     if vi >= 0 && !m.holder.is_interface() {
         return recv.vtable().get(vi as usize).copied();
     }
-    let key = (m.name, m.desc);
-    if let Some(hit) = recv.iface_cache.lock().unwrap().get(&key) {
-        return *hit;
+    if m.holder.is_interface() && !recv.is_interface() {
+        let itable = recv.itable.get_or_init(|| build_itable(recv));
+        let key = m as *const Method as usize;
+        if let Ok(i) = itable.binary_search_by_key(&key, |e| e.0) {
+            return itable[i].1;
+        }
     }
-    let found = recv
-        .vtable()
+    find_implementation(recv, m)
+}
+
+/// Every interface method `k` implements, sorted by method address, with its implementation
+/// (`None` where it stays abstract). Built once per class; lookups are lock-free.
+fn build_itable(k: &'static Klass) -> Box<[(usize, Option<&'static Method>)]> {
+    let mut table: Vec<(usize, Option<&'static Method>)> = k
+        .all_interfaces
+        .iter()
+        .flat_map(|i| i.methods().iter())
+        .filter(|im| !im.is_static() && !im.is_private() && im.name.as_str() != "<clinit>")
+        .map(|im| (im as *const Method as usize, find_implementation(k, im)))
+        .collect();
+    table.sort_unstable_by_key(|e| e.0);
+    table.dedup_by_key(|e| e.0);
+    table.into_boxed_slice()
+}
+
+/// The non-abstract method `recv` uses for `m`'s name and descriptor: its vtable (which holds
+/// inherited defaults), else a maximally-specific default method.
+fn find_implementation(recv: &'static Klass, m: &'static Method) -> Option<&'static Method> {
+    recv.vtable()
         .iter()
         .rev()
         .copied()
         .find(|c| c.name == m.name && c.desc == m.desc && !c.is_abstract())
-        .or_else(|| lookup_method(recv, m.name, m.desc).filter(|c| !c.is_abstract()));
-    recv.iface_cache.lock().unwrap().insert(key, found);
-    found
+        .or_else(|| lookup_method(recv, m.name, m.desc).filter(|c| !c.is_abstract()))
 }

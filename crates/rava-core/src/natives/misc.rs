@@ -94,8 +94,8 @@ fn set_system_stream(name: &str, desc: &str, value: u64) -> JResult<u64> {
 
 /// The defining loader of the innermost frame whose class has a non-boot loader.
 fn latest_user_defined_loader(t: &mut Thread, _: &[u64]) -> JResult<u64> {
-    let loader = (0..t.frame_count())
-        .filter_map(|n| t.caller_frame(n))
+    let loader = t
+        .frames()
         .map(|(m, _)| m.holder.loader())
         .find(|l| !l.is_null())
         .unwrap_or(std::ptr::null_mut());
