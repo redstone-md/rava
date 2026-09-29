@@ -45,6 +45,8 @@ pub(super) struct Emitter {
     pub inlined_bytes: usize,
     /// Header slots of the visible inlined frames around the current point, outermost first.
     pub vis_scopes: Vec<i32>,
+    /// With `RAVA_CORE_JIT_DUMP`: (code offset, method, bci) of each emitted instruction.
+    pub dump_map: Option<Vec<(u32, String, usize)>>,
     /// Constant operand-stack values at the current call site, captured before the stack is
     /// written back (they become constant locals of an inlined callee).
     pub site_consts: Vec<Option<i64>>,
@@ -91,6 +93,7 @@ pub fn compile(m: &'static Method, tier: u8) -> Option<CompiledMethod> {
         tier,
         inlined_bytes: 0,
         vis_scopes: Vec::new(),
+        dump_map: std::env::var_os("RAVA_CORE_JIT_DUMP").filter(|f| m.to_string().contains(f.to_str().unwrap_or(""))).map(|_| Vec::new()),
         site_consts: Vec::new(),
         lconst_base: vec![None; info.max_locals as usize],
         lconst: vec![None; info.max_locals as usize],
@@ -125,6 +128,8 @@ pub fn compile(m: &'static Method, tier: u8) -> Option<CompiledMethod> {
         if name.contains(filter.to_str().unwrap_or("")) {
             let file = format!("/tmp/rava-jit-{:x}.bin", entry);
             let _ = std::fs::write(&file, &code);
+            let map: String = e.dump_map.iter().flatten().map(|(off, m, bci)| format!("{off:x} {m}@{bci}\n")).collect();
+            let _ = std::fs::write(format!("{file}.map"), map);
             eprintln!("[jit-dump] {name} -> {file} (entry {entry:#x})");
         }
     }
@@ -160,6 +165,9 @@ impl Emitter {
                 }
             }
             self.a.bind(self.labels[pc]);
+            if let Some(map) = self.dump_map.as_mut() {
+                map.push((self.a.pos(), self.m.name.to_string(), pc));
+            }
             let first_slow = self.slow.len();
             self.emit(pc, depth)?;
             if self.failed {

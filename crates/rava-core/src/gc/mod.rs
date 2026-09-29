@@ -60,7 +60,7 @@ pub struct Stats {
 
 impl Heap {
     pub fn new(reserve: usize) -> Heap {
-        let min_trigger = std::env::var("RAVA_CORE_GC_MB").ok().and_then(|v| v.parse::<usize>().ok()).map_or(64 << 20, |mb| mb << 20);
+        let min_trigger = std::env::var("RAVA_CORE_GC_MB").ok().and_then(|v| v.parse::<usize>().ok()).map_or(128 << 20, |mb| mb << 20);
         Heap { space: Mutex::new(Space::new(reserve)), min_trigger }
     }
 
