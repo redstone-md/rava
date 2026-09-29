@@ -64,6 +64,24 @@ pub(super) fn register(r: &mut NativeRegistry) {
         ret_int(unsafe { libc::posix_fadvise(a[0] as i32, a[1] as i64, a[3] as i64, a[5] as i32) })
     });
     r.add(L, "directCopy0", "(IIJ)I", direct_copy);
+    // Extended attributes of open files (copied along with a file's attributes).
+    r.add(D, "flistxattr", "(IJI)I", |t, a| {
+        let n = unsafe { libc::flistxattr(a[0] as i32, a[1] as *mut libc::c_char, a[3] as usize) };
+        if n == -1 { Err(unix_error(t, errno())) } else { ret_int(n as i32) }
+    });
+    r.add(D, "fgetxattr0", "(IJJI)I", |t, a| {
+        let n = unsafe { libc::fgetxattr(a[0] as i32, a[1] as *const libc::c_char, a[3] as *mut libc::c_void, a[5] as usize) };
+        if n == -1 { Err(unix_error(t, errno())) } else { ret_int(n as i32) }
+    });
+    r.add(D, "fsetxattr0", "(IJJI)V", |t, a| {
+        let rc = unsafe { libc::fsetxattr(a[0] as i32, a[1] as *const libc::c_char, a[3] as *const libc::c_void, a[5] as usize, 0) };
+        if rc == -1 { Err(unix_error(t, errno())) } else { ret_void() }
+    });
+    r.add(D, "fremovexattr0", "(IJ)V", |t, a| {
+        let rc = unsafe { libc::fremovexattr(a[0] as i32, a[1] as *const libc::c_char) };
+        if rc == -1 { Err(unix_error(t, errno())) } else { ret_void() }
+    });
+    r.add("sun/nio/fs/UnixFileSystem", "bufferedCopy0", "(IIJIJ)V", buffered_copy);
     // The mount table (`FileStore`s): setmntent / getmntent_r / endmntent.
     r.add(L, "setmntent0", "(JJ)J", |t, a| {
         let fp = unsafe { libc::setmntent(cstr(a[0]), cstr(a[2])) };
@@ -136,6 +154,36 @@ fn direct_copy(t: &mut Thread, a: &[u64]) -> JResult<u64> {
             }
             _ if !cancel.is_null() && unsafe { *cancel } != 0 => return Err(unix_error(t, libc::ECANCELED)),
             _ => {}
+        }
+    }
+}
+
+/// Copies all of `src` to `dst` through the caller's buffer (when the kernel cannot copy
+/// directly), polling the cancel flag after each read.
+fn buffered_copy(t: &mut Thread, a: &[u64]) -> JResult<u64> {
+    let (dst, src, buf, size, cancel) = (a[0] as i32, a[1] as i32, a[2] as *mut libc::c_void, a[4] as usize, a[5] as *const i32);
+    loop {
+        let n = unsafe { libc::read(src, buf, size) };
+        if n <= 0 {
+            match n {
+                0 => return ret_void(),
+                _ if errno() == libc::EINTR => continue,
+                _ => return Err(unix_error(t, errno())),
+            }
+        }
+        if !cancel.is_null() && unsafe { *cancel } != 0 {
+            return Err(unix_error(t, libc::ECANCELED));
+        }
+        let mut done = 0;
+        while done < n as usize {
+            let w = unsafe { libc::write(dst, (buf as *const u8).add(done) as *const libc::c_void, n as usize - done) };
+            if w == -1 {
+                if errno() == libc::EINTR {
+                    continue;
+                }
+                return Err(unix_error(t, errno()));
+            }
+            done += w as usize;
         }
     }
 }
