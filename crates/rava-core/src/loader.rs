@@ -1,0 +1,254 @@
+//! Boot class loading: find bytes, parse, lay out fields, build methods and the vtable.
+
+use crate::classfile::ClassFile;
+use crate::heap::{Oop, HEADER_SIZE};
+use crate::klass::{FieldDesc, Klass, KlassKind, KlassParts, ACC_ABSTRACT, ACC_FINAL, ACC_PUBLIC};
+use crate::method::Method;
+use crate::symbol::Symbol;
+use crate::types::BasicType;
+use crate::vm::{vm, Vm};
+
+#[derive(Debug, Clone)]
+pub struct LoadError {
+    /// `java/lang/NoClassDefFoundError`, `java/lang/ClassFormatError`, ...
+    pub kind: &'static str,
+    pub message: String,
+}
+
+impl LoadError {
+    fn no_class(name: &str) -> Self {
+        LoadError { kind: "java/lang/NoClassDefFoundError", message: name.replace('/', ".") }
+    }
+}
+
+pub type LoadResult = Result<&'static Klass, LoadError>;
+
+/// Fields the VM adds to a JDK class's layout, invisible to reflection (as HotSpot's injected
+/// fields). Keyed by JDK class names: these are VM structure, not workload routing.
+fn injected_fields(class: &str) -> &'static [(&'static str, &'static str)] {
+    match class {
+        "java/lang/Class" => &[("klass", "J"), ("array_klass", "J"), ("primitive_type", "I")],
+        "java/lang/invoke/ResolvedMethodName" => &[("vmtarget", "J"), ("vmholder", "Ljava/lang/Class;")],
+        "java/lang/invoke/MemberName" => &[("vmindex", "J")],
+        _ => &[],
+    }
+}
+
+impl Vm {
+    /// Loads `name` (internal form or array descriptor) through the boot loader.
+    pub fn load_boot_class(&'static self, name: Symbol) -> LoadResult {
+        if let Some(k) = self.find_loaded(std::ptr::null_mut(), name) {
+            return Ok(k);
+        }
+        if name.as_str().starts_with('[') {
+            return self.array_class_by_descriptor(name);
+        }
+        let bytes = self.boot_class_bytes(name.as_str()).ok_or_else(|| LoadError::no_class(name.as_str()))?;
+        let cf = ClassFile::parse(bytes)
+            .map_err(|e| LoadError { kind: "java/lang/ClassFormatError", message: format!("{name}: {}", e.0) })?;
+        if cf.name != name {
+            return Err(LoadError::no_class(&format!("{name} (wrong name: {})", cf.name)));
+        }
+        self.define_class(cf, std::ptr::null_mut())
+    }
+
+    /// Defines a parsed class for `loader`, loading its supertypes through the boot loader.
+    pub fn define_class(&'static self, cf: ClassFile, loader: Oop) -> LoadResult {
+        let super_klass = match cf.super_name {
+            Some(s) => Some(self.load_boot_class(s)?),
+            None => None,
+        };
+        let interfaces = cf.interfaces.iter().map(|&i| self.load_boot_class(i)).collect::<Result<Vec<_>, _>>()?;
+        let layout = FieldLayout::compute(&cf, super_klass);
+        let klass: &'static Klass = Box::leak(Box::new(Klass::new(KlassParts {
+            name: cf.name,
+            kind: KlassKind::Instance,
+            access: cf.access,
+            super_klass,
+            interfaces,
+            fields: layout.fields,
+            instance_size: layout.instance_size,
+            ref_offsets: layout.ref_offsets,
+            static_slots: layout.static_slots,
+            initialized: false,
+            cf: Some(cf),
+        })));
+        klass.loader.store(loader, std::sync::atomic::Ordering::Release);
+        let cf = klass.cf.as_ref().unwrap();
+        let methods: Box<[Method]> =
+            cf.methods.iter().map(|m| Method::new(klass, m.name, m.desc, m.access, m.code.as_ref())).collect();
+        let _ = klass.methods.set(methods);
+        let _ = klass.vtable.set(build_vtable(klass));
+        self.register_well_known(klass);
+        Ok(self.publish(loader, klass))
+    }
+
+    /// The array class `[elem` for any element class.
+    pub fn array_class_of(&'static self, elem: &'static Klass) -> LoadResult {
+        if let Some(k) = elem.array_klass.get() {
+            return Ok(k);
+        }
+        let desc = if elem.is_array() { format!("[{}", elem.name) } else { format!("[L{};", elem.name) };
+        let k = self.new_array_klass(Symbol::intern(&desc), KlassKind::ObjArray { elem }, elem.loader())?;
+        Ok(*elem.array_klass.get_or_init(|| k))
+    }
+
+    pub fn array_class_by_descriptor(&'static self, desc: Symbol) -> LoadResult {
+        let comp = &desc.as_str()[1..];
+        match comp.as_bytes()[0] {
+            b'L' => self.array_class_of(self.load_boot_class(Symbol::intern(&comp[1..comp.len() - 1]))?),
+            b'[' => self.array_class_of(self.load_boot_class(Symbol::intern(comp))?),
+            c => self.primitive_array_class(BasicType::from_desc(c)),
+        }
+    }
+
+    pub fn primitive_array_class(&'static self, elem: BasicType) -> LoadResult {
+        let name = Symbol::intern(&format!("[{}", elem.desc_char()));
+        if let Some(k) = self.find_loaded(std::ptr::null_mut(), name) {
+            return Ok(k);
+        }
+        self.new_array_klass(name, KlassKind::TypeArray { elem }, std::ptr::null_mut())
+    }
+
+    fn new_array_klass(&'static self, name: Symbol, kind: KlassKind, loader: Oop) -> LoadResult {
+        let object = self.load_boot_class(Symbol::intern("java/lang/Object"))?;
+        let interfaces = vec![
+            self.load_boot_class(Symbol::intern("java/lang/Cloneable"))?,
+            self.load_boot_class(Symbol::intern("java/io/Serializable"))?,
+        ];
+        let klass: &'static Klass = Box::leak(Box::new(Klass::new(KlassParts {
+            name,
+            kind,
+            access: ACC_PUBLIC | ACC_FINAL | ACC_ABSTRACT,
+            super_klass: Some(object),
+            interfaces,
+            cf: None,
+            fields: Vec::new(),
+            instance_size: 0,
+            ref_offsets: Vec::new(),
+            static_slots: 0,
+            initialized: true,
+        })));
+        klass.loader.store(loader, std::sync::atomic::Ordering::Release);
+        let _ = klass.methods.set(Box::new([]));
+        let _ = klass.vtable.set(object.vtable().to_vec().into_boxed_slice());
+        Ok(self.publish(loader, klass))
+    }
+
+    fn register_well_known(&self, k: &'static Klass) {
+        let wk = &self.wk;
+        let slot = match k.name.as_str() {
+            "java/lang/Object" => &wk.object,
+            "java/lang/Class" => &wk.class,
+            "java/lang/String" => &wk.string,
+            "java/lang/Cloneable" => &wk.cloneable,
+            "java/io/Serializable" => &wk.serializable,
+            _ => return,
+        };
+        let _ = slot.set(k);
+    }
+}
+
+struct FieldLayout {
+    fields: Vec<FieldDesc>,
+    instance_size: u32,
+    ref_offsets: Vec<u32>,
+    static_slots: usize,
+}
+
+impl FieldLayout {
+    /// Instance fields pack after the superclass's, largest first so every field is naturally
+    /// aligned; statics get one 8-byte slot each.
+    fn compute(cf: &ClassFile, super_klass: Option<&'static Klass>) -> FieldLayout {
+        let mut fields: Vec<FieldDesc> = cf
+            .fields
+            .iter()
+            .map(|f| FieldDesc {
+                name: f.name,
+                desc: f.desc,
+                access: f.access,
+                ty: BasicType::from_desc(f.desc.as_str().as_bytes()[0]),
+                offset: 0,
+                constant_value: f.constant_value,
+            })
+            .collect();
+        for &(name, desc) in injected_fields(cf.name.as_str()) {
+            fields.push(FieldDesc {
+                name: Symbol::intern(name),
+                desc: Symbol::intern(desc),
+                access: 0x1000, // ACC_SYNTHETIC: hidden from reflection
+                ty: BasicType::from_desc(desc.as_bytes()[0]),
+                offset: 0,
+                constant_value: 0,
+            });
+        }
+        let mut size = super_klass.map_or(HEADER_SIZE, |s| s.instance_size());
+        let mut ref_offsets = super_klass.map_or(Vec::new(), |s| s.ref_offsets.to_vec());
+        let mut static_slots = 0;
+        for f in fields.iter_mut().filter(|f| f.is_static()) {
+            f.offset = static_slots;
+            static_slots += 1;
+        }
+        for width in [8, 4, 2, 1] {
+            for f in fields.iter_mut().filter(|f| !f.is_static() && f.ty.size() == width) {
+                size = (size + width - 1) & !(width - 1);
+                f.offset = size;
+                if f.ty.is_ref() {
+                    ref_offsets.push(size);
+                }
+                size += width;
+            }
+        }
+        FieldLayout { fields, instance_size: (size + 7) & !7, ref_offsets, static_slots: static_slots as usize }
+    }
+}
+
+/// JVMS 5.4.5 overriding: `m` overrides `sup` if names/descriptors match and `sup` is accessible
+/// from `m`'s class (public/protected, or package-private in the same runtime package).
+fn overrides(m: &Method, sup: &Method) -> bool {
+    if m.name != sup.name || m.desc != sup.desc || sup.is_private() || sup.is_static() {
+        return false;
+    }
+    const PUBLIC_OR_PROTECTED: u16 = 0x0005;
+    sup.access & PUBLIC_OR_PROTECTED != 0
+        || (m.holder.package() == sup.holder.package()
+            && std::ptr::eq(m.holder.loader(), sup.holder.loader()))
+}
+
+fn build_vtable(klass: &'static Klass) -> Box<[&'static Method]> {
+    if klass.is_interface() {
+        // Interfaces dispatch Object's public methods like any class does.
+        return klass.super_klass.map_or(Box::new([]), |s| s.vtable().into());
+    }
+    let mut vt: Vec<&'static Method> = klass.super_klass.map_or(Vec::new(), |s| s.vtable().to_vec());
+    for m in klass.methods().iter().filter(|m| m.is_virtual()) {
+        let mut placed = false;
+        for (i, slot) in vt.iter_mut().enumerate() {
+            if overrides(m, slot) {
+                *slot = m;
+                if !placed {
+                    m.set_vtable_index(i as i32);
+                    placed = true;
+                }
+            }
+        }
+        if !placed {
+            m.set_vtable_index(vt.len() as i32);
+            vt.push(m);
+        }
+    }
+    // Default methods inherited from interfaces take slots the class does not fill.
+    for iface in klass.all_interfaces.iter() {
+        for d in iface.methods().iter().filter(|d| d.is_default_candidate()) {
+            if !vt.iter().any(|m| m.name == d.name && m.desc == d.desc) {
+                vt.push(d);
+            }
+        }
+    }
+    vt.into_boxed_slice()
+}
+
+/// Convenience for callers holding no `Vm` reference.
+pub fn load(name: &str) -> LoadResult {
+    vm().load_boot_class(Symbol::intern(name))
+}

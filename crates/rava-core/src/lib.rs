@@ -1,10 +1,27 @@
 //! rava-core: the parity execution core. Design: `docs/core/README.md`.
 
 pub mod classfile;
+pub mod heap;
+pub mod interp;
 pub mod jimage;
+pub mod klass;
+pub mod link;
+pub mod loader;
+pub mod method;
+pub mod natives;
+pub mod runtime;
 pub mod symbol;
+pub mod thread;
+pub mod types;
+pub mod vm;
 
 use std::path::PathBuf;
+
+// Class metadata is immutable after definition except through its atomics and locks.
+unsafe impl Sync for klass::Klass {}
+unsafe impl Send for klass::Klass {}
+unsafe impl Sync for method::Method {}
+unsafe impl Send for method::Method {}
 
 /// Locates the JDK whose `lib/modules` supplies the class library: `JAVA_HOME`, else the
 /// installation that owns the `java` launcher on `PATH`.
