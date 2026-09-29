@@ -43,13 +43,7 @@ fn is_hidden_frame(m: &'static Method) -> bool {
     if m.holder.is_hidden() {
         return true;
     }
-    let Some(cf) = m.holder.cf.as_ref() else { return false };
-    let info = &cf.methods[m.index()];
-    info.attrs.iter().filter(|a| a.name == "RuntimeVisibleAnnotations").any(|a| {
-        crate::classfile::annotation_types(cf.attr_bytes(*a)).into_iter().any(|i| {
-            cf.utf8(i).is_ok_and(|s| s == "Ljava/lang/invoke/LambdaForm$Hidden;" || s == "Ljdk/internal/vm/annotation/Hidden;")
-        })
-    })
+    m.has_annotation("Ljava/lang/invoke/LambdaForm$Hidden;") || m.has_annotation("Ljdk/internal/vm/annotation/Hidden;")
 }
 
 fn is_walker_frame(m: &'static Method) -> bool {

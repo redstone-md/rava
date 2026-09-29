@@ -107,6 +107,16 @@ impl Method {
         !self.is_static() && !self.is_private() && self.name.as_str() != "<init>"
     }
 
+    /// Whether the method carries a runtime-visible annotation of type `desc` (e.g.
+    /// `Ljdk/internal/vm/annotation/ForceInline;`).
+    pub fn has_annotation(&self, desc: &str) -> bool {
+        let Some(cf) = self.holder.cf.as_ref() else { return false };
+        let info = &cf.methods[self.index()];
+        info.attrs.iter().filter(|a| a.name == "RuntimeVisibleAnnotations").any(|a| {
+            crate::classfile::annotation_types(cf.attr_bytes(*a)).into_iter().any(|i| cf.utf8(i).is_ok_and(|s| s == desc))
+        })
+    }
+
     /// JVMS 2.9.3: a native varargs method of `MethodHandle` or `VarHandle` taking `Object[]`.
     pub fn is_signature_polymorphic(&self) -> bool {
         self.is_native()
