@@ -1,6 +1,7 @@
 //! Code generation of arithmetic, conversions, comparisons and guards. Int values stay
 //! sign-extended to 64 bits and float values keep their bits in the low half (slot encoding).
-//! A result never shares a location with its inputs (their intervals overlap at the use).
+//! A result shares a register only with its first operand, when that operand dies there
+//! (`regalloc.rs`): every sequence reads the other operands before writing the result.
 
 use super::codegen::{Arg, Gen};
 use super::ir::*;
