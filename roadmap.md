@@ -271,6 +271,32 @@ tracer. No substrate implementation starts until a separate end-to-end
 performance tracer has an evidence-backed removal ceiling and a fresh-boot
 measurement protocol.
 
+### 2026-09-29: dynamic-class conformance tracer establishes a baseline
+
+Added `bench/dyn_class_sem.sh` and minimal Java fixtures. It compiles the probe
+onto the initial classpath, compiles `dyn.Plugin` and `dyn.BadInit` into a
+separate directory, then compares a Java `-Xint` run with the current Rava
+product. The disposable harness changes no world or runtime artifacts. It is a
+semantic check only; its current Rava arm enables Tier-0 JIT and does not
+certify the no-adapt acceptance gate.
+
+All compared observations match except the first failed class initializer:
+HotSpot reports `ExceptionInInitializerError`, while Rava propagates the
+original `IllegalStateException`; the subsequent attempt correctly reports
+`NoClassDefFoundError`. Successful dynamic loading, static initialization,
+virtual override and interface-default dispatch, reflection lookup/invocation
+and modifiers, guest exception handling, and absent-class `ClassNotFoundException`
+match on this probe. The new result exposes an ungated baseline semantics gap,
+not a substrate speedup.
+
+The probe calls `DynBase.value()` repeatedly before loading its subclass, but
+does not yet prove the background JIT has published that body before the load.
+The class-name JIT dump diagnostic wrote interleaved concurrent output and is
+not a reliable ordering witness. A future compiled-subclass case needs an
+explicit, non-production JIT-publication witness. No <5 s performance tracer
+has emerged; this probe cannot be counted toward the required removal ceiling.
+
+
 ## Objective
 
 Reduce Minecraft boot and warm-reload wall time through structural, workload-agnostic changes while preserving exact Java semantics.
