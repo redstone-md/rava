@@ -415,6 +415,18 @@ impl Asm {
     pub fn cvtt_f2i(&mut self, double: bool, w: bool, r: R, x: X) {
         self.sse_rr(Self::fp(double), w, 0x2C, r as u8, x.0);
     }
+    /// `movaps dst, src` (a register copy).
+    pub fn mov_xx(&mut self, dst: X, src: X) {
+        self.sse_rr(0, false, 0x28, dst.0, src.0);
+    }
+    /// `xorpd/xorps x, y`.
+    pub fn fxor(&mut self, double: bool, x: X, y: X) {
+        self.sse_rr(if double { 0x66 } else { 0 }, false, 0x57, x.0, y.0);
+    }
+    /// `andpd/andps x, y`.
+    pub fn fand(&mut self, double: bool, x: X, y: X) {
+        self.sse_rr(if double { 0x66 } else { 0 }, false, 0x54, x.0, y.0);
+    }
     /// `movq/movd x, r`.
     pub fn mov_xr(&mut self, w: bool, x: X, r: R) {
         self.sse_rr(0x66, w, 0x6E, x.0, r as u8);
@@ -461,5 +473,8 @@ mod tests {
         assert_eq!(hex(|a| a.cmov(true, Cond::L, R::Rax, R::Rcx)), "48 0f 4c c1");
         assert_eq!(hex(|a| a.load(true, R::Rbp, mem(R::R13, 8))), "49 8b 6d 08");
         assert_eq!(hex(|a| a.round_sd(X(9), X(2), 2)), "66 44 0f 3a 0b ca 02");
+        assert_eq!(hex(|a| a.mov_xx(X(10), X(3))), "44 0f 28 d3");
+        assert_eq!(hex(|a| a.fxor(true, X(2), X(1))), "66 0f 57 d1");
+        assert_eq!(hex(|a| a.fstore(true, mem(R::Rsp, 16), X(12))), "f2 44 0f 11 64 24 10");
     }
 }

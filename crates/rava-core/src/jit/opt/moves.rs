@@ -2,7 +2,7 @@
 //! receives the value its source held before any move, cycles broken through a scratch register.
 
 use super::regalloc::Loc;
-use crate::jit::asm::{mem, Asm, M, R};
+use crate::jit::asm::{mem, Asm, M, R, X};
 
 /// Scratch registers of the move resolver (not allocatable).
 const CYCLE: R = R::R11;
@@ -29,6 +29,15 @@ pub fn mov(a: &mut Asm, dst: Loc, src: Loc) {
             a.mov_ri(TEMP, c);
             a.store(true, spill(d), TEMP);
         }
+        (Loc::Xmm(d), Loc::Xmm(s)) => a.mov_xx(X(d), X(s)),
+        (Loc::Xmm(d), Loc::Stack(s)) => a.fload(true, X(d), spill(s)),
+        (Loc::Xmm(d), Loc::Reg(s)) => a.mov_xr(true, X(d), s),
+        (Loc::Xmm(d), Loc::Const(c)) => {
+            a.mov_ri(TEMP, c);
+            a.mov_xr(true, X(d), TEMP);
+        }
+        (Loc::Stack(d), Loc::Xmm(s)) => a.fstore(true, spill(d), X(s)),
+        (Loc::Reg(d), Loc::Xmm(s)) => a.mov_rx(true, d, X(s)),
         (d, s) => unreachable!("move {s:?} to {d:?}"),
     }
 }
