@@ -52,6 +52,8 @@
 
 use rava_classfile::{BootstrapMethod, Code, ConstantPool};
 #[cfg(test)]
+mod effect_graph;
+#[cfg(test)]
 mod effect_summary;
 
 /// GAP-S06: one callee admissibility query. `exact == true` means `owner` IS the
