@@ -201,18 +201,35 @@ pub fn holds_lock(o: Oop) -> bool {
 #[derive(Debug, PartialEq, Eq)]
 pub enum WaitError {
     NotOwner,
+    Interrupted,
 }
 
 /// `Object.wait(millis)`; 0 waits until notified. The thread is blocked outside Java meanwhile.
-pub fn wait(t: &Thread, o: Oop, millis: i64) -> Result<(), WaitError> {
+/// `interrupted` reads (and on true, clears) the thread's interrupt status; an interrupt before
+/// or during the wait ends it with `Interrupted` once the monitor is re-acquired.
+pub fn wait(t: &Thread, o: Oop, millis: i64, interrupted: &dyn Fn() -> bool) -> Result<(), WaitError> {
     if !holds_lock(o) {
         return Err(WaitError::NotOwner);
     }
+    if interrupted() {
+        return Err(WaitError::Interrupted);
+    }
     inflate_owned(o);
-    crate::gc::safepoint::blocking(t, || wait_blocking(o, millis))
+    let rec = t.gc_record;
+    rec.inspect(|r| r.waiting_on.store(o as usize, Ordering::SeqCst));
+    let r = crate::gc::safepoint::blocking(t, || wait_blocking(o, millis, interrupted));
+    rec.inspect(|r| r.waiting_on.store(0, Ordering::SeqCst));
+    r
 }
 
-fn wait_blocking(o: Oop, millis: i64) -> Result<(), WaitError> {
+/// Wakes the waiters on `o`'s monitor so an interrupted one can notice (`Thread.interrupt`).
+pub fn wake_waiters(o: usize) {
+    let m = monitor_of(o as Oop);
+    let _s = m.state.lock().unwrap();
+    m.waiting.notify_all();
+}
+
+fn wait_blocking(o: Oop, millis: i64, interrupted: &dyn Fn() -> bool) -> Result<(), WaitError> {
     let me = thread_token();
     let m = monitor_of(o);
     let mut s = m.state.lock().unwrap();
@@ -224,7 +241,12 @@ fn wait_blocking(o: Oop, millis: i64) -> Result<(), WaitError> {
     s.waiters += 1;
     m.entry.notify_one();
     let deadline = (millis > 0).then(|| std::time::Instant::now() + Duration::from_millis(millis as u64));
+    let mut was_interrupted = false;
     while s.notified == 0 {
+        if interrupted() {
+            was_interrupted = true;
+            break;
+        }
         match deadline {
             None => s = m.waiting.wait(s).unwrap(),
             Some(d) => {
@@ -236,7 +258,7 @@ fn wait_blocking(o: Oop, millis: i64) -> Result<(), WaitError> {
             }
         }
     }
-    if s.notified > 0 {
+    if s.notified > 0 && !was_interrupted {
         s.notified -= 1;
     }
     s.waiters -= 1;
@@ -245,7 +267,11 @@ fn wait_blocking(o: Oop, millis: i64) -> Result<(), WaitError> {
     }
     s.owner = me;
     s.count = count;
-    Ok(())
+    if was_interrupted {
+        Err(WaitError::Interrupted)
+    } else {
+        Ok(())
+    }
 }
 
 pub fn notify(o: Oop, all: bool) -> Result<(), WaitError> {

@@ -13,6 +13,17 @@ use std::sync::atomic::AtomicI64;
 vm_field!(eetop_offset, "java/lang/Thread", "eetop", "J");
 vm_field!(holder_offset, "java/lang/Thread", "holder", "Ljava/lang/Thread$FieldHolder;");
 vm_field!(status_offset, "java/lang/Thread$FieldHolder", "threadStatus", "I");
+vm_field!(interrupted_offset, "java/lang/Thread", "interrupted", "Z");
+
+/// Reads `jt`'s interrupt status; when set and `clear`, resets it (HotSpot `is_interrupted`).
+pub(crate) fn is_interrupted(jt: Oop, clear: bool) -> bool {
+    if jt.is_null() {
+        return false;
+    }
+    // SAFETY: a live java.lang.Thread (objects never move); the field is a volatile boolean.
+    let field = unsafe { &*((jt as usize + interrupted_offset() as usize) as *const std::sync::atomic::AtomicBool) };
+    field.load(std::sync::atomic::Ordering::SeqCst) && (!clear || field.swap(false, std::sync::atomic::Ordering::SeqCst))
+}
 
 /// `JavaThreadStatus` values stored in `Thread.FieldHolder.threadStatus`.
 pub const STATUS_RUNNABLE: i32 = 0x0005;
@@ -32,16 +43,24 @@ pub(super) fn register(r: &mut NativeRegistry) {
     r.add(T, "ensureMaterializedForStackWalk", "(Ljava/lang/Object;)V", |_, _| ret_void());
     r.add(T, "setPriority0", "(I)V", |_, _| ret_void());
     r.add(T, "setNativeName", "(Ljava/lang/String;)V", |_, _| ret_void());
-    r.add(T, "interrupt0", "()V", |_, _| ret_void());
+    r.add(T, "interrupt0", "()V", |_, a| {
+        // The Java caller has set `interrupted`; wake whatever the target is blocked in.
+        if let Some(rec) = record_of(a[0] as Oop) {
+            *rec.permit.lock().unwrap() = true;
+            rec.unparked.notify_all();
+            let o = rec.waiting_on.load(std::sync::atomic::Ordering::SeqCst);
+            if o != 0 {
+                sync::wake_waiters(o);
+            }
+        }
+        ret_void()
+    });
     r.add(T, "clearInterruptEvent", "()V", |_, _| ret_void());
     r.add(T, "yield0", "()V", |_, _| {
         std::thread::yield_now();
         ret_void()
     });
-    r.add(T, "sleep0", "(J)V", |t, a| {
-        crate::gc::safepoint::blocking(t, || std::thread::sleep(std::time::Duration::from_nanos(a[0].min(i64::MAX as u64))));
-        ret_void()
-    });
+    r.add(T, "sleep0", "(J)V", sleep0);
     r.add(T, "holdsLock", "(Ljava/lang/Object;)Z", |t, a| {
         if a[0] == 0 {
             return Err(rt::null_pointer(t));
@@ -53,12 +72,45 @@ pub(super) fn register(r: &mut NativeRegistry) {
         ret_long(&NEXT_TID as *const AtomicI64 as i64)
     });
     r.add(T, "start0", "()V", start0);
-    r.add("java/lang/Object", "wait0", "(J)V", |t, a| match sync::wait(t, a[0] as Oop, a[1] as i64) {
-        Ok(()) => ret_void(),
-        Err(_) => Err(throw_new(t, "java/lang/IllegalMonitorStateException", "current thread is not owner")),
+    r.add("java/lang/Object", "wait0", "(J)V", |t, a| {
+        let jt = t.java_thread;
+        match sync::wait(t, a[0] as Oop, a[1] as i64, &|| is_interrupted(jt, true)) {
+            Ok(()) => ret_void(),
+            Err(sync::WaitError::Interrupted) => Err(throw_new(t, "java/lang/InterruptedException", "")),
+            Err(sync::WaitError::NotOwner) => Err(throw_new(t, "java/lang/IllegalMonitorStateException", "current thread is not owner")),
+        }
     });
     r.add("java/lang/Object", "notify", "()V", |t, a| notify(t, a[0] as Oop, false));
     r.add("java/lang/Object", "notifyAll", "()V", |t, a| notify(t, a[0] as Oop, true));
+}
+
+/// `Thread.sleep`: waits on the thread's park event so `interrupt` can cut it short.
+fn sleep0(t: &mut Thread, a: &[u64]) -> JResult<u64> {
+    let jt = t.java_thread;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_nanos(a[0].min(i64::MAX as u64));
+    let interrupted = match t.gc_record {
+        None => {
+            crate::gc::safepoint::blocking(t, || std::thread::sleep(deadline - std::time::Instant::now()));
+            false
+        }
+        Some(rec) => crate::gc::safepoint::blocking(t, || {
+            let mut permit = rec.permit.lock().unwrap();
+            loop {
+                if is_interrupted(jt, true) {
+                    return true;
+                }
+                let now = std::time::Instant::now();
+                if now >= deadline {
+                    return false;
+                }
+                permit = rec.unparked.wait_timeout(permit, deadline - now).unwrap().0;
+            }
+        }),
+    };
+    if interrupted {
+        return Err(throw_new(t, "java/lang/InterruptedException", "sleep interrupted"));
+    }
+    ret_void()
 }
 
 fn notify(t: &mut Thread, o: Oop, all: bool) -> JResult<u64> {
