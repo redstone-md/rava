@@ -3,11 +3,11 @@
 //! arguments from the call's operand slots and leaves the result in the first; a case it does
 //! not handle (a null receiver, a class without a mirror yet) takes the call's slow path.
 
-use super::asm::{mem, mem_idx, Alu, Cond, R, X};
+use super::asm::{mem, mem_idx, Alu, Cond, Label, R, X};
 use super::compile::Emitter;
 use super::emit_obj::{load_typed, store_typed};
 use super::runtime;
-use crate::klass::Klass;
+use crate::klass::{Klass, ACC_ABSTRACT, ACC_INTERFACE};
 use crate::method::Method;
 use crate::types::BasicType;
 use std::mem::offset_of;
@@ -92,6 +92,27 @@ pub(super) fn intrinsic(m: &Method) -> Option<Intrinsic> {
 }
 
 impl Emitter {
+    /// `Unsafe.allocateInstance` of a constant, instantiable class: an inline allocation once
+    /// the class is initialized. Any other case (and a refill) makes the ordinary call, which
+    /// the caller emits next; returns the label to bind after it.
+    pub(super) fn allocate_instance(&mut self, m: &'static Method, args: i32, mirror: Option<i64>) -> Option<Label> {
+        if m.holder.name != "jdk/internal/misc/Unsafe" || m.name != "allocateInstance" {
+            return None;
+        }
+        let k = crate::runtime::klass_of_mirror(mirror? as crate::heap::Oop)?;
+        let instantiable = matches!(k.kind, crate::klass::KlassKind::Instance) && k.access & (ACC_ABSTRACT | ACC_INTERFACE) == 0 && k.name != "java/lang/Class";
+        if !instantiable {
+            return None;
+        }
+        let (call, done) = (self.a.new_label(), self.a.new_label());
+        self.init_check(k, call);
+        self.alloc_inline(k, call);
+        self.a.store(true, self.stk(args), R::Rax);
+        self.a.jmp(done);
+        self.a.bind(call);
+        Some(done)
+    }
+
     /// Compiles the call at `pc` to intrinsic `m` in place; false if `m` is not one.
     pub(super) fn try_intrinsic(&mut self, pc: usize, depth: u16, m: &'static Method, args: i32) -> bool {
         let Some(k) = intrinsic(m) else { return false };

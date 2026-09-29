@@ -120,7 +120,9 @@ impl Emitter {
             return;
         }
         let entry = if op == 0xb8 { Entry::Static(m.holder) } else { Entry::Receiver };
+        let fast_alloc = self.allocate_instance(m, args, self.site_const(args + 1));
         let inlined = match bound_target(self.m, self.code, pc) {
+            _ if fast_alloc.is_some() => fast_alloc,
             Some(t) => self.try_inline(pc, args, t, entry, None),
             // A virtual call to a concrete method: inline it for receivers that still dispatch
             // to it (checked on the vtable, so later subclasses stay correct).

@@ -24,6 +24,18 @@ pub struct AllocCache {
     classes: [ClassCache; CLASSES],
 }
 
+/// For inline allocation in compiled code: the size of a cell for an object of `bytes` (at
+/// most `LARGE_THRESHOLD`), and the offsets within `AllocCache` of that size class's bump
+/// pointer and bump limit. Bump memory is already zeroed.
+pub(crate) fn bump_layout(bytes: usize) -> Option<(usize, usize, usize)> {
+    if bytes > LARGE_THRESHOLD {
+        return None;
+    }
+    let class = class_of(bytes);
+    let base = std::mem::offset_of!(AllocCache, classes) + class * std::mem::size_of::<ClassCache>();
+    Some((CLASS_SIZES[class] as usize, base + std::mem::offset_of!(ClassCache, bump), base + std::mem::offset_of!(ClassCache, end)))
+}
+
 impl Default for AllocCache {
     fn default() -> Self {
         AllocCache { classes: [ClassCache::default(); CLASSES] }

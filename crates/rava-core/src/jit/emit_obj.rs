@@ -118,12 +118,31 @@ impl Emitter {
         };
         let slow = self.slow_path(pc, depth);
         self.init_check(k, slow);
+        let (done, refill) = (self.a.new_label(), self.a.new_label());
+        self.alloc_inline(k, refill);
+        self.a.jmp(done);
+        self.a.bind(refill);
         self.set_bci(pc);
         self.a.mov_rr(true, R::Rdi, R::R12);
         self.a.mov_ri(R::Rsi, k as *const Klass as i64);
         self.a.call_abs(runtime::new_instance as *const () as usize);
         self.check_pending();
+        self.a.bind(done);
         self.a.store(true, self.stk(depth as i32), R::Rax);
+    }
+
+    /// rax := a new instance of `k` bumped from this thread's allocation cache (zeroed memory,
+    /// class word written), or a jump to `slow` when the cache's bump range is exhausted.
+    pub(super) fn alloc_inline(&mut self, k: &'static Klass, slow: Label) {
+        let Some((size, bump, end)) = crate::gc::bump_layout(k.instance_size() as usize) else { return self.a.jmp(slow) };
+        let at = |off: usize| mem(R::R12, (std::mem::offset_of!(crate::thread::Thread, alloc) + off) as i32);
+        self.a.load(true, R::Rax, at(bump));
+        self.a.lea(R::Rdx, mem(R::Rax, size as i32));
+        self.a.alu_rm(true, Alu::Cmp, R::Rdx, at(end));
+        self.a.jcc(Cond::A, slow);
+        self.a.store(true, at(bump), R::Rdx);
+        self.a.mov_ri(R::Rdx, k as *const Klass as i64);
+        self.a.store(true, mem(R::Rax, 0), R::Rdx);
     }
 
     /// `newarray` / `anewarray`: a negative length takes the interpreter's exception path.
