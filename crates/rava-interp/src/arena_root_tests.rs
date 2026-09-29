@@ -108,9 +108,8 @@ fn arena_object_over_32_fields_traces_ref_at_slot_35() {
 /// keeping live objects — including one held only by a map — relocated + intact.
 #[test]
 fn major_gc_reclaims_dead_tenured_keeps_live_intact() {
-    // Serialise — RAVA_ARENA_MAJOR_KB is a process-global env toggle.
-    let _g = crate::parallel::TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-    std::env::remove_var("RAVA_ARENA_MAJOR_KB");
+    // This is cached process configuration in production; the test override is thread-local.
+    let _major_threshold = crate::nextgen::ArenaMajorKbTestOverride::set(0);
 
     let name: std::sync::Arc<str> = std::sync::Arc::from("LMajorTest");
     let layout: std::sync::Arc<[(u32, u8)]> = vec![(801u32, 0u8), (802, 0), (803, 0)].into();
@@ -143,9 +142,7 @@ fn major_gc_reclaims_dead_tenured_keeps_live_intact() {
     }
 
     // MAJOR: force via the tiny threshold, then compact.
-    std::env::set_var("RAVA_ARENA_MAJOR_KB", "0");
     vm.arena_collect_jit();
-    std::env::remove_var("RAVA_ARENA_MAJOR_KB");
 
     let old_after = crate::nextgen::arena_old_bytes();
     assert!(old_after < old_full, "major reclaimed dead tenured: {old_after} < {old_full}");
