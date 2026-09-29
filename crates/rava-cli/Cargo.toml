@@ -20,6 +20,8 @@ next-gen-gc = ["rava-interp/next-gen-gc"]
 # Builds the diagnostic wall/PC sampler into rava-interp. Production releases omit
 # the inactive sampler hooks; use this only when collecting a profile.
 wall-profile = ["rava-interp/wall-profile"]
+# Forwards the default-off class-initializer CPU census; also requires RAVA_CLINIT_CENSUS=1.
+clinit-census = ["rava-interp/clinit-census"]
 # Forwards the 24B → 16B arena object header layout (see rava-interp).
 shrink-header = ["rava-interp/shrink-header"]
 # PGO TRAINING ONLY, and only meaningful in a `-C profile-generate` build: links

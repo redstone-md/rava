@@ -14,6 +14,8 @@ mod arena_string_contract_tests;
 /// attribute only because this file belonged to another work stream at the time; declared here
 /// it is an ordinary sibling module and the attribute is gone.
 mod clinit;
+#[cfg(feature = "clinit-census")]
+mod clinit_census;
 pub(crate) mod threads;
 mod drive;
 pub(crate) mod aot_route_diag;
