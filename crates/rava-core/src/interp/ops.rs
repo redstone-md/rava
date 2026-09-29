@@ -25,15 +25,37 @@ macro_rules! f64_op { ($f:ident, $op:expr) => {{ let b = $f.pop_d(); let a = $f.
 
 pub(super) fn execute(t: &mut Thread, m: &'static Method, code: &'static CodeInfo, locals: *mut u64) -> JResult<u64> {
     let mut f = Frame::new(m, code, locals);
+    run(t, &mut f)
+}
+
+/// Continues a frame whose locals and `depth` operand-stack slots are already in memory at bci
+/// `pc` (deoptimized compiled code); `pending` is first dispatched to this frame's handlers at
+/// `pc`. The frame's header must be linked.
+pub(crate) fn resume(t: &mut Thread, m: &'static Method, locals: *mut u64, pc: usize, depth: usize, pending: Option<crate::thread::Throw>) -> JResult<u64> {
+    let mut f = Frame::new(m, m.code.expect("resumed method has code"), locals);
+    f.pc = pc;
+    f.op_pc = pc;
+    // SAFETY: the operand stack holds `depth` slots.
+    f.sp = unsafe { f.stack_base.add(depth) };
+    if let Some(ex) = pending {
+        let Some(handler) = s::find_handler(t, &f, ex.0) else { return Err(ex) };
+        f.sp = f.stack_base;
+        f.push_ref(ex.0);
+        f.pc = handler;
+    }
+    run(t, &mut f)
+}
+
+fn run(t: &mut Thread, f: &mut Frame) -> JResult<u64> {
     // The header's bci slot tracks this frame's live bytecode index.
     // SAFETY: `f.hdr` is this frame's header; `f` outlives the frame.
     unsafe { *f.hdr.add(crate::thread::header::BCI) = (&f.op_pc as *const usize as u64) | 1 };
     loop {
-        match step(t, &mut f) {
+        match step(t, f) {
             Ok(Some(ret)) => return Ok(ret),
             Ok(None) => {}
             Err(ex) if f.replaced => return Err(ex),
-            Err(ex) => match s::find_handler(t, &f, ex.0) {
+            Err(ex) => match s::find_handler(t, f, ex.0) {
                 Some(handler) => {
                     f.sp = f.stack_base;
                     f.push_ref(ex.0);
