@@ -266,3 +266,33 @@ impl Graph {
         }
     }
 }
+
+impl Graph {
+    /// A readable listing (`RAVA_CORE_OPT_IR`).
+    pub fn dump(&self) -> String {
+        let mut out = String::new();
+        let mut order: Vec<usize> = (0..self.blocks.len()).filter(|&b| !matches!(self.blocks[b].term, Term::None)).collect();
+        order.sort_by_key(|&b| self.blocks[b].order);
+        for b in order {
+            let blk = &self.blocks[b];
+            out += &format!("B{b} (bci {}, preds {:?}{})\n", blk.bci, blk.preds, if blk.loop_header { ", loop" } else { "" });
+            for &v in &blk.insts {
+                let inst = match &self.values[v as usize].inst {
+                    Inst::Call(c, args, s) => format!("Call({c:?}, {args:?}) @{}", s.bci),
+                    i @ (Inst::NullCheck(..) | Inst::ZeroCheck(..) | Inst::BoundsCheck(..) | Inst::InitCheck(..) | Inst::CheckCast(..) | Inst::StoreCheck(..) | Inst::New(..) | Inst::NewArray(..) | Inst::Monitor(..)) => {
+                        let s = i.state().unwrap();
+                        format!("{} @{}:{}", format!("{i:?}").split(", State").next().unwrap_or(""), s.method.name, s.bci)
+                    }
+                    i => format!("{i:?}"),
+                };
+                out += &format!("  v{v}: {:?} = {inst}\n", self.values[v as usize].ty);
+            }
+            let term = match &blk.term {
+                Term::Deopt(s) => format!("Deopt @{}:{}", s.method.name, s.bci),
+                t => format!("{t:?}"),
+            };
+            out += &format!("  {term}\n");
+        }
+        out
+    }
+}

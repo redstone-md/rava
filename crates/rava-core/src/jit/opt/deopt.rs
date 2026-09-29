@@ -31,6 +31,10 @@ pub extern "sysv64" fn deopt(t: *mut Thread, base: *mut u64, frames: *const Fram
         Some(e) => Err(e),
         None => Ok(0),
     };
+    if std::env::var_os("RAVA_CORE_DEOPT_LOG").is_some() {
+        let scopes: Vec<String> = frames.iter().map(|f| format!("{}@{} depth {} frame {}", f.method, f.bci, f.depth, f.frame)).collect();
+        eprintln!("[deopt] {} pending={}", scopes.join(" <- "), outcome.is_err());
+    }
     for (i, f) in frames.iter().enumerate() {
         let code = f.method.code.expect("compiled scope has code");
         // SAFETY: the scope's frame lies within the compiled frame.
