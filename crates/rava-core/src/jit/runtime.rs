@@ -107,7 +107,8 @@ pub extern "sysv64" fn ic_miss(k: *const Klass, m: *const Method, cell: *const I
     // SAFETY: the cell is leaked and owned by one call site.
     let cell = unsafe { &*cell };
     use std::sync::atomic::Ordering;
-    if !target.is_null() && cell.misses.fetch_add(1, Ordering::Relaxed) < IC_MAX_UPDATES {
+    // Megamorphic sites stop counting, so they do not keep writing a shared line.
+    if !target.is_null() && cell.misses.load(Ordering::Relaxed) < IC_MAX_UPDATES && cell.misses.fetch_add(1, Ordering::Relaxed) < IC_MAX_UPDATES {
         let e = Box::leak(Box::new(IcEntry { klass: k as usize, target: target as usize }));
         cell.entry.store(e, Ordering::Release);
     }
