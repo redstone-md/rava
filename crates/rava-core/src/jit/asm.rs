@@ -269,6 +269,10 @@ impl Asm {
     pub fn shift_cl(&mut self, w: bool, op: Shift, r: R) {
         self.op_rr(w, &[0xD3], op as u8, r as u8);
     }
+    /// `cmovcc dst, src`.
+    pub fn cmov(&mut self, w: bool, c: Cond, dst: R, src: R) {
+        self.op_rr(w, &[0x0F, 0x40 + c as u8], dst as u8, src as u8);
+    }
     /// Shift `r` by an immediate count.
     pub fn shift_ri(&mut self, w: bool, op: Shift, r: R, count: u8) {
         self.op_rr(w, &[0xC1], op as u8, r as u8);
@@ -449,6 +453,7 @@ mod tests {
         assert_eq!(hex(|a| a.shift_ri(true, Shift::Shr, R::Rsi, 32)), "48 c1 ee 20");
         assert_eq!(hex(|a| a.farith_rr(true, 0x59, X(0), X(1))), "f2 0f 59 c1");
         assert_eq!(hex(|a| a.push(R::Rbx)), "53");
+        assert_eq!(hex(|a| a.cmov(true, Cond::L, R::Rax, R::Rcx)), "48 0f 4c c1");
         assert_eq!(hex(|a| a.load(true, R::Rbp, mem(R::R13, 8))), "49 8b 6d 08");
         assert_eq!(hex(|a| a.round_sd(X(9), X(2), 2)), "66 44 0f 3a 0b ca 02");
     }

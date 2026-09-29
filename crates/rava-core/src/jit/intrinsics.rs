@@ -23,6 +23,9 @@ pub(super) enum Intrinsic {
     UnsafePut(BasicType, bool),
     IsInstance,
     GetClass,
+    /// `Math.min/max` on int, long, float or double (the type), `true` for max.
+    MinMax(BasicType, bool),
+    Abs(BasicType),
 }
 
 impl Intrinsic {
@@ -57,6 +60,16 @@ fn unsafe_access(rest: &str) -> Option<(BasicType, &str)> {
 pub(super) fn intrinsic(m: &Method) -> Option<Intrinsic> {
     let (holder, name, desc) = (m.holder.name.as_str(), m.name.as_str(), m.desc.as_str());
     match holder {
+        "java/lang/Math" | "java/lang/StrictMath" if matches!(name, "min" | "max" | "abs") => {
+            let ty = match desc {
+                "(II)I" | "(I)I" => BasicType::Int,
+                "(JJ)J" | "(J)J" => BasicType::Long,
+                "(FF)F" | "(F)F" => BasicType::Float,
+                "(DD)D" | "(D)D" => BasicType::Double,
+                _ => return None,
+            };
+            Some(if name == "abs" { Intrinsic::Abs(ty) } else { Intrinsic::MinMax(ty, name == "max") })
+        }
         "java/lang/Math" | "java/lang/StrictMath" if desc == "(D)D" => match name {
             "sqrt" => Some(Intrinsic::Sqrt),
             _ if !std::arch::is_x86_feature_detected!("sse4.1") => None,
@@ -110,6 +123,8 @@ impl Emitter {
                 }
             }
             Intrinsic::IsInstance => self.is_instance(pc, depth, args),
+            Intrinsic::MinMax(ty, max) => self.min_max(ty, max, args),
+            Intrinsic::Abs(ty) => self.abs(ty, args),
             Intrinsic::GetClass => {
                 let slow = self.slow_path(pc, depth);
                 self.a.load(true, R::Rax, self.stk(args));
@@ -123,6 +138,63 @@ impl Emitter {
             }
         }
         true
+    }
+
+    /// `Math.min/max` with Java semantics: NaN wins, and -0.0 is below +0.0 (for equal floats
+    /// the bitwise and/or of the operands picks the right zero).
+    fn min_max(&mut self, ty: BasicType, max: bool, args: i32) {
+        let wide = matches!(ty, BasicType::Long | BasicType::Double);
+        let b = args + if wide { 2 } else { 1 };
+        self.a.load(true, R::Rax, self.stk(args));
+        self.a.load(true, R::Rcx, self.stk(b));
+        if matches!(ty, BasicType::Int | BasicType::Long) {
+            self.a.alu_rr(wide, Alu::Cmp, R::Rax, R::Rcx);
+            self.a.cmov(true, if max { Cond::L } else { Cond::G }, R::Rax, R::Rcx);
+        } else {
+            let (nan, a_above, b_above, done) = (self.a.new_label(), self.a.new_label(), self.a.new_label(), self.a.new_label());
+            self.a.mov_xr(wide, X(0), R::Rax);
+            self.a.mov_xr(wide, X(1), R::Rcx);
+            self.a.fcmp(wide, X(0), X(1));
+            self.a.jcc(Cond::P, nan);
+            self.a.jcc(Cond::A, a_above);
+            self.a.jcc(Cond::B, b_above);
+            self.a.alu_rr(wide, if max { Alu::And } else { Alu::Or }, R::Rax, R::Rcx);
+            self.a.jmp(done);
+            self.a.bind(nan);
+            self.a.farith_rr(wide, 0x58, X(0), X(1));
+            self.a.mov_rx(wide, R::Rax, X(0));
+            self.a.jmp(done);
+            // The larger operand is kept for max, the other one for min.
+            self.a.bind(if max { b_above } else { a_above });
+            self.a.mov_rr(true, R::Rax, R::Rcx);
+            self.a.bind(if max { a_above } else { b_above });
+            self.a.bind(done);
+        }
+        self.a.store(true, self.stk(args), R::Rax);
+    }
+
+    /// `Math.abs`: integers negate when negative (MIN_VALUE stays), floats clear the sign bit.
+    fn abs(&mut self, ty: BasicType, args: i32) {
+        self.a.load(true, R::Rax, self.stk(args));
+        match ty {
+            BasicType::Int | BasicType::Long => {
+                let wide = ty == BasicType::Long;
+                self.a.mov_rr(true, R::Rcx, R::Rax);
+                self.a.neg(wide, R::Rcx);
+                self.a.cmov(wide, Cond::S, R::Rcx, R::Rax);
+                if wide {
+                    self.a.mov_rr(true, R::Rax, R::Rcx);
+                } else {
+                    self.a.movsxd(R::Rax, R::Rcx);
+                }
+            }
+            BasicType::Float => self.a.alu_ri(false, Alu::And, R::Rax, i32::MAX),
+            _ => {
+                self.a.mov_ri(R::Rcx, i64::MAX);
+                self.a.alu_rr(true, Alu::And, R::Rax, R::Rcx);
+            }
+        }
+        self.a.store(true, self.stk(args), R::Rax);
     }
 
     /// `mirror.isInstance(o)`: null → false, a primitive mirror → false, the exact class →
