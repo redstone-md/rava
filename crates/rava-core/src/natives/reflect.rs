@@ -63,6 +63,10 @@ pub(super) fn register(r: &mut NativeRegistry) {
         };
         ret_int(tag)
     });
+    r.add("java/lang/reflect/Executable", "getParameters0", "()[Ljava/lang/reflect/Parameter;", parameters);
+    r.add("java/lang/reflect/Executable", "getTypeAnnotationBytes0", "()[B", |_, _| ret_ref(std::ptr::null_mut()));
+    r.add("java/lang/reflect/Field", "getTypeAnnotationBytes0", "()[B", |_, _| ret_ref(std::ptr::null_mut()));
+    r.add("java/lang/SecurityManager", "getClassContext", "()[Ljava/lang/Class;", class_context);
     r.add("jdk/internal/reflect/Reflection", "getCallerClass", "()Ljava/lang/Class;", caller_class);
     r.add("jdk/internal/reflect/Reflection", "getClassAccessFlags", "(Ljava/lang/Class;)I", |_, a| {
         ret_int(rt::klass_of_mirror(a[0] as Oop).map_or(0x0411, |k| k.access as i32))
@@ -92,6 +96,51 @@ fn caller_class(t: &mut Thread, _: &[u64]) -> JResult<u64> {
         Some(m) => ret_ref(rt::mirror_of(t, m.holder)?),
         None => ret_ref(std::ptr::null_mut()),
     }
+}
+
+/// `Executable.getParameters0`: the parameters its `MethodParameters` attribute records, or null
+/// without one (the caller then synthesizes `argN` names).
+fn parameters(t: &mut Thread, a: &[u64]) -> JResult<u64> {
+    let exec = a[0] as Oop;
+    let m = executable_of(exec);
+    let Some(cf) = m.holder.cf.as_ref() else { return ret_ref(std::ptr::null_mut()) };
+    let Some(&attr) = cf.methods[m.index()].attrs.iter().find(|at| at.name == "MethodParameters") else {
+        return ret_ref(std::ptr::null_mut());
+    };
+    let b = cf.attr_bytes(attr);
+    let count = b.first().copied().unwrap_or(0) as usize;
+    let parameter_class = crate::loader::load("java/lang/reflect/Parameter").expect("Parameter");
+    let array_class = crate::vm::vm().array_class_of(parameter_class).expect("Parameter[]");
+    let arr = rt::alloc_array(t, array_class, count as i32)?;
+    for i in 0..count {
+        let at = 1 + 4 * i;
+        let Some(e) = b.get(at..at + 4) else { break };
+        let (name_index, flags) = (u16::from_be_bytes([e[0], e[1]]), u16::from_be_bytes([e[2], e[3]]));
+        let name = match (name_index != 0).then(|| cf.utf8(name_index)) {
+            Some(Ok(n)) => rt::new_string(t, n.as_str())?,
+            _ => std::ptr::null_mut(),
+        };
+        let args = [name as u64, flags as u64, exec as u64, i as u64];
+        let p = crate::boot::construct(t, "java/lang/reflect/Parameter", "(Ljava/lang/String;ILjava/lang/reflect/Executable;I)V", &args)?;
+        // SAFETY: `arr` has `count` reference elements.
+        unsafe { *obj::array_data::<Oop>(arr).add(i) = p };
+    }
+    ret_ref(arr)
+}
+
+/// `SecurityManager.getClassContext`: the classes of the methods on the stack, innermost first,
+/// from its caller on and without reflection frames (HotSpot's `JVM_GetClassContext`).
+fn class_context(t: &mut Thread, _: &[u64]) -> JResult<u64> {
+    let holders: Vec<&'static Klass> = t.frames().skip(1).map(|(m, _)| m.holder).filter(|&k| !is_reflection_frame(k)).collect();
+    let class_class = crate::loader::load("java/lang/Class").expect("Class");
+    let array_class = crate::vm::vm().array_class_of(class_class).expect("Class[]");
+    let arr = rt::alloc_array(t, array_class, holders.len() as i32)?;
+    for (i, k) in holders.into_iter().enumerate() {
+        let mirror = rt::mirror_of(t, k)?;
+        // SAFETY: `arr` has one reference element per holder.
+        unsafe { *obj::array_data::<Oop>(arr).add(i) = mirror };
+    }
+    ret_ref(arr)
 }
 
 fn is_reflection_frame(k: &Klass) -> bool {
