@@ -144,6 +144,10 @@ pub(super) fn register(r: &mut NativeRegistry) {
     r.add(U, "park", "(ZJ)V", |t, a| {
         let (absolute, time) = (a[1] != 0, a[2] as i64);
         let Some(rec) = t.gc_record else { return ret_void() };
+        let jt = t.java_thread;
+        if super::thread::is_interrupted(jt, false) {
+            return ret_void();
+        }
         let deadline = match (absolute, time) {
             (false, 0) => None,
             (false, n) if n > 0 => Some(std::time::Instant::now() + std::time::Duration::from_nanos(n as u64)),
@@ -155,7 +159,7 @@ pub(super) fn register(r: &mut NativeRegistry) {
         };
         crate::gc::safepoint::blocking(t, || {
             let mut permit = rec.permit.lock().unwrap();
-            while !*permit {
+            while !*permit && !super::thread::is_interrupted(jt, false) {
                 match deadline {
                     None => permit = rec.unparked.wait(permit).unwrap(),
                     Some(d) => {
