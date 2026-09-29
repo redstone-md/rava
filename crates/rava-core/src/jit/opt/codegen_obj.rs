@@ -71,8 +71,9 @@ impl Gen<'_> {
                 let rl = self.reg(len, R::Rdx);
                 self.a.test_rr(false, rl, rl);
                 self.a.jcc(Cond::S, fail);
-                self.set_bci(s.bci);
+                let linked = self.link(&s);
                 self.call_preserving(runtime::new_array as *const () as usize, &[Arg::Thread, Arg::Imm(k as *const Klass as i64), Arg::Val(len)]);
+                self.unlink(linked);
                 self.a.test_rr(true, R::Rax, R::Rax);
                 self.a.jcc(Cond::E, fail);
                 self.put(v, R::Rax);
@@ -117,6 +118,7 @@ impl Gen<'_> {
                 self.a.bind(ok);
             }
             Inst::Call(callee, args, s) => self.call(v, callee, &args, &s),
+            Inst::Intrinsic(k, args, s) => self.intrinsic(v, k, &args, s.as_ref()),
             other => unreachable!("not a memory instruction: {other:?}"),
         }
     }
@@ -195,8 +197,9 @@ impl Gen<'_> {
             None => self.a.jmp(slow),
         }
         self.a.bind(slow);
-        self.set_bci(s.bci);
+        let linked = self.link(s);
         self.call_preserving(runtime::new_instance as *const () as usize, &[Arg::Thread, Arg::Imm(k as *const Klass as i64)]);
+        self.unlink(linked);
         self.a.test_rr(true, R::Rax, R::Rax);
         self.a.jcc(Cond::E, fail);
         self.a.bind(done);
@@ -208,13 +211,13 @@ impl Gen<'_> {
     /// spill slots survive it (`regalloc.rs`).
     fn call(&mut self, v: V, callee: Callee, args: &[V], s: &Rc<State>) {
         let fail = self.deopt(s);
-        let base = self.stack_base + s.stack.len() as i32;
+        let base = Self::stack_base_of(s) + s.stack.len() as i32;
         let mut slot = base;
         for &x in args {
             self.store_val(self.slot(slot), x);
             slot += if self.g.ty(x).wide() { 2 } else { 1 };
         }
-        self.set_bci(s.bci);
+        let linked = self.link(s);
         match callee {
             Callee::Direct(m) => self.a.mov_ri(R::Rdx, m as *const Method as i64),
             Callee::Virtual(m) => {
@@ -223,11 +226,12 @@ impl Gen<'_> {
                 self.a.load(true, R::Rax, mem(R::Rax, offset_of!(Klass, vtable_ptr) as i32));
                 self.a.load(true, R::Rdx, mem(R::Rax, 8 * m.vtable_index()));
             }
-            Callee::Interface(m) => self.interface_target(m, base, fail),
+            Callee::Interface(m) => self.interface_target(m, base, fail, linked),
         }
         self.a.mov_rr(true, R::Rdi, R::R12);
         self.a.lea(R::Rsi, self.slot(base));
         self.a.call_m(mem(R::Rdx, offset_of!(Method, entry) as i32));
+        self.unlink(linked);
         self.a.alu_mi(true, Alu::Cmp, mem(R::R12, offsets::PENDING), 0);
         self.a.jcc(Cond::Ne, fail);
         self.put(v, R::Rax);
@@ -235,7 +239,7 @@ impl Gen<'_> {
 
     /// rdx := the implementation of interface method `m` for the receiver at frame slot `base`:
     /// an inline cache, the itable stub once the site is megamorphic, else the runtime.
-    fn interface_target(&mut self, m: &'static Method, base: i32, fail: crate::jit::asm::Label) {
+    fn interface_target(&mut self, m: &'static Method, base: i32, fail: crate::jit::asm::Label, linked: bool) {
         let cell = IcCell::new() as *const IcCell as i64;
         let (hit, done, found, missing) = (self.a.new_label(), self.a.new_label(), self.a.new_label(), self.a.new_label());
         self.a.load(true, R::Rcx, self.slot(base));
@@ -268,6 +272,7 @@ impl Gen<'_> {
         self.a.mov_rr(true, R::Rdi, R::R12);
         self.a.mov_ri(R::Rsi, m as *const Method as i64);
         self.a.call_abs(runtime::no_target as *const () as usize);
+        self.unlink(linked);
         self.a.jmp(fail);
         self.a.bind(hit);
         self.a.load(true, R::Rdx, mem(R::Rax, 8));

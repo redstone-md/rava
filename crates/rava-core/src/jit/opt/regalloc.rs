@@ -97,7 +97,7 @@ impl Intervals {
 
 pub fn allocate(g: &Graph) -> Allocation {
     let mut order: Vec<B> = (0..g.blocks.len() as B).filter(|&b| !matches!(g.blocks[b as usize].term, Term::None)).collect();
-    order.sort_by_key(|&b| g.blocks[b as usize].bci);
+    order.sort_by_key(|&b| g.blocks[b as usize].order);
     let n = g.values.len();
     // Positions: two per instruction (reads at p, a call's state reads at p + 1).
     let mut pos = vec![0u32; n];

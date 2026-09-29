@@ -29,23 +29,17 @@ pub(super) struct Gen<'a> {
     pub g: &'a Graph,
     pub loc: &'a [Loc],
     pub max_locals: i32,
-    pub stack_base: i32,
     labels: Vec<Label>,
     pub epilogue: Label,
     deopts: HashMap<*const State, Label>,
     deopt_list: Vec<(Label, Rc<State>)>,
     polls: Vec<(Label, Label)>,
     edge_stubs: Vec<(Label, B, B)>,
-    /// Bytecode index of the block being emitted.
-    pub bci: i32,
 }
 
-/// Emits `g` for `m`; returns the code and the value-stack slots of its frame.
-pub(super) fn generate(g: &Graph, al: &Allocation, m: &'static Method) -> (Vec<u8>, usize) {
-    let info = m.code.expect("compiled method has code");
-    let max_locals = info.max_locals as i32;
-    let stack_base = max_locals + header::SLOTS as i32;
-    let frame_slots = stack_base + info.max_stack as i32 + 2;
+/// Emits `g` for `m`, whose frame (inlined frames included) takes `frame_slots` value-stack slots.
+pub(super) fn generate(g: &Graph, al: &Allocation, m: &'static Method, frame_slots: i32) -> Vec<u8> {
+    let max_locals = m.code.expect("compiled method has code").max_locals as i32;
     let mut a = Asm::default();
     let labels = (0..g.blocks.len()).map(|_| a.new_label()).collect();
     let epilogue = a.new_label();
@@ -54,21 +48,18 @@ pub(super) fn generate(g: &Graph, al: &Allocation, m: &'static Method) -> (Vec<u
         g,
         loc: &al.loc,
         max_locals,
-        stack_base,
         labels,
         epilogue,
         deopts: HashMap::new(),
         deopt_list: Vec::new(),
         polls: Vec::new(),
         edge_stubs: Vec::new(),
-        bci: -1,
     };
     let spill_bytes = 8 * (al.spill_slots + (al.spill_slots & 1));
     let overflow = gen.a.new_label();
     gen.prologue(spill_bytes, frame_slots, overflow);
     for (i, &b) in al.order.iter().enumerate() {
         gen.a.bind(gen.labels[b as usize]);
-        gen.bci = g.blocks[b as usize].bci;
         for &v in &g.blocks[b as usize].insts {
             gen.inst(v);
         }
@@ -76,7 +67,7 @@ pub(super) fn generate(g: &Graph, al: &Allocation, m: &'static Method) -> (Vec<u
     }
     gen.emit_stubs();
     gen.emit_epilogue(spill_bytes, overflow);
-    (gen.a.finish(), frame_slots as usize)
+    gen.a.finish()
 }
 
 impl Gen<'_> {
@@ -227,10 +218,42 @@ impl Gen<'_> {
         }
     }
 
-    /// Records bytecode index `bci` in the frame header (before calls that may walk the stack).
-    pub fn set_bci(&mut self, bci: u32) {
+    /// Before a call that may walk the stack from state `s`: records the call site's bytecode
+    /// index in each frame header and links the visible inlined frames into `Thread::top`
+    /// (hidden ones, method-handle plumbing, are never walked). Returns whether any was linked.
+    pub fn link(&mut self, s: &State) -> bool {
+        let scopes = scopes(s);
+        let (outer, inner) = scopes.split_last().expect("a state has a scope");
         let at = self.hdr(header::BCI);
-        self.a.store_imm(at, (bci as i32) << 1);
+        self.a.store_imm(at, (outer.bci as i32) << 1);
+        let visible: Vec<&&State> = inner.iter().rev().filter(|s| !s.method.is_hidden_frame()).collect();
+        if visible.is_empty() {
+            return false;
+        }
+        self.a.lea(R::Rcx, self.hdr(header::METHOD));
+        for s in visible {
+            let hdr = s.frame + max_locals(s.method);
+            self.a.mov_ri(R::Rax, s.method as *const Method as i64);
+            self.a.store(true, self.slot(hdr + header::METHOD as i32), R::Rax);
+            self.a.store_imm(self.slot(hdr + header::BCI as i32), (s.bci as i32) << 1);
+            self.a.store(true, self.slot(hdr + header::CALLER as i32), R::Rcx);
+            self.a.lea(R::Rcx, self.slot(hdr + header::METHOD as i32));
+        }
+        self.a.store(true, mem(R::R12, offsets::TOP), R::Rcx);
+        true
+    }
+
+    /// Undoes `link` (preserves rax).
+    pub fn unlink(&mut self, linked: bool) {
+        if linked {
+            self.a.lea(R::Rcx, self.hdr(header::METHOD));
+            self.a.store(true, mem(R::R12, offsets::TOP), R::Rcx);
+        }
+    }
+
+    /// Frame slot of operand-stack slot 0 of the scope of `s`.
+    pub fn stack_base_of(s: &State) -> i32 {
+        s.frame + max_locals(s.method) + header::SLOTS as i32
     }
 
     /// Polls for a stop-the-world request.
@@ -296,7 +319,7 @@ impl Gen<'_> {
     }
 
     fn back_edge(&self, from: B, to: B) -> bool {
-        self.g.blocks[to as usize].bci <= self.g.blocks[from as usize].bci
+        self.g.blocks[to as usize].order <= self.g.blocks[from as usize].order
     }
 
     /// Where a conditional jump from `from` to `to` goes: the block itself, or a stub doing the
@@ -339,26 +362,46 @@ impl Gen<'_> {
         }
     }
 
-    /// Writes the state into the frame, then finishes the method in the interpreter.
+    /// Writes the state of every scope into the frame, then finishes the method in the
+    /// interpreter.
     fn deopt_stub(&mut self, s: &State) {
-        assert!(s.caller.is_none(), "inlined scopes are not compiled yet");
-        for (i, v) in s.locals.iter().enumerate() {
-            if let Some(v) = *v {
-                self.store_val(self.slot(s.frame + i as i32), v);
+        let scopes = scopes(s);
+        for sc in &scopes {
+            for (i, v) in sc.locals.iter().enumerate() {
+                if let Some(v) = *v {
+                    self.store_val(self.slot(sc.frame + i as i32), v);
+                }
+            }
+            let base = Self::stack_base_of(sc);
+            for (i, v) in sc.stack.iter().enumerate() {
+                if let Some(v) = *v {
+                    self.store_val(self.slot(base + i as i32), v);
+                }
             }
         }
-        for (i, v) in s.stack.iter().enumerate() {
-            if let Some(v) = *v {
-                self.store_val(self.slot(self.stack_base + i as i32), v);
-            }
-        }
+        let frames: Vec<super::deopt::Frame> =
+            scopes.iter().map(|sc| super::deopt::Frame { method: sc.method, frame: sc.frame, bci: sc.bci, depth: sc.stack.len() as u32 }).collect();
+        let frames: &'static [super::deopt::Frame] = Box::leak(frames.into_boxed_slice());
         self.a.mov_rr(true, R::Rdi, R::R12);
-        self.a.mov_ri(R::Rsi, s.method as *const Method as i64);
-        self.a.mov_rr(true, R::Rdx, R::R13);
-        self.a.mov_ri(R::Rcx, s.bci as i64 | (s.stack.len() as i64) << 32);
+        self.a.mov_rr(true, R::Rsi, R::R13);
+        self.a.mov_ri(R::Rdx, frames.as_ptr() as i64);
+        self.a.mov_ri(R::Rcx, frames.len() as i64);
         self.a.call_abs(super::deopt::deopt as *const () as usize);
         self.a.jmp(self.epilogue);
     }
+}
+
+/// The scopes of a state, innermost first.
+fn scopes(s: &State) -> Vec<&State> {
+    let mut out = vec![s];
+    while let Some(c) = &out.last().unwrap().caller {
+        out.push(c);
+    }
+    out
+}
+
+fn max_locals(m: &Method) -> i32 {
+    m.code.map_or(0, |c| c.max_locals as i32)
 }
 
 fn cond(c: Cmp) -> Cond {
