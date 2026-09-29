@@ -46,9 +46,14 @@ const MAX_RECOMPILES: u32 = 4;
 pub(super) fn note_deopt(m: &'static Method) {
     use std::sync::atomic::Ordering;
     let Some(cm) = m.compiled().filter(|c| c.tier >= 2) else { return };
-    if cm.deopts.fetch_add(1, Ordering::Relaxed) + 1 != DEOPTS_BEFORE_RECOMPILE {
-        return;
+    if cm.deopts.fetch_add(1, Ordering::Relaxed) + 1 == DEOPTS_BEFORE_RECOMPILE {
+        super::queue::submit(super::queue::Job::Recompile(m));
     }
+}
+
+/// Recompiles `m` after frequent deoptimizations.
+pub(in crate::jit) fn recompile(m: &'static Method) {
+    use std::sync::atomic::Ordering;
     let again = m.deopt_recompiles.fetch_add(1, Ordering::Relaxed) < MAX_RECOMPILES;
     if let Some(cm) = again.then(|| compile(m)).flatten().or_else(|| super::compile::compile(m, 2)) {
         m.install(cm);
