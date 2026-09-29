@@ -118,6 +118,7 @@ impl Gen<'_> {
                 self.a.bind(ok);
             }
             Inst::Call(callee, args, s) => self.call(v, callee, &args, &s),
+            Inst::Monitor(enter, o, s) => self.monitor(enter, o, &s),
             Inst::Intrinsic(k, args, s) => self.intrinsic(v, k, &args, s.as_ref()),
             other => unreachable!("not a memory instruction: {other:?}"),
         }
@@ -177,6 +178,32 @@ impl Gen<'_> {
         self.a.mov_ri(R::Rax, 1);
         self.a.jmp(done);
         self.a.bind(after);
+    }
+
+    /// The thin-lock fast path inline; the runtime otherwise (blocking, inflated monitors, or
+    /// an exit that throws).
+    fn monitor(&mut self, enter: bool, o: V, s: &Rc<State>) {
+        let fail = self.deopt(s);
+        let (slow, done) = (self.a.new_label(), self.a.new_label());
+        let ro = self.reg(o, R::Rcx);
+        if enter {
+            crate::jit::emit_obj::monitor_enter_fast(&mut self.a, ro, slow);
+        } else {
+            crate::jit::emit_obj::monitor_exit_fast(&mut self.a, ro, slow);
+        }
+        self.a.jmp(done);
+        self.a.bind(slow);
+        let linked = self.link(s);
+        if enter {
+            self.call_preserving(runtime::monitor_enter as *const () as usize, &[Arg::Thread, Arg::Val(o)]);
+            self.unlink(linked);
+        } else {
+            self.call_preserving(runtime::monitor_exit as *const () as usize, &[Arg::Thread, Arg::Val(o)]);
+            self.unlink(linked);
+            self.a.test_rr(true, R::Rax, R::Rax);
+            self.a.jcc(Cond::E, fail);
+        }
+        self.a.bind(done);
     }
 
     fn new_instance(&mut self, v: V, k: &'static Klass, s: &Rc<State>) {

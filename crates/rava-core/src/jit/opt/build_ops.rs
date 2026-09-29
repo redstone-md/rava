@@ -22,7 +22,7 @@ impl Builder {
     }
 
     /// Builds the instruction at `pc`: `Some(true)` to continue with the next one, `Some(false)`
-    /// once it ended the block, `None` if it is not supported.
+    /// once it ended the block, `None` if it is not supported (before changing any state).
     pub(super) fn build_insn(&mut self, pc: usize) -> Option<bool> {
         let op = self.sc.code[pc];
         match op {
@@ -145,6 +145,12 @@ impl Builder {
                 let v = self.pop();
                 let r = if op == 0xc0 { self.add(Inst::CheckCast(v, k, s), Ty::A) } else { self.add(Inst::InstanceOf(v, k), Ty::I) };
                 self.push(r);
+            }
+            0xc2 | 0xc3 => {
+                let s = self.state();
+                let o = self.pop();
+                self.add(Inst::NullCheck(o, s.clone()), Ty::A);
+                self.add(Inst::Monitor(op == 0xc2, o, s), Ty::I);
             }
             0xc4 => {
                 let n = u16::from_be_bytes([self.sc.code[pc + 2], self.sc.code[pc + 3]]) as usize;

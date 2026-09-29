@@ -26,6 +26,7 @@ pub extern "sysv64" fn deopt(t: *mut Thread, base: *mut u64, frames: *const Fram
     if let Some(s) = crate::jit::stats::get() {
         s.deopts.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
+    super::note_deopt(frames[n - 1].method);
     let mut outcome: Result<u64, Throw> = match t.take_pending() {
         Some(e) => Err(e),
         None => Ok(0),

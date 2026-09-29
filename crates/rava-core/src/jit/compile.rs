@@ -136,7 +136,7 @@ pub fn compile(m: &'static Method, tier: u8) -> Option<CompiledMethod> {
     if std::env::var_os("RAVA_CORE_JIT_LOG").is_some() {
         eprintln!("[jit] {m} {} bytes of bytecode -> {} bytes", info.code.len(), code.len());
     }
-    Some(CompiledMethod { entry, unresolved_deferrals: Default::default(), size: code.len(), blocks, frame_slots: frame_slots as usize, tier })
+    Some(CompiledMethod { entry, unresolved_deferrals: Default::default(), size: code.len(), blocks, frame_slots: frame_slots as usize, tier, deopts: Default::default() })
 }
 
 impl Emitter {

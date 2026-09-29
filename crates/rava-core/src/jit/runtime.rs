@@ -12,7 +12,7 @@ pub extern "sysv64" fn interp_one(t: *mut Thread, m: *const Method, locals: *mut
     let (t, m) = unsafe { (&mut *t, &*m) };
     let (bci, depth) = ((bci_depth & 0xffff_ffff) as usize, (bci_depth >> 32) as usize);
     if let Some(stats) = super::stats::get() {
-        stats.deferred(m.code.unwrap().code[bci]);
+        stats.deferred(m, bci);
     }
     let mut f = Frame::new(m, m.code.expect("compiled method has code"), locals);
     f.pc = bci;
@@ -154,6 +154,25 @@ pub extern "sysv64" fn no_target(t: *mut Thread, m: *const Method) {
     let (t, m) = unsafe { (&mut *t, &*m) };
     let e = crate::runtime::throw_new(t, "java/lang/AbstractMethodError", &m.to_string());
     t.pending = e.0;
+}
+
+/// `monitorenter` beyond the inline thin-lock path (may block).
+pub extern "sysv64" fn monitor_enter(t: *mut Thread, o: crate::heap::Oop) {
+    // SAFETY: the current thread and a live, non-null object.
+    crate::sync::enter(unsafe { &*t }, o);
+}
+
+/// `monitorexit` beyond the inline thin-lock path; 0 with IllegalMonitorStateException pending
+/// when this thread does not hold the monitor.
+pub extern "sysv64" fn monitor_exit(t: *mut Thread, o: crate::heap::Oop) -> u64 {
+    if crate::sync::exit(o) {
+        return 1;
+    }
+    // SAFETY: the current thread.
+    let t = unsafe { &mut *t };
+    let e = crate::runtime::throw_new(t, "java/lang/IllegalMonitorStateException", "");
+    t.pending = e.0;
+    0
 }
 
 /// Raises StackOverflowError for a frame that did not fit.

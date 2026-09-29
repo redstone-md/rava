@@ -117,6 +117,8 @@ pub enum Inst {
     InstanceOf(V, &'static Klass),
     /// `aastore`'s check that the value fits the array's element type.
     StoreCheck(V, V, Rc<State>),
+    /// `monitorenter` (true) or `monitorexit` of a non-null object.
+    Monitor(bool, V, Rc<State>),
     /// A JDK method compiled in place, with the state to deoptimize to (at the call) when it
     /// has cases it does not handle.
     Intrinsic(Intrinsic, Vec<V>, Option<Rc<State>>),
@@ -128,7 +130,7 @@ impl Inst {
         match self {
             Inst::NullCheck(_, s) | Inst::ZeroCheck(_, s) | Inst::BoundsCheck(_, _, s) | Inst::InitCheck(_, s) => Some(s),
             Inst::Call(_, _, s) | Inst::New(_, s) | Inst::NewArray(_, _, s) => Some(s),
-            Inst::CheckCast(_, _, s) | Inst::StoreCheck(_, _, s) | Inst::Intrinsic(_, _, Some(s)) => Some(s),
+            Inst::CheckCast(_, _, s) | Inst::StoreCheck(_, _, s) | Inst::Intrinsic(_, _, Some(s)) | Inst::Monitor(_, _, s) => Some(s),
             _ => None,
         }
     }
@@ -140,7 +142,7 @@ impl Inst {
             Inst::Phi(v) | Inst::Call(_, v, _) | Inst::Intrinsic(_, v, _) => v.clone(),
             Inst::Neg(a) | Inst::Convert(_, a) | Inst::NullCheck(a, _) | Inst::ZeroCheck(a, _) | Inst::ArrayLength(a) => vec![*a],
             Inst::LoadField(a, ..) | Inst::StoreStatic(_, _, a) | Inst::NewArray(_, a, _) => vec![*a],
-            Inst::CheckCast(a, ..) | Inst::InstanceOf(a, _) => vec![*a],
+            Inst::CheckCast(a, ..) | Inst::InstanceOf(a, _) | Inst::Monitor(_, a, _) => vec![*a],
             Inst::Bin(_, a, b) | Inst::Compare(_, a, b) | Inst::BoundsCheck(a, b, _) | Inst::LoadIndexed(a, b, _) => vec![*a, *b],
             Inst::StoreCheck(a, b, _) => vec![*a, *b],
             Inst::StoreField(a, _, _, b) => vec![*a, *b],

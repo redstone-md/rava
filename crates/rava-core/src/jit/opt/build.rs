@@ -176,13 +176,20 @@ impl Builder {
         }
     }
 
-    /// Builds instructions from `pc` until the block ends.
+    /// Builds instructions from `pc` until the block ends. An instruction the builder does not
+    /// handle (unresolved constants, rare bytecodes) ends the block with a deoptimization to it:
+    /// the interpreter runs it, and deoptimizing often recompiles the method (`mod.rs`).
     fn build_block(&mut self, mut pc: usize) -> Option<()> {
         loop {
             self.sc.bci = pc;
             let len = insn_len(self.sc.code, pc);
-            if !self.build_insn(pc)? {
-                return Some(());
+            match self.build_insn(pc) {
+                Some(true) => {}
+                Some(false) => return Some(()),
+                None => {
+                    self.deopt();
+                    return Some(());
+                }
             }
             pc += len;
             if self.sc.blocks.contains_key(&pc) {

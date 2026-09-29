@@ -42,6 +42,10 @@ impl Builder {
         let ret = m.sig.ret;
         let first = args.first().and_then(|&a| self.g.constant(a));
         let plan = self.inline_target(pc, op, m).filter(|&(t, _)| decide(t, first, &self.chain, 2, self.spent).is_some());
+        if std::env::var_os("RAVA_CORE_INLINE_LOG").is_some() {
+            let indent = "  ".repeat(self.chain.len());
+            eprintln!("[opt-inline] {indent}{} @{pc} -> {m} {}", self.sc.m, if plan.is_some() { "inlined" } else { "call" });
+        }
         let Some((target, guard)) = plan else {
             self.call_push(callee, args, s, ret);
             return true;
