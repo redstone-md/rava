@@ -1,6 +1,7 @@
 //! Launcher for the parity core.
 //!
-//! `rava-core [-cp PATH] [-Dk=v]... MAINCLASS [ARGS]...` boots the JDK and runs `main`.
+//! `rava-core [-cp PATH] [-Dk=v]... MAINCLASS [ARGS]...` boots the JDK and runs `main`;
+//! `rava-core [-Dk=v]... -jar FILE [ARGS]...` runs the main class the jar's manifest names.
 //! `rava-core -cp DIR --call CLASS METHOD` runs a static no-argument method on the bare VM
 //! (no JDK initialization) and prints its result — a tracer for the execution core.
 
@@ -14,6 +15,7 @@ fn main() -> ExitCode {
     let mut args = std::env::args().skip(1).peekable();
     let mut options = VmOptions::default();
     let mut call = false;
+    let mut jar = false;
     while let Some(a) = args.peek().cloned() {
         if a == "-cp" || a == "-classpath" || a == "--class-path" {
             args.next();
@@ -27,6 +29,16 @@ fn main() -> ExitCode {
         } else if a == "--call" {
             args.next();
             call = true;
+        } else if a == "-jar" {
+            // The jar is the class path; its manifest names the main class (and may extend the
+            // class path, which the JDK's loader follows).
+            args.next();
+            options.class_path = args.peek().cloned().unwrap_or_default();
+            jar = true;
+            break;
+        } else if a.starts_with("-X") || a.starts_with("-XX:") {
+            // HotSpot tuning flags have no meaning here.
+            args.next();
         } else {
             break;
         }
@@ -43,12 +55,12 @@ fn main() -> ExitCode {
     let worker = std::thread::Builder::new()
         .name("main".into())
         .stack_size(1 << 30)
-        .spawn(move || if call { run_call(options, &rest) } else { run_main(options, &rest) })
+        .spawn(move || if call { run_call(options, &rest) } else { run_main(options, jar, &rest) })
         .expect("spawn main thread");
     worker.join().unwrap_or(ExitCode::from(70))
 }
 
-fn run_main(options: VmOptions, rest: &[String]) -> ExitCode {
+fn run_main(options: VmOptions, jar: bool, rest: &[String]) -> ExitCode {
     let started = std::time::Instant::now();
     let vm = Vm::create(options).expect("create VM");
     let mut t = Thread::new();
@@ -57,7 +69,7 @@ fn run_main(options: VmOptions, rest: &[String]) -> ExitCode {
         if std::env::var_os("RAVA_CORE_TIMING").is_some() {
             eprintln!("[rava-core] JDK booted in {:.1} ms, {} classes", started.elapsed().as_secs_f64() * 1e3, vm.loaded_class_count());
         }
-        rava_core::boot::run_main(&mut t, &rest[0], &rest[1..])
+        rava_core::boot::run_launched(&mut t, &rest[0], jar, &rest[1..])
     });
     report(result.map(|_| 0), started, vm)
 }
