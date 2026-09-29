@@ -1,13 +1,14 @@
 //! Baseline compiler driver: frame setup, per-instruction emission (`emit.rs`), exception
 //! dispatch and slow paths.
 //!
-//! Registers: `r12` = thread, `r13` = frame base (locals). Everything else is scratch between
-//! instructions: the operand stack lives in memory at depth-indexed offsets, so every
-//! instruction boundary is a consistent interpreter state.
+//! Registers: `r12` = thread, `r13` = frame base (locals); rbx, rbp, r14 and r15 cache hot
+//! locals, and the operand stack is cached in scratch registers (`vstack.rs`). Whenever control
+//! may leave compiled code, the frame in memory is a consistent interpreter state.
 
 use super::analysis::{analyze, insn_len, Analysis};
 use super::asm::{mem, Asm, Cond, Label, M, R};
 use super::inline::{inline_slots, inline_target, InlineCtx};
+use super::vstack::{plan_local_regs, Slot};
 use super::{code_cache, runtime, CompiledMethod};
 use std::collections::HashMap;
 use crate::classfile::{ClassFile, CodeInfo};
@@ -25,8 +26,8 @@ pub(super) struct Emitter {
     pub labels: Vec<Label>,
     pub exc: Label,
     pub epilogue: Label,
-    /// Deferred slow paths: (entry label, bci, depth).
-    pub slow: Vec<(Label, usize, u16)>,
+    /// Deferred slow paths: (entry label, bci, depth, registers to reload from their slots).
+    pub slow: Vec<(Label, usize, u16, Vec<(R, i32)>)>,
     /// Safepoint-poll stubs: (entry label, label to resume at).
     pub polls: Vec<(Label, Label)>,
     /// Slots (from the frame base) of local 0 and operand-stack slot 0 of the code being emitted.
@@ -38,6 +39,9 @@ pub(super) struct Emitter {
     pub inlines: HashMap<usize, &'static Method>,
     /// Set while emitting an inlined body.
     pub inl: Option<InlineCtx>,
+    /// The virtual operand stack and the registers pinned to locals (`vstack.rs`).
+    pub vs: Vec<Slot>,
+    pub lregs: Vec<Option<R>>,
 }
 
 pub fn compile(m: &'static Method) -> Option<CompiledMethod> {
@@ -67,24 +71,39 @@ pub fn compile(m: &'static Method) -> Option<CompiledMethod> {
         inline_base: info.max_locals as i32 + header::SLOTS as i32 + info.max_stack as i32 + 2,
         inlines,
         inl: None,
+        vs: Vec::new(),
+        lregs: Vec::new(),
     };
+    if std::env::var_os("RAVA_CORE_NO_LOCAL_REGS").is_none() {
+        e.lregs = plan_local_regs(e.code, info.max_locals as usize, &e.an);
+    }
     let frame_slots = e.inline_base + inline_extra;
     let overflow = e.a.new_label();
     e.prologue(frame_slots, overflow);
     let mut pc = 0;
     let mut leaders = Vec::new();
     while pc < e.code.len() {
-        e.a.bind(e.labels[pc]);
         let len = insn_len(e.code, pc);
-        if let Some(depth) = e.an.depth[pc] {
-            if e.an.leader[pc] {
-                leaders.push((pc as u32, e.a.pos()));
-            }
-            e.emit(pc, depth)?;
+        let Some(depth) = e.an.depth[pc] else {
+            e.a.bind(e.labels[pc]);
+            pc += len;
+            continue;
+        };
+        if e.an.leader[pc] {
+            // Blocks start with the operand stack in memory.
+            e.flush_to_mem();
+            e.vs_reset(depth);
+            leaders.push(pc as u32);
         }
+        e.a.bind(e.labels[pc]);
+        let first_slow = e.slow.len();
+        e.emit(pc, depth)?;
+        let live = e.live_regs();
+        e.slow[first_slow..].iter_mut().for_each(|s| s.3 = live.clone());
         pc += len;
     }
     e.a.bind(e.labels[e.code.len()]);
+    let leaders = e.emit_entry_stubs(leaders);
     e.emit_slow_paths();
     e.emit_poll_stubs();
     e.emit_exception_dispatch();
@@ -151,7 +170,7 @@ impl Emitter {
             return ctx.restart;
         }
         let l = self.a.new_label();
-        self.slow.push((l, bci, depth));
+        self.slow.push((l, bci, depth, Vec::new()));
         l
     }
 
@@ -208,11 +227,7 @@ impl Emitter {
 
     fn prologue(&mut self, frame_slots: i32, overflow: Label) {
         let a = &mut self.a;
-        a.push(R::Rbp);
-        a.mov_rr(true, R::Rbp, R::Rsp);
-        for r in [R::R12, R::R13, R::R14, R::R15] {
-            a.push(r);
-        }
+        save_registers(a);
         a.mov_rr(true, R::R12, R::Rdi);
         a.mov_rr(true, R::R13, R::Rsi);
         a.lea(R::Rax, mem(R::R13, 8 * frame_slots));
@@ -229,12 +244,39 @@ impl Emitter {
         a.store(true, mem(R::R12, offsets::TOP), R::Rcx);
         a.store(true, mem(R::R12, offsets::SP), R::Rax);
         self.poll();
+        self.load_local_regs();
     }
 
+    /// Loads the registers pinned to locals from their slots.
+    fn load_local_regs(&mut self) {
+        for n in 0..self.lregs.len() {
+            if let Some(r) = self.lregs[n] {
+                self.a.load(true, r, self.local(n));
+            }
+        }
+    }
+
+    /// Entry points for OSR and exception handlers at each block: load the local registers,
+    /// then continue at the block. Returns (bci, code offset) pairs.
+    fn emit_entry_stubs(&mut self, leaders: Vec<u32>) -> Vec<(u32, u32)> {
+        let mut out = Vec::with_capacity(leaders.len());
+        for bci in leaders {
+            out.push((bci, self.a.pos()));
+            self.load_local_regs();
+            self.a.jmp(self.labels[bci as usize]);
+        }
+        out
+    }
+
+    /// Slow paths re-execute one instruction in the interpreter, reload the operand-stack
+    /// registers the fast path left live, and continue after the instruction.
     fn emit_slow_paths(&mut self) {
-        for (l, bci, depth) in std::mem::take(&mut self.slow) {
+        for (l, bci, depth, reload) in std::mem::take(&mut self.slow) {
             self.a.bind(l);
             self.defer(bci, depth);
+            for (r, slot) in reload {
+                self.a.load(true, r, self.stk(slot));
+            }
             let next = bci + insn_len(self.code, bci);
             self.a.jmp(self.labels[next]);
         }
@@ -263,10 +305,7 @@ impl Emitter {
         self.a.load(true, R::Rcx, h(header::SAVED_SP));
         self.a.store(true, mem(R::R12, offsets::SP), R::Rcx);
         self.a.bind(restore);
-        for r in [R::R15, R::R14, R::R13, R::R12] {
-            self.a.pop(r);
-        }
-        self.a.pop(R::Rbp);
+        restore_registers(&mut self.a);
         self.a.ret();
         // The frame was never linked: raise, then return without unlinking.
         self.a.bind(overflow);
@@ -274,5 +313,23 @@ impl Emitter {
         self.a.call_abs(runtime::stack_overflow as *const () as usize);
         self.a.alu_rr(false, super::asm::Alu::Xor, R::Rax, R::Rax);
         self.a.jmp(restore);
+    }
+}
+
+/// Callee-saved registers compiled code uses (thread, frame, pinned locals), saved in this
+/// order; the extra 8 bytes keep calls 16-byte aligned.
+const SAVED: [R; 6] = [R::Rbp, R::Rbx, R::R12, R::R13, R::R14, R::R15];
+
+pub(super) fn save_registers(a: &mut Asm) {
+    for r in SAVED {
+        a.push(r);
+    }
+    a.alu_ri(true, super::asm::Alu::Sub, R::Rsp, 8);
+}
+
+pub(super) fn restore_registers(a: &mut Asm) {
+    a.alu_ri(true, super::asm::Alu::Add, R::Rsp, 8);
+    for r in SAVED.iter().rev() {
+        a.pop(*r);
     }
 }
