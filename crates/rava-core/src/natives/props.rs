@@ -28,9 +28,9 @@ pub(super) fn register(r: &mut NativeRegistry) {
 fn platform_value(field: &str) -> Option<String> {
     let env = |k: &str| std::env::var(k).ok();
     Some(match field {
-        "display_country" | "format_country" => "US".into(),
-        "display_language" | "format_language" => "en".into(),
-        "file_encoding" | "sun_jnu_encoding" => "UTF-8".into(),
+        "display_country" | "format_country" => Some(locale().country.clone()).filter(|c| !c.is_empty())?,
+        "display_language" | "format_language" => locale().language.clone(),
+        "file_encoding" | "sun_jnu_encoding" => locale().codeset.clone(),
         "stdout_encoding" | "stderr_encoding" => return None,
         "file_separator" => "/".into(),
         "java_io_tmpdir" => "/tmp".into(),
@@ -47,6 +47,42 @@ fn platform_value(field: &str) -> Option<String> {
         "user_home" => env("HOME").unwrap_or_else(|| "?".into()),
         "user_name" => env("USER").unwrap_or_else(|| "?".into()),
         _ => return None,
+    })
+}
+
+struct Locale {
+    language: String,
+    country: String,
+    codeset: String,
+}
+
+/// The process locale as HotSpot's `ParseLocale` reads it: `setlocale(LC_ALL, "")`, the
+/// `LC_CTYPE` name (plain `C`/`POSIX` meaning en_US) and `nl_langinfo(CODESET)`.
+fn locale() -> &'static Locale {
+    static L: std::sync::OnceLock<Locale> = std::sync::OnceLock::new();
+    L.get_or_init(|| {
+        // SAFETY: called once, before Java code can observe the C locale.
+        let (name, codeset) = unsafe {
+            libc::setlocale(libc::LC_ALL, c"".as_ptr());
+            let lc = libc::setlocale(libc::LC_CTYPE, std::ptr::null());
+            let name = if lc.is_null() { String::new() } else { std::ffi::CStr::from_ptr(lc).to_string_lossy().into_owned() };
+            let cs = libc::nl_langinfo(libc::CODESET);
+            (name, if cs.is_null() { String::new() } else { std::ffi::CStr::from_ptr(cs).to_string_lossy().into_owned() })
+        };
+        let base = name.split(['.', '@']).next().unwrap_or("");
+        let (language, country) = match base.split_once('_') {
+            _ if name.is_empty() || name == "C" || name == "POSIX" => ("en".to_string(), "US".to_string()),
+            // "C.UTF-8" and the like: HotSpot maps the language and leaves no country.
+            _ if base == "C" || base == "POSIX" => ("en".to_string(), String::new()),
+            Some((l, c)) => (l.to_string(), c.to_string()),
+            None => (base.to_string(), String::new()),
+        };
+        let codeset = match codeset.as_str() {
+            "" => "UTF-8".to_string(),
+            "646" => "ISO646-US".to_string(),
+            _ => codeset,
+        };
+        Locale { language, country, codeset }
     })
 }
 
