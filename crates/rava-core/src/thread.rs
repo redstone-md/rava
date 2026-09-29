@@ -61,6 +61,8 @@ pub struct Thread {
     pub(crate) gc_record: Option<&'static crate::gc::safepoint::Record>,
     /// References natives keep outside the stacks (collector roots), e.g. while building arrays.
     pub(crate) handles: Vec<Oop>,
+    /// `sync::thread_token()` of the OS thread running this thread (read by compiled locking).
+    pub(crate) lock_token: u64,
 }
 
 impl Thread {
@@ -81,6 +83,7 @@ impl Thread {
             alloc: Default::default(),
             gc_record: None,
             handles: Vec::new(),
+            lock_token: crate::sync::thread_token(),
         }
     }
 

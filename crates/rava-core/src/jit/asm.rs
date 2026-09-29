@@ -379,6 +379,11 @@ impl Asm {
     pub fn fsqrt(&mut self, x: X, src: X) {
         self.sse_rr(0xF2, false, 0x51, x.0, src.0);
     }
+    /// `lock cmpxchg [m], src` (compares with rax).
+    pub fn lock_cmpxchg(&mut self, m: M, src: R) {
+        self.b(0xF0);
+        self.op_rm(true, &[0x0F, 0xB1], src as u8, m);
+    }
     pub fn mfence(&mut self) {
         self.b(0x0F);
         self.b(0xAE);

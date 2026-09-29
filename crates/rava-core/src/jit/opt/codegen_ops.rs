@@ -6,8 +6,6 @@ use super::codegen::{Arg, Gen};
 use super::ir::*;
 use crate::jit::asm::{mem, Alu, Cond, Shift, R, X};
 use crate::jit::runtime;
-use crate::klass::{InitState, Klass};
-use std::mem::offset_of;
 
 impl Gen<'_> {
     pub(super) fn inst(&mut self, v: V) {
@@ -47,11 +45,7 @@ impl Gen<'_> {
             }
             Inst::InitCheck(k, s) => {
                 let fail = self.deopt(&s);
-                let state = offset_of!(Klass, init) + crate::klass::InitLock::state_offset();
-                self.a.mov_ri(R::Rax, k as *const Klass as i64);
-                self.a.load_zx(1, R::Rax, mem(R::Rax, state as i32));
-                self.a.alu_ri(false, Alu::Cmp, R::Rax, InitState::Initialized as i32);
-                self.a.jcc(Cond::Ne, fail);
+                crate::jit::emit_obj::init_check(&mut self.a, k, R::Rax, fail);
             }
             _ => self.memory_inst(v),
         }
