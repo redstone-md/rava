@@ -24,8 +24,8 @@ pub(super) struct Scope {
     blocks: HashMap<usize, B>,
     /// Predecessor edges each block will get (from the bytecode).
     npreds: HashMap<B, usize>,
-    /// Entry state of each block reached so far.
-    entry: HashMap<B, (Vec<Option<V>>, Vec<Option<V>>)>,
+    /// Entry state of each block reached so far: locals, stack and the values known non-null.
+    entry: HashMap<B, (Vec<Option<V>>, Vec<Option<V>>, Vec<V>)>,
     /// The phi of each slot (locals, then stack) of merge blocks.
     phis: HashMap<B, Vec<Option<V>>>,
     /// Blocks with an entry state, not built yet.
@@ -86,18 +86,22 @@ pub(super) struct Builder {
     pub chain: Vec<(&'static Method, Option<i64>)>,
     /// Code order of the next block to build.
     seq: u32,
+    /// Values known non-null at the current point (checked on every path to it).
+    pub nonnull: Vec<V>,
 }
 
 /// Builds the graph of `m`; `None` if some instruction is not supported. Returns the frame size.
 pub(super) fn build(m: &'static Method) -> Option<(Graph, i32)> {
     let sc = Scope::new(m, None, 0)?;
-    let mut b = Builder { g: Graph::default(), extent: sc.frame_end(), sc, cur: 0, spent: 0, chain: vec![(m, None)], seq: 0 };
+    let mut b = Builder { g: Graph::default(), extent: sc.frame_end(), sc, cur: 0, spent: 0, chain: vec![(m, None)], seq: 0, nonnull: Vec::new() };
     // The entry block reads the parameters, then enters bci 0 like any other edge.
     let start = b.g.new_block(-1);
     b.start_block(start);
     let mut slot = 0u16;
     if !m.is_static() {
-        b.sc.locals[0] = Some(b.g.add(start, Inst::Param(0), Ty::A));
+        let this = b.g.add(start, Inst::Param(0), Ty::A);
+        b.sc.locals[0] = Some(this);
+        b.nonnull.push(this);
         slot = 1;
     }
     for p in m.sig.params.iter() {
@@ -132,10 +136,11 @@ impl Builder {
             let ready = &self.sc.ready;
             let i = (0..ready.len()).min_by_key(|&i| self.g.blocks[ready[i] as usize].bci).unwrap();
             let block = self.sc.ready.swap_remove(i);
-            let (locals, stack) = self.sc.entry[&block].clone();
+            let (locals, stack, nonnull) = self.sc.entry[&block].clone();
             self.start_block(block);
             self.sc.locals = locals;
             self.sc.stack = stack;
+            self.nonnull = nonnull;
             self.build_block(self.g.blocks[block as usize].bci as usize)?;
         }
         Some(())
@@ -230,12 +235,13 @@ impl Builder {
         self.sc.ready.push(to);
         let merge = self.sc.npreds.get(&to).copied().unwrap_or(0) > 1 || self.g.blocks[to as usize].loop_header;
         if !merge {
-            self.sc.entry.insert(to, (self.sc.locals.clone(), self.sc.stack.clone()));
+            self.sc.entry.insert(to, (self.sc.locals.clone(), self.sc.stack.clone(), self.nonnull.clone()));
             return;
         }
         let phis: Vec<Option<V>> = slots.iter().map(|s| s.map(|v| self.g.add(to, Inst::Phi(vec![v]), self.g.ty(v)))).collect();
         let (l, s) = phis.split_at(self.sc.locals.len());
-        self.sc.entry.insert(to, (l.to_vec(), s.to_vec()));
+        // Facts from one predecessor need not hold on the others.
+        self.sc.entry.insert(to, (l.to_vec(), s.to_vec(), Vec::new()));
         self.sc.phis.insert(to, phis);
     }
 
@@ -256,6 +262,23 @@ impl Builder {
 
     pub fn konst(&mut self, ty: Ty, bits: i64) -> V {
         self.add(Inst::Const(bits), ty)
+    }
+
+    /// Checks `v` for null unless it is known not to be; it is known afterwards.
+    pub fn null_check(&mut self, v: V, s: Rc<State>) {
+        if self.nonnull.contains(&v) || self.g.constant(v).is_some_and(|c| c != 0) {
+            return;
+        }
+        self.add(Inst::NullCheck(v, s), Ty::A);
+        self.nonnull.push(v);
+    }
+
+    /// Whether `v` is known to be null (`Some(true)`) or not (`Some(false)`).
+    pub fn nullness(&self, v: V) -> Option<bool> {
+        match self.g.constant(v) {
+            Some(c) => Some(c == 0),
+            None => self.nonnull.contains(&v).then_some(false),
+        }
     }
 
     pub fn push(&mut self, v: V) {

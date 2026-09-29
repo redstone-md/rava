@@ -32,6 +32,7 @@ struct Mark {
     term: Term,
     extent: i32,
     spent: usize,
+    nonnull: Vec<V>,
 }
 
 impl Builder {
@@ -46,6 +47,8 @@ impl Builder {
     /// The call `callee(args)` returning `ret`, with `plan` (a target and what it needs checked)
     /// inlined when the policy agrees. Returns whether the current block continues.
     pub(super) fn emit_call(&mut self, plan: Option<(&'static Method, Guard)>, callee: Callee, args: Vec<V>, s: Rc<State>, ret: BasicType) -> bool {
+        // What is known at the call holds after it, on every path through the callee.
+        let known = self.nonnull.clone();
         let first = args.first().and_then(|&a| self.g.constant(a));
         let plan = plan.filter(|&(t, _)| decide(t, first, &self.chain, 2, self.spent).is_some());
         if std::env::var_os("RAVA_CORE_INLINE_LOG").is_some() {
@@ -66,6 +69,7 @@ impl Builder {
         };
         if let Some(slow) = slow {
             self.start_block(slow);
+            self.nonnull.clone_from(&known);
             let r = self.call(callee, args, s, ret);
             self.g.blocks[slow as usize].term = Term::Goto(k);
             self.g.blocks[k as usize].preds.push(slow);
@@ -75,6 +79,7 @@ impl Builder {
             return false;
         }
         self.start_block(k);
+        self.nonnull = known;
         if ret != BasicType::Void {
             let v = match returns.as_slice() {
                 [(_, v)] => v.expect("a value return"),
@@ -175,6 +180,7 @@ impl Builder {
             term: cur.term.clone(),
             extent: self.extent,
             spent: self.spent,
+            nonnull: self.nonnull.clone(),
         }
     }
 
@@ -187,5 +193,6 @@ impl Builder {
         self.cur = m.cur;
         self.extent = m.extent;
         self.spent = m.spent;
+        self.nonnull = m.nonnull;
     }
 }

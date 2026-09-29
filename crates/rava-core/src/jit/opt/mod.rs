@@ -5,6 +5,7 @@
 mod build;
 mod build_mh;
 mod build_ops;
+mod canon;
 mod codegen;
 mod codegen_intr;
 mod codegen_obj;

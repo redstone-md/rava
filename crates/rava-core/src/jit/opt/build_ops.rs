@@ -2,6 +2,7 @@
 //! locals, as instructions of the current block.
 
 use super::build::Builder;
+use super::canon;
 use super::ir::*;
 use crate::classfile::Cp;
 use crate::jit::analysis::{i2, i4, insn_len};
@@ -40,7 +41,7 @@ impl Builder {
             0x2e..=0x35 => {
                 let s = self.state();
                 let (idx, arr) = (self.pop(), self.pop());
-                self.add(Inst::NullCheck(arr, s.clone()), Ty::A);
+                self.null_check(arr, s.clone());
                 self.add(Inst::BoundsCheck(arr, idx, s), Ty::I);
                 let bt = ARRAY_ELEMS[(op - 0x2e) as usize];
                 let v = self.add(Inst::LoadIndexed(arr, idx, bt), Ty::of(bt));
@@ -70,13 +71,23 @@ impl Builder {
                     0x87 | 0x8a | 0x8d => Ty::D,
                     _ => Ty::I,
                 };
-                let r = self.add(Inst::Convert(op, v), ty);
-                self.push(r);
+                match self.g.constant(v).and_then(|c| canon::convert(op, c)) {
+                    Some(c) => self.push_const(ty, c),
+                    None => {
+                        let r = self.add(Inst::Convert(op, v), ty);
+                        self.push(r);
+                    }
+                }
             }
             0x94..=0x98 => {
                 let (b, a) = (self.pop(), self.pop());
-                let r = self.add(Inst::Compare(op, a, b), Ty::I);
-                self.push(r);
+                match (self.g.constant(a), self.g.constant(b)) {
+                    (Some(x), Some(y)) if op == 0x94 => self.push_const(Ty::I, canon::compare(op, x, y).unwrap()),
+                    _ => {
+                        let r = self.add(Inst::Compare(op, a, b), Ty::I);
+                        self.push(r);
+                    }
+                }
             }
             0x99..=0xa6 | 0xc6 | 0xc7 => {
                 self.branch(pc, op);
@@ -114,6 +125,7 @@ impl Builder {
                 let s = self.state();
                 self.init_check(k, &s);
                 let v = self.add(Inst::New(k, s), Ty::A);
+                self.nonnull.push(v);
                 self.push(v);
             }
             0xbc | 0xbd => {
@@ -132,7 +144,7 @@ impl Builder {
             0xbe => {
                 let s = self.state();
                 let arr = self.pop();
-                self.add(Inst::NullCheck(arr, s), Ty::A);
+                self.null_check(arr, s);
                 let v = self.add(Inst::ArrayLength(arr), Ty::I);
                 self.push(v);
             }
@@ -163,7 +175,7 @@ impl Builder {
             0xc2 | 0xc3 => {
                 let s = self.state();
                 let o = self.pop();
-                self.add(Inst::NullCheck(o, s.clone()), Ty::A);
+                self.null_check(o, s.clone());
                 self.add(Inst::Monitor(op == 0xc2, o, s), Ty::I);
             }
             0xc4 => {
@@ -216,7 +228,7 @@ impl Builder {
         let s = self.state();
         let v = self.pop();
         let (idx, arr) = (self.pop(), self.pop());
-        self.add(Inst::NullCheck(arr, s.clone()), Ty::A);
+        self.null_check(arr, s.clone());
         self.add(Inst::BoundsCheck(arr, idx, s.clone()), Ty::I);
         let bt = ARRAY_ELEMS[(op - 0x4f) as usize];
         if bt == BasicType::Reference {
@@ -249,8 +261,13 @@ impl Builder {
         };
         if (0x74..=0x77).contains(&op) {
             let a = self.pop();
-            let r = self.add(Inst::Neg(a), ty);
-            self.push(r);
+            match self.g.constant(a).and_then(|c| canon::bin(BinOp::Sub, ty, 0, c)) {
+                Some(c) => self.push_const(ty, c),
+                None => {
+                    let r = self.add(Inst::Neg(a), ty);
+                    self.push(r);
+                }
+            }
             return Some(());
         }
         let bin = match op {
@@ -272,6 +289,10 @@ impl Builder {
             if self.g.constant(b).map_or(true, |c| c == 0) {
                 self.add(Inst::ZeroCheck(b, s), ty);
             }
+        }
+        if let Some(c) = self.g.constant(a).zip(self.g.constant(b)).and_then(|(x, y)| canon::bin(bin, ty, x, y)) {
+            self.push_const(ty, c);
+            return Some(());
         }
         let r = self.add(Inst::Bin(bin, a, b), ty);
         self.push(r);
@@ -302,6 +323,12 @@ impl Builder {
             }
         };
         let (then, other) = (self.block_at(target), self.block_at(next));
+        if let Some(taken) = self.known_branch(cmp, ty, a, b) {
+            let to = if taken { then } else { other };
+            self.edge(to);
+            self.g.blocks[self.cur as usize].term = Term::Goto(to);
+            return;
+        }
         self.edge(then);
         self.edge(other);
         self.g.blocks[self.cur as usize].term = Term::If { cmp, ty, a, b, then, other };
@@ -374,7 +401,7 @@ impl Builder {
             (0xb4, Resolved::InstanceField { offset, ty }) => {
                 let s = self.state();
                 let o = self.pop();
-                self.add(Inst::NullCheck(o, s), Ty::A);
+                self.null_check(o, s);
                 let v = self.add(Inst::LoadField(o, offset, ty), Ty::of(ty));
                 self.push(v);
             }
@@ -382,7 +409,7 @@ impl Builder {
                 let s = self.state();
                 let v = self.pop();
                 let o = self.pop();
-                self.add(Inst::NullCheck(o, s), Ty::A);
+                self.null_check(o, s);
                 self.add(Inst::StoreField(o, offset, ty, v), Ty::I);
             }
             _ => return None,
@@ -418,7 +445,7 @@ impl Builder {
             _ => Callee::Interface(m),
         };
         if op != 0xb8 {
-            self.add(Inst::NullCheck(args[0], pre.clone()), Ty::A);
+            self.null_check(args[0], pre.clone());
         }
         if let (0xb6 | 0xb8, Some(k)) = (op, crate::jit::intrinsics::intrinsic(m)) {
             let ret = m.sig.ret;
@@ -430,6 +457,25 @@ impl Builder {
             return Some(true);
         }
         Some(self.call_or_inline(pc, op, m, callee, args, s))
+    }
+}
+
+impl Builder {
+    /// The outcome of a branch decided at compile time: constant operands, or a null test of
+    /// a value known to be non-null.
+    fn known_branch(&self, cmp: Cmp, ty: Ty, a: V, b: V) -> Option<bool> {
+        if let (Some(x), Some(y)) = (self.g.constant(a), self.g.constant(b)) {
+            return Some(canon::branch(cmp, ty, x, y));
+        }
+        if ty != Ty::A || !matches!(cmp, Cmp::Eq | Cmp::Ne) {
+            return None;
+        }
+        let null = match (self.g.constant(a), self.g.constant(b)) {
+            (_, Some(0)) => self.nullness(a)?,
+            (Some(0), _) => self.nullness(b)?,
+            _ => return None,
+        };
+        Some(null == (cmp == Cmp::Eq))
     }
 }
 
