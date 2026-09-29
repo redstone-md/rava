@@ -38,14 +38,6 @@ pub(super) fn register(r: &mut NativeRegistry) {
     });
 }
 
-/// Frames of a hidden class, or of a method annotated `@Hidden`, are skipped unless asked for.
-fn is_hidden_frame(m: &'static Method) -> bool {
-    if m.holder.is_hidden() {
-        return true;
-    }
-    m.has_annotation("Ljava/lang/invoke/LambdaForm$Hidden;") || m.has_annotation("Ljdk/internal/vm/annotation/Hidden;")
-}
-
 fn is_walker_frame(m: &'static Method) -> bool {
     let n = m.holder.name.as_str();
     n == "java/lang/StackWalker" || n == W || m.holder.super_klass.is_some_and(|s| s.name == W)
@@ -60,7 +52,7 @@ fn call_stack_walk(t: &mut Thread, a: &[u64]) -> JResult<u64> {
         .frames()
         .skip(1)
         .skip_while(|(m, _)| is_walker_frame(m))
-        .filter(|(m, _)| show_hidden || !is_hidden_frame(m))
+        .filter(|(m, _)| show_hidden || !m.is_hidden_frame())
         .skip(skip)
         .collect();
     let mut walk = Walk { frames, next: 0 };

@@ -31,6 +31,7 @@ pub struct Method {
     pub(crate) recompiles: AtomicU32,
     /// Set once compilation was attempted and refused, so it is not retried.
     pub(crate) not_compilable: std::sync::atomic::AtomicBool,
+    hidden: OnceLock<bool>,
 }
 
 impl Method {
@@ -50,7 +51,16 @@ impl Method {
             compiled: std::sync::atomic::AtomicPtr::new(std::ptr::null_mut()),
             recompiles: AtomicU32::new(0),
             not_compilable: std::sync::atomic::AtomicBool::new(false),
+            hidden: OnceLock::new(),
         }
+    }
+
+    /// A frame stack traces and stack walks leave out (unless asked to show hidden frames): a
+    /// method of a hidden class, or one annotated `@Hidden` (method-handle plumbing).
+    pub fn is_hidden_frame(&self) -> bool {
+        *self.hidden.get_or_init(|| {
+            self.holder.is_hidden() || self.has_annotation("Ljava/lang/invoke/LambdaForm$Hidden;") || self.has_annotation("Ljdk/internal/vm/annotation/Hidden;")
+        })
     }
 
     pub fn is_static(&self) -> bool {
