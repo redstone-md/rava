@@ -5,9 +5,8 @@
 
 use super::ir::*;
 use super::moves::{self, spill};
-use super::regalloc::{phi_input, phis, Allocation, Loc, CALLER_SAVED};
+use super::regalloc::{phi_input, phis, Allocation, Loc, CALLEE_SAVED, CALLER_SAVED};
 use crate::jit::asm::{mem, Alu, Asm, Cond, Label, M, R};
-use crate::jit::compile::{restore_registers, save_registers};
 use crate::jit::runtime;
 use crate::method::Method;
 use crate::thread::{header, offsets};
@@ -35,6 +34,10 @@ pub(super) struct Gen<'a> {
     deopt_list: Vec<(Label, Rc<State>)>,
     polls: Vec<(Label, Label)>,
     edge_stubs: Vec<(Label, B, B)>,
+    /// Callee-saved registers the prologue saves (the thread, the frame, and those allocated).
+    saved: Vec<R>,
+    /// Bytes below them: spill slots and alignment.
+    frame_bytes: i32,
 }
 
 /// Emits `g` for `m`, whose frame (inlined frames included) takes `frame_slots` value-stack slots.
@@ -54,10 +57,14 @@ pub(super) fn generate(g: &Graph, al: &Allocation, m: &'static Method, frame_slo
         deopt_list: Vec::new(),
         polls: Vec::new(),
         edge_stubs: Vec::new(),
+        saved: Vec::new(),
+        frame_bytes: 0,
     };
-    let spill_bytes = 8 * (al.spill_slots + (al.spill_slots & 1));
+    // Entry rsp is 8 mod 16: an odd number of pushes realigns it, spill slots come in pairs.
+    gen.saved = [R::R12, R::R13].into_iter().chain(CALLEE_SAVED.into_iter().filter(|r| al.loc.contains(&Loc::Reg(*r)))).collect();
+    gen.frame_bytes = 8 * (al.spill_slots + (al.spill_slots & 1)) + if gen.saved.len() % 2 == 0 { 8 } else { 0 };
     let overflow = gen.a.new_label();
-    gen.prologue(spill_bytes, frame_slots, overflow);
+    gen.prologue(frame_slots, overflow);
     for (i, &b) in al.order.iter().enumerate() {
         gen.a.bind(gen.labels[b as usize]);
         for &v in &g.blocks[b as usize].insts {
@@ -66,7 +73,7 @@ pub(super) fn generate(g: &Graph, al: &Allocation, m: &'static Method, frame_slo
         gen.term(b, al.order.get(i + 1).copied());
     }
     gen.emit_stubs();
-    gen.emit_epilogue(spill_bytes, overflow);
+    gen.emit_epilogue(overflow);
     gen.a.finish()
 }
 
@@ -80,11 +87,13 @@ impl Gen<'_> {
         mem(R::R13, 8 * n)
     }
 
-    fn prologue(&mut self, spill_bytes: i32, frame_slots: i32, overflow: Label) {
+    fn prologue(&mut self, frame_slots: i32, overflow: Label) {
         let a = &mut self.a;
-        save_registers(a);
-        if spill_bytes > 0 {
-            a.alu_ri(true, Alu::Sub, R::Rsp, spill_bytes);
+        for &r in &self.saved {
+            a.push(r);
+        }
+        if self.frame_bytes > 0 {
+            a.alu_ri(true, Alu::Sub, R::Rsp, self.frame_bytes);
         }
         a.mov_rr(true, R::R12, R::Rdi);
         a.mov_rr(true, R::R13, R::Rsi);
@@ -104,7 +113,7 @@ impl Gen<'_> {
         self.poll();
     }
 
-    fn emit_epilogue(&mut self, spill_bytes: i32, overflow: Label) {
+    fn emit_epilogue(&mut self, overflow: Label) {
         let restore = self.a.new_label();
         self.a.bind(self.epilogue);
         self.a.load(true, R::Rcx, self.hdr(header::CALLER));
@@ -112,10 +121,12 @@ impl Gen<'_> {
         self.a.load(true, R::Rcx, self.hdr(header::SAVED_SP));
         self.a.store(true, mem(R::R12, offsets::SP), R::Rcx);
         self.a.bind(restore);
-        if spill_bytes > 0 {
-            self.a.alu_ri(true, Alu::Add, R::Rsp, spill_bytes);
+        if self.frame_bytes > 0 {
+            self.a.alu_ri(true, Alu::Add, R::Rsp, self.frame_bytes);
         }
-        restore_registers(&mut self.a);
+        for &r in self.saved.iter().rev() {
+            self.a.pop(r);
+        }
         self.a.ret();
         // The frame was never linked: raise, then return without unlinking.
         self.a.bind(overflow);
