@@ -76,7 +76,7 @@ impl Emitter {
             return self.defer(pc, depth);
         }
         let args = d - m.param_slots() as i32;
-        if op == 0xb8 && self.try_intrinsic(m, args) {
+        if (op == 0xb8 || op == 0xb6) && self.try_intrinsic(pc, depth, m, args) {
             return;
         }
         let inlined = match self.inlines.get(&pc).copied() {
