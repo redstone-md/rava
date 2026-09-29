@@ -34,7 +34,11 @@ pub extern "sysv64" fn tier_up(m: *const Method) {
     if m.compiled().is_some_and(|c| c.tier >= 2) || m.tiered.swap(true, Ordering::AcqRel) {
         return;
     }
-    if let Some(cm) = super::compile::compile(m, 2) {
+    let optimized = super::opt::enabled().then(|| super::opt::compile(m)).flatten();
+    if let (Some(s), true) = (super::stats::get(), optimized.is_some()) {
+        s.opt_methods.fetch_add(1, Ordering::Relaxed);
+    }
+    if let Some(cm) = optimized.or_else(|| super::compile::compile(m, 2)) {
         if let Some(s) = super::stats::get() {
             s.tier2_methods.fetch_add(1, Ordering::Relaxed);
         }

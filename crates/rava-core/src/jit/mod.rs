@@ -21,6 +21,7 @@ mod fold;
 mod inline;
 mod inline_plan;
 mod intrinsics;
+mod opt;
 mod profile;
 mod stubs;
 mod tier;
@@ -168,7 +169,8 @@ pub(crate) fn note_unresolved_deferral(m: &'static Method) {
 }
 
 fn compile_now(m: &'static Method) -> Option<&'static CompiledMethod> {
-    match compile::compile(m, 1) {
+    let optimized = opt::everywhere().then(|| opt::compile(m)).flatten();
+    match optimized.or_else(|| compile::compile(m, 1)) {
         Some(cm) => {
             if let Some(s) = stats::get() {
                 s.compiled_methods.fetch_add(1, Ordering::Relaxed);
