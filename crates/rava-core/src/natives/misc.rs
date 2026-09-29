@@ -78,6 +78,11 @@ pub(super) fn register(r: &mut NativeRegistry) {
     r.add("java/security/AccessController", "ensureMaterializedForStackWalk", "(Ljava/lang/Object;)V", |_, _| ret_void());
     r.add("jdk/internal/misc/ScopedMemoryAccess", "registerNatives", "()V", |_, _| ret_void());
     r.add("java/lang/ProcessEnvironment", "environ", "()[[B", environ);
+    r.add("java/util/TimeZone", "getSystemTimeZoneID", "(Ljava/lang/String;)Ljava/lang/String;", |t, _| {
+        ret_ref(rt::new_string(t, &system_time_zone())?)
+    });
+    r.add("java/util/TimeZone", "getSystemGMTOffsetID", "()Ljava/lang/String;", |t, _| ret_ref(rt::new_string(t, "GMT")?));
+    register_management(r);
     r.add("java/lang/ProcessImpl", "init", "()V", |_, _| ret_void());
     r.add("java/lang/ProcessHandleImpl", "initNative", "()V", |_, _| ret_void());
     r.add("java/lang/ProcessHandleImpl", "getCurrentPid0", "()J", |_, _| ret_long(std::process::id() as i64));
@@ -152,4 +157,51 @@ fn environ(t: &mut Thread, _: &[u64]) -> JResult<u64> {
         }
     }
     ret_ref(arr)
+}
+
+/// The host's zone ID: `TZ`, else the `/etc/localtime` link target, else `/etc/timezone`, else UTC.
+fn system_time_zone() -> String {
+    if let Ok(tz) = std::env::var("TZ") {
+        if !tz.is_empty() {
+            return tz.trim_start_matches(':').to_string();
+        }
+    }
+    if let Ok(target) = std::fs::read_link("/etc/localtime") {
+        let s = target.to_string_lossy().into_owned();
+        if let Some(i) = s.find("zoneinfo/") {
+            return s[i + 9..].to_string();
+        }
+    }
+    std::fs::read_to_string("/etc/timezone").map(|s| s.trim().to_string()).ok().filter(|s| !s.is_empty()).unwrap_or_else(|| "UTC".into())
+}
+
+/// `sun.management.VMManagementImpl`: what `java.lang.management` reports about this VM.
+fn register_management(r: &mut NativeRegistry) {
+    const M: &str = "sun/management/VMManagementImpl";
+    fn started() -> &'static std::time::Instant {
+        static S: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+        S.get_or_init(std::time::Instant::now)
+    }
+    started();
+    r.add(M, "getVersion0", "()Ljava/lang/String;", |t, _| ret_ref(rt::new_string(t, "4.0")?));
+    r.add(M, "initOptionalSupportFields", "()V", |_, _| ret_void());
+    for name in ["isThreadContentionMonitoringEnabled", "isThreadCpuTimeEnabled", "isThreadAllocatedMemoryEnabled", "getVerboseClass", "getVerboseGC"] {
+        r.add(M, name, "()Z", |_, _| ret_bool(false));
+    }
+    r.add(M, "getProcessId", "()I", |_, _| ret_int(std::process::id() as i32));
+    r.add(M, "getVmArguments0", "()[Ljava/lang/String;", |t, _| ret_ref(super::string_array(t, &[])?));
+    r.add(M, "getStartupTime", "()J", |_, _| {
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as i64);
+        ret_long(now - started().elapsed().as_millis() as i64)
+    });
+    r.add(M, "getUptime0", "()J", |_, _| ret_long(started().elapsed().as_millis() as i64));
+    r.add(M, "getAvailableProcessors", "()I", |_, _| ret_int(std::thread::available_parallelism().map_or(1, |n| n.get()) as i32));
+    r.add(M, "getTotalClassCount", "()J", |_, _| ret_long(vm().loaded_class_count() as i64));
+    r.add(M, "getLiveThreadCount", "()I", |_, _| ret_int(crate::gc::safepoint::all_threads().len() as i32));
+    for name in ["getUnloadedClassCount", "getTotalCompileTime", "getTotalThreadCount", "getSafepointCount", "getTotalSafepointTime", "getSafepointSyncTime", "getTotalApplicationNonStoppedTime", "getLoadedClassSize", "getUnloadedClassSize", "getClassLoadingTime", "getMethodDataSize", "getInitializedClassCount", "getClassInitializationTime", "getClassVerificationTime"] {
+        r.add(M, name, "()J", |_, _| ret_long(0));
+    }
+    for name in ["getPeakThreadCount", "getDaemonThreadCount"] {
+        r.add(M, name, "()I", |_, _| ret_int(0));
+    }
 }

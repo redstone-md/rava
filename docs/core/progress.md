@@ -110,6 +110,25 @@ A cell is live iff its class word is non-zero, so no allocation bitmap is mainta
 - Natives never keep references in Rust collections: arrays are allocated first and filled in
   place (found by stress-testing Maven at a 1 MiB trigger: 291 collections, correct output).
 
+## 2026-09-29 — a Minecraft-shaped workload: `bench/mclike/McLike.java`
+
+Built only from the Minecraft server's open-source dependencies (log4j2, gson, guava, fastutil,
+netty, jopt-simple, from Maven Central): option parsing, logging, a 1100-block registry with
+guava immutable state maps and fastutil ids, 4000 JSON "recipes" decoded through codec-like
+combinators, octave Perlin terrain sampling, and binding a netty NIO server. It exercises
+`StackWalker` (log4j caller lookup), sockets, epoll, time zones, `java.lang.management` and
+module-resource class definition (`defineClass2`), all added here.
+
+Same hash as HotSpot (`aff5afe088deab33`). Three alternating runs:
+
+| | wall | inside `main` |
+|---|---:|---:|
+| `java` (adaptive + CDS) | 1.73-1.80 s | 463-529 ms |
+| `rava-core` | **1.35-1.41 s** | 894-1034 ms |
+
+Startup, class loading and logging initialization are cheaper on rava-core; the steady-state
+work inside `main` is ~2x slower than HotSpot's optimizing tiers.
+
 ### Next
 
 1. Code quality: register-cached operand stack, cheaper calls (the profile is now flat over

@@ -11,9 +11,11 @@ mod misc;
 mod nio_ch;
 pub(crate) mod mh;
 mod module;
+mod net;
 pub(crate) mod props;
 mod reflect;
 mod reflect_class;
+mod stackwalk;
 pub(crate) mod thread;
 pub(crate) mod unsafe_mem;
 mod unixfs;
@@ -54,6 +56,8 @@ impl NativeRegistry {
         unixfs::register(&mut r);
         zip::register(&mut r);
         nio_ch::register(&mut r);
+        stackwalk::register(&mut r);
+        net::register(&mut r);
         misc::register(&mut r);
         r
     }

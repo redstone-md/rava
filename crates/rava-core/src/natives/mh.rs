@@ -209,6 +209,12 @@ fn resolve(t: &mut Thread, a: &[u64]) -> JResult<u64> {
     Err(throw_new(t, err, &format!("no such {what}: {}.{name_s}{desc}", defc.name.as_str().replace('/', "."))))
 }
 
+/// Initializes `mn` to denote `m` (for stack walking).
+pub(crate) fn init_member_name(t: &mut Thread, mn: Oop, m: &'static Method) -> JResult<()> {
+    let kind = if m.is_static() { REF_INVOKE_STATIC } else if m.holder.is_interface() { REF_INVOKE_INTERFACE } else { REF_INVOKE_VIRTUAL };
+    fill_method(t, mn, m, kind)
+}
+
 /// `init(MemberName, reflective member)`.
 fn init(t: &mut Thread, a: &[u64]) -> JResult<u64> {
     let (mn, r) = (a[0] as Oop, a[1] as Oop);

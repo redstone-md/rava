@@ -26,6 +26,12 @@ pub(super) fn register(r: &mut NativeRegistry) {
         "([Ljava/lang/StackTraceElement;Ljava/lang/Object;I)V",
         init_stack_trace_elements,
     );
+    r.add(
+        "java/lang/StackTraceElement",
+        "initStackTraceElement",
+        "(Ljava/lang/StackTraceElement;Ljava/lang/StackFrameInfo;)V",
+        init_stack_trace_element,
+    );
 }
 
 fn fill_in_stack_trace(t: &mut Thread, a: &[u64]) -> JResult<u64> {
@@ -55,38 +61,56 @@ fn fill_in_stack_trace(t: &mut Thread, a: &[u64]) -> JResult<u64> {
 
 /// The recorded frames of an exception.
 pub fn backtrace_of(ex: Oop) -> Vec<(&'static Method, i32)> {
-    // SAFETY: live Throwable; backtrace is null or the long[] written above.
-    unsafe {
-        let bt = obj::read::<Oop>(ex, backtrace_offset());
-        if bt.is_null() {
-            return Vec::new();
-        }
-        obj::array_slice::<i64>(bt).chunks_exact(2).map(|p| (&*(p[0] as *const Method), p[1] as i32)).collect()
-    }
+    // SAFETY: live Throwable.
+    frames_of_backtrace(unsafe { obj::read::<Oop>(ex, backtrace_offset()) })
 }
 
+/// Decodes a backtrace `long[]` written by `fill_in_stack_trace`.
+fn frames_of_backtrace(bt: Oop) -> Vec<(&'static Method, i32)> {
+    if bt.is_null() {
+        return Vec::new();
+    }
+    // SAFETY: a long[] of (method address, bci) pairs.
+    unsafe { obj::array_slice::<i64>(bt).chunks_exact(2).map(|p| (&*(p[0] as *const Method), p[1] as i32)).collect() }
+}
+
+/// `initStackTraceElements(elements, backtrace, depth)`.
 fn init_stack_trace_elements(t: &mut Thread, a: &[u64]) -> JResult<u64> {
-    let (elements, backtrace_holder) = (a[0] as Oop, a[1] as Oop);
-    let frames = backtrace_of(backtrace_holder);
-    for (i, (m, bci)) in frames.iter().enumerate() {
+    let (elements, backtrace) = (a[0] as Oop, a[1] as Oop);
+    for (i, (m, bci)) in frames_of_backtrace(backtrace).into_iter().enumerate() {
         // SAFETY: the element array has `depth` entries, pre-populated by the JDK.
         let e = unsafe { *obj::array_data::<Oop>(elements).add(i) };
-        if e.is_null() {
-            continue;
+        if !e.is_null() {
+            fill_element(t, e, m, bci)?;
         }
-        let class = rt::new_string(t, &m.holder.name.as_str().replace('/', "."))?;
-        let method = rt::new_string(t, m.name.as_str())?;
-        let file = match source_file(m) {
-            Some(f) => rt::new_string(t, f)?,
-            None => std::ptr::null_mut(),
-        };
-        // SAFETY: live StackTraceElement.
-        unsafe {
-            obj::write::<Oop>(e, ste_class(), class);
-            obj::write::<Oop>(e, ste_method(), method);
-            obj::write::<Oop>(e, ste_file(), file);
-            obj::write::<i32>(e, ste_line(), if m.is_native() { -2 } else { line_number(m, *bci) });
-        }
+    }
+    ret_void()
+}
+
+fn fill_element(t: &mut Thread, e: Oop, m: &'static Method, bci: i32) -> JResult<()> {
+    let class = rt::new_string(t, &m.holder.java_name())?;
+    // SAFETY: live StackTraceElement; each string is stored as soon as it exists.
+    unsafe { obj::write::<Oop>(e, ste_class(), class) };
+    let method = rt::new_string(t, m.name.as_str())?;
+    unsafe { obj::write::<Oop>(e, ste_method(), method) };
+    if let Some(f) = source_file(m) {
+        let file = rt::new_string(t, f)?;
+        unsafe { obj::write::<Oop>(e, ste_file(), file) };
+    }
+    unsafe { obj::write::<i32>(e, ste_line(), if m.is_native() { -2 } else { line_number(m, bci) }) };
+    Ok(())
+}
+
+vm_field!(sfi_member, "java/lang/StackFrameInfo", "memberName", "Ljava/lang/Object;");
+vm_field!(sfi_bci, "java/lang/StackFrameInfo", "bci", "I");
+
+/// `initStackTraceElement(element, stackFrameInfo)`.
+fn init_stack_trace_element(t: &mut Thread, a: &[u64]) -> JResult<u64> {
+    let (e, sfi) = (a[0] as Oop, a[1] as Oop);
+    // SAFETY: a StackFrameInfo filled by the stack walker.
+    let (mn, bci) = unsafe { (obj::read::<Oop>(sfi, sfi_member()), obj::read::<i32>(sfi, sfi_bci())) };
+    if let Some(m) = super::mh::member_target(mn) {
+        fill_element(t, e, m, bci)?;
     }
     ret_void()
 }
@@ -130,7 +154,7 @@ pub fn describe(ex: Oop) -> String {
         out.push('\n');
         for (m, bci) in backtrace_of(cur) {
             let file = source_file(m).unwrap_or("Unknown Source");
-            out += &format!("\tat {}.{}({}:{})\n", m.holder.name.as_str().replace('/', "."), m.name, file, line_number(m, bci));
+            out += &format!("\tat {}.{}({}:{})\n", m.holder.java_name(), m.name, file, line_number(m, bci));
         }
         if cause == cur {
             break;
