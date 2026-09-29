@@ -11,6 +11,9 @@ use std::sync::atomic::Ordering;
 const VM: &str = "jdk/internal/misc/VM";
 
 pub(super) fn register(r: &mut NativeRegistry) {
+    // No continuations: virtual threads run bound to platform threads (the JDK's own fallback,
+    // as on HotSpot with -XX:-VMContinuations).
+    r.add("jdk/internal/vm/ContinuationSupport", "isSupported0", "()Z", |_, _| ret_bool(false));
     r.add(VM, "initialize", "()V", |_, _| ret_void());
     r.add(VM, "latestUserDefinedLoader0", "()Ljava/lang/ClassLoader;", latest_user_defined_loader);
     r.add(VM, "getuid", "()J", |_, _| ret_long(unsafe { libc::getuid() } as i64));
