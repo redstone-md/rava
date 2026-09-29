@@ -64,7 +64,7 @@ pub(in crate::jit) fn recompile(m: &'static Method) {
 
 /// Compiles `m`, or `None` when some instruction is not supported.
 pub fn compile(m: &'static Method) -> Option<CompiledMethod> {
-    if m.is_synchronized() || m.is_native() {
+    if m.is_native() {
         return None;
     }
     let started = std::time::Instant::now();
@@ -77,6 +77,11 @@ pub fn compile(m: &'static Method) -> Option<CompiledMethod> {
 
 fn compile_timed(m: &'static Method) -> Option<CompiledMethod> {
     let log = std::env::var_os("RAVA_CORE_OPT_LOG").is_some();
+    let monitor = match (m.is_synchronized(), m.is_static()) {
+        (false, _) => None,
+        (true, false) => Some(codegen::Monitor::Receiver),
+        (true, true) => Some(codegen::Monitor::Mirror(Some(m.holder.mirror()).filter(|o| !o.is_null())? as usize)),
+    };
     let Some((mut g, extent)) = build::build(m) else {
         if log {
             eprintln!("[opt] refused {m}");
@@ -88,7 +93,7 @@ fn compile_timed(m: &'static Method) -> Option<CompiledMethod> {
         eprintln!("[opt-ir] {m}\n{}", g.dump());
     }
     let al = regalloc::allocate(&g);
-    let code = codegen::generate(&g, &al, m, extent);
+    let code = codegen::generate(&g, &al, m, extent, monitor);
     let entry = code_cache::install(&code);
     code_cache::perf_map(entry, code.len(), &m.to_string());
     if log {
