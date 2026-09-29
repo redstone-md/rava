@@ -11,6 +11,24 @@ paired wall deltas +0.163/+0.893 seconds. Runtime restored; further work must
 address execution coverage rather than pursue this refusal-cache experiment.
 See docs/handler-direct-refusal.md. Full no-adapt and wall below five seconds remain unmet.
 
+### 2026-09-29: the above-threshold initializer slice is not order-safe yet
+
+The only measured raw-work surface large enough to matter is
+`Blocks.<clinit>`: 14.3–16.2 CPU-s excluding nested initializers. A direct
+`javap` count on the canonical server JAR found 701 `BlockBehaviour.Properties.of()`
+call sites in `Blocks.class`; sampled factory/setter bodies mutate each receiver,
+but the constructor also reads `SoundType.STONE` and creates invokedynamic
+closures. That count is opportunity size, not CPU saved.
+
+The existing fail-closed effect proof cannot admit a parallel builder slice:
+the freshness walk stops at the first `putstatic@5`; the exact closure has
+5,006 unresolved virtual/interface edges and 32 missing classes; it carries no
+value-freshness facts across chains. The final `register` commits ordered,
+shared registry maps. Reordering computation while preserving class-init and
+exception order therefore remains unproved, and the builder subgraph's CPU share
+is unmeasured. Do not implement speculative parallel initialization. No
+qualifying full-boot path has been found under the retained constraints.
+
 ### 2026-09-29: fixed-policy execution is not a <5 s escape hatch
 
 A fresh isolated copy of `world_pristine` ran the same server JAR under
