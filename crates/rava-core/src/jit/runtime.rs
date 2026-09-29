@@ -92,6 +92,14 @@ pub struct IcCell {
 pub(super) const IC_MAX_UPDATES: u32 = 4;
 
 impl IcCell {
+    /// The cached receiver class while the site has seen no other.
+    pub(super) fn observed(&self) -> Option<usize> {
+        use std::sync::atomic::Ordering;
+        // SAFETY: entries are leaked and immutable once published.
+        let k = unsafe { (*self.entry.load(Ordering::Acquire)).klass };
+        (k != 0 && self.misses.load(Ordering::Relaxed) <= 1).then_some(k)
+    }
+
     pub(super) fn misses_offset() -> i32 {
         std::mem::offset_of!(IcCell, misses) as i32
     }

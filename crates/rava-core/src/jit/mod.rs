@@ -21,7 +21,9 @@ mod fold;
 mod inline;
 mod inline_plan;
 mod intrinsics;
+mod profile;
 mod stubs;
+mod tier;
 mod vstack;
 mod runtime;
 pub mod stats;
@@ -43,6 +45,8 @@ pub struct CompiledMethod {
     /// Value-stack slots the compiled frame uses (inlined frames included); an interpreted
     /// frame replaced by this code needs as much room.
     pub frame_slots: usize,
+    /// 1 for the first compilation, 2 once recompiled hot (`tier.rs`).
+    pub tier: u8,
 }
 
 impl CompiledMethod {
@@ -157,14 +161,14 @@ pub(crate) fn note_unresolved_deferral(m: &'static Method) {
         return;
     }
     if m.recompiles.fetch_add(1, Ordering::Relaxed) < MAX_RECOMPILES {
-        if let Some(fresh) = compile::compile(m) {
+        if let Some(fresh) = compile::compile(m, cm.tier) {
             m.install(fresh);
         }
     }
 }
 
 fn compile_now(m: &'static Method) -> Option<&'static CompiledMethod> {
-    match compile::compile(m) {
+    match compile::compile(m, 1) {
         Some(cm) => {
             if let Some(s) = stats::get() {
                 s.compiled_methods.fetch_add(1, Ordering::Relaxed);

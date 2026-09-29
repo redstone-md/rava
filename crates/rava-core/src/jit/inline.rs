@@ -66,6 +66,8 @@ pub(super) enum Entry {
     Receiver,
     /// A virtual callee: the receiver's vtable entry `index` must be this very method.
     Vtable(i32),
+    /// A profiled callee: the receiver must be exactly this class.
+    Klass(&'static Klass),
 }
 
 impl Emitter {
@@ -91,11 +93,16 @@ impl Emitter {
         match entry {
             Entry::Static(holder) => self.init_check(holder, restart),
             Entry::Receiver if known_receiver => {}
-            Entry::Receiver | Entry::Vtable(_) => {
+            Entry::Receiver | Entry::Vtable(_) | Entry::Klass(_) => {
                 self.a.load(true, R::Rcx, self.stk(args));
                 self.a.test_rr(true, R::Rcx, R::Rcx);
                 self.a.jcc(super::asm::Cond::E, restart);
             }
+        }
+        if let Entry::Klass(k) = entry {
+            self.a.mov_ri(R::Rdx, k as *const Klass as i64);
+            self.a.alu_rm(true, super::asm::Alu::Cmp, R::Rdx, mem(R::Rcx, 0));
+            self.a.jcc(super::asm::Cond::Ne, restart);
         }
         if let Entry::Vtable(index) = entry {
             self.a.load(true, R::Rax, mem(R::Rcx, 0));
@@ -144,6 +151,7 @@ impl Emitter {
             lconst_base,
             lconst,
         };
+        self.inlined_bytes += info.code.len();
         let caller = self.swap_body(body);
         self.chain.push((callee, consts.first().copied().flatten()));
         let ok = self.emit_body(None);

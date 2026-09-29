@@ -441,6 +441,7 @@ impl Emitter {
                 let target = rel(pc, i2(self.code, pc + 1) as i32);
                 if target <= pc {
                     self.poll();
+                    self.count_backedge(target);
                 }
                 return self.a.jmp(self.label(target));
             }

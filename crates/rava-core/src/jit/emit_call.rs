@@ -25,7 +25,7 @@ impl Emitter {
         }
         let n = target.param_slots() as usize;
         let consts = consts.unwrap_or_else(|| (0..n).map(|i| self.site_consts.get(args as usize + i).copied().flatten()).collect());
-        let kind = decide(target, consts.first().copied().flatten(), &self.chain);
+        let kind = decide(target, consts.first().copied().flatten(), &self.chain, self.tier, self.inlined_bytes);
         if std::env::var_os("RAVA_CORE_INLINE_LOG").is_some() {
             let indent = "  ".repeat(self.chain.len());
             eprintln!("[inline] {indent}{} @{pc} -> {target} {}", self.m, if kind.is_some() { "inlined" } else { "call" });
@@ -63,6 +63,7 @@ impl Emitter {
         } else {
             // Inline cache: compare the receiver class with the cached pair, else miss handler.
             let cell = runtime::IcCell::new();
+            super::profile::record(self.m, pc, cell);
             let (hit, done, found) = (self.a.new_label(), self.a.new_label(), self.a.new_label());
             self.a.load(true, R::Rdi, mem(R::Rcx, 0));
             self.a.mov_ri(R::Rax, cell as *const runtime::IcCell as i64);
@@ -129,6 +130,10 @@ impl Emitter {
             None if op == 0xb6 && m.vtable_index() >= 0 && !m.is_abstract() && !m.holder.is_interface() => {
                 self.try_inline(pc, args, m, Entry::Vtable(m.vtable_index()), None)
             }
+            // Tier 2: a site tier 1 only saw one receiver class at inlines that class's target.
+            None if self.tier >= 2 && matches!(op, 0xb6 | 0xb9) => super::profile::monomorphic(self.m, pc)
+                .and_then(|k| crate::link::select_method(k, m).filter(|t| !t.is_abstract()).map(|t| (k, t)))
+                .and_then(|(k, t)| self.try_inline(pc, args, t, Entry::Klass(k), None)),
             None => None,
         };
         let slow = self.slow_path(pc, depth);
