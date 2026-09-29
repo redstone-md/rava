@@ -29,6 +29,8 @@ pub struct Method {
     /// running it, since every version shares the frame layout).
     compiled: std::sync::atomic::AtomicPtr<crate::jit::CompiledMethod>,
     pub(crate) recompiles: AtomicU32,
+    /// Recompilations of optimized code after deoptimizations (`jit/opt`).
+    pub(crate) deopt_recompiles: AtomicU32,
     /// Set once compilation was attempted and refused, so it is not retried.
     pub(crate) not_compilable: std::sync::atomic::AtomicBool,
     hidden: OnceLock<bool>,
@@ -52,6 +54,7 @@ impl Method {
             entry: AtomicUsize::new(crate::jit::interpreter_entry()),
             compiled: std::sync::atomic::AtomicPtr::new(std::ptr::null_mut()),
             recompiles: AtomicU32::new(0),
+            deopt_recompiles: AtomicU32::new(0),
             not_compilable: std::sync::atomic::AtomicBool::new(false),
             hidden: OnceLock::new(),
             tiered: std::sync::atomic::AtomicBool::new(false),

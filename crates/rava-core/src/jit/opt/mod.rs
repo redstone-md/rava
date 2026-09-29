@@ -32,6 +32,26 @@ pub fn everywhere() -> bool {
     mode() == "all"
 }
 
+/// Deoptimizations of one compiled version before its method is recompiled, and the
+/// recompilations before it keeps the baseline compiler's tier-2 code instead.
+const DEOPTS_BEFORE_RECOMPILE: u32 = 8;
+const MAX_RECOMPILES: u32 = 4;
+
+/// Counts a deoptimization of `m`'s optimized code. Frequent ones recompile it: constants have
+/// been resolved and profiles updated since; a method that keeps deoptimizing gets baseline
+/// code (which handles exceptions and every instruction itself).
+pub(super) fn note_deopt(m: &'static Method) {
+    use std::sync::atomic::Ordering;
+    let Some(cm) = m.compiled().filter(|c| c.tier >= 2) else { return };
+    if cm.deopts.fetch_add(1, Ordering::Relaxed) + 1 != DEOPTS_BEFORE_RECOMPILE {
+        return;
+    }
+    let again = m.deopt_recompiles.fetch_add(1, Ordering::Relaxed) < MAX_RECOMPILES;
+    if let Some(cm) = again.then(|| compile(m)).flatten().or_else(|| super::compile::compile(m, 2)) {
+        m.install(cm);
+    }
+}
+
 /// Compiles `m`, or `None` when some instruction is not supported.
 pub fn compile(m: &'static Method) -> Option<CompiledMethod> {
     if m.is_synchronized() || m.is_native() {
@@ -56,5 +76,5 @@ pub fn compile(m: &'static Method) -> Option<CompiledMethod> {
         let _ = std::fs::write(&file, &code);
         eprintln!("[opt-dump] {m} -> {file}");
     }
-    Some(CompiledMethod { entry, unresolved_deferrals: Default::default(), size: code.len(), blocks: Vec::new(), frame_slots: extent as usize, tier: 2 })
+    Some(CompiledMethod { entry, unresolved_deferrals: Default::default(), size: code.len(), blocks: Vec::new(), frame_slots: extent as usize, tier: 2, deopts: Default::default() })
 }

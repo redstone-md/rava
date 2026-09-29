@@ -64,7 +64,12 @@ pub(super) fn register(r: &mut NativeRegistry) {
     r.add("java/lang/Runtime", "freeMemory", "()J", |_, _| ret_long(32 << 20));
     r.add("java/lang/Runtime", "gc", "()V", |_, _| ret_void());
     r.add("java/lang/Shutdown", "beforeHalt", "()V", |_, _| ret_void());
-    r.add("java/lang/Shutdown", "halt0", "(I)V", |_, a| std::process::exit(a[0] as i32));
+    r.add("java/lang/Shutdown", "halt0", "(I)V", |_, a| {
+        if let Some(s) = crate::jit::stats::get() {
+            s.report();
+        }
+        std::process::exit(a[0] as i32)
+    });
     r.add("java/lang/System", "setIn0", "(Ljava/io/InputStream;)V", |_, a| set_system_stream("in", "Ljava/io/InputStream;", a[0]));
     r.add("java/lang/System", "setOut0", "(Ljava/io/PrintStream;)V", |_, a| set_system_stream("out", "Ljava/io/PrintStream;", a[0]));
     r.add("java/lang/System", "setErr0", "(Ljava/io/PrintStream;)V", |_, a| set_system_stream("err", "Ljava/io/PrintStream;", a[0]));
