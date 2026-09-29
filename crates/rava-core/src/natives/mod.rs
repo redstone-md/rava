@@ -10,6 +10,7 @@ mod lang;
 mod misc;
 mod nio_ch;
 mod auth;
+mod desktop;
 mod management;
 mod process;
 pub(crate) mod mh;
@@ -66,6 +67,7 @@ impl NativeRegistry {
         process::register(&mut r);
         management::register(&mut r);
         auth::register(&mut r);
+        desktop::register(&mut r);
         stackwalk::register(&mut r);
         net::register(&mut r);
         misc::register(&mut r);
