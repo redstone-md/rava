@@ -34,6 +34,7 @@ pub fn mirror_of(t: &mut Thread, k: &'static Klass) -> JResult<Oop> {
         obj::write::<Oop>(m, loader_offset(), k.loader());
         obj::write::<Oop>(m, component_offset(), component);
     }
+    crate::natives::set_mirror_module(m, k);
     match k.mirror.compare_exchange(std::ptr::null_mut(), m, Ordering::AcqRel, Ordering::Acquire) {
         Ok(_) => Ok(m),
         Err(winner) => Ok(winner),
@@ -69,8 +70,15 @@ const PRIMITIVES: [BasicType; 9] = [
     BasicType::Void,
 ];
 
+static PRIMITIVE_MIRRORS: Mutex<[usize; 10]> = Mutex::new([0; 10]);
+
+/// Every primitive mirror created so far.
+pub fn primitive_mirrors() -> Vec<Oop> {
+    PRIMITIVE_MIRRORS.lock().unwrap().iter().filter(|&&m| m != 0).map(|&m| m as Oop).collect()
+}
+
 pub fn primitive_mirror(t: &mut Thread, ty: BasicType) -> JResult<Oop> {
-    static TABLE: Mutex<[usize; 10]> = Mutex::new([0; 10]);
+    const TABLE: &Mutex<[usize; 10]> = &PRIMITIVE_MIRRORS;
     if let Some(&m) = TABLE.lock().unwrap().get(ty as usize).filter(|&&m| m != 0) {
         return Ok(m as Oop);
     }
@@ -79,6 +87,7 @@ pub fn primitive_mirror(t: &mut Thread, ty: BasicType) -> JResult<Oop> {
     let m = alloc_instance(t, class_class)?;
     // SAFETY: fresh Class instance.
     unsafe { obj::write::<i32>(m, primitive_offset(), ty as i32 + 1) };
+    crate::natives::set_primitive_mirror_module(m);
     let mut table = TABLE.lock().unwrap();
     if table[ty as usize] == 0 {
         table[ty as usize] = m as usize;

@@ -1,12 +1,14 @@
 //! Runtime services shared by the interpreter, natives and (later) compiled code.
 
+mod boxing;
 mod init;
 mod mirror;
 mod strings;
 
+pub use boxing::{box_value, unbox_value};
 pub use init::initialize;
-pub use mirror::{klass_of_mirror, mirror_of, primitive_by_name, primitive_mirror, primitive_type_of_mirror};
-pub use strings::{intern, intern_modified_utf8 as intern_literal, java_string_to_rust, new_string, new_string_utf16, string_units};
+pub use mirror::{klass_of_mirror, mirror_of, primitive_by_name, primitive_mirror, primitive_mirrors, primitive_type_of_mirror};
+pub use strings::{intern, intern_modified_utf8 as intern_literal, intern_str, java_string_to_rust, new_string, new_string_utf16, string_units};
 
 use crate::heap::{obj, Oop};
 use crate::klass::Klass;
@@ -89,6 +91,7 @@ pub fn link_error(t: &mut Thread, e: LinkError) -> Throw {
     match e {
         LinkError::Load(LoadError { kind, message }) => throw_new(t, kind, &message),
         LinkError::Error(kind, message) => throw_new(t, kind, &message),
+        LinkError::Thrown(ex) => ex,
     }
 }
 

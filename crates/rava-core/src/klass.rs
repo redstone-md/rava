@@ -104,6 +104,8 @@ pub struct Klass {
     pub(crate) resolved: Box<[OnceLock<Resolved>]>,
     pub(crate) array_klass: OnceLock<&'static Klass>,
     pub(crate) iface_cache: Mutex<HashMap<(Symbol, Symbol), Option<&'static Method>>>,
+    /// Defined by `Lookup.defineHiddenClass` (not findable by name).
+    hidden: bool,
 }
 
 pub(crate) struct KlassParts {
@@ -118,6 +120,7 @@ pub(crate) struct KlassParts {
     pub ref_offsets: Vec<u32>,
     pub static_slots: usize,
     pub initialized: bool,
+    pub hidden: bool,
 }
 
 impl Klass {
@@ -151,6 +154,7 @@ impl Klass {
             resolved: (0..pool_len).map(|_| OnceLock::new()).collect(),
             array_klass: OnceLock::new(),
             iface_cache: Mutex::new(HashMap::new()),
+            hidden: p.hidden,
         }
     }
 
@@ -169,6 +173,10 @@ impl Klass {
 
     pub fn is_interface(&self) -> bool {
         self.access & ACC_INTERFACE != 0
+    }
+
+    pub fn is_hidden(&self) -> bool {
+        self.hidden
     }
 
     pub fn is_array(&self) -> bool {

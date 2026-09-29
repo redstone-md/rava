@@ -1,0 +1,106 @@
+//! `jdk.internal.util.SystemProps$Raw`: platform defaults and VM-supplied properties.
+
+use super::{ret_ref, NativeRegistry};
+use crate::heap::{obj, Oop};
+use crate::runtime as rt;
+use crate::thread::{JResult, Thread};
+use crate::vm::vm;
+
+const RAW: &str = "jdk/internal/util/SystemProps$Raw";
+
+/// Platform properties in `SystemProps.Raw` index order (alphabetical by constant name).
+const PLATFORM_FIELDS: [&str; 39] = [
+    "display_country", "display_language", "display_script", "display_variant", "file_encoding",
+    "file_separator", "format_country", "format_language", "format_script", "format_variant",
+    "ftp_nonProxyHosts", "ftp_proxyHost", "ftp_proxyPort", "http_nonProxyHosts", "http_proxyHost",
+    "http_proxyPort", "https_proxyHost", "https_proxyPort", "java_io_tmpdir", "line_separator",
+    "os_arch", "os_name", "os_version", "path_separator", "socksNonProxyHosts", "socksProxyHost",
+    "socksProxyPort", "stderr_encoding", "stdout_encoding", "sun_arch_abi", "sun_arch_data_model",
+    "sun_cpu_endian", "sun_cpu_isalist", "sun_io_unicode_encoding", "sun_jnu_encoding",
+    "sun_os_patch_level", "user_dir", "user_home", "user_name",
+];
+
+pub(super) fn register(r: &mut NativeRegistry) {
+    r.add(RAW, "platformProperties", "()[Ljava/lang/String;", platform_properties);
+    r.add(RAW, "vmProperties", "()[Ljava/lang/String;", vm_properties);
+}
+
+fn platform_value(field: &str) -> Option<String> {
+    let env = |k: &str| std::env::var(k).ok();
+    Some(match field {
+        "display_country" | "format_country" => "US".into(),
+        "display_language" | "format_language" => "en".into(),
+        "file_encoding" | "sun_jnu_encoding" => "UTF-8".into(),
+        "stdout_encoding" | "stderr_encoding" => return None,
+        "file_separator" => "/".into(),
+        "java_io_tmpdir" => "/tmp".into(),
+        "line_separator" => "\n".into(),
+        "os_arch" => if cfg!(target_arch = "x86_64") { "amd64".into() } else { std::env::consts::ARCH.into() },
+        "os_name" => "Linux".into(),
+        "os_version" => os_release(),
+        "path_separator" => ":".into(),
+        "sun_arch_data_model" => "64".into(),
+        "sun_cpu_endian" => "little".into(),
+        "sun_io_unicode_encoding" => "UnicodeLittle".into(),
+        "sun_os_patch_level" => "unknown".into(),
+        "user_dir" => std::env::current_dir().ok()?.to_string_lossy().into_owned(),
+        "user_home" => env("HOME").unwrap_or_else(|| "?".into()),
+        "user_name" => env("USER").unwrap_or_else(|| "?".into()),
+        _ => return None,
+    })
+}
+
+fn os_release() -> String {
+    // SAFETY: uname fills a caller-provided struct.
+    unsafe {
+        let mut u: libc::utsname = std::mem::zeroed();
+        if libc::uname(&mut u) != 0 {
+            return "unknown".into();
+        }
+        std::ffi::CStr::from_ptr(u.release.as_ptr()).to_string_lossy().into_owned()
+    }
+}
+
+fn platform_properties(t: &mut Thread, _: &[u64]) -> JResult<u64> {
+    let values: Vec<Option<String>> = PLATFORM_FIELDS.iter().map(|f| platform_value(f)).collect();
+    ret_ref(string_array(t, &values)?)
+}
+
+fn vm_properties(t: &mut Thread, _: &[u64]) -> JResult<u64> {
+    let v = vm();
+    let home = v.options.java_home.to_string_lossy().into_owned();
+    let mut pairs: Vec<(String, String)> = vec![
+        ("java.home".into(), home.clone()),
+        ("java.vm.specification.name".into(), "Java Virtual Machine Specification".into()),
+        ("java.vm.specification.vendor".into(), "Oracle Corporation".into()),
+        ("java.vm.specification.version".into(), "21".into()),
+        ("java.vm.name".into(), "rava".into()),
+        ("java.vm.vendor".into(), "rava".into()),
+        ("java.vm.version".into(), env!("CARGO_PKG_VERSION").into()),
+        ("java.vm.info".into(), "interpreted mode".into()),
+        ("jdk.debug".into(), "release".into()),
+        ("sun.boot.library.path".into(), format!("{home}/lib")),
+        ("java.library.path".into(), "/usr/java/packages/lib:/usr/lib64:/lib64:/lib:/usr/lib".into()),
+        ("java.class.path".into(), v.options.class_path.clone()),
+        ("sun.java.launcher".into(), "SUN_STANDARD".into()),
+        ("sun.management.compiler".into(), "rava tiered".into()),
+    ];
+    pairs.extend(v.options.properties.iter().cloned());
+    let flat: Vec<Option<String>> = pairs.into_iter().flat_map(|(k, v)| [Some(k), Some(v)]).collect();
+    ret_ref(string_array(t, &flat)?)
+}
+
+/// A `String[]` with the given (possibly null) elements.
+pub fn string_array(t: &mut Thread, values: &[Option<String>]) -> JResult<Oop> {
+    let string_class = crate::loader::load("java/lang/String").expect("String");
+    let array_class = vm().array_class_of(string_class).expect("String[]");
+    let arr = rt::alloc_array(t, array_class, values.len() as i32)?;
+    for (i, v) in values.iter().enumerate() {
+        if let Some(s) = v {
+            let js = rt::new_string(t, s)?;
+            // SAFETY: `arr` has values.len() reference elements.
+            unsafe { *obj::array_data::<Oop>(arr).add(i) = js };
+        }
+    }
+    Ok(arr)
+}

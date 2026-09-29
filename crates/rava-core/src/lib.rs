@@ -1,5 +1,6 @@
 //! rava-core: the parity execution core. Design: `docs/core/README.md`.
 
+pub mod boot;
 pub mod classfile;
 pub mod heap;
 pub mod interp;
@@ -11,6 +12,7 @@ pub mod method;
 pub mod natives;
 pub mod runtime;
 pub mod symbol;
+pub mod sync;
 pub mod thread;
 pub mod types;
 pub mod vm;

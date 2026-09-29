@@ -18,6 +18,8 @@ pub struct Thread {
     /// First free slot of the value stack.
     pub(crate) sp: *mut u64,
     pub java_thread: Oop,
+    /// `Thread.scopedValueCache` of the current thread.
+    pub(crate) scoped_value_cache: Oop,
     /// Interpreter call depth, bounded to turn runaway recursion into StackOverflowError.
     pub(crate) depth: u32,
     /// Active frames, innermost last: the method and, for interpreted frames, a pointer to the
@@ -30,7 +32,7 @@ impl Thread {
     pub fn new() -> Thread {
         let mut stack = vec![0u64; STACK_SLOTS].into_boxed_slice();
         let sp = stack.as_mut_ptr();
-        Thread { stack, sp, java_thread: std::ptr::null_mut(), depth: 0, frames: Vec::with_capacity(256) }
+        Thread { stack, sp, java_thread: std::ptr::null_mut(), scoped_value_cache: std::ptr::null_mut(), depth: 0, frames: Vec::with_capacity(256) }
     }
 
     /// One past the last usable slot.

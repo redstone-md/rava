@@ -9,6 +9,8 @@
 mod ops;
 mod support;
 
+pub(crate) use support::{read_field, write_field};
+
 use crate::method::Method;
 use crate::runtime::throw_new;
 use crate::thread::{JResult, Thread};
@@ -32,15 +34,31 @@ pub fn invoke(t: &mut Thread, m: &'static Method, locals: *mut u64) -> JResult<u
     if frame_end > t.stack_limit() || t.depth >= MAX_DEPTH {
         return Err(throw_new(t, "java/lang/StackOverflowError", ""));
     }
+    let lock = if m.is_synchronized() { Some(sync_target(t, m, locals)?) } else { None };
     let saved_sp = t.sp;
     t.sp = frame_end;
     t.depth += 1;
     t.frames.push((m, std::ptr::null()));
     let r = ops::execute(t, m, code, locals);
+    if let Some(o) = lock {
+        crate::sync::exit(o);
+    }
     t.frames.pop();
     t.depth -= 1;
     t.sp = saved_sp;
     r
+}
+
+/// Acquires the monitor of a synchronized method: the receiver, or the class for statics.
+fn sync_target(t: &mut Thread, m: &'static Method, locals: *mut u64) -> JResult<crate::heap::Oop> {
+    let o = if m.is_static() {
+        crate::runtime::mirror_of(t, m.holder)?
+    } else {
+        // SAFETY: slot 0 holds the receiver.
+        unsafe { *locals as crate::heap::Oop }
+    };
+    crate::sync::enter(o);
+    Ok(o)
 }
 
 fn call_native(t: &mut Thread, m: &'static Method, locals: *mut u64) -> JResult<u64> {
@@ -48,16 +66,25 @@ fn call_native(t: &mut Thread, m: &'static Method, locals: *mut u64) -> JResult<
         Some(f) => *f,
         None => match vm().natives.lookup(m) {
             Some(f) => *m.native.get_or_init(|| f),
-            None => return Err(throw_new(t, "java/lang/UnsatisfiedLinkError", &m.to_string())),
+            None => {
+                if std::env::var_os("RAVA_CORE_TRACE_ULE").is_some() {
+                    eprintln!("[ULE] {m}");
+                }
+                return Err(throw_new(t, "java/lang/UnsatisfiedLinkError", &m.to_string()));
+            }
         },
     };
     // SAFETY: the caller placed `param_slots` argument slots at `locals`.
     let args = unsafe { std::slice::from_raw_parts(locals, m.param_slots() as usize) };
+    let lock = if m.is_synchronized() { Some(sync_target(t, m, locals)?) } else { None };
     let saved_sp = t.sp;
     // SAFETY: natives may call back into Java; keep their frames above the arguments.
     t.sp = unsafe { locals.add(m.param_slots() as usize) }.max(t.sp);
     t.frames.push((m, std::ptr::null()));
     let r = f(t, args);
+    if let Some(o) = lock {
+        crate::sync::exit(o);
+    }
     t.frames.pop();
     t.sp = saved_sp;
     r

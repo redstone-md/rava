@@ -6,6 +6,9 @@ use crate::klass::{FieldDesc, Klass, KlassKind, KlassParts, ACC_ABSTRACT, ACC_FI
 use crate::method::Method;
 use crate::symbol::Symbol;
 use crate::types::BasicType;
+use crate::link::{LinkError, LinkResult};
+use crate::runtime as rt;
+use crate::thread::{JResult, Thread};
 use crate::vm::{vm, Vm};
 
 #[derive(Debug, Clone)]
@@ -16,12 +19,18 @@ pub struct LoadError {
 }
 
 impl LoadError {
-    fn no_class(name: &str) -> Self {
+    pub(crate) fn no_class(name: &str) -> Self {
         LoadError { kind: "java/lang/NoClassDefFoundError", message: name.replace('/', ".") }
     }
 }
 
 pub type LoadResult = Result<&'static Klass, LoadError>;
+
+impl From<LoadError> for LinkError {
+    fn from(e: LoadError) -> Self {
+        LinkError::Load(e)
+    }
+}
 
 /// Fields the VM adds to a JDK class's layout, invisible to reflection (as HotSpot's injected
 /// fields). Keyed by JDK class names: these are VM structure, not workload routing.
@@ -49,16 +58,79 @@ impl Vm {
         if cf.name != name {
             return Err(LoadError::no_class(&format!("{name} (wrong name: {})", cf.name)));
         }
-        self.define_class(cf, std::ptr::null_mut())
+        self.define_with(cf, std::ptr::null_mut(), &mut |n| self.load_boot_class(n).map_err(LinkError::from))
+            .map_err(|e| match e {
+                LinkError::Load(e) => e,
+                other => LoadError { kind: "java/lang/LinkageError", message: format!("{other:?}") },
+            })
     }
 
-    /// Defines a parsed class for `loader`, loading its supertypes through the boot loader.
-    pub fn define_class(&'static self, cf: ClassFile, loader: Oop) -> LoadResult {
+    /// Loads `name` as seen from `loader` (JVMS 5.3): the boot loader directly, any other loader
+    /// through its Java `loadClass`, recording the loader as an initiating loader.
+    pub fn load_class(&'static self, t: &mut Thread, loader: Oop, name: Symbol) -> LinkResult<&'static Klass> {
+        if loader.is_null() {
+            return Ok(self.load_boot_class(name)?);
+        }
+        if let Some(k) = self.find_loaded(loader, name) {
+            return Ok(k);
+        }
+        if let Some(comp) = name.as_str().strip_prefix('[') {
+            let elem = match comp.as_bytes()[0] {
+                b'L' => self.load_class(t, loader, Symbol::intern(&comp[1..comp.len() - 1]))?,
+                b'[' => self.load_class(t, loader, Symbol::intern(comp))?,
+                _ => return Ok(self.load_boot_class(name)?),
+            };
+            return Ok(self.array_class_of(elem)?);
+        }
+        let k = self.call_load_class(t, loader, name).map_err(LinkError::Thrown)?;
+        if k.name != name {
+            return Err(LoadError::no_class(name.as_str()).into());
+        }
+        self.classes.write().unwrap().entry((loader as usize, name)).or_insert(k);
+        Ok(k)
+    }
+
+    fn call_load_class(&'static self, t: &mut Thread, loader: Oop, name: Symbol) -> JResult<&'static Klass> {
+        let class_loader = crate::loader::load("java/lang/ClassLoader").expect("ClassLoader");
+        let load = class_loader
+            .declared_method(Symbol::intern("loadClass"), Symbol::intern("(Ljava/lang/String;)Ljava/lang/Class;"))
+            .expect("ClassLoader.loadClass");
+        // SAFETY: live loader object.
+        let target = crate::link::select_method(unsafe { crate::heap::obj::klass(loader) }, load).unwrap_or(load);
+        let jname = rt::new_string(t, &name.as_str().replace('/', "."))?;
+        let result = t.call(target, &[loader as u64, jname as u64]);
+        let cnfe = crate::loader::load("java/lang/ClassNotFoundException").expect("CNFE");
+        let mirror = match result {
+            Ok(m) if m != 0 => m as Oop,
+            Ok(_) => return Err(rt::throw_new(t, "java/lang/NoClassDefFoundError", &name.as_str().replace('/', "."))),
+            // SAFETY: live exception.
+            Err(ex) if unsafe { crate::heap::obj::klass(ex.0) }.is_subtype_of(cnfe) => {
+                return Err(rt::throw_new(t, "java/lang/NoClassDefFoundError", name.as_str()));
+            }
+            Err(ex) => return Err(ex),
+        };
+        Ok(rt::klass_of_mirror(mirror).expect("loadClass returned a primitive class"))
+    }
+
+    /// Defines a parsed class for `loader`, resolving its supertypes through that loader.
+    pub fn define_class(&'static self, t: &mut Thread, cf: ClassFile, loader: Oop) -> LinkResult<&'static Klass> {
+        self.define_with(cf, loader, &mut |name| self.load_class(t, loader, name))
+    }
+
+    fn define_with(
+        &'static self,
+        cf: ClassFile,
+        loader: Oop,
+        resolve: &mut dyn FnMut(Symbol) -> LinkResult<&'static Klass>,
+    ) -> LinkResult<&'static Klass> {
         let super_klass = match cf.super_name {
-            Some(s) => Some(self.load_boot_class(s)?),
+            Some(s) => Some(resolve(s)?),
             None => None,
         };
-        let interfaces = cf.interfaces.iter().map(|&i| self.load_boot_class(i)).collect::<Result<Vec<_>, _>>()?;
+        if super_klass.is_some_and(|s| s.is_interface()) {
+            return Err(LinkError::Error("java/lang/IncompatibleClassChangeError", format!("class {} has interface as super class", cf.name)));
+        }
+        let interfaces = cf.interfaces.iter().map(|&i| resolve(i)).collect::<Result<Vec<_>, _>>()?;
         let layout = FieldLayout::compute(&cf, super_klass);
         let klass: &'static Klass = Box::leak(Box::new(Klass::new(KlassParts {
             name: cf.name,
@@ -71,6 +143,7 @@ impl Vm {
             ref_offsets: layout.ref_offsets,
             static_slots: layout.static_slots,
             initialized: false,
+            hidden: false,
             cf: Some(cf),
         })));
         klass.loader.store(loader, std::sync::atomic::Ordering::Release);
@@ -128,6 +201,7 @@ impl Vm {
             ref_offsets: Vec::new(),
             static_slots: 0,
             initialized: true,
+            hidden: false,
         })));
         klass.loader.store(loader, std::sync::atomic::Ordering::Release);
         let _ = klass.methods.set(Box::new([]));
