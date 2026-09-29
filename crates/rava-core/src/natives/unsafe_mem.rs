@@ -1,0 +1,149 @@
+//! `jdk.internal.misc.Unsafe`. An access address is `base + offset`, where a null base makes
+//! `offset` absolute. Static fields are exposed with a null base and the absolute address of
+//! their slot as the offset, so every static access goes through the same path.
+
+use super::{ret_bool, ret_int, ret_long, ret_ref, ret_void, NativeRegistry};
+use crate::heap::{Oop, ARRAY_BASE_OFFSET};
+use crate::klass::Klass;
+use crate::runtime::{self as rt, throw_new};
+use std::sync::atomic::{fence, AtomicI32, AtomicI64, Ordering};
+
+const U: &str = "jdk/internal/misc/Unsafe";
+
+#[inline(always)]
+fn addr(base: u64, offset: u64) -> *mut u8 {
+    (base as usize).wrapping_add(offset as usize) as *mut u8
+}
+
+macro_rules! accessors {
+    ($r:ident, $get:expr, $put:expr, $desc_get:expr, $desc_put:expr, $ty:ty, $enc:expr, $dec:expr) => {
+        $r.add(U, $get, $desc_get, |_, a| {
+            // SAFETY: Unsafe's contract: the caller supplies a valid base/offset pair.
+            let v: $ty = unsafe { std::ptr::read_volatile(addr(a[1], a[2]) as *const $ty) };
+            Ok($enc(v))
+        });
+        $r.add(U, $put, $desc_put, |_, a| {
+            let v: $ty = $dec(a[4]);
+            // SAFETY: as above.
+            unsafe { std::ptr::write_volatile(addr(a[1], a[2]) as *mut $ty, v) };
+            ret_void()
+        });
+    };
+}
+
+macro_rules! typed {
+    ($r:ident, $name:literal, $d:literal, $ty:ty, $enc:expr, $dec:expr) => {
+        accessors!($r, concat!("get", $name), concat!("put", $name), concat!("(Ljava/lang/Object;J)", $d),
+            concat!("(Ljava/lang/Object;J", $d, ")V"), $ty, $enc, $dec);
+        accessors!($r, concat!("get", $name, "Volatile"), concat!("put", $name, "Volatile"),
+            concat!("(Ljava/lang/Object;J)", $d), concat!("(Ljava/lang/Object;J", $d, ")V"), $ty, $enc, $dec);
+    };
+}
+
+pub(super) fn register(r: &mut NativeRegistry) {
+    r.add(U, "registerNatives", "()V", |_, _| ret_void());
+    typed!(r, "Int", "I", i32, |v: i32| v as i64 as u64, |s: u64| s as i32);
+    typed!(r, "Long", "J", i64, |v: i64| v as u64, |s: u64| s as i64);
+    typed!(r, "Reference", "Ljava/lang/Object;", u64, |v: u64| v, |s: u64| s);
+    typed!(r, "Boolean", "Z", u8, |v: u8| (v != 0) as u64, |s: u64| (s & 1) as u8);
+    typed!(r, "Byte", "B", i8, |v: i8| v as i64 as u64, |s: u64| s as i8);
+    typed!(r, "Short", "S", i16, |v: i16| v as i64 as u64, |s: u64| s as i16);
+    typed!(r, "Char", "C", u16, |v: u16| v as u64, |s: u64| s as u16);
+    typed!(r, "Float", "F", u32, |v: u32| v as u64, |s: u64| s as u32);
+    typed!(r, "Double", "D", u64, |v: u64| v, |s: u64| s);
+    r.add(U, "compareAndSetInt", "(Ljava/lang/Object;JII)Z", |_, a| {
+        // SAFETY: aligned int address per Unsafe contract.
+        let cell = unsafe { &*(addr(a[1], a[2]) as *const AtomicI32) };
+        ret_bool(cell.compare_exchange(a[4] as i32, a[5] as i32, Ordering::SeqCst, Ordering::SeqCst).is_ok())
+    });
+    r.add(U, "compareAndExchangeInt", "(Ljava/lang/Object;JII)I", |_, a| {
+        let cell = unsafe { &*(addr(a[1], a[2]) as *const AtomicI32) };
+        ret_int(cell.compare_exchange(a[4] as i32, a[5] as i32, Ordering::SeqCst, Ordering::SeqCst).unwrap_or_else(|v| v))
+    });
+    r.add(U, "compareAndSetLong", "(Ljava/lang/Object;JJJ)Z", |_, a| {
+        let cell = unsafe { &*(addr(a[1], a[2]) as *const AtomicI64) };
+        ret_bool(cell.compare_exchange(a[4] as i64, a[6] as i64, Ordering::SeqCst, Ordering::SeqCst).is_ok())
+    });
+    r.add(U, "compareAndExchangeLong", "(Ljava/lang/Object;JJJ)J", |_, a| {
+        let cell = unsafe { &*(addr(a[1], a[2]) as *const AtomicI64) };
+        ret_long(cell.compare_exchange(a[4] as i64, a[6] as i64, Ordering::SeqCst, Ordering::SeqCst).unwrap_or_else(|v| v))
+    });
+    r.add(U, "compareAndSetReference", "(Ljava/lang/Object;JLjava/lang/Object;Ljava/lang/Object;)Z", |_, a| {
+        let cell = unsafe { &*(addr(a[1], a[2]) as *const AtomicI64) };
+        ret_bool(cell.compare_exchange(a[4] as i64, a[5] as i64, Ordering::SeqCst, Ordering::SeqCst).is_ok())
+    });
+    r.add(U, "compareAndExchangeReference", "(Ljava/lang/Object;JLjava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;", |_, a| {
+        let cell = unsafe { &*(addr(a[1], a[2]) as *const AtomicI64) };
+        Ok(cell.compare_exchange(a[4] as i64, a[5] as i64, Ordering::SeqCst, Ordering::SeqCst).unwrap_or_else(|v| v) as u64)
+    });
+    r.add(U, "arrayBaseOffset0", "(Ljava/lang/Class;)I", |_, _| ret_int(ARRAY_BASE_OFFSET as i32));
+    r.add(U, "arrayIndexScale0", "(Ljava/lang/Class;)I", |_, a| {
+        ret_int(rt::klass_of_mirror(a[1] as Oop).map_or(8, |k| k.elem_size()) as i32)
+    });
+    r.add(U, "addressSize0", "()I", |_, _| ret_int(8));
+    r.add(U, "pageSize", "()I", |_, _| ret_int(4096));
+    r.add(U, "objectFieldOffset1", "(Ljava/lang/Class;Ljava/lang/String;)J", |t, a| {
+        let k = rt::klass_of_mirror(a[1] as Oop).ok_or_else(|| throw_new(t, "java/lang/InternalError", "primitive"))?;
+        let name = rt::java_string_to_rust(a[2] as Oop);
+        match k.supers().find_map(|c| c.fields.iter().find(|f| !f.is_static() && f.name == name.as_str())) {
+            Some(f) => ret_long(f.offset as i64),
+            None => Err(throw_new(t, "java/lang/InternalError", &name)),
+        }
+    });
+    r.add(U, "objectFieldOffset0", "(Ljava/lang/reflect/Field;)J", |t, a| {
+        let (k, i) = super::reflect::field_of(a[1] as Oop);
+        let f = &k.fields[i];
+        if f.is_static() {
+            return Err(throw_new(t, "java/lang/IllegalArgumentException", "static field"));
+        }
+        ret_long(f.offset as i64)
+    });
+    r.add(U, "staticFieldOffset0", "(Ljava/lang/reflect/Field;)J", |_, a| {
+        let (k, i) = super::reflect::field_of(a[1] as Oop);
+        ret_long(static_slot_address(k, i) as i64)
+    });
+    r.add(U, "staticFieldBase0", "(Ljava/lang/reflect/Field;)Ljava/lang/Object;", |_, _| ret_ref(std::ptr::null_mut()));
+    r.add(U, "shouldBeInitialized0", "(Ljava/lang/Class;)Z", |_, a| {
+        ret_bool(rt::klass_of_mirror(a[1] as Oop).is_some_and(|k| k.init.state() != crate::klass::InitState::Initialized))
+    });
+    r.add(U, "ensureClassInitialized0", "(Ljava/lang/Class;)V", |t, a| {
+        if let Some(k) = rt::klass_of_mirror(a[1] as Oop) {
+            rt::initialize(t, k)?;
+        }
+        ret_void()
+    });
+    r.add(U, "allocateInstance", "(Ljava/lang/Class;)Ljava/lang/Object;", |t, a| {
+        let k = rt::klass_of_mirror(a[1] as Oop).ok_or_else(|| throw_new(t, "java/lang/InstantiationException", "primitive"))?;
+        rt::initialize(t, k)?;
+        ret_ref(rt::alloc_instance(t, k)?)
+    });
+    r.add(U, "throwException", "(Ljava/lang/Throwable;)V", |_, a| Err(crate::thread::Throw(a[1] as Oop)));
+    r.add(U, "fullFence", "()V", |_, _| { fence(Ordering::SeqCst); ret_void() });
+    r.add(U, "loadFence", "()V", |_, _| { fence(Ordering::Acquire); ret_void() });
+    r.add(U, "storeFence", "()V", |_, _| { fence(Ordering::Release); ret_void() });
+    r.add(U, "allocateMemory0", "(J)J", |_, a| ret_long(unsafe { libc::malloc(a[1].max(1) as usize) } as i64));
+    r.add(U, "reallocateMemory0", "(JJ)J", |_, a| ret_long(unsafe { libc::realloc(a[1] as *mut libc::c_void, a[3].max(1) as usize) } as i64));
+    r.add(U, "freeMemory0", "(J)V", |_, a| { unsafe { libc::free(a[1] as *mut libc::c_void) }; ret_void() });
+    r.add(U, "setMemory0", "(Ljava/lang/Object;JJB)V", |_, a| {
+        unsafe { std::ptr::write_bytes(addr(a[1], a[2]), a[6] as u8, a[4] as usize) };
+        ret_void()
+    });
+    r.add(U, "copyMemory0", "(Ljava/lang/Object;JLjava/lang/Object;JJ)V", |_, a| {
+        unsafe { std::ptr::copy(addr(a[1], a[2]), addr(a[4], a[5]), a[7] as usize) };
+        ret_void()
+    });
+    r.add(U, "getLoadAverage0", "([DI)I", |_, _| ret_int(-1));
+    r.add(U, "unpark", "(Ljava/lang/Object;)V", |_, _| ret_void());
+    r.add(U, "park", "(ZJ)V", |_, a| {
+        if a[2] > 0 && a[1] == 0 {
+            std::thread::sleep(std::time::Duration::from_nanos(a[2]));
+        }
+        ret_void()
+    });
+}
+
+/// Absolute address of static field `i` of `k` (the Unsafe "offset" for a null base).
+pub(crate) fn static_slot_address(k: &'static Klass, i: usize) -> usize {
+    &k.statics[k.fields[i].offset as usize] as *const _ as usize
+}
+
