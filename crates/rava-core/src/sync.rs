@@ -315,7 +315,7 @@ mod tests {
         assert!(exit(o));
         assert!(exit(o));
         assert!(!exit(o));
-        assert_eq!(wait(&t, o, 1), Err(WaitError::NotOwner));
+        assert_eq!(wait(&t, o, 1, &|| false), Err(WaitError::NotOwner));
     }
 
     #[test]
@@ -327,7 +327,7 @@ mod tests {
             let t = Thread::new();
             let o = addr as Oop;
             enter(&t, o);
-            wait(&t, o, 0).unwrap();
+            wait(&t, o, 0, &|| false).unwrap();
             exit(o);
         });
         let t = Thread::new();
