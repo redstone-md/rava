@@ -159,7 +159,7 @@ pub(crate) fn checkpoint(
                     eprint!("{}", vm.heap.composition());
                 }
             }
-            if crate::prof::enabled() && n % 40_000_000 == 0 {
+            if crate::prof::enabled() && n % crate::prof::dump_every_ops() == 0 {
                 crate::prof::dump();
             }
             if vm.jit_enabled {
