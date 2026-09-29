@@ -71,6 +71,7 @@ fn run_initializers(t: &mut Thread, k: &'static Klass) -> JResult<()> {
         }
     }
     assign_constant_values(t, k)?;
+    crate::natives::jfr_register_on_init(t, k)?;
     if let Some(clinit) = k.declared_method(Symbol::intern("<clinit>"), Symbol::intern("()V")) {
         t.call(clinit, &[])?;
     }
