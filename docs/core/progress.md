@@ -170,3 +170,20 @@ comparison: `docs/core/opt-tier.md`.
 1. Profile-guided inlining of virtual/interface calls (inline-cache state at recompilation),
    polymorphic inline caches.
 2. Cheaper calls (register arguments, lighter prologues) and less stack traffic around calls.
+
+## 2026-09-29 — the optimizing tier, and a GC trigger fix
+
+Hot methods are now recompiled by an SSA optimizing tier (`docs/core/opt-tier.md`): graph
+building with inlining (direct, vtable- and profile-guarded, method-handle chains), constant
+folding, null-check elimination, linear-scan register allocation, and deoptimization to the
+interpreter for guards, exceptions and unresolved constants. Two runtime fixes mattered as much:
+compiled class-init checks let the initializing thread through (JVMS 5.5), and the GC trigger
+counts bumped bytes instead of whole handed-out runs (Minestom went from 13 collections to 1).
+
+| | `java` | `rava-core` |
+|---|---:|---:|
+| Minestom total (init + 256 chunks + start) | 1.79-1.98 s | **1.98-2.38 s** |
+| Minestom chunk generation | 0.69-0.79 s | 1.11-1.31 s |
+| BootLike | 563 ms (in `main`) | 1.15-1.39 s wall |
+| DfTree | 99-136 ms | 237-273 ms wall |
+| RSA-1024 key generation | 119-168 ms | 85-101 ms |
