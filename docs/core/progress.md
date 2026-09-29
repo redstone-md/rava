@@ -146,3 +146,27 @@ FxHash symbol table with an ASCII fast path, swept pages recycled with `memset` 
 | LoadAll (15,978 classes from the McLike class path) | 2.64-2.82 s | **2.36-2.53 s** |
 | McLike wall | 1.73-1.80 s | **~1.0 s** |
 | McLike inside `main` | 463-529 ms | 700-750 ms |
+
+## 2026-09-29 — the JIT grows up: register caching, inlining, method-handle folding
+
+The baseline compiler now keeps hot locals in callee-saved registers and caches the operand stack
+in scratch registers (the memory frame stays the interpreter-visible state), inlines small
+statically bound and vtable-guarded callees in real (or, for hidden plumbing, unlinked) frames
+without native calls, folds constants (static finals, trusted finals, `@Stable`, method-handle
+forms and member names) so `invokedynamic` chains collapse into direct calls, and intrinsifies
+`Math` rounding, `Unsafe` access, `Class.isInstance` and `Object.getClass`. Design and the C1
+comparison: `docs/core/opt-tier.md`.
+
+| | `java` | `rava-core` |
+|---|---:|---:|
+| McLike wall | 1.81-1.85 s | **0.78-0.93 s** |
+| McLike inside `main` | 469-535 ms | 478-540 ms |
+| BootLike (records as map keys) | 425-466 ms | 2.16-2.56 s |
+| DfTree (megamorphic function trees) | 123 ms | 296 ms |
+| RSA-1024 key generation (cold, noisy) | 97-171 ms | 112-634 ms |
+
+### Next
+
+1. Profile-guided inlining of virtual/interface calls (inline-cache state at recompilation),
+   polymorphic inline caches.
+2. Cheaper calls (register arguments, lighter prologues) and less stack traffic around calls.
