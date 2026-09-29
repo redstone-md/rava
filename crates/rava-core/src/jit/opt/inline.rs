@@ -40,40 +40,60 @@ impl Builder {
     /// after the pop) as an inlined body when possible, else as a call. Returns whether the
     /// current block continues (false when every path through the callee left compiled code).
     pub(super) fn call_or_inline(&mut self, pc: usize, op: u8, m: &'static Method, callee: Callee, args: Vec<V>, s: Rc<State>) -> bool {
-        let plan = self.inline_target(pc, op, m);
-        self.emit_call(plan, callee, args, s, m.sig.ret)
+        let plans = self.inline_targets(pc, op, m);
+        self.emit_call(plans, callee, args, s, m.sig.ret)
     }
 
-    /// The call `callee(args)` returning `ret`, with `plan` (a target and what it needs checked)
-    /// inlined when the policy agrees. Returns whether the current block continues.
-    pub(super) fn emit_call(&mut self, plan: Option<(&'static Method, Guard)>, callee: Callee, args: Vec<V>, s: Rc<State>, ret: BasicType) -> bool {
+    /// The call `callee(args)` returning `ret`, with each of `plans` (a target and what it
+    /// needs checked) inlined when the policy agrees; guarded plans are tried in turn and the
+    /// call is made when none applies. Returns whether the current block continues.
+    pub(super) fn emit_call(&mut self, plans: Vec<(&'static Method, Guard)>, callee: Callee, args: Vec<V>, s: Rc<State>, ret: BasicType) -> bool {
         // What is known at the call holds after it, on every path through the callee.
         let known = self.nonnull.clone();
         let first = args.first().and_then(|&a| self.g.constant(a));
-        let plan = plan.filter(|&(t, _)| decide(t, first, &self.chain, 2, self.spent).is_some());
-        if std::env::var_os("RAVA_CORE_INLINE_LOG").is_some() {
-            let indent = "  ".repeat(self.chain.len());
-            eprintln!("[opt-inline] {indent}{} @{} -> {callee:?} {}", self.sc.m, s.bci, if plan.is_some() { "inlined" } else { "call" });
-        }
-        let Some((target, guard)) = plan else {
-            self.call_push(callee, args, s, ret);
-            return true;
-        };
-        let mark = self.mark();
         let k = self.g.new_block(-1);
-        let slow = self.guard(guard, target, args.first().copied());
-        let Some(mut returns) = self.inline_body(target, &args, s.clone(), k, first) else {
-            self.undo(mark);
-            self.call_push(callee, args, s, ret);
-            return true;
-        };
-        if let Some(slow) = slow {
-            self.start_block(slow);
-            self.nonnull.clone_from(&known);
+        let mut returns = Vec::new();
+        // `open`: the current block (the last guard's failure path) still needs the call.
+        let (mut open, mut inlined) = (true, false);
+        for (target, guard) in plans {
+            let ok = decide(target, first, &self.chain, 3, self.spent).is_some();
+            if std::env::var_os("RAVA_CORE_INLINE_LOG").is_some() {
+                let indent = "  ".repeat(self.chain.len());
+                eprintln!("[opt-inline] {indent}{} @{} -> {target} {}", self.sc.m, s.bci, if ok { "inlined" } else { "call" });
+            }
+            if !ok {
+                continue;
+            }
+            let mark = self.mark();
+            let slow = self.guard(guard, target, args.first().copied());
+            let Some(r) = self.inline_body(target, &args, s.clone(), k, first) else {
+                self.undo(mark);
+                continue;
+            };
+            returns.extend(r);
+            inlined = true;
+            match slow {
+                Some(b) => {
+                    self.start_block(b);
+                    self.nonnull.clone_from(&known);
+                }
+                None => {
+                    open = false;
+                    break;
+                }
+            }
+        }
+        if open {
             let r = self.call(callee, args, s, ret);
-            self.g.blocks[slow as usize].term = Term::Goto(k);
-            self.g.blocks[k as usize].preds.push(slow);
-            returns.push((slow, r));
+            if !inlined {
+                if let Some(v) = r {
+                    self.push(v);
+                }
+                return true;
+            }
+            self.g.blocks[self.cur as usize].term = Term::Goto(k);
+            self.g.blocks[k as usize].preds.push(self.cur);
+            returns.push((self.cur, r));
         }
         if returns.is_empty() {
             return false;
@@ -96,24 +116,17 @@ impl Builder {
         (ret != BasicType::Void).then_some(v)
     }
 
-    fn call_push(&mut self, callee: Callee, args: Vec<V>, s: Rc<State>, ret: BasicType) {
-        if let Some(v) = self.call(callee, args, s, ret) {
-            self.push(v);
-        }
-    }
-
-    /// The method to inline for this site and what it needs checked (as the baseline compiler
-    /// chooses it).
-    fn inline_target(&self, pc: usize, op: u8, m: &'static Method) -> Option<(&'static Method, Guard)> {
+    /// The methods to inline for this site and what each needs checked: the statically bound
+    /// target, the vtable's current target, or the targets for the receiver classes profiled.
+    fn inline_targets(&self, pc: usize, op: u8, m: &'static Method) -> Vec<(&'static Method, Guard)> {
         if let Some(t) = bound_target(self.sc.m, self.sc.code, pc) {
-            return Some((t, Guard::None));
+            return vec![(t, Guard::None)];
         }
         if op == 0xb6 && m.vtable_index() >= 0 && !m.is_abstract() && !m.holder.is_interface() {
-            return Some((m, Guard::Vtable(m.vtable_index())));
+            return vec![(m, Guard::Vtable(m.vtable_index()))];
         }
-        let k = crate::jit::profile::monomorphic(self.sc.m, pc)?;
-        let t = crate::link::select_method(k, m).filter(|t| !t.is_abstract())?;
-        Some((t, Guard::Klass(k)))
+        let profiled = crate::jit::profile::receivers(self.sc.m, pc).into_iter();
+        profiled.filter_map(|k| crate::link::select_method(k, m).filter(|t| !t.is_abstract()).map(|t| (t, Guard::Klass(k)))).collect()
     }
 
     /// Ends the current block with the guard's test; returns the failure block, and continues in
