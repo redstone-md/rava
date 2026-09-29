@@ -75,6 +75,12 @@ pub fn throw_new(t: &mut Thread, class: &str, message: &str) -> Throw {
 }
 
 fn construct_throwable(t: &mut Thread, class: &str, message: &str) -> JResult<Oop> {
+    if let Ok(filter) = std::env::var("RAVA_CORE_TRACE_THROW") {
+        if class.contains(filter.as_str()) {
+            let frames: Vec<String> = t.frames().take(8).map(|(m, bci)| format!("{m}@{bci}")).collect();
+            eprintln!("[throw] {class}: {message}\n  {}", frames.join("\n  "));
+        }
+    }
     let k = crate::loader::load(class).map_err(|e| fatal(&format!("cannot load {class}: {e:?}")))?;
     initialize(t, k)?;
     let ex = alloc_instance(t, k)?;

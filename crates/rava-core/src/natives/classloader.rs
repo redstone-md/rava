@@ -27,6 +27,22 @@ pub(super) fn register(r: &mut NativeRegistry) {
         "(Ljava/lang/ClassLoader;Ljava/lang/Class;Ljava/lang/String;[BIILjava/security/ProtectionDomain;ZILjava/lang/Object;)Ljava/lang/Class;",
         define_class0,
     );
+    r.add(
+        CL,
+        "defineClass2",
+        "(Ljava/lang/ClassLoader;Ljava/lang/String;Ljava/nio/ByteBuffer;IILjava/security/ProtectionDomain;Ljava/lang/String;)Ljava/lang/Class;",
+        |t, a| {
+            let (loader, name, buffer, off, len) = (a[0] as Oop, a[1] as Oop, a[2] as Oop, a[3] as i32, a[4] as i32);
+            // SAFETY: a direct ByteBuffer: `address` is its base; [off, off+len) was validated.
+            let bytes = unsafe {
+                let base = obj::read::<i64>(buffer, buffer_address()) as usize;
+                std::slice::from_raw_parts((base + off as usize) as *const u8, len as usize)
+            };
+            let owned: &'static [u8] = Box::leak(bytes.to_vec().into_boxed_slice());
+            let k = define_from_bytes(t, loader, owned, if name.is_null() { None } else { Some(internal_name(name)) })?;
+            ret_ref(rt::mirror_of(t, k)?)
+        },
+    );
     r.add(CL, "findBootstrapClass", "(Ljava/lang/String;)Ljava/lang/Class;", |t, a| {
         let name = internal_name(a[0] as Oop);
         match vm().load_boot_class(Symbol::intern(&name)) {
@@ -99,6 +115,7 @@ pub(crate) fn define_from_bytes(t: &mut Thread, loader: Oop, bytes: &'static [u8
 }
 
 vm_field!(class_data, "java/lang/Class", "classData", "Ljava/lang/Object;");
+vm_field!(buffer_address, "java/nio/Buffer", "address", "J");
 
 /// `Lookup.defineClass` / `defineHiddenClass` (flags: 1 nestmate, 2 hidden).
 fn define_class0(t: &mut Thread, a: &[u64]) -> JResult<u64> {
