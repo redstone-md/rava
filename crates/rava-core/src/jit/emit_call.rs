@@ -45,7 +45,9 @@ impl Emitter {
         self.set_bci(pc);
         self.a.mov_rr(true, R::Rdi, R::R12);
         self.a.lea(R::Rsi, self.stk(args));
+        self.link_scopes();
         self.a.call_m(mem(R::Rdx, offset_of!(Method, entry) as i32));
+        self.unlink_scopes();
         self.check_pending();
         if ret != BasicType::Void {
             self.a.store(true, self.stk(args), R::Rax);
