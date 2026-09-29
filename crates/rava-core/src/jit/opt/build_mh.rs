@@ -45,7 +45,7 @@ impl Builder {
         let (invoker, appendix) = indy::linked(self.sc.m, pc)?;
         let (mut args, pre, s) = self.pop_args(sig.params.len() + receiver);
         if receiver == 1 {
-            self.add(Inst::NullCheck(args[0], pre), Ty::A);
+            self.null_check(args[0], pre);
         }
         if appendix != 0 {
             args.push(self.konst(Ty::A, appendix as i64));
@@ -60,7 +60,7 @@ impl Builder {
         if let Some(target) = self.g.constant(args[0]).and_then(|h| fold::handle_target(h as usize)) {
             return self.emit_call(Some((target, Guard::None)), Callee::Direct(target), args, s, sig.ret);
         }
-        self.add(Inst::NullCheck(args[0], pre), Ty::A);
+        self.null_check(args[0], pre);
         let form = self.add(Inst::LoadField(args[0], indy::mh_form(), BasicType::Reference), Ty::A);
         let entry = self.add(Inst::LoadField(form, indy::lf_vmentry(), BasicType::Reference), Ty::A);
         let target = self.member_method(entry);
@@ -80,7 +80,7 @@ impl Builder {
         let mn = args.pop()?;
         let is_static = kind == "linkToStatic";
         if !is_static {
-            self.add(Inst::NullCheck(args[0], pre.clone()), Ty::A);
+            self.null_check(args[0], pre.clone());
         }
         if let Some(target) = self.g.constant(mn).and_then(|c| fold::member_target(c as usize)) {
             if is_static {
