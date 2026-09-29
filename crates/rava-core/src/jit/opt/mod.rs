@@ -23,9 +23,9 @@ fn mode() -> &'static str {
     MODE.get_or_init(|| std::env::var("RAVA_CORE_OPT").unwrap_or_default())
 }
 
-/// Whether hot methods go to this tier (`RAVA_CORE_OPT=1`, until it covers enough bytecode).
+/// Whether hot methods go to this tier (`RAVA_CORE_OPT=0` keeps baseline tier-2 code).
 pub fn enabled() -> bool {
-    !matches!(mode(), "" | "0")
+    mode() != "0"
 }
 
 /// `RAVA_CORE_OPT=all`: every compilation tries this tier first (testing).
