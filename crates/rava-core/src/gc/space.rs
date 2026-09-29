@@ -119,7 +119,13 @@ impl Space {
             return Some((p, free, addr, addr));
         }
         let addr = match self.empty.pop() {
-            Some(a) => a,
+            Some(a) => {
+                // A recycled page keeps its memory committed (cheaper to clear than to fault in
+                // again); bump allocation relies on zeroed memory.
+                // SAFETY: an unused page of the heap.
+                unsafe { std::ptr::write_bytes(a as *mut u8, 0, PAGE_SIZE) };
+                a
+            }
             None if self.fresh + PAGE_SIZE <= self.end => {
                 self.fresh += PAGE_SIZE;
                 self.fresh - PAGE_SIZE
