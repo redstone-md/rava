@@ -373,11 +373,12 @@ yet supported by a measured tracer or success estimate.
 
 The user authorized a fundamental execution-substrate rewrite while retaining
 both hard gates: a fresh canonical Minecraft boot below five seconds, with no
-runtime adaptation and no snapshots/restores. Runtime routing/admission may use
-only bytecode, CFGs, descriptors, resolved dispatch, effect summaries, and
-structural facts fixed at class load. Invocation counts, class/workload names,
-body hashes, timing, inputs/outputs, and prior aborts are not runtime decision
-inputs. Static engine-level PGO is distinct from runtime adaptation.
+runtime adaptation and no snapshots/restores. **Superseded 2026-09-29 by the
+user:** "no-adapt" forbids tuning for a specific workload (e.g. routes keyed to
+Minecraft classes, workload names, body hashes or expected outputs). Generic
+JVM-style adaptivity — invocation/back-edge counters, tiering, OSR, type
+profiles, inline caches, speculation with deoptimization — is allowed, because
+the reference JVM does the same for every program. See `docs/HANDOFF.md` §1.
 
 The replacement must preserve current runtime-visible loading, class identity,
 initialization, dispatch, exception, native, reflection, thread, and moving-GC
