@@ -101,6 +101,14 @@ pub fn run_main(t: &mut Thread, main_class: &str, args: &[String]) -> JResult<()
     run_launched(t, main_class, false, args)
 }
 
+/// Ends the VM as the launcher's `DestroyJavaVM` does: waits for the non-daemon threads, then
+/// runs the shutdown sequence (the shutdown hooks).
+pub fn destroy(t: &mut Thread) -> JResult<()> {
+    crate::natives::thread::await_non_daemon(t);
+    call_static(t, "java/lang/Shutdown", "shutdown", "()V", &[])?;
+    Ok(())
+}
+
 /// Runs `main` of `target`: a class name, or with `jar` a jar file whose manifest names the
 /// main class (`java -jar`), as the JDK launcher does.
 pub fn run_launched(t: &mut Thread, target: &str, jar: bool, args: &[String]) -> JResult<()> {
