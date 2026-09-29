@@ -39,6 +39,8 @@ pub struct Method {
     hidden: OnceLock<bool>,
     /// Set once tier-2 compilation was requested.
     pub(crate) tiered: std::sync::atomic::AtomicBool,
+    /// The first compilation has been requested (`jit/queue.rs`).
+    pub(crate) queued: std::sync::atomic::AtomicBool,
 }
 
 impl Method {
@@ -62,6 +64,7 @@ impl Method {
             not_compilable: std::sync::atomic::AtomicBool::new(false),
             hidden: OnceLock::new(),
             tiered: std::sync::atomic::AtomicBool::new(false),
+            queued: std::sync::atomic::AtomicBool::new(false),
         }
     }
 

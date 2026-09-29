@@ -23,6 +23,7 @@ mod inline_plan;
 mod intrinsics;
 mod opt;
 mod profile;
+mod queue;
 mod stubs;
 mod tier;
 mod vstack;
@@ -100,10 +101,11 @@ pub(crate) fn on_invoke(m: &'static Method) -> Option<&'static CompiledMethod> {
     if let Some(s) = stats::get() {
         s.interpreted_calls.fetch_add(1, Ordering::Relaxed);
     }
-    if n < threshold() {
+    if n < threshold() || m.queued.swap(true, Ordering::AcqRel) {
         return None;
     }
-    compile_now(m)
+    queue::submit(queue::Job::Baseline(m));
+    m.compiled()
 }
 
 /// Loop back-edges before a running interpreted method is replaced on the stack.
@@ -121,12 +123,10 @@ pub(crate) fn on_backedge(m: &'static Method, target: usize) -> Option<usize> {
         return None;
     }
     // Loops enter baseline code (optimized code has no block entries).
-    let cm = match (m.baseline(), m.compiled()) {
-        (Some(cm), _) => cm,
-        (None, None) => compile_now(m)?,
-        (None, Some(_)) => return None,
-    };
-    cm.address_of(target as u32)
+    if m.baseline().is_none() && m.compiled().is_none() && !m.queued.swap(true, Ordering::AcqRel) {
+        queue::submit(queue::Job::Baseline(m));
+    }
+    m.baseline()?.address_of(target as u32)
 }
 
 /// Continues the interpreted frame at `locals` in compiled code at `address` until the method
@@ -173,7 +173,7 @@ pub(crate) fn note_unresolved_deferral(m: &'static Method) {
     }
 }
 
-fn compile_now(m: &'static Method) -> Option<&'static CompiledMethod> {
+pub(super) fn compile_now(m: &'static Method) -> Option<&'static CompiledMethod> {
     let optimized = opt::everywhere().then(|| opt::compile(m)).flatten();
     match optimized.or_else(|| compile::compile(m, 1)) {
         Some(cm) => {

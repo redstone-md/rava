@@ -27,13 +27,18 @@ fn enabled() -> bool {
     *ON.get_or_init(|| std::env::var_os("RAVA_CORE_NO_TIER2").is_none())
 }
 
-/// Compiles `m` at tier 2 once.
+/// Requests the tier-2 compilation of `m` once.
 pub extern "sysv64" fn tier_up(m: *const Method) {
     // SAFETY: generated code passes a live method.
     let m: &'static Method = unsafe { &*m };
     if m.compiled().is_some_and(|c| c.tier >= 2) || m.tiered.swap(true, Ordering::AcqRel) {
         return;
     }
+    super::queue::submit(super::queue::Job::TierUp(m));
+}
+
+/// Compiles `m` at tier 2: optimized, else baseline with the larger inlining budget.
+pub(super) fn compile_tier2(m: &'static Method) {
     let optimized = super::opt::enabled().then(|| super::opt::compile(m)).flatten();
     if let (Some(s), true) = (super::stats::get(), optimized.is_some()) {
         s.opt_methods.fetch_add(1, Ordering::Relaxed);
