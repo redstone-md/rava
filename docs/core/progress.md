@@ -187,3 +187,22 @@ counts bumped bytes instead of whole handed-out runs (Minestom went from 13 coll
 | BootLike | 563 ms (in `main`) | 1.15-1.39 s wall |
 | DfTree | 99-136 ms | 237-273 ms wall |
 | RSA-1024 key generation | 119-168 ms | 85-101 ms |
+
+## 2026-09-29 — optimizing tier, continued: SSE registers, background compilation
+
+Since the previous entry: SSE registers for float/double values, register coalescing, trivial
+phi elimination, compact deoptimization metadata, background compiler threads, bimorphic
+inlining from two-class inline-cache profiles with `InlineSmallCode`, synchronized methods and
+monitors in optimized code, intrinsics for `compareAndSet*`, `currentThread` and constant
+`allocateInstance`, and a direct native entry. Fixed on the way: exception handlers of baseline
+frames after optimized code was installed, inlined frames missing from traces after a deopt,
+the initializing thread failing compiled class-init checks, and `wait`/`notify` losing wakeups.
+
+| | `java` | `rava-core` |
+|---|---:|---:|
+| Minestom total (init + 256 chunks + start) | 1.79-1.98 s | **1.46-1.80 s** |
+| Minestom chunk generation | 0.69-0.79 s | 0.83-1.13 s |
+| Minestom init | 0.97-1.18 s | **0.63-0.86 s** |
+| DfTree (in `main`) | 93-102 ms | 99-149 ms |
+| ParGen, 1 thread / 4 threads | 405-439 / 239-265 ms | 950-1215 / 344-375 ms |
+| BootLike (in `main`) | 392-607 ms | 793-865 ms |
