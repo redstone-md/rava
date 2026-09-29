@@ -11,6 +11,29 @@ paired wall deltas +0.163/+0.893 seconds. Runtime restored; further work must
 address execution coverage rather than pursue this refusal-cache experiment.
 See docs/handler-direct-refusal.md. Full no-adapt and wall below five seconds remain unmet.
 
+### 2026-09-29: fixed-policy execution is not a <5 s escape hatch
+
+A fresh isolated copy of `world_pristine` ran the same server JAR under
+OpenJDK 25 with first-invocation C2, no tiered warm-up, and interpreter
+profiling disabled (`-Xcomp -Xbatch -XX:-TieredCompilation
+-XX:-UseOnStackReplacement -XX:-ProfileInterpreter`). After a discarded
+warm-up, the same-mode pair reached `Done` in **47.1/47.9 s**. This is a
+fixed-compiler probe, not strict no-adapt certification; it decisively misses
+the wall target.
+
+The source census found no honest `RAVA_NO_ADAPT` switch that both preserves
+semantics and certifies the project's no-name/no-history contract. Count- and
+receiver-profile gates can be disabled safely, but native namespace and
+allocation routes select implementations required by synthetic object state;
+turning them off changes behavior. A structural `NativeStateFact` could be
+completed later, but its current provider coverage is incomplete and no
+large measured payoff is established. External-replacement evidence remains:
+adaptive HotSpot reaches ~5.3–5.6 s but adapts; static Native Image disables
+adaptation but violates arbitrary dynamic class-loading/reflection; Rava's
+prepared full-corpus AOT already loses badly. The `<5 s`, strict no-adapt, and
+no-snapshot objective remains unresolved; a tradeoff decision or a new measured
+mechanism is required before implementation.
+
 ### 2026-09-29: hash-verified product recheck; strict gates remain open
 
 Re-ran the recorded `85f7d415…` exact-source profile-use product from
