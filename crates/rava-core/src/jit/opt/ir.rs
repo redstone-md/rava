@@ -82,6 +82,21 @@ pub enum Callee {
     Virtual(&'static Method),
     /// Dispatched on the receiver through the class's itable (or default methods).
     Interface(&'static Method),
+    /// The `Method*` a value holds (method-handle plumbing).
+    Method(V),
+    /// The implementation of the `Method*` a value holds for the receiver's class
+    /// (`linkToVirtual` / `linkToInterface`).
+    Select(V),
+}
+
+impl Callee {
+    /// The value naming the target, for computed targets.
+    pub fn input(&self) -> Option<V> {
+        match *self {
+            Callee::Method(v) | Callee::Select(v) => Some(v),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -139,7 +154,8 @@ impl Inst {
     pub fn inputs(&self) -> Vec<V> {
         match self {
             Inst::Param(_) | Inst::Const(_) | Inst::LoadStatic(..) | Inst::InitCheck(..) | Inst::New(..) => vec![],
-            Inst::Phi(v) | Inst::Call(_, v, _) | Inst::Intrinsic(_, v, _) => v.clone(),
+            Inst::Call(c, v, _) => v.iter().copied().chain(c.input()).collect(),
+            Inst::Phi(v) | Inst::Intrinsic(_, v, _) => v.clone(),
             Inst::Neg(a) | Inst::Convert(_, a) | Inst::NullCheck(a, _) | Inst::ZeroCheck(a, _) | Inst::ArrayLength(a) => vec![*a],
             Inst::LoadField(a, ..) | Inst::StoreStatic(_, _, a) | Inst::NewArray(_, a, _) => vec![*a],
             Inst::CheckCast(a, ..) | Inst::InstanceOf(a, _) | Inst::Monitor(_, a, _) => vec![*a],

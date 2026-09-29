@@ -254,6 +254,8 @@ impl Gen<'_> {
                 self.a.load(true, R::Rdx, mem(R::Rax, 8 * m.vtable_index()));
             }
             Callee::Interface(m) => self.interface_target(m, base, fail, linked),
+            Callee::Method(t) => self.load(R::Rdx, t),
+            Callee::Select(t) => self.select_target(t, base, fail, linked),
         }
         self.a.mov_rr(true, R::Rdi, R::R12);
         self.a.lea(R::Rsi, self.slot(base));
@@ -262,6 +264,29 @@ impl Gen<'_> {
         self.a.alu_mi(true, Alu::Cmp, mem(R::R12, offsets::PENDING), 0);
         self.a.jcc(Cond::Ne, fail);
         self.put(v, R::Rax);
+    }
+
+    /// rdx := the implementation of the `Method*` in `t` for the receiver at frame slot `base`.
+    fn select_target(&mut self, t: V, base: i32, fail: crate::jit::asm::Label, linked: bool) {
+        let found = self.a.new_label();
+        self.load(R::R11, t);
+        self.a.load(true, R::Rcx, self.slot(base));
+        self.a.load(true, R::Rdi, mem(R::Rcx, 0));
+        self.a.mov_rr(true, R::Rsi, R::R11);
+        // The method stays on the stack across the call for the error path.
+        self.a.push(R::R11);
+        self.a.push(R::R11);
+        self.a.call_abs(runtime::select_linked as *const () as usize);
+        self.a.pop(R::Rsi);
+        self.a.pop(R::Rsi);
+        self.a.test_rr(true, R::Rax, R::Rax);
+        self.a.jcc(Cond::Ne, found);
+        self.a.mov_rr(true, R::Rdi, R::R12);
+        self.a.call_abs(runtime::no_target as *const () as usize);
+        self.unlink(linked);
+        self.a.jmp(fail);
+        self.a.bind(found);
+        self.a.mov_rr(true, R::Rdx, R::Rax);
     }
 
     /// rdx := the implementation of interface method `m` for the receiver at frame slot `base`:
