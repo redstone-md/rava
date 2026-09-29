@@ -228,6 +228,19 @@ It does **not** certify strict no-adapt: Tier-0 compilation still routes on
 runtime invocation counts. The full `cargo test -p rava-interp --features
 next-gen-gc` run did not settle and was cancelled; no suite pass is claimed.
 
+### 2026-09-29: strict-gate representation redesign has no eligible tracer
+
+After the user chose to retain both no-adapt and no-snapshot, independent
+read-only audits of current heap/JIT code and prior build-backed representation
+arcs found no incremental object-model change sized to the required >7.6 CPU-s.
+The old ≈25% value-model attribution was superseded: the latest whole-runtime
+audit (boot-speed-ledger row 745) bounds all remaining fixed-policy candidates
+at 4–6 CPU-s combined. Full pointer unification was built to live execution and
+measured 1.4–3.1 s slower; the only unrefuted born-arena consumer slice is
+priced near 1% CPU. No representation patch is justified. Meeting the target
+while keeping both gates would require a fundamental VM/substrate redesign not
+yet supported by a measured tracer or success estimate.
+
 ## Objective
 
 Reduce Minecraft boot and warm-reload wall time through structural, workload-agnostic changes while preserving exact Java semantics.
