@@ -75,7 +75,7 @@ fn sync_target(t: &mut Thread, m: &'static Method, locals: *mut u64) -> JResult<
     Ok(o)
 }
 
-fn call_native(t: &mut Thread, m: &'static Method, locals: *mut u64) -> JResult<u64> {
+pub(crate) fn call_native(t: &mut Thread, m: &'static Method, locals: *mut u64) -> JResult<u64> {
     let f = match m.native.get() {
         Some(f) => *f,
         None => match vm().natives.lookup(m) {

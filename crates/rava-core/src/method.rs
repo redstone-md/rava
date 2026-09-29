@@ -56,7 +56,7 @@ impl Method {
             native: OnceLock::new(),
             invocations: AtomicU32::new(0),
             backedges: AtomicU32::new(0),
-            entry: AtomicUsize::new(crate::jit::interpreter_entry()),
+            entry: AtomicUsize::new(if access & crate::klass::ACC_NATIVE != 0 { crate::jit::native_entry() } else { crate::jit::interpreter_entry() }),
             compiled: std::sync::atomic::AtomicPtr::new(std::ptr::null_mut()),
             baseline: std::sync::atomic::AtomicPtr::new(std::ptr::null_mut()),
             recompiles: AtomicU32::new(0),
