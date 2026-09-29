@@ -1,14 +1,13 @@
 //! `Class.getRecordComponents0`: one `RecordComponent` per entry of the `Record` attribute
 //! (JVMS 4.7.30), as HotSpot's `Reflection::new_record_component` builds them.
 
+use super::byte_array;
 use super::reflect_class::{executable_object, klass, new_object_array, optional_string, store};
 use super::{ret_ref, NativeRegistry};
 use crate::heap::{obj, Oop};
 use crate::klass::Klass;
 use crate::runtime::{self as rt, vm_field};
 use crate::thread::{JResult, Thread};
-use crate::types::BasicType;
-use crate::vm::vm;
 
 const RC: &str = "java/lang/reflect/RecordComponent";
 
@@ -63,13 +62,6 @@ fn components(k: &'static Klass) -> Option<Vec<Component>> {
     Some(out)
 }
 
-fn byte_array(t: &mut Thread, bytes: Option<&[u8]>) -> JResult<Oop> {
-    let Some(src) = bytes else { return Ok(std::ptr::null_mut()) };
-    let arr = rt::alloc_array(t, vm().primitive_array_class(BasicType::Byte).expect("[B"), src.len() as i32)?;
-    // SAFETY: a fresh byte[] of the same length.
-    unsafe { obj::array_slice::<u8>(arr).copy_from_slice(src) };
-    Ok(arr)
-}
 
 fn record_components(t: &mut Thread, a: &[u64]) -> JResult<u64> {
     let Some(k) = klass(a[0]) else { return ret_ref(std::ptr::null_mut()) };

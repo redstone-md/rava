@@ -75,6 +75,16 @@ impl NativeRegistry {
     }
 }
 
+/// A new byte[] with `bytes` (null for `None`).
+pub(crate) fn byte_array(t: &mut crate::thread::Thread, bytes: Option<&[u8]>) -> JResult<crate::heap::Oop> {
+    let Some(src) = bytes else { return Ok(std::ptr::null_mut()) };
+    let byte_class = crate::vm::vm().primitive_array_class(crate::types::BasicType::Byte).expect("[B");
+    let arr = crate::runtime::alloc_array(t, byte_class, src.len() as i32)?;
+    // SAFETY: a fresh byte[] of the same length.
+    unsafe { crate::heap::obj::array_slice::<u8>(arr).copy_from_slice(src) };
+    Ok(arr)
+}
+
 /// Native return helpers: slot encodings shared with the interpreter.
 pub(crate) fn ret_void() -> JResult<u64> {
     Ok(0)

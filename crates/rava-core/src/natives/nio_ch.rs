@@ -33,7 +33,24 @@ fn status(t: &mut Thread, n: i64, eof: bool) -> JResult<i64> {
     }
 }
 
+crate::runtime::vm_field!(key_dev, "sun/nio/ch/FileKey", "st_dev", "J");
+crate::runtime::vm_field!(key_ino, "sun/nio/ch/FileKey", "st_ino", "J");
+
 pub(super) fn register(r: &mut NativeRegistry) {
+    r.add("sun/nio/ch/FileKey", "initIDs", "()V", |_, _| ret_void());
+    r.add("sun/nio/ch/FileKey", "init", "(Ljava/io/FileDescriptor;)V", |t, a| {
+        // The identity of the open file (FileLockTable keys locks by it).
+        let mut st: libc::stat = unsafe { std::mem::zeroed() };
+        if unsafe { libc::fstat(fd(a[1]), &mut st) } == -1 {
+            return Err(io_error(t, "fstat failed"));
+        }
+        // SAFETY: a live FileKey.
+        unsafe {
+            obj::write::<i64>(a[0] as Oop, key_dev(), st.st_dev as i64);
+            obj::write::<i64>(a[0] as Oop, key_ino(), st.st_ino as i64);
+        }
+        ret_void()
+    });
     r.add(IOUTIL, "initIDs", "()V", |_, _| ret_void());
     r.add(IOUTIL, "fdVal", "(Ljava/io/FileDescriptor;)I", |_, a| ret_int(fd(a[0])));
     r.add(IOUTIL, "setfdVal", "(Ljava/io/FileDescriptor;I)V", |_, a| {
