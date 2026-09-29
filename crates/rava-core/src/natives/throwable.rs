@@ -43,6 +43,7 @@ fn fill_in_stack_trace(t: &mut Thread, a: &[u64]) -> JResult<u64> {
         .frames()
         .skip_while(|(m, _)| m.name.as_str() == "fillInStackTrace")
         .skip_while(|(m, _)| m.name.as_str() == "<init>" && ek.is_subtype_of(m.holder))
+        .filter(|(m, _)| !m.is_hidden_frame())
         .collect();
     let longs = vm().primitive_array_class(BasicType::Long).expect("[J");
     let bt = rt::alloc_array(t, longs, frames.len() as i32 * 2)?;
