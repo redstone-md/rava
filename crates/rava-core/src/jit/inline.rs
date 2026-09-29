@@ -48,6 +48,8 @@ struct Body {
     local_base: i32,
     stack_base: i32,
     inl: Option<InlineCtx>,
+    vs: Vec<super::vstack::Slot>,
+    lregs: Vec<Option<R>>,
 }
 
 /// The statically bound target of the call at `pc`, if the call can be inlined.
@@ -156,14 +158,22 @@ impl Emitter {
             local_base: base,
             stack_base: base + info.max_locals as i32,
             inl: Some(InlineCtx { restart, done, result }),
+            vs: Vec::new(),
+            lregs: Vec::new(),
         };
         let saved = self.swap_body(body);
         let mut pc = 0;
         let mut ok = Some(());
         while pc < self.code.len() && ok.is_some() {
-            self.a.bind(self.labels[pc]);
             if let Some(depth) = self.an.depth[pc] {
+                if self.an.leader[pc] {
+                    self.flush_to_mem();
+                    self.vs_reset(depth);
+                }
+                self.a.bind(self.labels[pc]);
                 ok = self.emit(pc, depth);
+            } else {
+                self.a.bind(self.labels[pc]);
             }
             pc += insn_len(self.code, pc);
         }
@@ -183,24 +193,25 @@ impl Emitter {
             local_base: std::mem::replace(&mut self.local_base, b.local_base),
             stack_base: std::mem::replace(&mut self.stack_base, b.stack_base),
             inl: std::mem::replace(&mut self.inl, b.inl),
+            vs: std::mem::replace(&mut self.vs, b.vs),
+            lregs: std::mem::replace(&mut self.lregs, b.lregs),
         }
     }
 
-    /// `xreturn` / `return`: the method epilogue, or the end of an inlined body.
-    pub(super) fn ret(&mut self, value: Option<i32>) {
-        match (self.inl, value) {
-            (Some(ctx), Some(slot)) => {
-                self.a.load(true, R::Rax, self.stk(slot));
-                self.a.store(true, mem(R::R13, 8 * ctx.result), R::Rax);
+    /// `xreturn` (the value in rax) / `return`: the method epilogue, or the end of an inlined
+    /// body.
+    pub(super) fn ret(&mut self, value: bool) {
+        match self.inl {
+            Some(ctx) => {
+                if value {
+                    self.a.store(true, mem(R::R13, 8 * ctx.result), R::Rax);
+                }
                 self.a.jmp(ctx.done);
             }
-            (Some(ctx), None) => self.a.jmp(ctx.done),
-            (None, Some(slot)) => {
-                self.a.load(true, R::Rax, self.stk(slot));
-                self.a.jmp(self.epilogue);
-            }
-            (None, None) => {
-                self.a.alu_rr(false, super::asm::Alu::Xor, R::Rax, R::Rax);
+            None => {
+                if !value {
+                    self.a.alu_rr(false, super::asm::Alu::Xor, R::Rax, R::Rax);
+                }
                 self.a.jmp(self.epilogue);
             }
         }

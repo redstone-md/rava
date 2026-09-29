@@ -9,7 +9,7 @@ use crate::types::BasicType;
 use std::mem::offset_of;
 
 impl Emitter {
-    fn cp_index(&self, pc: usize) -> u16 {
+    pub(super) fn cp_index(&self, pc: usize) -> u16 {
         u16::from_be_bytes([self.code[pc + 1], self.code[pc + 2]])
     }
 
@@ -169,32 +169,42 @@ impl Emitter {
 
 /// Loads a field of type `ty` at `m` into rax in slot encoding.
 pub(super) fn load_typed(a: &mut Asm, ty: BasicType, m: M) {
+    load_typed_to(a, R::Rax, ty, m)
+}
+
+/// Loads a field of type `ty` at `m` into `dst` in slot encoding.
+pub(super) fn load_typed_to(a: &mut Asm, dst: R, ty: BasicType, m: M) {
     match ty {
-        BasicType::Boolean | BasicType::Byte => a.load_sx(1, R::Rax, m),
-        BasicType::Char => a.load_zx(2, R::Rax, m),
-        BasicType::Short => a.load_sx(2, R::Rax, m),
-        BasicType::Int => a.load_sx(4, R::Rax, m),
-        BasicType::Float => a.load(false, R::Rax, m),
-        _ => a.load(true, R::Rax, m),
+        BasicType::Boolean | BasicType::Byte => a.load_sx(1, dst, m),
+        BasicType::Char => a.load_zx(2, dst, m),
+        BasicType::Short => a.load_sx(2, dst, m),
+        BasicType::Int => a.load_sx(4, dst, m),
+        BasicType::Float => a.load(false, dst, m),
+        _ => a.load(true, dst, m),
     }
 }
 
 /// Stores rdx (slot encoding) into a field of type `ty` at `m`.
 pub(super) fn store_typed(a: &mut Asm, ty: BasicType, m: M) {
+    store_typed_from(a, R::Rdx, ty, m)
+}
+
+/// Stores `src` (slot encoding) into a field of type `ty` at `m`; a boolean store masks `src`.
+pub(super) fn store_typed_from(a: &mut Asm, src: R, ty: BasicType, m: M) {
     match ty {
         BasicType::Boolean => {
-            a.alu_ri(false, Alu::And, R::Rdx, 1);
-            a.store8(m, R::Rdx);
+            a.alu_ri(false, Alu::And, src, 1);
+            a.store8(m, src);
         }
-        BasicType::Byte => a.store8(m, R::Rdx),
-        BasicType::Char | BasicType::Short => a.store16(m, R::Rdx),
-        BasicType::Int | BasicType::Float => a.store(false, m, R::Rdx),
-        _ => a.store(true, m, R::Rdx),
+        BasicType::Byte => a.store8(m, src),
+        BasicType::Char | BasicType::Short => a.store16(m, src),
+        BasicType::Int | BasicType::Float => a.store(false, m, src),
+        _ => a.store(true, m, src),
     }
 }
 
 /// Normalizes rdx to the full-slot representation of a static field of type `ty`.
-fn normalize_into(a: &mut Asm, ty: BasicType) {
+pub(super) fn normalize_into(a: &mut Asm, ty: BasicType) {
     match ty {
         BasicType::Boolean => a.alu_ri(false, Alu::And, R::Rdx, 1),
         BasicType::Byte => a.movsx_rr(1, R::Rdx, R::Rdx),

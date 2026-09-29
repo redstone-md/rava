@@ -15,8 +15,11 @@ mod compile;
 mod emit;
 mod emit_call;
 mod emit_obj;
+mod emit_reg;
+mod emit_reg_mem;
 mod inline;
 mod intrinsics;
+mod vstack;
 mod runtime;
 pub mod stats;
 
@@ -130,11 +133,7 @@ fn osr_trampoline() -> usize {
     *T.get_or_init(|| {
         use asm::R;
         let mut a = asm::Asm::default();
-        a.push(R::Rbp);
-        a.mov_rr(true, R::Rbp, R::Rsp);
-        for r in [R::R12, R::R13, R::R14, R::R15] {
-            a.push(r);
-        }
+        compile::save_registers(&mut a);
         a.mov_rr(true, R::R12, R::Rdi);
         a.mov_rr(true, R::R13, R::Rsi);
         a.jmp_r(R::Rdx);

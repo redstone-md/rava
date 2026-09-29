@@ -201,6 +201,11 @@ impl Asm {
         self.op_rm(true, &[0xC7], 0, m);
         self.d32(imm);
     }
+    /// `mov dword [m], imm32`.
+    pub fn store_imm32(&mut self, m: M, imm: i32) {
+        self.op_rm(false, &[0xC7], 0, m);
+        self.d32(imm);
+    }
     pub fn lea(&mut self, dst: R, m: M) {
         self.op_rm(true, &[0x8D], dst as u8, m);
     }
@@ -255,6 +260,11 @@ impl Asm {
     /// Shift `r` by `cl`.
     pub fn shift_cl(&mut self, w: bool, op: Shift, r: R) {
         self.op_rr(w, &[0xD3], op as u8, r as u8);
+    }
+    /// Shift `r` by an immediate count.
+    pub fn shift_ri(&mut self, w: bool, op: Shift, r: R, count: u8) {
+        self.op_rr(w, &[0xC1], op as u8, r as u8);
+        self.b(count);
     }
     pub fn setcc(&mut self, c: Cond, r: R) {
         self.rex(false, 0, 0, r as u8, (4..8).contains(&(r as u8)));
@@ -350,6 +360,10 @@ impl Asm {
     pub fn farith_m(&mut self, double: bool, op: u8, x: X, m: M) {
         self.sse_rm(Self::fp(double), false, op, x.0, m);
     }
+    /// `addsd/subsd/mulsd/divsd x, y` by opcode.
+    pub fn farith_rr(&mut self, double: bool, op: u8, x: X, y: X) {
+        self.sse_rr(Self::fp(double), false, op, x.0, y.0);
+    }
     pub fn fsqrt(&mut self, x: X, src: X) {
         self.sse_rr(0xF2, false, 0x51, x.0, src.0);
     }
@@ -423,6 +437,11 @@ mod tests {
         assert_eq!(hex(|a| a.cvtt_f2i(true, true, R::Rax, X(1))), "f2 48 0f 2c c1");
         assert_eq!(hex(|a| a.call_m(mem(R::Rdx, 16))), "ff 52 10");
         assert_eq!(hex(|a| a.round_sd(X(0), X(1), 1)), "66 0f 3a 0b c1 01");
+        assert_eq!(hex(|a| a.shift_ri(false, Shift::Shl, R::R9, 3)), "41 c1 e1 03");
+        assert_eq!(hex(|a| a.shift_ri(true, Shift::Shr, R::Rsi, 32)), "48 c1 ee 20");
+        assert_eq!(hex(|a| a.farith_rr(true, 0x59, X(0), X(1))), "f2 0f 59 c1");
+        assert_eq!(hex(|a| a.push(R::Rbx)), "53");
+        assert_eq!(hex(|a| a.load(true, R::Rbp, mem(R::R13, 8))), "49 8b 6d 08");
         assert_eq!(hex(|a| a.round_sd(X(9), X(2), 2)), "66 44 0f 3a 0b ca 02");
     }
 }
