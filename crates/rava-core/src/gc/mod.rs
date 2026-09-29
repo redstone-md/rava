@@ -46,7 +46,7 @@ pub struct Stats {
 
 impl Heap {
     pub fn new(reserve: usize) -> Heap {
-        let min_trigger = std::env::var("RAVA_CORE_GC_MB").ok().and_then(|v| v.parse::<usize>().ok()).map_or(256 << 20, |mb| mb << 20);
+        let min_trigger = std::env::var("RAVA_CORE_GC_MB").ok().and_then(|v| v.parse::<usize>().ok()).map_or(64 << 20, |mb| mb << 20);
         Heap { space: Mutex::new(Space::new(reserve)), min_trigger }
     }
 
@@ -180,8 +180,6 @@ fn sweep(space: &mut Space) -> usize {
             free_head = addr;
         }
         if live_cells == 0 {
-            // SAFETY: returns the page's memory to the kernel; it reads back as zeros.
-            unsafe { libc::madvise(page as *mut libc::c_void, PAGE_SIZE, libc::MADV_DONTNEED) };
             space.pages[index] = None;
             space.empty.push(page);
             continue;
