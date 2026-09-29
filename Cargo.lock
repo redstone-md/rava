@@ -558,6 +558,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "rava-core"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "rava-classfile",
+]
+
+[[package]]
 name = "rava-interp"
 version = "0.1.0"
 dependencies = [
