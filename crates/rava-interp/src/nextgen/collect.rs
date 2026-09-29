@@ -849,6 +849,30 @@ pub fn arena_old_cap() -> usize {
 /// `RAVA_ARENA_MAJOR_KB`, when set, remains the WHOLE policy: it is the manual handle used to
 /// force majors for tests and A/Bs, and an adaptive arm underneath it would make that handle
 /// mean something else.
+#[cfg(test)]
+thread_local! {
+    static ARENA_MAJOR_KB_TEST_OVERRIDE: std::cell::Cell<Option<usize>> =
+        const { std::cell::Cell::new(None) };
+}
+
+#[cfg(test)]
+pub(crate) struct ArenaMajorKbTestOverride(Option<usize>);
+
+#[cfg(test)]
+impl ArenaMajorKbTestOverride {
+    pub(crate) fn set(kb: usize) -> Self {
+        let previous = ARENA_MAJOR_KB_TEST_OVERRIDE.with(|limit| limit.replace(Some(kb)));
+        Self(previous)
+    }
+}
+
+#[cfg(test)]
+impl Drop for ArenaMajorKbTestOverride {
+    fn drop(&mut self) {
+        ARENA_MAJOR_KB_TEST_OVERRIDE.with(|limit| limit.set(self.0));
+    }
+}
+
 pub fn arena_should_major() -> bool {
     // `RAVA_ARENA_MAJOR_KB` is a PROCESS CONSTANT that was re-read on EVERY call — and this is
     // called twice per collection (`gc_collect`'s major/minor choice, then its accounting).
@@ -860,6 +884,9 @@ pub fn arena_should_major() -> bool {
     let lo = *LO.get_or_init(|| {
         std::env::var("RAVA_ARENA_MAJOR_KB").ok().and_then(|s| s.parse::<usize>().ok())
     });
+    #[cfg(test)]
+    let lo = ARENA_MAJOR_KB_TEST_OVERRIDE.with(|limit| limit.get().or(lo));
+
     crate::nextgen::tlab::with_tlab(|slot| {
         slot
             .as_ref()
