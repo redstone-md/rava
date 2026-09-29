@@ -6,6 +6,7 @@
 //! Slot encodings: int-like values sign-extended, float bits in the low half, raw long/double
 //! bits, references as addresses.
 
+mod indy;
 mod ops;
 mod support;
 

@@ -39,8 +39,19 @@ Interpreter speed (tier 0 only; the compiler is the next tracer):
 - Every JDK native library is reported as built in; their natives are Rust.
 - `Finalizer.isFinalizationEnabled()` is false; reference processing waits for the collector.
 
+## 2026-09-29 — invokedynamic on the JDK's own linkage
+
+`invokedynamic`, signature-polymorphic calls and method-handle constants link through the JDK's
+`MethodHandleNatives.linkCallSite` / `linkMethod` / `linkMethodHandleConstant` up-calls, as in
+HotSpot; the VM implements `MemberName` resolution, `invokeBasic` / `linkTo*`, hidden classes
+(`defineClass0`) and dynamic constants. String concatenation (`StringConcatFactory`), lambdas
+(`LambdaMetafactory` spinning hidden classes), method references, records
+(`ObjectMethods.bootstrap`) and streams produce HotSpot's output.
+
+`bench/BootLike.java` runs to the correct hash (`H=189720856431`) interpreter-only in 35.4 s
+(HotSpot `-Xint` 14.2 s, adaptive HotSpot 0.5 s): the interpreter is correct; speed comes next.
+
 ### Next
 
-1. `invokedynamic` and `java.lang.invoke` (lambdas, string concatenation, records).
-2. Baseline compiler (tier 1).
-3. Garbage collector.
+1. Baseline compiler (tier 1).
+2. Garbage collector (BootLike allocates 258 MiB with no collection).

@@ -78,6 +78,13 @@ impl Method {
         !self.is_static() && !self.is_private() && self.name.as_str() != "<init>"
     }
 
+    /// JVMS 2.9.3: a native varargs method of `MethodHandle` or `VarHandle` taking `Object[]`.
+    pub fn is_signature_polymorphic(&self) -> bool {
+        self.is_native()
+            && self.access & 0x0080 != 0
+            && (self.holder.name == "java/lang/invoke/MethodHandle" || self.holder.name == "java/lang/invoke/VarHandle")
+    }
+
     pub fn is_default_candidate(&self) -> bool {
         !self.is_static() && !self.is_private() && !self.is_abstract()
     }

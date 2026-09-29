@@ -203,6 +203,24 @@ impl ClassFile {
         Some((self.class_name(class)?, name, desc))
     }
 
+    /// Entry `i` of the `BootstrapMethods` attribute: the method-handle constant and the
+    /// static-argument constant indices.
+    pub fn bootstrap_method(&self, i: u16) -> Option<(u16, Vec<u16>)> {
+        let b = self.attr_bytes(self.attr("BootstrapMethods")?);
+        let count = u16::from_be_bytes([b[0], b[1]]);
+        let mut pos = 2;
+        for n in 0..count {
+            let handle = u16::from_be_bytes([b[pos], b[pos + 1]]);
+            let argc = u16::from_be_bytes([b[pos + 2], b[pos + 3]]) as usize;
+            if n == i {
+                let args = (0..argc).map(|a| u16::from_be_bytes([b[pos + 4 + 2 * a], b[pos + 5 + 2 * a]])).collect();
+                return Some((handle, args));
+            }
+            pos += 4 + 2 * argc;
+        }
+        None
+    }
+
     pub fn attr(&self, name: &str) -> Option<Attr> {
         self.attrs.iter().copied().find(|a| a.name == name)
     }
@@ -238,6 +256,41 @@ impl ClassFile {
         let line_numbers = attrs.into_iter().find(|a| a.name == "LineNumberTable");
         Ok(CodeInfo { max_stack, max_locals, code, handlers, line_numbers })
     }
+}
+
+/// Type-descriptor constant indices of the annotations in a `Runtime*Annotations` body.
+pub fn annotation_types(body: &[u8]) -> Vec<u16> {
+    fn u2(b: &[u8], p: usize) -> u16 {
+        u16::from_be_bytes([b[p], b[p + 1]])
+    }
+    fn skip_annotation(b: &[u8], mut p: usize, out: Option<&mut Vec<u16>>) -> usize {
+        if let Some(out) = out {
+            out.push(u2(b, p));
+        }
+        let pairs = u2(b, p + 2);
+        p += 4;
+        for _ in 0..pairs {
+            p = skip_value(b, p + 2);
+        }
+        p
+    }
+    fn skip_value(b: &[u8], p: usize) -> usize {
+        match b[p] {
+            b'e' => p + 5,
+            b'@' => skip_annotation(b, p + 1, None),
+            b'[' => (0..u2(b, p + 1)).fold(p + 3, |q, _| skip_value(b, q)),
+            _ => p + 3,
+        }
+    }
+    let mut out = Vec::new();
+    if body.len() < 2 {
+        return out;
+    }
+    let mut p = 2;
+    for _ in 0..u2(body, 0) {
+        p = skip_annotation(body, p, Some(&mut out));
+    }
+    out
 }
 
 fn parse_pool(r: &mut Reader) -> Result<Vec<Cp>> {

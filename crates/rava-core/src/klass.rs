@@ -106,6 +106,8 @@ pub struct Klass {
     pub(crate) iface_cache: Mutex<HashMap<(Symbol, Symbol), Option<&'static Method>>>,
     /// Defined by `Lookup.defineHiddenClass` (not findable by name).
     hidden: bool,
+    /// Nest host fixed at definition (hidden nestmates); otherwise from `NestHost`.
+    pub(crate) nest_host: OnceLock<&'static Klass>,
 }
 
 pub(crate) struct KlassParts {
@@ -155,6 +157,7 @@ impl Klass {
             array_klass: OnceLock::new(),
             iface_cache: Mutex::new(HashMap::new()),
             hidden: p.hidden,
+            nest_host: OnceLock::new(),
         }
     }
 
@@ -173,6 +176,14 @@ impl Klass {
 
     pub fn is_interface(&self) -> bool {
         self.access & ACC_INTERFACE != 0
+    }
+
+    /// The binary name as `Class.getName` reports it (`a.b.C`, hidden: `a.b.C/0x...`).
+    pub fn java_name(&self) -> String {
+        match (self.hidden, self.cf.as_ref()) {
+            (true, Some(cf)) => format!("{}{}", cf.name.as_str().replace('/', "."), &self.name.as_str()[cf.name.as_str().len()..]),
+            _ => self.name.as_str().replace('/', "."),
+        }
     }
 
     pub fn is_hidden(&self) -> bool {
@@ -200,7 +211,8 @@ impl Klass {
     }
 
     pub fn package(&self) -> &'static str {
-        let n = self.name.as_str();
+        // Hidden classes keep their original name in the class file; the suffix is not a package.
+        let n = self.cf.as_ref().map_or(self.name, |cf| cf.name).as_str();
         n.rsplit_once('/').map_or("", |(p, _)| p)
     }
 

@@ -18,6 +18,8 @@ pub enum Resolved {
     Method(&'static Method),
     /// An interned `java.lang.String` literal.
     String(usize),
+    /// A resolved object constant (method type, method handle, dynamic constant).
+    Constant(usize),
 }
 
 // Resolved entries only name immortal metadata and immortal interned strings.
@@ -44,9 +46,24 @@ impl Klass {
         }
         let cf = self.cf.as_ref().unwrap();
         let name = cf.class_name(index).ok_or_else(|| bad_pool(self, index))?;
-        let k = vm().load_class(t, self.loader(), name)?;
+        // A class's references to its own name denote itself (hidden classes are not findable).
+        let k = if name == cf.name { self } else { vm().load_class(t, self.loader(), name)? };
         let _ = self.resolved[index as usize].set(Resolved::Class(k));
         Ok(k)
+    }
+
+    /// The nest host (JVMS 5.4.4): fixed for hidden nestmates, else the `NestHost` attribute's
+    /// class, else the class itself.
+    pub fn nest_host(&'static self, t: &mut Thread) -> &'static Klass {
+        if let Some(h) = self.nest_host.get() {
+            return h;
+        }
+        let declared = self.cf.as_ref().and_then(|cf| {
+            let b = cf.attr_bytes(cf.attr("NestHost")?);
+            Some(u16::from_be_bytes([b[0], b[1]]))
+        });
+        let host = declared.and_then(|i| self.resolve_class(t, i).ok()).unwrap_or(self);
+        self.nest_host.get_or_init(|| host)
     }
 
     /// Field reference `index`, resolved to its storage.

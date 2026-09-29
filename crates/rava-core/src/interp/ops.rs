@@ -177,7 +177,7 @@ fn step(t: &mut Thread, f: &mut Frame) -> JResult<Option<u64>> {
             0xb4 => { s::getfield(t, f)?; f.pc += 3 }
             0xb5 => { s::putfield(t, f)?; f.pc += 3 }
             0xb6..=0xb9 => { s::invoke(t, f, op)?; f.pc += if op == 0xb9 { 5 } else { 3 } }
-            0xba => { s::invokedynamic(t, f)?; f.pc += 5 }
+            0xba => { super::indy::invokedynamic(t, f)?; f.pc += 5 }
             0xbb => { s::new_object(t, f)?; f.pc += 3 }
             0xbc => { s::newarray(t, f)?; f.pc += 2 }
             0xbd => { s::anewarray(t, f)?; f.pc += 3 }

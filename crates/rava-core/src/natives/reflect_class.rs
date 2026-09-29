@@ -51,17 +51,12 @@ pub(super) fn register(r: &mut NativeRegistry) {
     r.add(C, "getSimpleBinaryName0", "()Ljava/lang/String;", |t, a| inner_class_info(t, a[0], InnerQuery::SimpleName));
     r.add(C, "getDeclaredClasses0", "()[Ljava/lang/Class;", |t, _| ret_ref(class_array(t, &[])?));
     r.add(C, "getEnclosingMethod0", "()[Ljava/lang/Object;", enclosing_method);
-    r.add(C, "getNestHost0", "()Ljava/lang/Class;", |t, a| {
-        let host = klass(a[0]).and_then(|k| {
-            let cf = k.cf.as_ref()?;
-            let at = cf.attr("NestHost")?;
-            let b = cf.attr_bytes(at);
-            k.resolve_class(t, u16::from_be_bytes([b[0], b[1]])).ok()
-        });
-        ret_ref(match host {
-            Some(h) => rt::mirror_of(t, h)?,
-            None => a[0] as Oop,
-        })
+    r.add(C, "getNestHost0", "()Ljava/lang/Class;", |t, a| match klass(a[0]) {
+        Some(k) => {
+            let host = k.nest_host(t);
+            ret_ref(rt::mirror_of(t, host)?)
+        }
+        None => ret_ref(a[0] as Oop),
     });
     r.add(C, "getPermittedSubclasses0", "()[Ljava/lang/Class;", |_, _| ret_ref(std::ptr::null_mut()));
 }
@@ -105,17 +100,6 @@ fn mirror_array(t: &mut Thread, mirrors: &[Oop]) -> JResult<Oop> {
     Ok(arr)
 }
 
-/// The mirror for a field descriptor, loaded through `k`'s loader.
-pub(crate) fn mirror_for_desc(t: &mut Thread, k: &'static Klass, desc: &str) -> JResult<Oop> {
-    let c = desc.as_bytes()[0];
-    if c != b'L' && c != b'[' {
-        return rt::primitive_mirror(t, BasicType::from_desc(c));
-    }
-    let name = if c == b'L' { &desc[1..desc.len() - 1] } else { desc };
-    let target = vm().load_class(t, k.loader(), Symbol::intern(name)).map_err(|e| rt::link_error(t, e))?;
-    rt::mirror_of(t, target)
-}
-
 /// Parameter mirrors and return mirror of a method descriptor.
 pub(crate) fn signature_mirrors(t: &mut Thread, m: &'static Method) -> JResult<(Oop, Oop)> {
     let d = m.desc.as_str();
@@ -124,10 +108,10 @@ pub(crate) fn signature_mirrors(t: &mut Thread, m: &'static Method) -> JResult<(
     let mut i = 1;
     while b[i] != b')' {
         let end = skip_field_desc(b, i);
-        params.push(mirror_for_desc(t, m.holder, &d[i..end])?);
+        params.push(rt::mirror_for_desc(t, m.holder, &d[i..end])?);
         i = end;
     }
-    let ret = mirror_for_desc(t, m.holder, &d[i + 1..])?;
+    let ret = rt::mirror_for_desc(t, m.holder, &d[i + 1..])?;
     Ok((mirror_array(t, &params)?, ret))
 }
 
@@ -169,7 +153,7 @@ fn declared_fields(t: &mut Thread, a: &[u64]) -> JResult<u64> {
             continue;
         }
         let name = rt::intern_str(t, f.name.as_str())?;
-        let ty = mirror_for_desc(t, k, f.desc.as_str())?;
+        let ty = rt::mirror_for_desc(t, k, f.desc.as_str())?;
         let sig = optional_string(t, member_attr(&info.attrs, "Signature").and_then(|at| attr_utf8(k, at)))?;
         let ann = optional_bytes(t, k, member_attr(&info.attrs, "RuntimeVisibleAnnotations"))?;
         let trusted_final = f.access & 0x0010 != 0 && (f.is_static() || k.is_hidden() || k.super_klass.is_some_and(|s| s.name == "java/lang/Record"));
