@@ -5,6 +5,7 @@ members = [
     "crates/rava-classfile",
     "crates/rava-interp",
     "crates/rava-cli",
+    "crates/rava-core",
 ]
 
 [workspace.package]

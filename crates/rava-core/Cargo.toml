@@ -1,0 +1,10 @@
+[package]
+name = "rava-core"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+description = "Next-generation rava execution core: direct object layout, real java.base bytecode, tiered compilation."
+
+[dependencies]
+rava-classfile = { path = "../rava-classfile" }
+libc = "0.2"
