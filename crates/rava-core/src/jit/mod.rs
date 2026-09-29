@@ -18,6 +18,7 @@ mod emit_obj;
 mod emit_reg;
 mod emit_reg_mem;
 mod inline;
+mod inline_plan;
 mod intrinsics;
 mod vstack;
 mod runtime;
@@ -37,6 +38,9 @@ pub struct CompiledMethod {
     pub size: usize,
     /// (bytecode index, native address) of every block leader, sorted by bci.
     pub blocks: Vec<(u32, usize)>,
+    /// Value-stack slots the compiled frame uses (inlined frames included); an interpreted
+    /// frame replaced by this code needs as much room.
+    pub frame_slots: usize,
 }
 
 impl CompiledMethod {

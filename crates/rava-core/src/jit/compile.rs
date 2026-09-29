@@ -7,10 +7,11 @@
 
 use super::analysis::{analyze, insn_len, Analysis};
 use super::asm::{mem, Asm, Cond, Label, M, R};
-use super::inline::{inline_slots, inline_target, InlineCtx};
+use super::inline::InlineCtx;
+use super::inline_plan::{plan, Plan};
 use super::vstack::{plan_local_regs, Slot};
 use super::{code_cache, runtime, CompiledMethod};
-use std::collections::HashMap;
+use std::rc::Rc;
 use crate::classfile::{ClassFile, CodeInfo};
 use crate::method::Method;
 use crate::thread::{header, offsets};
@@ -33,10 +34,10 @@ pub(super) struct Emitter {
     /// Slots (from the frame base) of local 0 and operand-stack slot 0 of the code being emitted.
     pub local_base: i32,
     pub stack_base: i32,
-    /// Scratch slots for inlined callees, above the caller's operand stack.
-    pub inline_base: i32,
-    /// Call sites compiled in place, decided before emission (`inline.rs`).
-    pub inlines: HashMap<usize, &'static Method>,
+    /// Scratch slots for leaf callees, above this body's operand stack.
+    pub scratch_base: i32,
+    /// Call sites of this body compiled in place (`inline_plan.rs`).
+    pub plan: Rc<Plan>,
     /// Set while emitting an inlined body.
     pub inl: Option<InlineCtx>,
     /// The virtual operand stack and the registers pinned to locals (`vstack.rs`).
@@ -50,7 +51,8 @@ pub fn compile(m: &'static Method) -> Option<CompiledMethod> {
     }
     let info: &'static CodeInfo = m.code?;
     let an = analyze(m)?;
-    let (inlines, inline_extra) = plan_inlining(m, info.code, &an);
+    let stack_base = info.max_locals as i32 + header::SLOTS as i32;
+    let plan = Rc::new(plan(m, &an, stack_base, &mut Vec::new()));
     let mut a = Asm::default();
     let labels = (0..=info.code.len()).map(|_| a.new_label()).collect();
     let (exc, epilogue) = (a.new_label(), a.new_label());
@@ -67,9 +69,9 @@ pub fn compile(m: &'static Method) -> Option<CompiledMethod> {
         slow: Vec::new(),
         polls: Vec::new(),
         local_base: 0,
-        stack_base: info.max_locals as i32 + header::SLOTS as i32,
-        inline_base: info.max_locals as i32 + header::SLOTS as i32 + info.max_stack as i32 + 2,
-        inlines,
+        stack_base,
+        scratch_base: stack_base + info.max_stack as i32 + 2,
+        plan: plan.clone(),
         inl: None,
         vs: Vec::new(),
         lregs: Vec::new(),
@@ -77,33 +79,12 @@ pub fn compile(m: &'static Method) -> Option<CompiledMethod> {
     if std::env::var_os("RAVA_CORE_NO_LOCAL_REGS").is_none() {
         e.lregs = plan_local_regs(e.code, info.max_locals as usize, &e.an);
     }
-    let frame_slots = e.inline_base + inline_extra;
+    let frame_slots = plan.extent;
     let overflow = e.a.new_label();
     e.prologue(frame_slots, overflow);
-    let mut pc = 0;
     let mut leaders = Vec::new();
-    while pc < e.code.len() {
-        let len = insn_len(e.code, pc);
-        let Some(depth) = e.an.depth[pc] else {
-            e.a.bind(e.labels[pc]);
-            pc += len;
-            continue;
-        };
-        if e.an.leader[pc] {
-            // Blocks start with the operand stack in memory.
-            e.flush_to_mem();
-            e.vs_reset(depth);
-            leaders.push(pc as u32);
-        }
-        e.a.bind(e.labels[pc]);
-        let first_slow = e.slow.len();
-        e.emit(pc, depth)?;
-        let live = e.live_regs();
-        e.slow[first_slow..].iter_mut().for_each(|s| s.3 = live.clone());
-        pc += len;
-    }
-    e.a.bind(e.labels[e.code.len()]);
-    let leaders = e.emit_entry_stubs(leaders);
+    e.emit_body(Some(&mut leaders))?;
+    let leaders = e.emit_entry_stubs(leaders, frame_slots);
     e.emit_slow_paths();
     e.emit_poll_stubs();
     e.emit_exception_dispatch();
@@ -115,30 +96,40 @@ pub fn compile(m: &'static Method) -> Option<CompiledMethod> {
     if std::env::var_os("RAVA_CORE_JIT_LOG").is_some() {
         eprintln!("[jit] {m} {} bytes of bytecode -> {} bytes", info.code.len(), code.len());
     }
-    Some(CompiledMethod { entry, unresolved_deferrals: Default::default(), size: code.len(), blocks })
-}
-
-/// The call sites to inline and the scratch slots they need; decided once, since resolution may
-/// progress concurrently while the method is being emitted.
-fn plan_inlining(m: &'static Method, code: &[u8], an: &Analysis) -> (HashMap<usize, &'static Method>, i32) {
-    let (mut sites, mut extra) = (HashMap::new(), 0);
-    if std::env::var_os("RAVA_CORE_NO_INLINE").is_some() {
-        return (sites, extra);
-    }
-    let mut pc = 0;
-    while pc < code.len() {
-        if an.depth[pc].is_some() && matches!(code[pc], 0xb6..=0xb8) {
-            if let Some(t) = inline_target(m, code, pc) {
-                extra = extra.max(inline_slots(t));
-                sites.insert(pc, t);
-            }
-        }
-        pc += insn_len(code, pc);
-    }
-    (sites, extra)
+    Some(CompiledMethod { entry, unresolved_deferrals: Default::default(), size: code.len(), blocks, frame_slots: frame_slots as usize })
 }
 
 impl Emitter {
+    /// Emits the current body; block starts are collected into `leaders` (the method's own
+    /// body, for OSR and handler entry).
+    pub(super) fn emit_body(&mut self, mut leaders: Option<&mut Vec<u32>>) -> Option<()> {
+        let mut pc = 0;
+        while pc < self.code.len() {
+            let len = insn_len(self.code, pc);
+            let Some(depth) = self.an.depth[pc] else {
+                self.a.bind(self.labels[pc]);
+                pc += len;
+                continue;
+            };
+            if self.an.leader[pc] {
+                // Blocks start with the operand stack in memory.
+                self.flush_to_mem();
+                self.vs_reset(depth);
+                if let Some(l) = leaders.as_deref_mut() {
+                    l.push(pc as u32);
+                }
+            }
+            self.a.bind(self.labels[pc]);
+            let first_slow = self.slow.len();
+            self.emit(pc, depth)?;
+            let live = self.live_regs();
+            self.slow[first_slow..].iter_mut().for_each(|s| s.3 = live.clone());
+            pc += len;
+        }
+        self.a.bind(self.labels[self.code.len()]);
+        Some(())
+    }
+
     pub fn local(&self, n: usize) -> M {
         mem(R::R13, 8 * (self.local_base + n as i32))
     }
@@ -149,12 +140,12 @@ impl Emitter {
     }
 
     pub fn hdr(&self, field: usize) -> M {
-        mem(R::R13, 8 * (self.max_locals + field as i32))
+        mem(R::R13, 8 * (self.local_base + self.max_locals + field as i32))
     }
 
     /// Records `bci` as the frame's current instruction (before calls and slow paths).
     pub fn set_bci(&mut self, bci: usize) {
-        debug_assert!(self.inl.is_none(), "inlined bodies never record a bci");
+        debug_assert!(!self.in_leaf(), "leaf bodies never record a bci");
         let at = self.hdr(header::BCI);
         self.a.store_imm(at, (bci as i32) << 1);
     }
@@ -166,7 +157,7 @@ impl Emitter {
     /// A slow path that re-executes this instruction in the interpreter, then continues with
     /// the next instruction.
     pub fn slow_path(&mut self, bci: usize, depth: u16) -> Label {
-        if let Some(ctx) = self.inl {
+        if let (true, Some(ctx)) = (self.in_leaf(), self.inl) {
             return ctx.restart;
         }
         let l = self.a.new_label();
@@ -186,13 +177,13 @@ impl Emitter {
     }
 
     fn defer_via(&mut self, bci: usize, depth: u16, helper: usize) {
-        if let Some(ctx) = self.inl {
+        if let (true, Some(ctx)) = (self.in_leaf(), self.inl) {
             return self.a.jmp(ctx.restart);
         }
         self.set_bci(bci);
         self.a.mov_rr(true, R::Rdi, R::R12);
         self.a.mov_ri(R::Rsi, self.m as *const Method as i64);
-        self.a.mov_rr(true, R::Rdx, R::R13);
+        self.a.lea(R::Rdx, self.local(0));
         self.a.mov_ri(R::Rcx, (bci as i64) | (depth as i64) << 32);
         self.a.call_abs(helper);
         self.a.test_rr(true, R::Rax, R::Rax);
@@ -256,12 +247,15 @@ impl Emitter {
         }
     }
 
-    /// Entry points for OSR and exception handlers at each block: load the local registers,
-    /// then continue at the block. Returns (bci, code offset) pairs.
-    fn emit_entry_stubs(&mut self, leaders: Vec<u32>) -> Vec<(u32, u32)> {
+    /// Entry points for OSR and exception handlers at each block: claim the whole compiled
+    /// frame (an interpreted frame is smaller than one with inlined frames), load the local
+    /// registers, then continue at the block. Returns (bci, code offset) pairs.
+    fn emit_entry_stubs(&mut self, leaders: Vec<u32>, frame_slots: i32) -> Vec<(u32, u32)> {
         let mut out = Vec::with_capacity(leaders.len());
         for bci in leaders {
             out.push((bci, self.a.pos()));
+            self.a.lea(R::Rax, mem(R::R13, 8 * frame_slots));
+            self.a.store(true, mem(R::R12, offsets::SP), R::Rax);
             self.load_local_regs();
             self.a.jmp(self.labels[bci as usize]);
         }
@@ -270,7 +264,7 @@ impl Emitter {
 
     /// Slow paths re-execute one instruction in the interpreter, reload the operand-stack
     /// registers the fast path left live, and continue after the instruction.
-    fn emit_slow_paths(&mut self) {
+    pub(super) fn emit_slow_paths(&mut self) {
         for (l, bci, depth, reload) in std::mem::take(&mut self.slow) {
             self.a.bind(l);
             self.defer(bci, depth);

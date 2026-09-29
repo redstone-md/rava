@@ -79,8 +79,11 @@ impl Emitter {
         if (op == 0xb8 || op == 0xb6) && self.try_intrinsic(pc, depth, m, args) {
             return;
         }
-        let inlined = match self.inlines.get(&pc).copied() {
-            Some(callee) if self.inl.is_none() => self.inline_call(args, callee, op != 0xb8, m.holder),
+        let inlined = match self.plan.clone().sites.get(&pc) {
+            Some(site) if !self.in_leaf() => {
+                self.set_bci(pc);
+                self.inline_call(args, site.target, &site.kind, op != 0xb8, m.holder)
+            }
             _ => None,
         };
         let slow = self.slow_path(pc, depth);

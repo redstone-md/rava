@@ -1,137 +1,68 @@
-//! Leaf inlining and JDK intrinsics.
+//! Emitting inlined bodies (decisions in `inline_plan.rs`).
 //!
-//! A call whose target is statically known (static, private, final, `invokespecial`) to a small
-//! *leaf* method is compiled in place. A leaf may only read the heap (`getfield`, `getstatic`,
-//! array loads) and compute; it has no stores, calls (other than pure intrinsics), allocation, locks
-//! or loops. Its body therefore has no side effects, so any slow path inside it (a null, an
-//! index out of bounds, an uninitialized class) abandons the inlined attempt and *restarts* the
-//! call as an ordinary one, which then behaves exactly as if nothing had been inlined. No frame
-//! is ever observable for the inlined method: it cannot throw, reach a safepoint or allocate.
+//! **Leaf** bodies only read the heap and compute, so they have no side effects. Their locals
+//! and stack live in a scratch area above the caller's operand stack (the arguments are copied
+//! there). Any slow path inside abandons the attempt and *restarts* the call as an ordinary one,
+//! so no frame for the leaf is ever observable.
 //!
-//! The callee's locals and operand stack live in a scratch area above the caller's operand
-//! stack; the arguments are copied there, so the caller's slots stay intact for the restart.
+//! **Framed** bodies run in a real interpreter frame at the arguments, exactly where a call would
+//! put it: the header is written and linked from `Thread::top` without a native call. Deferred
+//! instructions, slow paths, stack traces and the collector see a normal chain of frames. An
+//! inlined body has no exception handlers: an exception unlinks its frame and continues in the
+//! caller's dispatch, whose bci is the call site.
 
-use super::analysis::{analyze, i2, i4, insn_len, Analysis};
+use super::analysis::{analyze, Analysis};
 use super::asm::{mem, Label, R};
-use super::intrinsics::intrinsic;
 use super::compile::Emitter;
-use crate::classfile::{ClassFile, Cp};
-use crate::klass::{Klass, ACC_FINAL};
-use crate::link::Resolved;
+use super::inline_plan::{Kind, Plan};
+use super::vstack::Slot;
+use crate::classfile::ClassFile;
+use crate::klass::Klass;
 use crate::method::Method;
-use std::sync::atomic::Ordering;
-
-/// HotSpot's `MaxInlineSize`: always inline leaves this small.
-const MAX_INLINE_SIZE: usize = 35;
-/// Larger leaves are inlined once the callee itself is hot (cf. `FreqInlineSize`).
-const HOT_INLINE_SIZE: usize = 128;
-const HOT_CALLEE: u32 = 1000;
-/// Scratch slots one inlined body may use.
-const MAX_INLINE_SLOTS: usize = 48;
+use crate::thread::{header, offsets};
+use std::rc::Rc;
 
 /// Where an inlined body returns to.
 #[derive(Clone, Copy)]
 pub(super) struct InlineCtx {
+    /// The ordinary call sequence (leaf slow paths, and failed entry checks).
     pub restart: Label,
     pub done: Label,
     /// Absolute slot (from the frame base) receiving the result.
     pub result: i32,
+    /// For framed bodies, the absolute slot of their frame header.
+    pub frame: Option<i32>,
 }
 
-/// The per-method state swapped when emitting a callee's body in place.
-struct Body {
-    m: &'static Method,
-    cf: &'static ClassFile,
-    code: &'static [u8],
-    an: Analysis,
-    labels: Vec<Label>,
-    local_base: i32,
-    stack_base: i32,
-    inl: Option<InlineCtx>,
-    vs: Vec<super::vstack::Slot>,
-    lregs: Vec<Option<R>>,
-}
-
-/// The statically bound target of the call at `pc`, if the call can be inlined.
-pub(super) fn inline_target(caller: &'static Method, code: &[u8], pc: usize) -> Option<&'static Method> {
-    let op = code[pc];
-    let index = u16::from_be_bytes([code[pc + 1], code[pc + 2]]);
-    let Some(Resolved::Method(m)) = caller.holder.resolved[index as usize].get().copied() else { return None };
-    if m.is_signature_polymorphic() || m.is_abstract() || intrinsic(m).is_some() {
-        return None;
-    }
-    let target = match op {
-        0xb8 if m.is_static() => m,
-        0xb7 if !m.is_static() => crate::interp::special_target(caller.holder, m),
-        0xb6 if !m.is_static() && (m.is_private() || m.access & ACC_FINAL != 0 || m.holder.access & ACC_FINAL != 0) => m,
-        _ => return None,
-    };
-    is_leaf(target).then_some(target)
-}
-
-/// Scratch slots needed by an inlined `m`.
-pub(super) fn inline_slots(m: &Method) -> i32 {
-    m.code.map_or(0, |c| c.max_locals as i32 + c.max_stack as i32)
-}
-
-fn is_leaf(m: &'static Method) -> bool {
-    let Some(info) = m.code else { return false };
-    let limit = if m.invocations.load(Ordering::Relaxed) >= HOT_CALLEE { HOT_INLINE_SIZE } else { MAX_INLINE_SIZE };
-    if m.is_native() || m.is_synchronized() || m.is_abstract() || !info.handlers.is_empty() || info.code.len() > limit {
-        return false;
-    }
-    if info.max_locals as usize + info.max_stack as usize > MAX_INLINE_SLOTS {
-        return false;
-    }
-    let (code, resolved) = (info.code, &m.holder.resolved);
-    let is = |pc: usize, f: fn(Resolved) -> bool| resolved[u16::from_be_bytes([code[pc + 1], code[pc + 2]]) as usize].get().copied().is_some_and(f);
-    let mut pc = 0;
-    while pc < code.len() {
-        let ok = match code[pc] {
-            0x00..=0x11 | 0x15..=0x35 | 0x36..=0x4e | 0x57..=0x98 | 0xac..=0xb1 | 0xbe => true,
-            0x12..=0x14 => ldc_is_constant(m, code, pc),
-            0x99..=0xa7 | 0xc6 | 0xc7 => i2(code, pc + 1) > 0,
-            0xaa | 0xab => switch_targets(code, pc).iter().all(|&t| t > pc),
-            0xb2 => is(pc, |r| matches!(r, Resolved::StaticField { .. })),
-            0xb4 => is(pc, |r| matches!(r, Resolved::InstanceField { .. })),
-            0xb6 | 0xb8 => is(pc, |r| matches!(r, Resolved::Method(t) if intrinsic(t).is_some_and(|i| i.is_pure()))),
-            _ => false,
-        };
-        if !ok {
-            return false;
-        }
-        pc += insn_len(code, pc);
-    }
-    true
-}
-
-fn ldc_is_constant(m: &Method, code: &[u8], pc: usize) -> bool {
-    let index = if code[pc] == 0x12 { code[pc + 1] as u16 } else { u16::from_be_bytes([code[pc + 1], code[pc + 2]]) };
-    let Some(cf) = m.holder.cf.as_ref() else { return false };
-    match cf.pool[index as usize] {
-        Cp::Int(_) | Cp::Float(_) | Cp::Long(_) | Cp::Double(_) => true,
-        Cp::String(_) => matches!(m.holder.resolved[index as usize].get(), Some(Resolved::String(_))),
-        _ => false,
-    }
-}
-
-fn switch_targets(code: &[u8], pc: usize) -> Vec<usize> {
-    let p = (pc + 4) & !3;
-    let rel = |off: i32| (pc as i64 + off as i64) as usize;
-    let mut out = vec![rel(i4(code, p))];
-    if code[pc] == 0xaa {
-        let n = (i4(code, p + 8) - i4(code, p + 4) + 1) as usize;
-        out.extend((0..n).map(|i| rel(i4(code, p + 12 + 4 * i))));
-    } else {
-        out.extend((0..i4(code, p + 4) as usize).map(|i| rel(i4(code, p + 12 + 8 * i))));
-    }
-    out
+/// The per-body state swapped while emitting a callee in place.
+pub(super) struct Body {
+    pub m: &'static Method,
+    pub cf: &'static ClassFile,
+    pub code: &'static [u8],
+    pub an: Analysis,
+    pub labels: Vec<Label>,
+    pub max_locals: i32,
+    pub local_base: i32,
+    pub stack_base: i32,
+    pub scratch_base: i32,
+    pub exc: Label,
+    pub inl: Option<InlineCtx>,
+    pub vs: Vec<Slot>,
+    pub lregs: Vec<Option<R>>,
+    pub slow: Vec<(Label, usize, u16, Vec<(R, i32)>)>,
+    pub plan: Rc<Plan>,
 }
 
 impl Emitter {
-    /// Emits `callee` in place for the call at operand slot `args`; returns the label to bind
-    /// after the ordinary call sequence, which follows as the restart path.
-    pub(super) fn inline_call(&mut self, args: i32, callee: &'static Method, receiver: bool, holder: &'static Klass) -> Option<Label> {
+    /// Whether this body is a leaf (whose slow paths restart the call).
+    pub(super) fn in_leaf(&self) -> bool {
+        self.inl.is_some_and(|c| c.frame.is_none())
+    }
+
+    /// Emits `callee` in place for the call at operand slot `args`, after the entry checks (a
+    /// null receiver, an uninitialized class) that branch to the ordinary call sequence, which
+    /// the caller emits next. Returns the label to bind after that sequence.
+    pub(super) fn inline_call(&mut self, args: i32, callee: &'static Method, kind: &Kind, receiver: bool, holder: &'static Klass) -> Option<Label> {
         let an = analyze(callee)?;
         let info = callee.code?;
         let (restart, done) = (self.a.new_label(), self.a.new_label());
@@ -142,59 +73,92 @@ impl Emitter {
         } else {
             self.init_check(holder, restart);
         }
-        let base = self.inline_base;
-        for i in 0..callee.param_slots() as i32 {
-            self.a.load(true, R::Rax, self.stk(args + i));
-            self.a.store(true, mem(R::R13, 8 * (base + i)), R::Rax);
-        }
         let result = self.stack_base + args;
-        let labels = (0..=info.code.len()).map(|_| self.a.new_label()).collect();
+        let (local_base, frame, plan) = match kind {
+            Kind::Leaf => {
+                let base = self.scratch_base;
+                for i in 0..callee.param_slots() as i32 {
+                    self.a.load(true, R::Rax, self.stk(args + i));
+                    self.a.store(true, mem(R::R13, 8 * (base + i)), R::Rax);
+                }
+                (base, None, Rc::new(Plan::default()))
+            }
+            Kind::Framed(plan) => {
+                let hdr = result + info.max_locals as i32;
+                self.link_frame(callee, hdr);
+                (result, Some(hdr), plan.clone())
+            }
+        };
+        let stack_base = local_base + info.max_locals as i32 + if frame.is_some() { header::SLOTS as i32 } else { 0 };
         let body = Body {
             m: callee,
             cf: callee.holder.cf.as_ref()?,
             code: info.code,
+            labels: (0..=info.code.len()).map(|_| self.a.new_label()).collect(),
             an,
-            labels,
-            local_base: base,
-            stack_base: base + info.max_locals as i32,
-            inl: Some(InlineCtx { restart, done, result }),
+            max_locals: info.max_locals as i32,
+            local_base,
+            stack_base,
+            scratch_base: stack_base + info.max_stack as i32 + 2,
+            exc: self.a.new_label(),
+            inl: Some(InlineCtx { restart, done, result, frame }),
             vs: Vec::new(),
             lregs: Vec::new(),
+            slow: Vec::new(),
+            plan,
         };
-        let saved = self.swap_body(body);
-        let mut pc = 0;
-        let mut ok = Some(());
-        while pc < self.code.len() && ok.is_some() {
-            if let Some(depth) = self.an.depth[pc] {
-                if self.an.leader[pc] {
-                    self.flush_to_mem();
-                    self.vs_reset(depth);
-                }
-                self.a.bind(self.labels[pc]);
-                ok = self.emit(pc, depth);
-            } else {
-                self.a.bind(self.labels[pc]);
-            }
-            pc += insn_len(self.code, pc);
+        let caller = self.swap_body(body);
+        let ok = self.emit_body(None);
+        if ok.is_some() && frame.is_some() {
+            self.emit_slow_paths();
+            // Exceptions leave the inlined frame and continue in the caller's dispatch.
+            self.a.bind(self.exc);
+            self.unlink_frame(frame.unwrap());
+            self.a.jmp(caller.exc);
         }
-        self.swap_body(saved);
+        self.swap_body(caller);
         ok?;
         self.a.bind(restart);
         Some(done)
     }
 
-    fn swap_body(&mut self, b: Body) -> Body {
+    /// Writes an inlined frame's header at absolute slot `hdr` and makes it the innermost frame.
+    fn link_frame(&mut self, m: &'static Method, hdr: i32) {
+        let h = |f: usize| mem(R::R13, 8 * (hdr + f as i32));
+        self.a.mov_ri(R::Rax, m as *const Method as i64);
+        self.a.store(true, h(header::METHOD), R::Rax);
+        self.a.store_imm(h(header::BCI), 0);
+        self.a.load(true, R::Rcx, mem(R::R12, offsets::TOP));
+        self.a.store(true, h(header::CALLER), R::Rcx);
+        self.a.load(true, R::Rcx, mem(R::R12, offsets::SP));
+        self.a.store(true, h(header::SAVED_SP), R::Rcx);
+        self.a.lea(R::Rcx, h(header::METHOD));
+        self.a.store(true, mem(R::R12, offsets::TOP), R::Rcx);
+    }
+
+    fn unlink_frame(&mut self, hdr: i32) {
+        self.a.load(true, R::Rcx, mem(R::R13, 8 * (hdr + header::CALLER as i32)));
+        self.a.store(true, mem(R::R12, offsets::TOP), R::Rcx);
+    }
+
+    pub(super) fn swap_body(&mut self, b: Body) -> Body {
+        use std::mem::replace;
         Body {
-            m: std::mem::replace(&mut self.m, b.m),
-            cf: std::mem::replace(&mut self.cf, b.cf),
-            code: std::mem::replace(&mut self.code, b.code),
-            an: std::mem::replace(&mut self.an, b.an),
-            labels: std::mem::replace(&mut self.labels, b.labels),
-            local_base: std::mem::replace(&mut self.local_base, b.local_base),
-            stack_base: std::mem::replace(&mut self.stack_base, b.stack_base),
-            inl: std::mem::replace(&mut self.inl, b.inl),
-            vs: std::mem::replace(&mut self.vs, b.vs),
-            lregs: std::mem::replace(&mut self.lregs, b.lregs),
+            m: replace(&mut self.m, b.m),
+            cf: replace(&mut self.cf, b.cf),
+            code: replace(&mut self.code, b.code),
+            an: replace(&mut self.an, b.an),
+            labels: replace(&mut self.labels, b.labels),
+            max_locals: replace(&mut self.max_locals, b.max_locals),
+            local_base: replace(&mut self.local_base, b.local_base),
+            stack_base: replace(&mut self.stack_base, b.stack_base),
+            scratch_base: replace(&mut self.scratch_base, b.scratch_base),
+            exc: replace(&mut self.exc, b.exc),
+            inl: replace(&mut self.inl, b.inl),
+            vs: replace(&mut self.vs, b.vs),
+            lregs: replace(&mut self.lregs, b.lregs),
+            slow: replace(&mut self.slow, b.slow),
+            plan: replace(&mut self.plan, b.plan),
         }
     }
 
@@ -205,6 +169,9 @@ impl Emitter {
             Some(ctx) => {
                 if value {
                     self.a.store(true, mem(R::R13, 8 * ctx.result), R::Rax);
+                }
+                if let Some(hdr) = ctx.frame {
+                    self.unlink_frame(hdr);
                 }
                 self.a.jmp(ctx.done);
             }
