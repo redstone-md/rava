@@ -212,6 +212,22 @@ Module or adapter is justified. Reopen only with new measured eligible work
 and a proof that preserves §5.5, shared-heap ownership, write barriers, and
 moving-GC roots. The `<5 s`, strict no-adapt, no-snapshot target remains open.
 
+### 2026-09-29: reverted PGO product reaches Done in isolated smoke
+
+Rebuilt the exact profiled source (`b5d7b83`; all `crates/` match) as
+`release-fat` with `next-gen-gc`, native CPU tuning, and profile
+`target/pgo-current-source.profdata`. Binary SHA-256:
+`85f7d4151e23269b7b447ecb801f79e8d62f3f8d5701da0ccccbe9f031ec6993`.
+
+A disposable copy of `world_pristine` with the canonical classpath and
+`rava.toml` reached `Done (0.352s)`; external launch-to-detection was 22.83 s.
+The only Rava flags were `RAVA_JIT=1`, `RAVA_JIT_TIER0=1`, and
+`RAVA_HARD_MB=3584`; no snapshot, restore, or prepared-AOT path was used.
+This is one boot smoke, not a matched timing result or a `<5 s` pass.
+It does **not** certify strict no-adapt: Tier-0 compilation still routes on
+runtime invocation counts. The full `cargo test -p rava-interp --features
+next-gen-gc` run did not settle and was cancelled; no suite pass is claimed.
+
 ## Objective
 
 Reduce Minecraft boot and warm-reload wall time through structural, workload-agnostic changes while preserving exact Java semantics.
