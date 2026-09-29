@@ -1,6 +1,8 @@
 //! rava-core: the parity execution core. Design: `docs/core/README.md`.
 
+pub mod classfile;
 pub mod jimage;
+pub mod symbol;
 
 use std::path::PathBuf;
 
