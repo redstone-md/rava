@@ -14,11 +14,13 @@ mod module;
 mod net;
 pub(crate) mod props;
 mod reflect;
+mod records;
 mod reflect_class;
 mod stackwalk;
 pub(crate) mod thread;
 pub(crate) mod unsafe_mem;
 mod unixfs;
+mod unixfs_ext;
 mod zip;
 mod throwable;
 
@@ -51,9 +53,11 @@ impl NativeRegistry {
         module::register(&mut r);
         classloader::register(&mut r);
         reflect_class::register(&mut r);
+        records::register(&mut r);
         mh::register(&mut r);
         array::register(&mut r);
         unixfs::register(&mut r);
+        unixfs_ext::register(&mut r);
         zip::register(&mut r);
         nio_ch::register(&mut r);
         stackwalk::register(&mut r);
