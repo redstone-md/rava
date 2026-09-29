@@ -90,7 +90,6 @@ pub(super) fn register(r: &mut NativeRegistry) {
         ret_ref(rt::new_string(t, &system_time_zone())?)
     });
     r.add("java/util/TimeZone", "getSystemGMTOffsetID", "()Ljava/lang/String;", |t, _| ret_ref(rt::new_string(t, "GMT")?));
-    register_management(r);
     const PERF: &str = "jdk/internal/perf/Perf";
     r.add(PERF, "registerNatives", "()V", |_, _| ret_void());
     r.add(PERF, "createLong", "(Ljava/lang/String;IIJ)Ljava/nio/ByteBuffer;", |t, a| {
@@ -176,33 +175,3 @@ fn system_time_zone() -> String {
     std::fs::read_to_string("/etc/timezone").map(|s| s.trim().to_string()).ok().filter(|s| !s.is_empty()).unwrap_or_else(|| "UTC".into())
 }
 
-/// `sun.management.VMManagementImpl`: what `java.lang.management` reports about this VM.
-fn register_management(r: &mut NativeRegistry) {
-    const M: &str = "sun/management/VMManagementImpl";
-    fn started() -> &'static std::time::Instant {
-        static S: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
-        S.get_or_init(std::time::Instant::now)
-    }
-    started();
-    r.add(M, "getVersion0", "()Ljava/lang/String;", |t, _| ret_ref(rt::new_string(t, "4.0")?));
-    r.add(M, "initOptionalSupportFields", "()V", |_, _| ret_void());
-    for name in ["isThreadContentionMonitoringEnabled", "isThreadCpuTimeEnabled", "isThreadAllocatedMemoryEnabled", "getVerboseClass", "getVerboseGC"] {
-        r.add(M, name, "()Z", |_, _| ret_bool(false));
-    }
-    r.add(M, "getProcessId", "()I", |_, _| ret_int(std::process::id() as i32));
-    r.add(M, "getVmArguments0", "()[Ljava/lang/String;", |t, _| ret_ref(super::string_array(t, &[])?));
-    r.add(M, "getStartupTime", "()J", |_, _| {
-        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as i64);
-        ret_long(now - started().elapsed().as_millis() as i64)
-    });
-    r.add(M, "getUptime0", "()J", |_, _| ret_long(started().elapsed().as_millis() as i64));
-    r.add(M, "getAvailableProcessors", "()I", |_, _| ret_int(std::thread::available_parallelism().map_or(1, |n| n.get()) as i32));
-    r.add(M, "getTotalClassCount", "()J", |_, _| ret_long(vm().loaded_class_count() as i64));
-    r.add(M, "getLiveThreadCount", "()I", |_, _| ret_int(crate::gc::safepoint::all_threads().len() as i32));
-    for name in ["getUnloadedClassCount", "getTotalCompileTime", "getTotalThreadCount", "getSafepointCount", "getTotalSafepointTime", "getSafepointSyncTime", "getTotalApplicationNonStoppedTime", "getLoadedClassSize", "getUnloadedClassSize", "getClassLoadingTime", "getMethodDataSize", "getInitializedClassCount", "getClassInitializationTime", "getClassVerificationTime"] {
-        r.add(M, name, "()J", |_, _| ret_long(0));
-    }
-    for name in ["getPeakThreadCount", "getDaemonThreadCount"] {
-        r.add(M, name, "()I", |_, _| ret_int(0));
-    }
-}
