@@ -7,7 +7,9 @@
 
 use super::analysis::{analyze, insn_len, Analysis};
 use super::asm::{mem, Asm, Cond, Label, M, R};
+use super::inline::{inline_slots, inline_target, InlineCtx};
 use super::{code_cache, runtime, CompiledMethod};
+use std::collections::HashMap;
 use crate::classfile::{ClassFile, CodeInfo};
 use crate::method::Method;
 use crate::thread::{header, offsets};
@@ -27,6 +29,15 @@ pub(super) struct Emitter {
     pub slow: Vec<(Label, usize, u16)>,
     /// Safepoint-poll stubs: (entry label, label to resume at).
     pub polls: Vec<(Label, Label)>,
+    /// Slots (from the frame base) of local 0 and operand-stack slot 0 of the code being emitted.
+    pub local_base: i32,
+    pub stack_base: i32,
+    /// Scratch slots for inlined callees, above the caller's operand stack.
+    pub inline_base: i32,
+    /// Call sites compiled in place, decided before emission (`inline.rs`).
+    pub inlines: HashMap<usize, &'static Method>,
+    /// Set while emitting an inlined body.
+    pub inl: Option<InlineCtx>,
 }
 
 pub fn compile(m: &'static Method) -> Option<CompiledMethod> {
@@ -35,6 +46,7 @@ pub fn compile(m: &'static Method) -> Option<CompiledMethod> {
     }
     let info: &'static CodeInfo = m.code?;
     let an = analyze(m)?;
+    let (inlines, inline_extra) = plan_inlining(m, info.code, &an);
     let mut a = Asm::default();
     let labels = (0..=info.code.len()).map(|_| a.new_label()).collect();
     let (exc, epilogue) = (a.new_label(), a.new_label());
@@ -50,8 +62,13 @@ pub fn compile(m: &'static Method) -> Option<CompiledMethod> {
         epilogue,
         slow: Vec::new(),
         polls: Vec::new(),
+        local_base: 0,
+        stack_base: info.max_locals as i32 + header::SLOTS as i32,
+        inline_base: info.max_locals as i32 + header::SLOTS as i32 + info.max_stack as i32 + 2,
+        inlines,
+        inl: None,
     };
-    let frame_slots = info.max_locals as i32 + header::SLOTS as i32 + info.max_stack as i32 + 2;
+    let frame_slots = e.inline_base + inline_extra;
     let overflow = e.a.new_label();
     e.prologue(frame_slots, overflow);
     let mut pc = 0;
@@ -82,14 +99,34 @@ pub fn compile(m: &'static Method) -> Option<CompiledMethod> {
     Some(CompiledMethod { entry, unresolved_deferrals: Default::default(), size: code.len(), blocks })
 }
 
+/// The call sites to inline and the scratch slots they need; decided once, since resolution may
+/// progress concurrently while the method is being emitted.
+fn plan_inlining(m: &'static Method, code: &[u8], an: &Analysis) -> (HashMap<usize, &'static Method>, i32) {
+    let (mut sites, mut extra) = (HashMap::new(), 0);
+    if std::env::var_os("RAVA_CORE_NO_INLINE").is_some() {
+        return (sites, extra);
+    }
+    let mut pc = 0;
+    while pc < code.len() {
+        if an.depth[pc].is_some() && matches!(code[pc], 0xb6..=0xb8) {
+            if let Some(t) = inline_target(m, code, pc) {
+                extra = extra.max(inline_slots(t));
+                sites.insert(pc, t);
+            }
+        }
+        pc += insn_len(code, pc);
+    }
+    (sites, extra)
+}
+
 impl Emitter {
     pub fn local(&self, n: usize) -> M {
-        mem(R::R13, 8 * n as i32)
+        mem(R::R13, 8 * (self.local_base + n as i32))
     }
 
     /// Operand-stack slot `i` (0 = bottom).
     pub fn stk(&self, i: i32) -> M {
-        mem(R::R13, 8 * (self.max_locals + header::SLOTS as i32 + i))
+        mem(R::R13, 8 * (self.stack_base + i))
     }
 
     pub fn hdr(&self, field: usize) -> M {
@@ -98,6 +135,7 @@ impl Emitter {
 
     /// Records `bci` as the frame's current instruction (before calls and slow paths).
     pub fn set_bci(&mut self, bci: usize) {
+        debug_assert!(self.inl.is_none(), "inlined bodies never record a bci");
         let at = self.hdr(header::BCI);
         self.a.store_imm(at, (bci as i32) << 1);
     }
@@ -109,6 +147,9 @@ impl Emitter {
     /// A slow path that re-executes this instruction in the interpreter, then continues with
     /// the next instruction.
     pub fn slow_path(&mut self, bci: usize, depth: u16) -> Label {
+        if let Some(ctx) = self.inl {
+            return ctx.restart;
+        }
         let l = self.a.new_label();
         self.slow.push((l, bci, depth));
         l
@@ -126,6 +167,9 @@ impl Emitter {
     }
 
     fn defer_via(&mut self, bci: usize, depth: u16, helper: usize) {
+        if let Some(ctx) = self.inl {
+            return self.a.jmp(ctx.restart);
+        }
         self.set_bci(bci);
         self.a.mov_rr(true, R::Rdi, R::R12);
         self.a.mov_ri(R::Rsi, self.m as *const Method as i64);

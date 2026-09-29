@@ -73,18 +73,9 @@ impl Emitter {
                 self.a.jmp(self.label(rel(pc, off)));
             }
             0xaa | 0xab => self.switch(pc, d, op),
-            0xac | 0xae | 0xb0 => {
-                self.a.load(true, R::Rax, self.stk(d - 1));
-                self.a.jmp(self.epilogue);
-            }
-            0xad | 0xaf => {
-                self.a.load(true, R::Rax, self.stk(d - 2));
-                self.a.jmp(self.epilogue);
-            }
-            0xb1 => {
-                self.a.alu_rr(false, Alu::Xor, R::Rax, R::Rax);
-                self.a.jmp(self.epilogue);
-            }
+            0xac | 0xae | 0xb0 => self.ret(Some(d - 1)),
+            0xad | 0xaf => self.ret(Some(d - 2)),
+            0xb1 => self.ret(None),
             0xb2..=0xb5 => self.field(pc, depth, op),
             0xb6..=0xb9 => self.invoke(pc, depth, op),
             0xbe => {
@@ -201,27 +192,27 @@ impl Emitter {
             // int add/sub/and/or/xor
             0x60 | 0x64 | 0x7e | 0x80 | 0x82 => {
                 let alu = match op { 0x60 => Alu::Add, 0x64 => Alu::Sub, 0x7e => Alu::And, 0x80 => Alu::Or, _ => Alu::Xor };
-                a.load(false, R::Rax, self_stk(self.max_locals, d - 2));
-                a.alu_rm(false, alu, R::Rax, self_stk(self.max_locals, d - 1));
+                a.load(false, R::Rax, self_stk(self.stack_base, d - 2));
+                a.alu_rm(false, alu, R::Rax, self_stk(self.stack_base, d - 1));
                 a.movsxd(R::Rax, R::Rax);
-                a.store(true, self_stk(self.max_locals, d - 2), R::Rax);
+                a.store(true, self_stk(self.stack_base, d - 2), R::Rax);
             }
             // long add/sub/and/or/xor
             0x61 | 0x65 | 0x7f | 0x81 | 0x83 => {
                 let alu = match op { 0x61 => Alu::Add, 0x65 => Alu::Sub, 0x7f => Alu::And, 0x81 => Alu::Or, _ => Alu::Xor };
-                a.load(true, R::Rax, self_stk(self.max_locals, d - 4));
-                a.alu_rm(true, alu, R::Rax, self_stk(self.max_locals, d - 2));
-                a.store(true, self_stk(self.max_locals, d - 4), R::Rax);
+                a.load(true, R::Rax, self_stk(self.stack_base, d - 4));
+                a.alu_rm(true, alu, R::Rax, self_stk(self.stack_base, d - 2));
+                a.store(true, self_stk(self.stack_base, d - 4), R::Rax);
             }
             0x68 | 0x69 => {
                 let (w, x, y) = if op == 0x68 { (false, d - 2, d - 1) } else { (true, d - 4, d - 2) };
-                a.load(w, R::Rax, self_stk(self.max_locals, x));
-                a.load(w, R::Rcx, self_stk(self.max_locals, y));
+                a.load(w, R::Rax, self_stk(self.stack_base, x));
+                a.load(w, R::Rcx, self_stk(self.stack_base, y));
                 a.imul_rr(w, R::Rax, R::Rcx);
                 if !w {
                     a.movsxd(R::Rax, R::Rax);
                 }
-                a.store(true, self_stk(self.max_locals, x), R::Rax);
+                a.store(true, self_stk(self.stack_base, x), R::Rax);
             }
             0x6c | 0x6d | 0x70 | 0x71 => {
                 let w = op & 1 == 1;
@@ -229,10 +220,10 @@ impl Emitter {
                 let slow = self.slow_path(pc, depth);
                 let (special, done) = (self.a.new_label(), self.a.new_label());
                 let a = &mut self.a;
-                a.load(w, R::Rcx, self_stk(self.max_locals, y));
+                a.load(w, R::Rcx, self_stk(self.stack_base, y));
                 a.test_rr(w, R::Rcx, R::Rcx);
                 a.jcc(Cond::E, slow);
-                a.load(w, R::Rax, self_stk(self.max_locals, x));
+                a.load(w, R::Rax, self_stk(self.stack_base, x));
                 a.alu_ri(w, Alu::Cmp, R::Rcx, -1);
                 a.jcc(Cond::E, special);
                 a.idiv(w, R::Rcx);
@@ -254,52 +245,52 @@ impl Emitter {
                     }
                 }
                 a.bind(done);
-                a.store(true, self_stk(self.max_locals, x), R::Rax);
+                a.store(true, self_stk(self.stack_base, x), R::Rax);
             }
             0x74 | 0x75 => {
                 let (w, x) = if op == 0x74 { (false, d - 1) } else { (true, d - 2) };
-                a.load(w, R::Rax, self_stk(self.max_locals, x));
+                a.load(w, R::Rax, self_stk(self.stack_base, x));
                 a.neg(w, R::Rax);
                 if !w {
                     a.movsxd(R::Rax, R::Rax);
                 }
-                a.store(true, self_stk(self.max_locals, x), R::Rax);
+                a.store(true, self_stk(self.stack_base, x), R::Rax);
             }
             0x78..=0x7d => {
                 let w = op & 1 == 1;
                 let x = if w { d - 3 } else { d - 2 };
                 let sh = match op { 0x78 | 0x79 => Shift::Shl, 0x7a | 0x7b => Shift::Sar, _ => Shift::Shr };
-                a.load(w, R::Rax, self_stk(self.max_locals, x));
-                a.load(false, R::Rcx, self_stk(self.max_locals, d - 1));
+                a.load(w, R::Rax, self_stk(self.stack_base, x));
+                a.load(false, R::Rcx, self_stk(self.stack_base, d - 1));
                 a.shift_cl(w, sh, R::Rax);
                 if !w {
                     a.movsxd(R::Rax, R::Rax);
                 }
-                a.store(true, self_stk(self.max_locals, x), R::Rax);
+                a.store(true, self_stk(self.stack_base, x), R::Rax);
             }
             // float / double + - * /
             0x62 | 0x63 | 0x66 | 0x67 | 0x6a | 0x6b | 0x6e | 0x6f => {
                 let double = op & 1 == 1;
                 let (x, y) = if double { (d - 4, d - 2) } else { (d - 2, d - 1) };
                 let sse = match op { 0x62 | 0x63 => 0x58, 0x66 | 0x67 => 0x5C, 0x6a | 0x6b => 0x59, _ => 0x5E };
-                a.fload(double, X(0), self_stk(self.max_locals, x));
-                a.farith_m(double, sse, X(0), self_stk(self.max_locals, y));
-                a.fstore(double, self_stk(self.max_locals, x), X(0));
+                a.fload(double, X(0), self_stk(self.stack_base, x));
+                a.farith_m(double, sse, X(0), self_stk(self.stack_base, y));
+                a.fstore(double, self_stk(self.stack_base, x), X(0));
             }
             0x72 | 0x73 => {
                 let double = op == 0x73;
                 let (x, y) = if double { (d - 4, d - 2) } else { (d - 2, d - 1) };
-                a.load(true, R::Rdi, self_stk(self.max_locals, x));
-                a.load(true, R::Rsi, self_stk(self.max_locals, y));
+                a.load(true, R::Rdi, self_stk(self.stack_base, x));
+                a.load(true, R::Rsi, self_stk(self.stack_base, y));
                 a.call_abs(if double { runtime::drem as *const () as usize } else { runtime::frem as *const () as usize });
-                a.store(true, self_stk(self.max_locals, x), R::Rax);
+                a.store(true, self_stk(self.stack_base, x), R::Rax);
             }
             0x76 | 0x77 => {
                 let (x, bit) = if op == 0x76 { (d - 1, 1i64 << 31) } else { (d - 2, i64::MIN) };
-                a.load(true, R::Rax, self_stk(self.max_locals, x));
+                a.load(true, R::Rax, self_stk(self.stack_base, x));
                 a.mov_ri(R::Rcx, bit);
                 a.alu_rr(true, Alu::Xor, R::Rax, R::Rcx);
-                a.store(true, self_stk(self.max_locals, x), R::Rax);
+                a.store(true, self_stk(self.stack_base, x), R::Rax);
             }
             _ => return None,
         }
@@ -307,7 +298,7 @@ impl Emitter {
     }
 
     fn convert(&mut self, op: u8, d: i32) {
-        let ml = self.max_locals;
+        let ml = self.stack_base;
         let a = &mut self.a;
         match op {
             0x85 => {} // i2l: an int slot is already sign-extended
@@ -353,7 +344,7 @@ impl Emitter {
     }
 
     fn lcmp(&mut self, d: i32) {
-        let ml = self.max_locals;
+        let ml = self.stack_base;
         let a = &mut self.a;
         a.load(true, R::Rcx, self_stk(ml, d - 4));
         a.alu_rm(true, Alu::Cmp, R::Rcx, self_stk(ml, d - 2));
@@ -370,7 +361,7 @@ impl Emitter {
         let double = op >= 0x97;
         let nan = if op == 0x95 || op == 0x97 { -1 } else { 1 };
         let (x, y) = if double { (d - 4, d - 2) } else { (d - 2, d - 1) };
-        let ml = self.max_locals;
+        let ml = self.stack_base;
         let done = self.a.new_label();
         let a = &mut self.a;
         a.fload(double, X(0), self_stk(ml, x));
@@ -431,7 +422,7 @@ impl Emitter {
             0x34 => a.load_zx(2, R::Rax, mem_idx(R::Rax, R::Rcx, 2, base)),
             _ => a.load_sx(2, R::Rax, mem_idx(R::Rax, R::Rcx, 2, base)),
         }
-        a.store(true, self_stk(self.max_locals, d - 2), R::Rax);
+        a.store(true, self_stk(self.stack_base, d - 2), R::Rax);
     }
 
     fn array_store(&mut self, pc: usize, depth: u16, op: u8) {
@@ -471,8 +462,9 @@ impl Emitter {
 
 }
 
-pub(super) fn self_stk(max_locals: i32, i: i32) -> M {
-    mem(R::R13, 8 * (max_locals + crate::thread::header::SLOTS as i32 + i))
+/// Operand slot `i` of a stack starting at frame slot `base` (for use while `self.a` is borrowed).
+pub(super) fn self_stk(base: i32, i: i32) -> M {
+    mem(R::R13, 8 * (base + i))
 }
 
 pub(super) fn rel(pc: usize, off: i32) -> usize {

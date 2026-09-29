@@ -76,6 +76,13 @@ impl Emitter {
             return self.defer(pc, depth);
         }
         let args = d - m.param_slots() as i32;
+        if op == 0xb8 && self.try_intrinsic(m, args) {
+            return;
+        }
+        let inlined = match self.inlines.get(&pc).copied() {
+            Some(callee) if self.inl.is_none() => self.inline_call(args, callee, op != 0xb8, m.holder),
+            _ => None,
+        };
         let slow = self.slow_path(pc, depth);
         if op == 0xb8 {
             self.init_check(m.holder, slow);
@@ -92,6 +99,9 @@ impl Emitter {
             }
         }
         self.call_rdx(pc, args, m.sig.ret);
+        if let Some(done) = inlined {
+            self.a.bind(done);
+        }
     }
 
     pub(super) fn invokedynamic(&mut self, pc: usize, depth: u16) {

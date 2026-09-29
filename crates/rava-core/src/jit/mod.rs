@@ -15,6 +15,7 @@ mod compile;
 mod emit;
 mod emit_call;
 mod emit_obj;
+mod inline;
 mod runtime;
 pub mod stats;
 

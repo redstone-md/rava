@@ -353,6 +353,16 @@ impl Asm {
     pub fn fsqrt(&mut self, x: X, src: X) {
         self.sse_rr(0xF2, false, 0x51, x.0, src.0);
     }
+    /// `roundsd x, src, mode` (SSE4.1; mode 0 nearest-even, 1 floor, 2 ceil).
+    pub fn round_sd(&mut self, x: X, src: X, mode: u8) {
+        self.b(0x66);
+        self.rex(false, x.0, 0, src.0, false);
+        self.b(0x0F);
+        self.b(0x3A);
+        self.b(0x0B);
+        self.b(0xC0 | lo(x.0) << 3 | lo(src.0));
+        self.b(mode);
+    }
     /// `ucomisd/ucomiss a, b`.
     pub fn fcmp(&mut self, double: bool, a: X, b: X) {
         self.sse_rr(if double { 0x66 } else { 0 }, false, 0x2E, a.0, b.0);
@@ -407,5 +417,7 @@ mod tests {
         assert_eq!(hex(|a| a.idiv(false, R::Rcx)), "99 f7 f9");
         assert_eq!(hex(|a| a.cvtt_f2i(true, true, R::Rax, X(1))), "f2 48 0f 2c c1");
         assert_eq!(hex(|a| a.call_m(mem(R::Rdx, 16))), "ff 52 10");
+        assert_eq!(hex(|a| a.round_sd(X(0), X(1), 1)), "66 0f 3a 0b c1 01");
+        assert_eq!(hex(|a| a.round_sd(X(9), X(2), 2)), "66 44 0f 3a 0b ca 02");
     }
 }
