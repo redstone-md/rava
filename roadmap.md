@@ -1190,3 +1190,24 @@ a shared-array refusal, and an exact static-call query. On `Blocks.<clinit>`, th
 freshness walk records two facts then stops at `putstatic@5`. Every following
 instruction is Unknown in that report; the direct scanner remains the complete
 inventory. Neither report makes an admission or parallel-safety claim.
+
+The offline graph walk follows exact static calls and constructor calls only;
+other `invokespecial` calls remain unresolved because JVM special selection can
+depend on the caller hierarchy. For LambdaMetafactory it follows static
+implementation handles (reference kind 6) and constructor handles (kind 8);
+virtual/special lambda handles, virtual/interface calls, missing classes or
+method bodies, and reference-typed concat conversions remain unresolved. No call
+is executed and no initializer order is changed. On this jar, the `Blocks`
+reachable graph contains 993 method keys (including unresolved leaves), 3,440
+exact-call edges, 1,074 exact lambda-implementation edges, zero unresolved
+non-constructor special calls, 5,006 open virtual/interface edges, eight
+non-exact lambda dispatches, and 12 concat sites (11 with unresolved reference
+conversions). There were zero unclassified bootstrap sites, 32 missing classes,
+and one missing method/body. The open-dispatch and missing-class boundary keeps
+the transitive effect graph incomplete; **proven safe work remains zero**. The
+test-only walker does not alter product code or admission.
+
+For accounting, **zero methods and zero measured CPU-seconds are credited as
+proven-safe work**: this is the fail-closed bound because the reachable graph
+still contains unresolved side effects and dispatch, not evidence that no safe
+subgraph exists.

@@ -33,10 +33,17 @@ pub(super) struct FieldEffect {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct CallEdge {
+    pub pc: usize,
+    pub cp_index: Option<u16>,
     pub dispatch: Dispatch,
     pub owner: String,
     pub name: String,
     pub descriptor: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct DynamicSite {
+    pub cp_index: u16,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -151,6 +158,8 @@ pub(super) fn observe_call(
     observer(EffectFact::Call {
         pc,
         edge: Some(CallEdge {
+            pc,
+            cp_index: None,
             dispatch,
             owner: member.owner.to_owned(),
             name: member.name.to_owned(),
@@ -194,6 +203,7 @@ pub(super) fn observe_dynamic(
 pub(super) struct DirectEffects {
     pub fields: Vec<FieldEffect>,
     pub calls: Vec<CallEdge>,
+    pub dynamic_sites: Vec<DynamicSite>,
     pub array_stores: usize,
     pub monitor_ops: usize,
     pub dynamic_calls: usize,
@@ -256,9 +266,14 @@ pub(super) fn collect(code: &Code, pool: &ConstantPool) -> DirectEffects {
                 });
             }
             0xb6..=0xb9 => {
-                let Some(member) = cp_index().and_then(|index| pool.member_ref(index)) else {
+                let Some(cp_index) = cp_index() else {
                     result.unknown_sites.push(format!("unresolved-call@{pc}"));
-                    pc += length;
+                    pc = next_pc;
+                    continue;
+                };
+                let Some(member) = pool.member_ref(cp_index) else {
+                    result.unknown_sites.push(format!("unresolved-call@{pc}"));
+                    pc = next_pc;
                     continue;
                 };
                 let dispatch = match opcode {
@@ -268,6 +283,8 @@ pub(super) fn collect(code: &Code, pool: &ConstantPool) -> DirectEffects {
                     _ => Dispatch::Interface,
                 };
                 result.calls.push(CallEdge {
+                    pc,
+                    cp_index: Some(cp_index),
                     dispatch,
                     owner: member.owner.to_owned(),
                     name: member.name.to_owned(),
@@ -276,6 +293,9 @@ pub(super) fn collect(code: &Code, pool: &ConstantPool) -> DirectEffects {
             }
             0xba => {
                 result.dynamic_calls += 1;
+                if let Some(cp_index) = cp_index() {
+                    result.dynamic_sites.push(DynamicSite { cp_index });
+                }
                 result.unknown_sites.push(format!("invokedynamic@{pc}"));
             }
             0x4f..=0x56 => result.array_stores += 1,
