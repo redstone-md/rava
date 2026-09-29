@@ -10,7 +10,7 @@ pub(crate) mod indy;
 pub(crate) mod ops;
 pub(crate) mod support;
 
-pub(crate) use ops::exec_single;
+pub(crate) use ops::{exec_single, resume};
 pub(crate) use support::{find_handler, read_field, special_target, write_field, Frame};
 
 use crate::method::Method;
