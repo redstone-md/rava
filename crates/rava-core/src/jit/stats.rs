@@ -9,6 +9,8 @@ pub struct Stats {
     pub interpreted_calls: AtomicU64,
     pub compiled_methods: AtomicU64,
     pub tier2_methods: AtomicU64,
+    pub opt_methods: AtomicU64,
+    pub deopts: AtomicU64,
 }
 
 pub fn get() -> Option<&'static Stats> {
@@ -20,6 +22,8 @@ pub fn get() -> Option<&'static Stats> {
                 interpreted_calls: AtomicU64::new(0),
                 compiled_methods: AtomicU64::new(0),
                 tier2_methods: AtomicU64::new(0),
+                opt_methods: AtomicU64::new(0),
+                deopts: AtomicU64::new(0),
             }))
         })
     })
@@ -35,9 +39,11 @@ impl Stats {
             self.deferred.iter().enumerate().map(|(op, c)| (c.load(Ordering::Relaxed), op)).filter(|r| r.0 > 0).collect();
         rows.sort_unstable_by(|a, b| b.cmp(a));
         eprintln!(
-            "[jit-stats] compiled methods {} ({} at tier 2), interpreted invocations {}",
+            "[jit-stats] compiled methods {} ({} at tier 2, {} optimized, {} deopts), interpreted invocations {}",
             self.compiled_methods.load(Ordering::Relaxed),
             self.tier2_methods.load(Ordering::Relaxed),
+            self.opt_methods.load(Ordering::Relaxed),
+            self.deopts.load(Ordering::Relaxed),
             self.interpreted_calls.load(Ordering::Relaxed)
         );
         for (n, op) in rows.iter().take(16) {

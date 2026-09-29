@@ -147,6 +147,15 @@ pub extern "sysv64" fn select_linked(k: *const Klass, m: *const Method) -> *cons
     select(k, m)
 }
 
+/// An interface call whose receiver class has no implementation: AbstractMethodError, as the
+/// interpreter raises it.
+pub extern "sysv64" fn no_target(t: *mut Thread, m: *const Method) {
+    // SAFETY: the current thread and a live method.
+    let (t, m) = unsafe { (&mut *t, &*m) };
+    let e = crate::runtime::throw_new(t, "java/lang/AbstractMethodError", &m.to_string());
+    t.pending = e.0;
+}
+
 /// Raises StackOverflowError for a frame that did not fit.
 pub extern "sysv64" fn stack_overflow(t: *mut Thread) {
     // SAFETY: the current thread.
