@@ -195,3 +195,9 @@ pub extern "sysv64" fn new_array(t: *mut Thread, k: *const Klass, length: u64) -
         }
     }
 }
+
+/// Safepoint poll slow path: stops for a collection in progress.
+pub extern "sysv64" fn safepoint(t: *mut Thread) {
+    // SAFETY: the current thread.
+    crate::gc::safepoint::poll(unsafe { &*t });
+}

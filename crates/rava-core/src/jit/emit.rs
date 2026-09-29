@@ -65,8 +65,13 @@ impl Emitter {
                 self.a.alu_rm(true, Alu::Cmp, R::Rax, self.stk(d - 1));
                 self.branch(pc, if op == 0xa5 { Cond::E } else { Cond::Ne });
             }
-            0xa7 => self.a.jmp(self.label(rel(pc, i2(self.code, pc + 1) as i32))),
-            0xc8 => self.a.jmp(self.label(rel(pc, i4(self.code, pc + 1)))),
+            0xa7 | 0xc8 => {
+                let off = if op == 0xa7 { i2(self.code, pc + 1) as i32 } else { i4(self.code, pc + 1) };
+                if off <= 0 {
+                    self.poll();
+                }
+                self.a.jmp(self.label(rel(pc, off)));
+            }
             0xaa | 0xab => self.switch(pc, d, op),
             0xac | 0xae | 0xb0 => {
                 self.a.load(true, R::Rax, self.stk(d - 1));
@@ -120,7 +125,16 @@ impl Emitter {
 
     fn branch(&mut self, pc: usize, c: Cond) {
         let target = rel(pc, i2(self.code, pc + 1) as i32);
-        self.a.jcc(c, self.label(target));
+        if target <= pc {
+            // Poll only when the backward branch is taken.
+            let skip = self.a.new_label();
+            self.a.jcc(invert(c), skip);
+            self.poll();
+            self.a.jmp(self.label(target));
+            self.a.bind(skip);
+        } else {
+            self.a.jcc(c, self.label(target));
+        }
     }
 
     fn iinc(&mut self, n: usize, delta: i32) {
@@ -463,6 +477,12 @@ pub(super) fn self_stk(max_locals: i32, i: i32) -> M {
 
 pub(super) fn rel(pc: usize, off: i32) -> usize {
     (pc as i64 + off as i64) as usize
+}
+
+fn invert(c: Cond) -> Cond {
+    // Condition codes pair up: flipping the low bit negates the condition.
+    // SAFETY: every value 0..16 is a `Cond`.
+    unsafe { std::mem::transmute::<u8, Cond>(c as u8 ^ 1) }
 }
 
 fn int_cond(c: u8) -> Cond {

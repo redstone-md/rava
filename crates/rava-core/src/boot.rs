@@ -68,13 +68,13 @@ fn create_initial_thread(t: &mut Thread, group: Oop) -> JResult<()> {
     rt::initialize(t, thread_class)?;
     let jt = rt::alloc_instance(t, thread_class)?;
     t.java_thread = jt;
-    jthread::mark_started(jt);
+    jthread::mark_started(t, jt);
     let name = rt::new_string(t, "main")?;
     t.call(
         method(thread_class, "<init>", "(Ljava/lang/ThreadGroup;Ljava/lang/String;)V"),
         &[jt as u64, group as u64, name as u64],
     )?;
-    jthread::mark_started(jt);
+    jthread::mark_started(t, jt);
     Ok(())
 }
 

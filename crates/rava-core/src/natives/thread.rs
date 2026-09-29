@@ -38,8 +38,8 @@ pub(super) fn register(r: &mut NativeRegistry) {
         std::thread::yield_now();
         ret_void()
     });
-    r.add(T, "sleep0", "(J)V", |_, a| {
-        std::thread::sleep(std::time::Duration::from_nanos(a[0].min(i64::MAX as u64)));
+    r.add(T, "sleep0", "(J)V", |t, a| {
+        crate::gc::safepoint::blocking(t, || std::thread::sleep(std::time::Duration::from_nanos(a[0].min(i64::MAX as u64))));
         ret_void()
     });
     r.add(T, "holdsLock", "(Ljava/lang/Object;)Z", |t, a| {
@@ -53,7 +53,7 @@ pub(super) fn register(r: &mut NativeRegistry) {
         ret_long(&NEXT_TID as *const AtomicI64 as i64)
     });
     r.add(T, "start0", "()V", start0);
-    r.add("java/lang/Object", "wait0", "(J)V", |t, a| match sync::wait(a[0] as Oop, a[1] as i64) {
+    r.add("java/lang/Object", "wait0", "(J)V", |t, a| match sync::wait(t, a[0] as Oop, a[1] as i64) {
         Ok(()) => ret_void(),
         Err(_) => Err(throw_new(t, "java/lang/IllegalMonitorStateException", "current thread is not owner")),
     });
@@ -68,11 +68,13 @@ fn notify(t: &mut Thread, o: Oop, all: bool) -> JResult<u64> {
     }
 }
 
-/// Marks `jt` as alive and running (eetop non-zero, status RUNNABLE).
-pub(crate) fn mark_started(jt: Oop) {
+/// Marks `jt` as alive and running: `eetop` holds the thread's collector record (used by
+/// `unpark`), status RUNNABLE.
+pub(crate) fn mark_started(t: &Thread, jt: Oop) {
+    let eetop = t.gc_record.map_or(sync::thread_token() as i64, |r| r as *const _ as i64);
     // SAFETY: live java.lang.Thread whose holder exists after construction.
     unsafe {
-        obj::write::<i64>(jt, eetop_offset(), sync::thread_token() as i64);
+        obj::write::<i64>(jt, eetop_offset(), eetop);
         let holder = obj::read::<Oop>(jt, holder_offset());
         if !holder.is_null() {
             obj::write::<i32>(holder, status_offset(), STATUS_RUNNABLE);
@@ -107,7 +109,8 @@ fn start0(t: &mut Thread, a: &[u64]) -> JResult<u64> {
 fn run_thread(jt: Oop) {
     let mut t = Thread::new();
     t.java_thread = jt;
-    mark_started(jt);
+    t.attach();
+    mark_started(&t, jt);
     // SAFETY: live receiver.
     let k = unsafe { obj::klass(jt) };
     let thread_class = crate::loader::load("java/lang/Thread").expect("Thread");
@@ -123,8 +126,19 @@ fn run_thread(jt: Oop) {
     if let Some(exit) = thread_class.declared_method(Symbol::intern("exit"), Symbol::intern("()V")) {
         let _ = t.call(exit, &[jt as u64]);
     }
-    sync::enter(jt);
+    sync::enter(&t, jt);
     mark_terminated(jt);
     let _ = sync::notify(jt, true);
     sync::exit(jt);
+    t.detach();
+}
+
+/// The collector record of a started, attached thread (from `eetop`).
+pub(crate) fn record_of(jt: Oop) -> Option<&'static crate::gc::safepoint::Record> {
+    if jt.is_null() {
+        return None;
+    }
+    // SAFETY: live java.lang.Thread; eetop is 0, -1 (starting) or a leaked record address.
+    let eetop = unsafe { obj::read::<i64>(jt, eetop_offset()) };
+    crate::gc::safepoint::all_threads().into_iter().find(|r| *r as *const _ as i64 == eetop)
 }

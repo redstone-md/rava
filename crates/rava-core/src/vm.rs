@@ -1,6 +1,7 @@
 //! The process-wide VM: class image, heap, loaded classes, interned strings, natives.
 
-use crate::heap::{Heap, Oop};
+use crate::gc::Heap;
+use crate::heap::Oop;
 use crate::jimage::JImage;
 use crate::klass::Klass;
 use crate::natives::NativeRegistry;
@@ -49,6 +50,8 @@ pub struct Vm {
     /// Defined classes, keyed by (defining loader address, name). The boot loader is 0.
     pub(crate) classes: RwLock<HashMap<(usize, Symbol), &'static Klass>>,
     pub(crate) strings: Mutex<HashMap<Box<[u16]>, usize>>,
+    /// Every class ever defined, hidden and array classes included (collector roots).
+    pub(crate) all_classes: Mutex<Vec<&'static Klass>>,
     pub natives: NativeRegistry,
     pub wk: WellKnown,
 }
@@ -79,6 +82,7 @@ impl Vm {
             heap,
             classes: RwLock::new(HashMap::new()),
             strings: Mutex::new(HashMap::new()),
+            all_classes: Mutex::new(Vec::new()),
             natives: NativeRegistry::with_builtins(),
             wk: WellKnown::default(),
         });
@@ -92,6 +96,36 @@ impl Vm {
     /// Publishes a newly defined class; if another thread won the race, returns its class.
     pub(crate) fn publish(&self, loader: Oop, k: &'static Klass) -> &'static Klass {
         *self.classes.write().unwrap().entry((loader as usize, k.name)).or_insert(k)
+    }
+
+    /// Enumerates the VM's roots: `precise` receives references, `conservative` words that may
+    /// or may not point into objects (untyped static slots).
+    pub(crate) fn for_each_root(&self, precise: &mut dyn FnMut(Oop), conservative: &mut dyn FnMut(usize)) {
+        for &k in self.all_classes.lock().unwrap().iter() {
+            precise(k.mirror());
+            precise(k.loader());
+            for slot in k.statics.iter() {
+                conservative(slot.load(std::sync::atomic::Ordering::Relaxed) as usize);
+            }
+            for r in k.resolved.iter() {
+                match r.get() {
+                    Some(crate::link::Resolved::String(o)) | Some(crate::link::Resolved::Constant(o)) => precise(*o as Oop),
+                    _ => {}
+                }
+            }
+        }
+        for &s in self.strings.lock().unwrap().values() {
+            precise(s as Oop);
+        }
+        for m in crate::runtime::primitive_mirrors() {
+            precise(m);
+        }
+        crate::interp::indy::for_each_root(precise);
+        crate::natives::module_roots(precise);
+    }
+
+    pub(crate) fn record_class(&self, k: &'static Klass) {
+        self.all_classes.lock().unwrap().push(k);
     }
 
     pub fn loaded_class_count(&self) -> usize {

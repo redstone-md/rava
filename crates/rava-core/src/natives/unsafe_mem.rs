@@ -133,12 +133,42 @@ pub(super) fn register(r: &mut NativeRegistry) {
         ret_void()
     });
     r.add(U, "getLoadAverage0", "([DI)I", |_, _| ret_int(-1));
-    r.add(U, "unpark", "(Ljava/lang/Object;)V", |_, _| ret_void());
-    r.add("java/util/concurrent/atomic/AtomicLong", "VMSupportsCS8", "()Z", |_, _| ret_bool(true));
-    r.add(U, "park", "(ZJ)V", |_, a| {
-        if a[2] > 0 && a[1] == 0 {
-            std::thread::sleep(std::time::Duration::from_nanos(a[2]));
+    r.add(U, "unpark", "(Ljava/lang/Object;)V", |_, a| {
+        if let Some(rec) = super::thread::record_of(a[1] as Oop) {
+            *rec.permit.lock().unwrap() = true;
+            rec.unparked.notify_one();
         }
+        ret_void()
+    });
+    r.add("java/util/concurrent/atomic/AtomicLong", "VMSupportsCS8", "()Z", |_, _| ret_bool(true));
+    r.add(U, "park", "(ZJ)V", |t, a| {
+        let (absolute, time) = (a[1] != 0, a[2] as i64);
+        let Some(rec) = t.gc_record else { return ret_void() };
+        let deadline = match (absolute, time) {
+            (false, 0) => None,
+            (false, n) if n > 0 => Some(std::time::Instant::now() + std::time::Duration::from_nanos(n as u64)),
+            (true, ms) => {
+                let now_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as i64);
+                Some(std::time::Instant::now() + std::time::Duration::from_millis((ms - now_ms).max(0) as u64))
+            }
+            _ => return ret_void(),
+        };
+        crate::gc::safepoint::blocking(t, || {
+            let mut permit = rec.permit.lock().unwrap();
+            while !*permit {
+                match deadline {
+                    None => permit = rec.unparked.wait(permit).unwrap(),
+                    Some(d) => {
+                        let now = std::time::Instant::now();
+                        if now >= d {
+                            break;
+                        }
+                        permit = rec.unparked.wait_timeout(permit, d - now).unwrap().0;
+                    }
+                }
+            }
+            *permit = false;
+        });
         ret_void()
     });
 }

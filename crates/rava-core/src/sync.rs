@@ -5,6 +5,7 @@
 //! variables. (Thin locks in the mark word are a later optimisation behind this interface.)
 
 use crate::heap::Oop;
+use crate::thread::Thread;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
@@ -50,12 +51,18 @@ pub fn thread_token() -> u64 {
     ID.with(|id| *id)
 }
 
-pub fn enter(o: Oop) {
+pub fn enter(t: &Thread, o: Oop) {
     let me = thread_token();
     let m = monitor_of(o);
     let mut s = m.state.lock().unwrap();
-    while s.owner != 0 && s.owner != me {
-        s = m.entry.wait(s).unwrap();
+    if s.owner != 0 && s.owner != me {
+        // Blocked on another owner: let a collection proceed meanwhile.
+        s = crate::gc::safepoint::blocking(t, || {
+            while s.owner != 0 && s.owner != me {
+                s = m.entry.wait(s).unwrap();
+            }
+            s
+        });
     }
     s.owner = me;
     s.count += 1;
@@ -85,8 +92,12 @@ pub enum WaitError {
     NotOwner,
 }
 
-/// `Object.wait(millis)`; 0 waits until notified.
-pub fn wait(o: Oop, millis: i64) -> Result<(), WaitError> {
+/// `Object.wait(millis)`; 0 waits until notified. The thread is blocked outside Java meanwhile.
+pub fn wait(t: &Thread, o: Oop, millis: i64) -> Result<(), WaitError> {
+    crate::gc::safepoint::blocking(t, || wait_blocking(o, millis))
+}
+
+fn wait_blocking(o: Oop, millis: i64) -> Result<(), WaitError> {
     let me = thread_token();
     let m = monitor_of(o);
     let mut s = m.state.lock().unwrap();
@@ -146,14 +157,15 @@ mod tests {
 
     #[test]
     fn reentrant_enter_exit_and_ownership() {
+        let t = Thread::new();
         let o = 0x1000usize as Oop;
-        enter(o);
-        enter(o);
+        enter(&t, o);
+        enter(&t, o);
         assert!(holds_lock(o));
         assert!(exit(o));
         assert!(exit(o));
         assert!(!exit(o));
-        assert_eq!(wait(o, 1), Err(WaitError::NotOwner));
+        assert_eq!(wait(&t, o, 1), Err(WaitError::NotOwner));
     }
 
     #[test]
@@ -161,13 +173,15 @@ mod tests {
         let o = 0x2000usize as Oop;
         let addr = o as usize;
         let waiter = std::thread::spawn(move || {
+            let t = Thread::new();
             let o = addr as Oop;
-            enter(o);
-            wait(o, 0).unwrap();
+            enter(&t, o);
+            wait(&t, o, 0).unwrap();
             exit(o);
         });
+        let t = Thread::new();
         loop {
-            enter(o);
+            enter(&t, o);
             let waiting = monitor_of(o).state.lock().unwrap().waiters;
             if waiting == 1 {
                 notify(o, false).unwrap();

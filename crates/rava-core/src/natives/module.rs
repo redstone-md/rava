@@ -116,6 +116,14 @@ fn patch_existing_mirrors(_t: &mut Thread) {
     }
 }
 
+/// Modules recorded by the registry (collector roots).
+pub(crate) fn roots(f: &mut dyn FnMut(Oop)) {
+    let reg = registry().lock().unwrap();
+    reg.packages.values().for_each(|&m| f(m as Oop));
+    f(reg.boot_unnamed as Oop);
+    f(reg.java_base as Oop);
+}
+
 /// Primitive mirrors belong to java.base (patched once it is defined).
 pub(crate) fn set_primitive_mirror_module(mirror: Oop) {
     let base = registry().lock().unwrap().java_base as Oop;

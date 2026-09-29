@@ -83,20 +83,25 @@ fn member_attr(attrs: &[Attr], name: &str) -> Option<Attr> {
     attrs.iter().copied().find(|a| a.name == name)
 }
 
-/// A `Class[]` of the given classes.
-pub(crate) fn class_array(t: &mut Thread, classes: &[&'static Klass]) -> JResult<Oop> {
-    let mut mirrors = Vec::with_capacity(classes.len());
-    for &k in classes {
-        mirrors.push(rt::mirror_of(t, k)?);
-    }
-    mirror_array(t, &mirrors)
+/// A fresh `elem[]` of `len` nulls. Build Java arrays first and fill them in place: a Rust
+/// `Vec` of references is not a collector root, but the array (held in a local) is.
+fn new_object_array(t: &mut Thread, elem: &'static Klass, len: usize) -> JResult<Oop> {
+    let array_class = vm().array_class_of(elem).map_err(|e| rt::link_error(t, e.into()))?;
+    rt::alloc_array(t, array_class, len as i32)
 }
 
-fn mirror_array(t: &mut Thread, mirrors: &[Oop]) -> JResult<Oop> {
-    let class_class = crate::loader::load(C).expect("Class");
-    let arr = rt::alloc_array(t, vm().array_class_of(class_class).expect("Class[]"), mirrors.len() as i32)?;
-    // SAFETY: fresh Class[] of the same length.
-    unsafe { obj::array_slice::<Oop>(arr).copy_from_slice(mirrors) };
+fn store(array: Oop, i: usize, value: Oop) {
+    // SAFETY: `array` is a reference array with more than `i` elements.
+    unsafe { *obj::array_data::<Oop>(array).add(i) = value };
+}
+
+/// A `Class[]` of the given classes.
+pub(crate) fn class_array(t: &mut Thread, classes: &[&'static Klass]) -> JResult<Oop> {
+    let arr = new_object_array(t, crate::loader::load(C).expect("Class"), classes.len())?;
+    for (i, &k) in classes.iter().enumerate() {
+        let m = rt::mirror_of(t, k)?;
+        store(arr, i, m);
+    }
     Ok(arr)
 }
 
@@ -104,31 +109,32 @@ fn mirror_array(t: &mut Thread, mirrors: &[Oop]) -> JResult<Oop> {
 pub(crate) fn signature_mirrors(t: &mut Thread, m: &'static Method) -> JResult<(Oop, Oop)> {
     let d = m.desc.as_str();
     let b = d.as_bytes();
-    let mut params = Vec::new();
-    let mut i = 1;
+    let params = new_object_array(t, crate::loader::load(C).expect("Class"), m.sig.params.len())?;
+    let (mut i, mut n) = (1, 0);
     while b[i] != b')' {
         let end = skip_field_desc(b, i);
-        params.push(rt::mirror_for_desc(t, m.holder, &d[i..end])?);
-        i = end;
+        let p = rt::mirror_for_desc(t, m.holder, &d[i..end])?;
+        store(params, n, p);
+        (i, n) = (end, n + 1);
     }
     let ret = rt::mirror_for_desc(t, m.holder, &d[i + 1..])?;
-    Ok((mirror_array(t, &params)?, ret))
+    Ok((params, ret))
 }
 
 fn exception_mirrors(t: &mut Thread, m: &'static Method) -> JResult<Oop> {
     let cf = m.holder.cf.as_ref().unwrap();
     let info = &cf.methods[m.index()];
-    let mut ex = Vec::new();
-    if let Some(at) = member_attr(&info.attrs, "Exceptions") {
+    let indices: Vec<u16> = member_attr(&info.attrs, "Exceptions").map_or(Vec::new(), |at| {
         let b = cf.attr_bytes(at);
-        let n = u16::from_be_bytes([b[0], b[1]]) as usize;
-        for i in 0..n {
-            let idx = u16::from_be_bytes([b[2 + 2 * i], b[3 + 2 * i]]);
-            let k = m.holder.resolve_class(t, idx).map_err(|e| rt::link_error(t, e))?;
-            ex.push(rt::mirror_of(t, k)?);
-        }
+        (0..u16::from_be_bytes([b[0], b[1]]) as usize).map(|i| u16::from_be_bytes([b[2 + 2 * i], b[3 + 2 * i]])).collect()
+    });
+    let arr = new_object_array(t, crate::loader::load(C).expect("Class"), indices.len())?;
+    for (i, idx) in indices.into_iter().enumerate() {
+        let k = m.holder.resolve_class(t, idx).map_err(|e| rt::link_error(t, e))?;
+        let mirror = rt::mirror_of(t, k)?;
+        store(arr, i, mirror);
     }
-    mirror_array(t, &ex)
+    Ok(arr)
 }
 
 fn optional_string(t: &mut Thread, s: Option<&'static str>) -> JResult<Oop> {
@@ -142,16 +148,16 @@ fn optional_bytes(t: &mut Thread, k: &'static Klass, at: Option<Attr>) -> JResul
 fn declared_fields(t: &mut Thread, a: &[u64]) -> JResult<u64> {
     let field_class = crate::loader::load("java/lang/reflect/Field").expect("Field");
     rt::initialize(t, field_class)?;
-    let Some(k) = klass(a[0]) else { return ret_ref(object_array(t, field_class, &[])?) };
+    let Some(k) = klass(a[0]) else { return ret_ref(new_object_array(t, field_class, 0)?) };
     let public_only = a[1] != 0;
     let cf = k.cf.as_ref();
-    let mut out = Vec::new();
-    for (slot, f) in k.fields.iter().enumerate() {
-        // Injected VM fields sit past the class file's own fields and stay invisible.
-        let Some(info) = cf.and_then(|cf| cf.fields.get(slot)) else { continue };
-        if public_only && f.access & 1 == 0 {
-            continue;
-        }
+    // Injected VM fields sit past the class file's own fields and stay invisible.
+    let slots: Vec<usize> = (0..cf.map_or(0, |cf| cf.fields.len()))
+        .filter(|&i| !public_only || k.fields[i].access & 1 != 0)
+        .collect();
+    let out = new_object_array(t, field_class, slots.len())?;
+    for (n, slot) in slots.into_iter().enumerate() {
+        let (f, info) = (&k.fields[slot], &cf.unwrap().fields[slot]);
         let name = rt::intern_str(t, f.name.as_str())?;
         let ty = rt::mirror_for_desc(t, k, f.desc.as_str())?;
         let sig = optional_string(t, member_attr(&info.attrs, "Signature").and_then(|at| attr_utf8(k, at)))?;
@@ -163,24 +169,28 @@ fn declared_fields(t: &mut Thread, a: &[u64]) -> JResult<u64> {
             "(Ljava/lang/Class;Ljava/lang/String;Ljava/lang/Class;IZILjava/lang/String;[B)V",
             &[a[0], name as u64, ty as u64, (f.access & 0x50df) as u64, trusted_final as u64, slot as u64, sig as u64, ann as u64],
         )?;
-        out.push(field);
+        store(out, n, field);
     }
-    ret_ref(object_array(t, field_class, &out)?)
+    ret_ref(out)
 }
 
 fn declared_executables(t: &mut Thread, a: &[u64], constructors: bool) -> JResult<u64> {
     let class_name = if constructors { "java/lang/reflect/Constructor" } else { "java/lang/reflect/Method" };
     let exec_class = crate::loader::load(class_name).expect("reflect class");
     rt::initialize(t, exec_class)?;
-    let Some(k) = klass(a[0]).filter(|k| !k.is_array()) else { return ret_ref(object_array(t, exec_class, &[])?) };
+    let Some(k) = klass(a[0]).filter(|k| !k.is_array()) else { return ret_ref(new_object_array(t, exec_class, 0)?) };
     let public_only = a[1] != 0;
     let cf = k.cf.as_ref().unwrap();
-    let mut out = Vec::new();
-    for (slot, m) in k.methods().iter().enumerate() {
-        let is_ctor = m.name == "<init>";
-        if is_ctor != constructors || m.name == "<clinit>" || public_only && m.access & 1 == 0 {
-            continue;
-        }
+    let slots: Vec<usize> = k
+        .methods()
+        .iter()
+        .enumerate()
+        .filter(|(_, m)| (m.name == "<init>") == constructors && m.name != "<clinit>" && (!public_only || m.access & 1 != 0))
+        .map(|(i, _)| i)
+        .collect();
+    let out = new_object_array(t, exec_class, slots.len())?;
+    for (n, slot) in slots.into_iter().enumerate() {
+        let m = &k.methods()[slot];
         let info = &cf.methods[slot];
         let (params, ret) = signature_mirrors(t, m)?;
         let exceptions = exception_mirrors(t, m)?;
@@ -205,17 +215,9 @@ fn declared_executables(t: &mut Thread, a: &[u64], constructors: bool) -> JResul
                 &[a[0], name as u64, params as u64, ret as u64, exceptions as u64, mods, slot as u64, sig as u64, ann as u64, pann as u64, dflt as u64],
             )?
         };
-        out.push(o);
+        store(out, n, o);
     }
-    ret_ref(object_array(t, exec_class, &out)?)
-}
-
-fn object_array(t: &mut Thread, elem: &'static Klass, items: &[Oop]) -> JResult<Oop> {
-    let array_class = vm().array_class_of(elem).map_err(|e| rt::link_error(t, e.into()))?;
-    let arr = rt::alloc_array(t, array_class, items.len() as i32)?;
-    // SAFETY: fresh array of the same length.
-    unsafe { obj::array_slice::<Oop>(arr).copy_from_slice(items) };
-    Ok(arr)
+    ret_ref(out)
 }
 
 enum InnerQuery {
@@ -255,12 +257,15 @@ fn enclosing_method(t: &mut Thread, a: &[u64]) -> JResult<u64> {
     let b = cf.attr_bytes(at);
     let (class_idx, nat) = (u16::from_be_bytes([b[0], b[1]]), u16::from_be_bytes([b[2], b[3]]));
     let outer = k.resolve_class(t, class_idx).map_err(|e| rt::link_error(t, e))?;
-    let mut items = vec![rt::mirror_of(t, outer)?, std::ptr::null_mut(), std::ptr::null_mut()];
+    let items = new_object_array(t, crate::loader::load("java/lang/Object").expect("Object"), 3)?;
+    let outer_mirror = rt::mirror_of(t, outer)?;
+    store(items, 0, outer_mirror);
     if let Some((name, desc)) = cf.name_and_type(nat) {
-        items[1] = rt::new_string(t, name.as_str())?;
-        items[2] = rt::new_string(t, desc.as_str())?;
+        let n = rt::new_string(t, name.as_str())?;
+        store(items, 1, n);
+        let d = rt::new_string(t, desc.as_str())?;
+        store(items, 2, d);
     }
-    let object = crate::loader::load("java/lang/Object").expect("Object");
-    ret_ref(object_array(t, object, &items)?)
+    ret_ref(items)
 }
 

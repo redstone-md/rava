@@ -55,6 +55,12 @@ pub struct Thread {
     pub(crate) scoped_value_cache: Oop,
     /// Interpreter call depth, bounded to turn runaway recursion into StackOverflowError.
     pub(crate) depth: u32,
+    /// Allocation caches of this thread (reset by each collection).
+    pub(crate) alloc: crate::gc::AllocCache,
+    /// Registration with the collector's safepoint protocol (after `attach`).
+    pub(crate) gc_record: Option<&'static crate::gc::safepoint::Record>,
+    /// References natives keep outside the stacks (collector roots), e.g. while building arrays.
+    pub(crate) handles: Vec<Oop>,
 }
 
 impl Thread {
@@ -72,7 +78,19 @@ impl Thread {
             java_thread: std::ptr::null_mut(),
             scoped_value_cache: std::ptr::null_mut(),
             depth: 0,
+            alloc: Default::default(),
+            gc_record: None,
+            handles: Vec::new(),
         }
+    }
+
+    /// Registers this thread (at its final address) with the collector.
+    pub fn attach(&mut self) {
+        crate::gc::safepoint::attach(self);
+    }
+
+    pub fn detach(&mut self) {
+        crate::gc::safepoint::detach(self);
     }
 
     pub(crate) fn stack_limit(&self) -> *mut u64 {

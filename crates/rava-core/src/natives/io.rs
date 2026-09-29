@@ -65,8 +65,10 @@ pub(super) fn register(r: &mut NativeRegistry) {
         if buf.is_empty() {
             return ret_int(0);
         }
-        // SAFETY: `buf` is a live byte range of the Java array.
-        let n = unsafe { libc::read(fd, buf.as_ptr() as *mut libc::c_void, buf.len()) };
+        // Reads block (e.g. on a console): the thread is outside Java meanwhile. The array is
+        // held by the calling frame, so the buffer stays valid.
+        let (ptr, len) = (buf.as_ptr() as usize, buf.len());
+        let n = crate::gc::safepoint::blocking(t, || unsafe { libc::read(fd, ptr as *mut libc::c_void, len) });
         match n {
             0 => ret_int(-1),
             n if n < 0 => Err(io_error(t, "Read error")),

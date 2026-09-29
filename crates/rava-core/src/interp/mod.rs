@@ -27,6 +27,7 @@ const NATIVE_BCI: u64 = (-1i64 << 1) as u64;
 
 /// Invokes `m` whose parameter slots start at `locals`, in compiled code when available.
 pub fn invoke(t: &mut Thread, m: &'static Method, locals: *mut u64) -> JResult<u64> {
+    crate::gc::safepoint::poll(t);
     if let Some(cm) = crate::jit::on_invoke(m) {
         return crate::jit::call(t, m, cm, locals);
     }
@@ -70,7 +71,7 @@ fn sync_target(t: &mut Thread, m: &'static Method, locals: *mut u64) -> JResult<
         // SAFETY: slot 0 holds the receiver.
         unsafe { *locals as crate::heap::Oop }
     };
-    crate::sync::enter(o);
+    crate::sync::enter(t, o);
     Ok(o)
 }
 

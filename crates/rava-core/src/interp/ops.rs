@@ -11,6 +11,7 @@ use crate::thread::{JResult, Thread};
 macro_rules! backedge {
     ($t:ident, $f:ident) => {
         if $f.pc < $f.op_pc {
+            crate::gc::safepoint::poll($t);
             if let Some(ret) = s::on_backedge($t, $f)? {
                 return Ok(Some(ret));
             }
@@ -220,7 +221,7 @@ fn exec_one(t: &mut Thread, f: &mut Frame) -> JResult<Option<u64>> {
             0xc2 => {
                 let o = f.pop_ref();
                 if o.is_null() { return Err(crate::runtime::null_pointer(t)) }
-                crate::sync::enter(o); f.pc += 1
+                crate::sync::enter(t, o); f.pc += 1
             }
             0xc3 => {
                 let o = f.pop_ref();

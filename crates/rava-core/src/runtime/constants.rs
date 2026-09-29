@@ -32,18 +32,19 @@ pub fn mirror_for_desc(t: &mut Thread, k: &'static Klass, desc: &str) -> JResult
 /// The `java.lang.invoke.MethodType` for a method descriptor, as seen from `k`.
 pub fn method_type(t: &mut Thread, k: &'static Klass, desc: &str) -> JResult<Oop> {
     let b = desc.as_bytes();
-    let mut params = Vec::new();
-    let mut i = 1;
+    let count = crate::types::MethodSig::parse(Symbol::intern(desc)).params.len();
+    let class_class = crate::loader::load("java/lang/Class").expect("Class");
+    // Fill a Java array in place: it (not a Rust Vec) keeps the mirrors reachable.
+    let arr = super::alloc_array(t, vm().array_class_of(class_class).expect("Class[]"), count as i32)?;
+    let (mut i, mut n) = (1, 0);
     while b[i] != b')' {
         let end = skip_field_desc(b, i);
-        params.push(mirror_for_desc(t, k, &desc[i..end])?);
-        i = end;
+        let p = mirror_for_desc(t, k, &desc[i..end])?;
+        // SAFETY: `arr` has `count` elements.
+        unsafe { *obj::array_data::<Oop>(arr).add(n) = p };
+        (i, n) = (end, n + 1);
     }
     let ret = mirror_for_desc(t, k, &desc[i + 1..])?;
-    let class_class = crate::loader::load("java/lang/Class").expect("Class");
-    let arr = super::alloc_array(t, vm().array_class_of(class_class).expect("Class[]"), params.len() as i32)?;
-    // SAFETY: fresh Class[] of the same length.
-    unsafe { obj::array_slice::<Oop>(arr).copy_from_slice(&params) };
     call_mhn(t, "findMethodHandleType", "(Ljava/lang/Class;[Ljava/lang/Class;)Ljava/lang/invoke/MethodType;", &[ret as u64, arr as u64])
 }
 
