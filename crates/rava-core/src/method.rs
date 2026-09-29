@@ -25,7 +25,10 @@ pub struct Method {
     /// Machine-code entry with the compiled-code ABI (`jit::EntryFn`): compiled code, or an
     /// adapter into the interpreter / native. Generated code calls through this field.
     pub(crate) entry: AtomicUsize,
-    pub(crate) compiled: OnceLock<Box<crate::jit::CompiledMethod>>,
+    /// Current compiled code (replaced on recompilation; old code stays valid for frames still
+    /// running it, since every version shares the frame layout).
+    compiled: std::sync::atomic::AtomicPtr<crate::jit::CompiledMethod>,
+    pub(crate) recompiles: AtomicU32,
     /// Set once compilation was attempted and refused, so it is not retried.
     pub(crate) not_compilable: std::sync::atomic::AtomicBool,
 }
@@ -44,7 +47,8 @@ impl Method {
             invocations: AtomicU32::new(0),
             backedges: AtomicU32::new(0),
             entry: AtomicUsize::new(crate::jit::interpreter_entry()),
-            compiled: OnceLock::new(),
+            compiled: std::sync::atomic::AtomicPtr::new(std::ptr::null_mut()),
+            recompiles: AtomicU32::new(0),
             not_compilable: std::sync::atomic::AtomicBool::new(false),
         }
     }
@@ -63,6 +67,19 @@ impl Method {
     }
     pub fn is_synchronized(&self) -> bool {
         self.access & ACC_SYNCHRONIZED != 0
+    }
+
+    pub(crate) fn compiled(&self) -> Option<&'static crate::jit::CompiledMethod> {
+        // SAFETY: published compiled methods are leaked and never freed.
+        unsafe { self.compiled.load(Ordering::Acquire).as_ref() }
+    }
+
+    /// Publishes new machine code for this method.
+    pub(crate) fn install(&self, cm: crate::jit::CompiledMethod) -> &'static crate::jit::CompiledMethod {
+        let cm: &'static crate::jit::CompiledMethod = Box::leak(Box::new(cm));
+        self.compiled.store(cm as *const _ as *mut _, Ordering::Release);
+        self.entry.store(cm.entry, Ordering::Release);
+        cm
     }
 
     /// Slots for all arguments including the receiver.

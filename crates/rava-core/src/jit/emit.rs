@@ -175,7 +175,7 @@ impl Emitter {
                     self.cf.pool[index as usize],
                     crate::classfile::Cp::String(_) | crate::classfile::Cp::MethodType(_) | crate::classfile::Cp::MethodHandle { .. }
                 ) => self.const64(d, *o as i64),
-                _ => self.defer(pc, depth),
+                _ => self.defer_unresolved(pc, depth),
             },
         }
     }

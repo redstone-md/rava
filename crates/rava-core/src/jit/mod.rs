@@ -27,6 +27,8 @@ pub type EntryFn = extern "sysv64" fn(*mut Thread, *mut u64, *const Method) -> u
 /// A method's machine code and the native address of each block start.
 pub struct CompiledMethod {
     pub entry: usize,
+    /// Executions of sites compiled before their constants were resolved.
+    pub unresolved_deferrals: std::sync::atomic::AtomicU32,
     pub size: usize,
     /// (bytecode index, native address) of every block leader, sorted by bci.
     pub blocks: Vec<(u32, usize)>,
@@ -69,7 +71,7 @@ extern "sysv64" fn interpreter_adapter(t: *mut Thread, locals: *mut u64, m: *con
 
 /// Counts an interpreted invocation of `m`; compiles it once hot. Returns its compiled code.
 pub(crate) fn on_invoke(m: &'static Method) -> Option<&'static CompiledMethod> {
-    if let Some(cm) = m.compiled.get() {
+    if let Some(cm) = m.compiled() {
         return Some(cm);
     }
     if !enabled() || m.is_native() || m.not_compilable.load(Ordering::Relaxed) {
@@ -100,7 +102,7 @@ pub(crate) fn on_backedge(m: &'static Method, target: usize) -> Option<usize> {
     if n < OSR_THRESHOLD {
         return None;
     }
-    let cm = match m.compiled.get() {
+    let cm = match m.compiled() {
         Some(cm) => cm,
         None => compile_now(m)?,
     };
@@ -138,15 +140,29 @@ fn osr_trampoline() -> usize {
     })
 }
 
+/// Deferrals of once-unresolved sites before the method is recompiled.
+const RECOMPILE_AFTER: u32 = 64;
+const MAX_RECOMPILES: u32 = 3;
+
+pub(crate) fn note_unresolved_deferral(m: &'static Method) {
+    let Some(cm) = m.compiled() else { return };
+    if cm.unresolved_deferrals.fetch_add(1, Ordering::Relaxed) + 1 != RECOMPILE_AFTER {
+        return;
+    }
+    if m.recompiles.fetch_add(1, Ordering::Relaxed) < MAX_RECOMPILES {
+        if let Some(fresh) = compile::compile(m) {
+            m.install(fresh);
+        }
+    }
+}
+
 fn compile_now(m: &'static Method) -> Option<&'static CompiledMethod> {
     match compile::compile(m) {
         Some(cm) => {
             if let Some(s) = stats::get() {
                 s.compiled_methods.fetch_add(1, Ordering::Relaxed);
             }
-            let cm = m.compiled.get_or_init(|| Box::new(cm));
-            m.entry.store(cm.entry, Ordering::Release);
-            Some(cm)
+            Some(m.install(cm))
         }
         None => {
             m.not_compilable.store(true, Ordering::Relaxed);

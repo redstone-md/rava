@@ -75,7 +75,7 @@ pub fn compile(m: &'static Method) -> Option<CompiledMethod> {
     if std::env::var_os("RAVA_CORE_JIT_LOG").is_some() {
         eprintln!("[jit] {m} {} bytes of bytecode -> {} bytes", info.code.len(), code.len());
     }
-    Some(CompiledMethod { entry, size: code.len(), blocks })
+    Some(CompiledMethod { entry, unresolved_deferrals: Default::default(), size: code.len(), blocks })
 }
 
 impl Emitter {
@@ -112,12 +112,22 @@ impl Emitter {
 
     /// Emits the interpreter deferral for `bci` inline (the instruction is always slow here).
     pub fn defer(&mut self, bci: usize, depth: u16) {
+        self.defer_via(bci, depth, runtime::interp_one as *const () as usize);
+    }
+
+    /// Defers an instruction whose constant was unresolved at compile time; frequent use of such
+    /// sites triggers recompilation once they have been resolved.
+    pub fn defer_unresolved(&mut self, bci: usize, depth: u16) {
+        self.defer_via(bci, depth, runtime::interp_one_unresolved as *const () as usize);
+    }
+
+    fn defer_via(&mut self, bci: usize, depth: u16, helper: usize) {
         self.set_bci(bci);
         self.a.mov_rr(true, R::Rdi, R::R12);
         self.a.mov_ri(R::Rsi, self.m as *const Method as i64);
         self.a.mov_rr(true, R::Rdx, R::R13);
         self.a.mov_ri(R::Rcx, (bci as i64) | (depth as i64) << 32);
-        self.a.call_abs(runtime::interp_one as *const () as usize);
+        self.a.call_abs(helper);
         self.a.test_rr(true, R::Rax, R::Rax);
         self.a.jcc(Cond::Ne, self.exc);
     }
