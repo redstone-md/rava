@@ -561,7 +561,10 @@ dependencies = [
 name = "rava-core"
 version = "0.1.0"
 dependencies = [
+ "adler2",
+ "crc32fast",
  "libc",
+ "miniz_oxide",
  "rava-classfile",
 ]
 

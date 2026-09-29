@@ -8,3 +8,6 @@ description = "Next-generation rava execution core: direct object layout, real j
 [dependencies]
 rava-classfile = { path = "../rava-classfile" }
 libc = "0.2"
+miniz_oxide = "0.8"
+crc32fast = "1.4"
+adler2 = "2"

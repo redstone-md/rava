@@ -134,6 +134,7 @@ pub(super) fn register(r: &mut NativeRegistry) {
     });
     r.add(U, "getLoadAverage0", "([DI)I", |_, _| ret_int(-1));
     r.add(U, "unpark", "(Ljava/lang/Object;)V", |_, _| ret_void());
+    r.add("java/util/concurrent/atomic/AtomicLong", "VMSupportsCS8", "()Z", |_, _| ret_bool(true));
     r.add(U, "park", "(ZJ)V", |_, a| {
         if a[2] > 0 && a[1] == 0 {
             std::thread::sleep(std::time::Duration::from_nanos(a[2]));

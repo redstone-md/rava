@@ -94,6 +94,11 @@ impl JImage {
         Ok(Self { map, table_length, redirect_at, offsets_at, locations_at, strings_at, strings_size, resources_at })
     }
 
+    /// Address and length of the whole mapped image (for `NativeImageBuffer.getNativeMap`).
+    pub fn mapping(&self) -> (usize, usize) {
+        (self.map.ptr as usize, self.map.len)
+    }
+
     /// Opens `lib/modules` of the JDK at `java_home`.
     pub fn open_java_home(java_home: impl AsRef<Path>) -> io::Result<Self> {
         Self::open(java_home.as_ref().join("lib").join("modules"))
