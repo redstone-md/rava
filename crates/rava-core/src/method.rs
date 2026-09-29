@@ -5,7 +5,7 @@ use crate::klass::{Klass, ACC_ABSTRACT, ACC_NATIVE, ACC_PRIVATE, ACC_STATIC, ACC
 use crate::natives::NativeFn;
 use crate::symbol::Symbol;
 use crate::types::MethodSig;
-use std::sync::atomic::{AtomicI32, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicI32, AtomicU32, AtomicUsize, Ordering};
 use std::sync::OnceLock;
 
 pub struct Method {
@@ -18,8 +18,16 @@ pub struct Method {
     /// Index in the holder's (and every subclass's) vtable; -1 when not virtually dispatched.
     vtable_index: AtomicI32,
     pub(crate) native: OnceLock<NativeFn>,
-    /// Invocation counter feeding tier-up decisions (generic JVM adaptivity).
+    /// Invocation and loop back-edge counters feeding tier-up and on-stack replacement
+    /// (generic JVM adaptivity). Racy increments are acceptable: they only time the tier-up.
     pub invocations: AtomicU32,
+    pub backedges: AtomicU32,
+    /// Machine-code entry with the compiled-code ABI (`jit::EntryFn`): compiled code, or an
+    /// adapter into the interpreter / native. Generated code calls through this field.
+    pub(crate) entry: AtomicUsize,
+    pub(crate) compiled: OnceLock<Box<crate::jit::CompiledMethod>>,
+    /// Set once compilation was attempted and refused, so it is not retried.
+    pub(crate) not_compilable: std::sync::atomic::AtomicBool,
 }
 
 impl Method {
@@ -34,6 +42,10 @@ impl Method {
             vtable_index: AtomicI32::new(-1),
             native: OnceLock::new(),
             invocations: AtomicU32::new(0),
+            backedges: AtomicU32::new(0),
+            entry: AtomicUsize::new(crate::jit::interpreter_entry()),
+            compiled: OnceLock::new(),
+            not_compilable: std::sync::atomic::AtomicBool::new(false),
         }
     }
 

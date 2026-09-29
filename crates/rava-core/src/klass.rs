@@ -7,7 +7,6 @@ use crate::link::Resolved;
 use crate::method::Method;
 use crate::symbol::Symbol;
 use crate::types::BasicType;
-use std::collections::HashMap;
 use std::sync::atomic::{AtomicPtr, AtomicU64, AtomicU8, Ordering};
 use std::sync::{Condvar, Mutex, OnceLock};
 use std::thread::ThreadId;
@@ -77,6 +76,11 @@ impl InitLock {
         }
     }
 
+    /// Byte offset of the state byte, read by generated code.
+    pub(crate) const fn state_offset() -> usize {
+        std::mem::offset_of!(InitLock, state)
+    }
+
     pub(crate) fn set(&self, s: InitState) {
         self.state.store(s as u8, Ordering::Release)
     }
@@ -103,11 +107,16 @@ pub struct Klass {
     pub(crate) loader: AtomicPtr<crate::heap::ObjHeader>,
     pub(crate) resolved: Box<[OnceLock<Resolved>]>,
     pub(crate) array_klass: OnceLock<&'static Klass>,
-    pub(crate) iface_cache: Mutex<HashMap<(Symbol, Symbol), Option<&'static Method>>>,
+    /// Interface method → implementation, sorted by method address (see `link::select_method`).
+    pub(crate) itable: OnceLock<Box<[(usize, Option<&'static Method>)]>>,
     /// Defined by `Lookup.defineHiddenClass` (not findable by name).
     hidden: bool,
     /// Nest host fixed at definition (hidden nestmates); otherwise from `NestHost`.
     pub(crate) nest_host: OnceLock<&'static Klass>,
+    /// Raw views read by generated code: the vtable's first entry, and an object array's
+    /// element class (null otherwise).
+    pub(crate) vtable_ptr: AtomicPtr<&'static Method>,
+    pub(crate) elem_klass: *const Klass,
 }
 
 pub(crate) struct KlassParts {
@@ -138,7 +147,6 @@ impl Klass {
         let pool_len = p.cf.as_ref().map_or(0, |cf| cf.pool.len());
         Klass {
             name: p.name,
-            kind: p.kind,
             access: p.access,
             super_klass: p.super_klass,
             interfaces: p.interfaces.into_boxed_slice(),
@@ -155,9 +163,15 @@ impl Klass {
             loader: AtomicPtr::new(std::ptr::null_mut()),
             resolved: (0..pool_len).map(|_| OnceLock::new()).collect(),
             array_klass: OnceLock::new(),
-            iface_cache: Mutex::new(HashMap::new()),
+            itable: OnceLock::new(),
             hidden: p.hidden,
             nest_host: OnceLock::new(),
+            vtable_ptr: AtomicPtr::new(std::ptr::null_mut()),
+            elem_klass: match p.kind {
+                KlassKind::ObjArray { elem } => elem,
+                _ => std::ptr::null(),
+            },
+            kind: p.kind,
         }
     }
 
@@ -168,6 +182,11 @@ impl Klass {
 
     pub fn methods(&'static self) -> &'static [Method] {
         self.methods.get().map_or(&[], |m| m)
+    }
+
+    pub(crate) fn set_vtable(&'static self, vt: Box<[&'static Method]>) {
+        let vt = self.vtable.get_or_init(|| vt);
+        self.vtable_ptr.store(vt.as_ptr() as *mut &'static Method, Ordering::Release);
     }
 
     pub fn vtable(&'static self) -> &'static [&'static Method] {

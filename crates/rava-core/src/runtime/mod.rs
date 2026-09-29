@@ -97,6 +97,10 @@ pub fn link_error(t: &mut Thread, e: LinkError) -> Throw {
     }
 }
 
+pub fn stack_overflow(t: &mut Thread) -> Throw {
+    t.with_reserve(|t| throw_new(t, "java/lang/StackOverflowError", ""))
+}
+
 pub fn null_pointer(t: &mut Thread) -> Throw {
     throw_new(t, "java/lang/NullPointerException", "")
 }

@@ -51,7 +51,34 @@ HotSpot; the VM implements `MemberName` resolution, `invokeBasic` / `linkTo*`, h
 `bench/BootLike.java` runs to the correct hash (`H=189720856431`) interpreter-only in 35.4 s
 (HotSpot `-Xint` 14.2 s, adaptive HotSpot 0.5 s): the interpreter is correct; speed comes next.
 
+## 2026-09-29 — baseline compiler (tier 1)
+
+A template compiler emits x86-64 directly (own encoder, `jit/asm.rs`, checked against GNU
+`as`). Compiled code keeps the interpreter's frame layout — locals, a 4-slot linked header
+(method, bci, caller, saved sp) and the operand stack in value-stack memory — so:
+
+- any instruction can be deferred to the interpreter on the same frame (`jit_interp_one`);
+  every slow path (null, bounds, class init, unresolved constant, failed cast) re-executes the
+  instruction there and gets exact semantics and exception messages;
+- exceptions dispatch through the shared handler search; stack traces walk one frame chain;
+- on-stack replacement is a jump into the compiled body at a loop header.
+
+Compiled natively: loads/stores, int/long/float/double arithmetic and conversions, branches,
+switches, fields, statics (with init checks), arrays, `new`/`newarray`/`anewarray`, type checks
+with per-site caches, `invoke*` with vtable dispatch and monomorphic inline caches, per-class
+lock-free itables, linked `invokedynamic`, `invokeBasic` and `linkTo*`.
+Policy: compile after 100 invocations or 2000 loop back-edges (generic counters).
+
+| workload | interpreter | tier 1 | HotSpot `-Xint` | HotSpot adaptive |
+|---|---:|---:|---:|---:|
+| `fib(32)` | 388 ms | 49 ms | 143 ms | — |
+| array loop (OSR) | 7.8 s | 0.56 s | 2.2 s | — |
+| `BootLike` | 35.4 s | 4.2 s | 14.2 s | 0.5 s |
+
+Every test also passes with `RAVA_CORE_JIT_THRESHOLD=1` (the whole JDK boot compiled).
+
 ### Next
 
-1. Baseline compiler (tier 1).
+1. Code quality: register-cached operand stack, cheaper calls (the profile is now flat over
+   compiled Java code, led by method-handle chains).
 2. Garbage collector (BootLike allocates 258 MiB with no collection).

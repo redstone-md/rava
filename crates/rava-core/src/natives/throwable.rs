@@ -33,8 +33,8 @@ fn fill_in_stack_trace(t: &mut Thread, a: &[u64]) -> JResult<u64> {
     // SAFETY: live receiver.
     let ek = unsafe { obj::klass(ex) };
     // Skip this native, the Java fillInStackTrace wrappers, and the exception's constructors.
-    let frames: Vec<(&'static Method, i32)> = (0..t.frame_count())
-        .filter_map(|n| t.caller_frame(n))
+    let frames: Vec<(&'static Method, i32)> = t
+        .frames()
         .skip_while(|(m, _)| m.name.as_str() == "fillInStackTrace")
         .skip_while(|(m, _)| m.name.as_str() == "<init>" && ek.is_subtype_of(m.holder))
         .collect();

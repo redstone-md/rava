@@ -11,24 +11,29 @@ use crate::types::BasicType;
 use crate::vm::vm;
 use std::sync::atomic::Ordering;
 
-pub(super) struct Frame {
+pub(crate) struct Frame {
     pub method: &'static Method,
     pub code: &'static [u8],
     pub info: &'static CodeInfo,
     pub locals: *mut u64,
+    pub hdr: *mut u64,
     pub stack_base: *mut u64,
     pub sp: *mut u64,
     pub pc: usize,
     pub op_pc: usize,
+    /// Set when compiled code took over this frame (OSR): its exceptions were already
+    /// dispatched there, so the interpreter must not search this frame's handlers again.
+    pub replaced: bool,
 }
 
 // All slot accesses stay inside the frame the verifier-shaped bytecode describes: locals below
 // `max_locals`, operand stack below `max_stack` (the value stack was bounds-checked on entry).
 impl Frame {
     pub fn new(method: &'static Method, info: &'static CodeInfo, locals: *mut u64) -> Frame {
-        // SAFETY: `invoke` reserved max_locals + max_stack slots from `locals`.
-        let stack_base = unsafe { locals.add(info.max_locals as usize) };
-        Frame { method, code: info.code, info, locals, stack_base, sp: stack_base, pc: 0, op_pc: 0 }
+        // SAFETY: `invoke` reserved locals, header and operand stack from `locals`.
+        let hdr = unsafe { locals.add(info.max_locals as usize) };
+        let stack_base = unsafe { hdr.add(crate::thread::header::SLOTS) };
+        Frame { method, code: info.code, info, locals, hdr, stack_base, sp: stack_base, pc: 0, op_pc: 0, replaced: false }
     }
     #[inline(always)]
     pub fn push(&mut self, v: u64) {
@@ -88,6 +93,15 @@ impl Frame {
         }
         self.pop()
     }
+}
+
+/// A taken backward branch: counts it and, once the loop is hot, finishes the method in
+/// compiled code (on-stack replacement). `Some` is the method's return value.
+#[cold]
+pub(super) fn on_backedge(t: &mut Thread, f: &mut Frame) -> JResult<Option<u64>> {
+    let Some(address) = crate::jit::on_backedge(f.method, f.pc) else { return Ok(None) };
+    f.replaced = true;
+    crate::jit::osr(t, address, f.locals).map(Some)
 }
 
 pub(super) fn fcmp(a: f64, b: f64, nan_is_greater: bool) -> i32 {
@@ -361,7 +375,7 @@ pub(super) fn invoke(t: &mut Thread, f: &mut Frame, op: u8) -> JResult<()> {
 }
 
 /// invokespecial selection (JVMS 6.5): super calls search from the current class's superclass.
-fn special_target(current: &'static Klass, m: &'static Method) -> &'static Method {
+pub(crate) fn special_target(current: &'static Klass, m: &'static Method) -> &'static Method {
     const ACC_SUPER: u16 = 0x0020;
     let is_super_call = m.name.as_str() != "<init>"
         && !m.holder.is_interface()
@@ -468,7 +482,7 @@ pub(super) fn instanceof(t: &mut Thread, f: &mut Frame) -> JResult<()> {
 }
 
 /// The handler pc for an exception thrown at `f.op_pc`, if this method catches it.
-pub(super) fn find_handler(t: &mut Thread, f: &Frame, ex: Oop) -> Option<usize> {
+pub(crate) fn find_handler(t: &mut Thread, f: &Frame, ex: Oop) -> Option<usize> {
     // SAFETY: live exception object.
     let ek = unsafe { obj::klass(ex) };
     let pc = f.op_pc as u16;

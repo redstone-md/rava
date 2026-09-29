@@ -1,0 +1,207 @@
+//! Templates for fields, type checks and allocation.
+
+use super::asm::{mem, Alu, Asm, Cond, Label, M, R};
+use super::compile::Emitter;
+use super::runtime;
+use crate::klass::{InitState, Klass, ACC_ABSTRACT, ACC_INTERFACE};
+use crate::link::Resolved;
+use crate::types::BasicType;
+use std::mem::offset_of;
+
+impl Emitter {
+    fn cp_index(&self, pc: usize) -> u16 {
+        u16::from_be_bytes([self.code[pc + 1], self.code[pc + 2]])
+    }
+
+    fn resolved_class(&self, pc: usize) -> Option<&'static Klass> {
+        match self.m.holder.resolved[self.cp_index(pc) as usize].get() {
+            Some(Resolved::Class(k)) => Some(k),
+            _ => None,
+        }
+    }
+
+    pub(super) fn field(&mut self, pc: usize, depth: u16, op: u8) {
+        let d = depth as i32;
+        match (op, self.m.holder.resolved[self.cp_index(pc) as usize].get().copied()) {
+            (0xb4, Some(Resolved::InstanceField { offset, ty })) => {
+                let slow = self.slow_path(pc, depth);
+                self.a.load(true, R::Rax, self.stk(d - 1));
+                self.a.test_rr(true, R::Rax, R::Rax);
+                self.a.jcc(Cond::E, slow);
+                load_typed(&mut self.a, ty, mem(R::Rax, offset as i32));
+                self.a.store(true, self.stk(d - 1), R::Rax);
+            }
+            (0xb5, Some(Resolved::InstanceField { offset, ty })) => {
+                let slots = ty.slots() as i32;
+                let slow = self.slow_path(pc, depth);
+                self.a.load(true, R::Rax, self.stk(d - 1 - slots));
+                self.a.test_rr(true, R::Rax, R::Rax);
+                self.a.jcc(Cond::E, slow);
+                self.a.load(true, R::Rdx, self.stk(d - slots));
+                store_typed(&mut self.a, ty, mem(R::Rax, offset as i32));
+            }
+            (0xb2 | 0xb3, Some(Resolved::StaticField { holder, slot, ty })) => {
+                let slow = self.slow_path(pc, depth);
+                self.init_check(holder, slow);
+                self.a.mov_ri(R::Rcx, slot as *const _ as i64);
+                if op == 0xb2 {
+                    load_typed(&mut self.a, ty, mem(R::Rcx, 0));
+                    self.a.store(true, self.stk(d), R::Rax);
+                } else {
+                    self.a.load(true, R::Rdx, self.stk(d - ty.slots() as i32));
+                    normalize_into(&mut self.a, ty);
+                    self.a.store(true, mem(R::Rcx, 0), R::Rdx);
+                }
+            }
+            _ => self.defer(pc, depth),
+        }
+    }
+
+    /// Jumps to `slow` unless `k` is initialized (the slow path initializes it).
+    pub(super) fn init_check(&mut self, k: &'static Klass, slow: Label) {
+        if k.init.state() == InitState::Initialized {
+            return;
+        }
+        let state = offset_of!(Klass, init) + crate::klass::InitLock::state_offset();
+        self.a.mov_ri(R::Rsi, k as *const Klass as i64);
+        self.a.load_zx(1, R::Rsi, mem(R::Rsi, state as i32));
+        self.a.alu_ri(false, Alu::Cmp, R::Rsi, InitState::Initialized as i32);
+        self.a.jcc(Cond::Ne, slow);
+    }
+
+    /// With the object's class in `rdi`: sets `rax` to 1 if it is a subtype of `k`, else 0.
+    /// The exact class and the last class that passed at this site are checked inline.
+    fn subtype_rdi(&mut self, k: &'static Klass) {
+        let cell: &'static std::sync::atomic::AtomicUsize = Box::leak(Box::new(std::sync::atomic::AtomicUsize::new(0)));
+        let done = self.a.new_label();
+        self.a.mov_ri(R::Rsi, k as *const Klass as i64);
+        self.a.mov_ri(R::Rax, 1);
+        self.a.alu_rr(true, Alu::Cmp, R::Rdi, R::Rsi);
+        self.a.jcc(Cond::E, done);
+        self.a.mov_ri(R::Rdx, cell as *const _ as i64);
+        self.a.alu_rm(true, Alu::Cmp, R::Rdi, mem(R::Rdx, 0));
+        self.a.jcc(Cond::E, done);
+        self.a.call_abs(runtime::subtype_cached as *const () as usize);
+        self.a.bind(done);
+    }
+
+    pub(super) fn checkcast(&mut self, pc: usize, depth: u16) {
+        let Some(k) = self.resolved_class(pc) else { return self.defer(pc, depth) };
+        let (done, slow) = (self.a.new_label(), self.slow_path(pc, depth));
+        self.a.load(true, R::Rax, self.stk(depth as i32 - 1));
+        self.a.test_rr(true, R::Rax, R::Rax);
+        self.a.jcc(Cond::E, done);
+        self.a.load(true, R::Rdi, mem(R::Rax, 0));
+        self.subtype_rdi(k);
+        self.a.test_rr(true, R::Rax, R::Rax);
+        self.a.jcc(Cond::E, slow);
+        self.a.bind(done);
+    }
+
+    pub(super) fn instanceof(&mut self, pc: usize, depth: u16) {
+        let Some(k) = self.resolved_class(pc) else { return self.defer(pc, depth) };
+        let slot = self.stk(depth as i32 - 1);
+        let done = self.a.new_label();
+        self.a.load(true, R::Rax, slot);
+        self.a.test_rr(true, R::Rax, R::Rax);
+        self.a.jcc(Cond::E, done);
+        self.a.load(true, R::Rdi, mem(R::Rax, 0));
+        self.subtype_rdi(k);
+        self.a.bind(done);
+        self.a.store(true, slot, R::Rax);
+    }
+
+    pub(super) fn new_object(&mut self, pc: usize, depth: u16) {
+        let k = match self.resolved_class(pc) {
+            Some(k) if k.access & (ACC_ABSTRACT | ACC_INTERFACE) == 0 => k,
+            _ => return self.defer(pc, depth),
+        };
+        let slow = self.slow_path(pc, depth);
+        self.init_check(k, slow);
+        self.set_bci(pc);
+        self.a.mov_rr(true, R::Rdi, R::R12);
+        self.a.mov_ri(R::Rsi, k as *const Klass as i64);
+        self.a.call_abs(runtime::new_instance as *const () as usize);
+        self.check_pending();
+        self.a.store(true, self.stk(depth as i32), R::Rax);
+    }
+
+    /// `newarray` / `anewarray`: a negative length takes the interpreter's exception path.
+    pub(super) fn new_array(&mut self, pc: usize, depth: u16, op: u8) {
+        let vm = crate::vm::vm();
+        let k = if op == 0xbc {
+            BasicType::from_newarray_code(self.code[pc + 1]).and_then(|t| vm.primitive_array_class(t).ok())
+        } else {
+            self.resolved_class(pc).and_then(|e| vm.array_class_of(e).ok())
+        };
+        let Some(k) = k else { return self.defer(pc, depth) };
+        let slot = self.stk(depth as i32 - 1);
+        let slow = self.slow_path(pc, depth);
+        self.a.load(false, R::Rdx, slot);
+        self.a.test_rr(false, R::Rdx, R::Rdx);
+        self.a.jcc(Cond::S, slow);
+        self.set_bci(pc);
+        self.a.mov_rr(true, R::Rdi, R::R12);
+        self.a.mov_ri(R::Rsi, k as *const Klass as i64);
+        self.a.call_abs(runtime::new_array as *const () as usize);
+        self.check_pending();
+        self.a.store(true, slot, R::Rax);
+    }
+
+    /// `aastore` store check for a non-null value in `rdx` into the array in `rax`: falls
+    /// through when assignable (registers reloaded), else jumps to `slow`.
+    pub(super) fn aastore_check(&mut self, array: M, index: M, value: M, slow: Label) {
+        let ok = self.a.new_label();
+        self.a.load(true, R::Rsi, mem(R::Rax, 0));
+        self.a.load(true, R::Rsi, mem(R::Rsi, offset_of!(Klass, elem_klass) as i32));
+        self.a.load(true, R::Rdi, mem(R::Rdx, 0));
+        self.a.alu_rr(true, Alu::Cmp, R::Rdi, R::Rsi);
+        self.a.jcc(Cond::E, ok);
+        self.a.call_abs(runtime::subtype as *const () as usize);
+        self.a.test_rr(true, R::Rax, R::Rax);
+        self.a.jcc(Cond::E, slow);
+        self.a.load(true, R::Rax, array);
+        self.a.load(false, R::Rcx, index);
+        self.a.load(true, R::Rdx, value);
+        self.a.bind(ok);
+    }
+}
+
+/// Loads a field of type `ty` at `m` into rax in slot encoding.
+pub(super) fn load_typed(a: &mut Asm, ty: BasicType, m: M) {
+    match ty {
+        BasicType::Boolean | BasicType::Byte => a.load_sx(1, R::Rax, m),
+        BasicType::Char => a.load_zx(2, R::Rax, m),
+        BasicType::Short => a.load_sx(2, R::Rax, m),
+        BasicType::Int => a.load_sx(4, R::Rax, m),
+        BasicType::Float => a.load(false, R::Rax, m),
+        _ => a.load(true, R::Rax, m),
+    }
+}
+
+/// Stores rdx (slot encoding) into a field of type `ty` at `m`.
+pub(super) fn store_typed(a: &mut Asm, ty: BasicType, m: M) {
+    match ty {
+        BasicType::Boolean => {
+            a.alu_ri(false, Alu::And, R::Rdx, 1);
+            a.store8(m, R::Rdx);
+        }
+        BasicType::Byte => a.store8(m, R::Rdx),
+        BasicType::Char | BasicType::Short => a.store16(m, R::Rdx),
+        BasicType::Int | BasicType::Float => a.store(false, m, R::Rdx),
+        _ => a.store(true, m, R::Rdx),
+    }
+}
+
+/// Normalizes rdx to the full-slot representation of a static field of type `ty`.
+fn normalize_into(a: &mut Asm, ty: BasicType) {
+    match ty {
+        BasicType::Boolean => a.alu_ri(false, Alu::And, R::Rdx, 1),
+        BasicType::Byte => a.movsx_rr(1, R::Rdx, R::Rdx),
+        BasicType::Char => a.movzx16_rr(R::Rdx, R::Rdx),
+        BasicType::Short => a.movsx_rr(2, R::Rdx, R::Rdx),
+        BasicType::Int => a.movsxd(R::Rdx, R::Rdx),
+        BasicType::Float => a.mov_rr(false, R::Rdx, R::Rdx),
+        _ => {}
+    }
+}
