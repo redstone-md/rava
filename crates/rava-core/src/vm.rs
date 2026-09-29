@@ -121,6 +121,7 @@ impl Vm {
             precise(m);
         }
         crate::interp::indy::for_each_root(precise);
+        crate::natives::thread::for_each_starting(precise);
         crate::natives::module_roots(precise);
     }
 

@@ -145,13 +145,26 @@ fn mark_terminated(jt: Oop) {
     }
 }
 
+/// `java.lang.Thread` objects between `start0` and their thread attaching: nothing else may
+/// reference them meanwhile (a virtual thread's carrier, say), so they are collector roots.
+fn starting() -> &'static std::sync::Mutex<Vec<usize>> {
+    static STARTING: std::sync::Mutex<Vec<usize>> = std::sync::Mutex::new(Vec::new());
+    &STARTING
+}
+
+pub(crate) fn for_each_starting(f: &mut dyn FnMut(Oop)) {
+    starting().lock().unwrap().iter().for_each(|&o| f(o as Oop));
+}
+
 fn start0(t: &mut Thread, a: &[u64]) -> JResult<u64> {
     let jt = a[0] as Oop;
     // SAFETY: live receiver.
     unsafe { obj::write::<i64>(jt, eetop_offset(), -1) };
     let addr = jt as usize;
+    starting().lock().unwrap().push(addr);
     let spawned = std::thread::Builder::new().stack_size(512 << 20).spawn(move || run_thread(addr as Oop));
     if spawned.is_err() {
+        starting().lock().unwrap().retain(|&o| o != addr);
         mark_terminated(jt);
         return Err(throw_new(t, "java/lang/OutOfMemoryError", "unable to create native thread"));
     }
@@ -162,6 +175,8 @@ fn run_thread(jt: Oop) {
     let mut t = Thread::new();
     t.java_thread = jt;
     t.attach();
+    // Attached, the thread keeps its own object alive.
+    starting().lock().unwrap().retain(|&o| o != jt as usize);
     mark_started(&t, jt);
     // SAFETY: live receiver.
     let k = unsafe { obj::klass(jt) };
