@@ -13,16 +13,16 @@ use std::ffi::CStr;
 
 const D: &str = "sun/nio/fs/UnixNativeDispatcher";
 
-fn cstr(addr: u64) -> *const libc::c_char {
+pub(super) fn cstr(addr: u64) -> *const libc::c_char {
     addr as *const libc::c_char
 }
 
-fn errno() -> i32 {
+pub(super) fn errno() -> i32 {
     std::io::Error::last_os_error().raw_os_error().unwrap_or(libc::EIO)
 }
 
 /// `new UnixException(errno)`.
-fn unix_error(t: &mut Thread, err: i32) -> Throw {
+pub(super) fn unix_error(t: &mut Thread, err: i32) -> Throw {
     match crate::boot::construct(t, "sun/nio/fs/UnixException", "(I)V", &[err as u64]) {
         Ok(e) => Throw(e),
         Err(e) => e,
@@ -30,7 +30,7 @@ fn unix_error(t: &mut Thread, err: i32) -> Throw {
 }
 
 /// Checks a POSIX return value (`-1` means failure with errno).
-fn check(t: &mut Thread, r: i64) -> JResult<i64> {
+pub(super) fn check(t: &mut Thread, r: i64) -> JResult<i64> {
     if r == -1 {
         Err(unix_error(t, errno()))
     } else {
