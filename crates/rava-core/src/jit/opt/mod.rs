@@ -65,6 +65,9 @@ pub fn compile(m: &'static Method) -> Option<CompiledMethod> {
         }
         return None;
     };
+    if std::env::var_os("RAVA_CORE_OPT_IR").is_some_and(|f| m.to_string().contains(f.to_str().unwrap_or(""))) {
+        eprintln!("[opt-ir] {m}\n{}", g.dump());
+    }
     let al = regalloc::allocate(&g);
     let code = codegen::generate(&g, &al, m, extent);
     let entry = code_cache::install(&code);
