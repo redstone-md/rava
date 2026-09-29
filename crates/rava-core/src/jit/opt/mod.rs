@@ -4,6 +4,7 @@
 
 mod build;
 mod build_mh;
+mod build_obj;
 mod build_ops;
 mod canon;
 mod codegen;
@@ -14,6 +15,7 @@ mod deopt;
 mod inline;
 mod ir;
 mod moves;
+mod operands;
 mod phis;
 mod regalloc;
 

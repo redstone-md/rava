@@ -26,12 +26,17 @@ pub(super) enum Intrinsic {
     /// `Math.min/max` on int, long, float or double (the type), `true` for max.
     MinMax(BasicType, bool),
     Abs(BasicType),
+    /// `Unsafe.compareAndSetX(Object, long, expected, x)` (and the weak forms) for int, long and
+    /// reference fields: a locked compare-and-exchange.
+    CompareAndSet(BasicType),
+    /// `Thread.currentThread()`.
+    CurrentThread,
 }
 
 impl Intrinsic {
     /// Without side effects (usable inside inlined leaf bodies).
     pub(super) fn is_pure(self) -> bool {
-        !matches!(self, Intrinsic::UnsafePut(..))
+        !matches!(self, Intrinsic::UnsafePut(..) | Intrinsic::CompareAndSet(_))
     }
 }
 
@@ -79,6 +84,11 @@ pub(super) fn intrinsic(m: &Method) -> Option<Intrinsic> {
             _ => None,
         },
         "jdk/internal/misc/Unsafe" if !m.is_static() => {
+            let cas = name.strip_prefix("compareAndSet").or_else(|| name.strip_prefix("weakCompareAndSet"));
+            if let Some(rest) = cas {
+                let ty = ["", "Plain", "Acquire", "Release"].iter().find_map(|o| rest.strip_suffix(o).and_then(unsafe_type))?;
+                return (matches!(ty, BasicType::Int | BasicType::Long | BasicType::Reference) && desc.ends_with(")Z")).then_some(Intrinsic::CompareAndSet(ty));
+            }
             if let Some((ty, _)) = name.strip_prefix("get").and_then(unsafe_access) {
                 return desc.starts_with("(Ljava/lang/Object;J)").then_some(Intrinsic::UnsafeGet(ty));
             }
@@ -87,6 +97,7 @@ pub(super) fn intrinsic(m: &Method) -> Option<Intrinsic> {
         }
         "java/lang/Class" if name == "isInstance" && desc == "(Ljava/lang/Object;)Z" => Some(Intrinsic::IsInstance),
         "java/lang/Object" if name == "getClass" && desc == "()Ljava/lang/Class;" => Some(Intrinsic::GetClass),
+        "java/lang/Thread" if name == "currentThread" && desc == "()Ljava/lang/Thread;" => Some(Intrinsic::CurrentThread),
         _ => None,
     }
 }
@@ -146,6 +157,22 @@ impl Emitter {
             Intrinsic::IsInstance => self.is_instance(pc, depth, args),
             Intrinsic::MinMax(ty, max) => self.min_max(ty, max, args),
             Intrinsic::Abs(ty) => self.abs(ty, args),
+            Intrinsic::CompareAndSet(ty) => {
+                // [unsafe, o, offset (2 slots), expected, x]; a null base makes the offset absolute.
+                let wide = ty == BasicType::Long;
+                self.a.load(true, R::Rcx, self.stk(args + 1));
+                self.a.load(true, R::Rdx, self.stk(args + 2));
+                self.a.load(true, R::Rax, self.stk(args + 4));
+                self.a.load(true, R::R11, self.stk(args + if wide { 6 } else { 5 }));
+                self.a.lock_cmpxchg_w(ty != BasicType::Int, mem_idx(R::Rcx, R::Rdx, 1, 0), R::R11);
+                self.a.setcc(Cond::E, R::Rax);
+                self.a.movzx8(R::Rax, R::Rax);
+                self.a.store(true, self.stk(args), R::Rax);
+            }
+            Intrinsic::CurrentThread => {
+                self.a.load(true, R::Rax, mem(R::R12, offset_of!(crate::thread::Thread, java_thread) as i32));
+                self.a.store(true, self.stk(args), R::Rax);
+            }
             Intrinsic::GetClass => {
                 let slow = self.slow_path(pc, depth);
                 self.a.load(true, R::Rax, self.stk(args));

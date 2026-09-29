@@ -381,8 +381,12 @@ impl Asm {
     }
     /// `lock cmpxchg [m], src` (compares with rax).
     pub fn lock_cmpxchg(&mut self, m: M, src: R) {
+        self.lock_cmpxchg_w(true, m, src);
+    }
+    /// `lock cmpxchg` on a 64-bit (`w`) or 32-bit memory operand.
+    pub fn lock_cmpxchg_w(&mut self, w: bool, m: M, src: R) {
         self.b(0xF0);
-        self.op_rm(true, &[0x0F, 0xB1], src as u8, m);
+        self.op_rm(w, &[0x0F, 0xB1], src as u8, m);
     }
     pub fn mfence(&mut self) {
         self.b(0x0F);
