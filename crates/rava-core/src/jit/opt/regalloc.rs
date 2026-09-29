@@ -6,6 +6,9 @@
 use super::ir::*;
 use crate::jit::asm::R;
 
+/// SSE registers for float and double values (all caller-saved; xmm0 and xmm1 are scratch).
+pub const XMMS: [u8; 14] = [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
+
 /// Registers holding values across calls, and the ones calls clobber. rax, rcx, rdx and r11 are
 /// scratch for code generation; r12 and r13 hold the thread and the frame.
 pub const CALLEE_SAVED: [R; 4] = [R::Rbx, R::Rbp, R::R14, R::R15];
@@ -16,6 +19,8 @@ pub enum Loc {
     /// The value is never read.
     None,
     Reg(R),
+    /// An SSE register (float and double values).
+    Xmm(u8),
     /// Spill slot `n` at `[rsp + 8n]`.
     Stack(i32),
     Const(i64),
@@ -235,33 +240,38 @@ fn scan(g: &Graph, iv: &Intervals) -> (Vec<Loc>, i32) {
     for &v in &todo {
         active.retain(|&a| iv.end[a] >= iv.start[v]);
         let crossing = iv.crosses_call(v);
-        let taken = |r: R, active: &[usize], loc: &[Loc]| active.iter().any(|&a| loc[a] == Loc::Reg(r));
-        let pools: &[&[R]] = if crossing { &[&CALLEE_SAVED] } else { &[&CALLER_SAVED, &CALLEE_SAVED] };
-        let allowed = |r: R| pools.iter().any(|p| p.contains(&r));
+        let taken = |c: Loc, active: &[usize], loc: &[Loc]| active.iter().any(|&a| loc[a] == c);
+        // Candidate registers in preference order: none survives a call but the callee-saved.
+        let cands: Vec<Loc> = match (matches!(g.values[v].ty, Ty::F | Ty::D), crossing) {
+            (true, true) => Vec::new(),
+            (true, false) => XMMS.iter().map(|&x| Loc::Xmm(x)).collect(),
+            (false, true) => CALLEE_SAVED.iter().map(|&r| Loc::Reg(r)).collect(),
+            (false, false) => CALLER_SAVED.iter().chain(CALLEE_SAVED.iter()).map(|&r| Loc::Reg(r)).collect(),
+        };
+        let allowed = |c: Loc| cands.contains(&c);
         // Coalescing: the result takes the register of its first operand when that dies here
         // (code generation computes into the first operand's register).
         let first = match g.values[v].inst {
             Inst::Phi(_) => None,
             ref inst => inputs(g, inst).first().copied(),
         };
-        let hint = first.filter(|&x| iv.end[x as usize] == iv.start[v]).and_then(|x| match loc[x as usize] {
-            Loc::Reg(r) if allowed(r) && !active.iter().any(|&a| a != x as usize && loc[a] == Loc::Reg(r)) => Some((x as usize, r)),
-            _ => None,
+        let hint = first.filter(|&x| iv.end[x as usize] == iv.start[v]).and_then(|x| {
+            let c = loc[x as usize];
+            (allowed(c) && !active.iter().any(|&a| a != x as usize && loc[a] == c)).then_some((x as usize, c))
         });
-        if let Some((x, r)) = hint {
-            loc[v] = Loc::Reg(r);
+        if let Some((x, c)) = hint {
+            loc[v] = c;
             active.retain(|&a| a != x);
             active.push(v);
             continue;
         }
-        let free = pools.iter().flat_map(|p| p.iter()).copied().find(|&r| !taken(r, &active, &loc));
-        if let Some(r) = free {
-            loc[v] = Loc::Reg(r);
+        if let Some(&c) = cands.iter().find(|&&c| !taken(c, &active, &loc)) {
+            loc[v] = c;
             active.push(v);
             continue;
         }
         // Steal from the active interval ending last, if it outlives this one.
-        let victim = active.iter().copied().filter(|&a| matches!(loc[a], Loc::Reg(r) if allowed(r))).max_by_key(|&a| iv.end[a]);
+        let victim = active.iter().copied().filter(|&a| allowed(loc[a])).max_by_key(|&a| iv.end[a]);
         match victim {
             Some(a) if iv.end[a] > iv.end[v] => {
                 loc[v] = loc[a];

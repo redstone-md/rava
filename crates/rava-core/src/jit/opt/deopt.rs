@@ -3,14 +3,15 @@
 //! their calls). The interpreter finishes the innermost scope, then each caller from after its
 //! call (or from the call, rethrowing), up to the method itself.
 
-use super::regalloc::Loc;
+use super::regalloc::{Loc, XMMS};
 use crate::jit::analysis::insn_len;
 use crate::jit::asm::R;
 use crate::method::Method;
 use crate::thread::{header, Thread, Throw};
 
 /// Registers the common deoptimization stub pushes, in push order (an even count keeps the
-/// stack aligned); the runtime finds the spill slots right above them.
+/// stack aligned), above the SSE registers it stores (`XMMS` order, 8 bytes each); the runtime
+/// finds the spill slots right above them.
 pub const SAVED: [R; 10] = [R::Rbx, R::Rbp, R::R14, R::R15, R::Rsi, R::Rdi, R::R8, R::R9, R::R10, R::R11];
 
 /// A deoptimization point: its scopes and where each live frame slot's value is.
@@ -38,12 +39,15 @@ pub struct Frame {
 pub extern "sysv64" fn deopt(t: *mut Thread, base: *mut u64, desc: *const Desc, saved: *const u64) -> u64 {
     // SAFETY: called by compiled code with its own thread, frame, descriptor and saved registers.
     let (t, desc) = unsafe { (&mut *t, &*desc) };
+    let gprs = XMMS.len();
     for &(slot, loc) in &desc.slots {
-        // SAFETY: the stub pushed `SAVED` last to first below the spill slots.
+        // SAFETY: the stub stored the SSE registers, and above them pushed `SAVED` last to first,
+        // below the spill slots.
         let v = unsafe {
             match loc {
-                Loc::Reg(r) => *saved.add(SAVED.len() - 1 - SAVED.iter().position(|&s| s == r).expect("an allocatable register")),
-                Loc::Stack(k) => *saved.add(SAVED.len() + k as usize),
+                Loc::Xmm(x) => *saved.add(XMMS.iter().position(|&s| s == x).expect("an allocatable SSE register")),
+                Loc::Reg(r) => *saved.add(gprs + SAVED.len() - 1 - SAVED.iter().position(|&s| s == r).expect("an allocatable register")),
+                Loc::Stack(k) => *saved.add(gprs + SAVED.len() + k as usize),
                 Loc::Const(c) => c as u64,
                 Loc::None => continue,
             }

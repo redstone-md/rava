@@ -3,7 +3,7 @@
 use super::codegen::{Arg, Gen};
 use super::ir::*;
 use super::regalloc::Loc;
-use crate::jit::asm::{mem, mem_idx, Alu, Cond, R};
+use crate::jit::asm::{mem, mem_idx, Alu, Cond, R, X};
 use crate::jit::emit_obj::{load_typed_to, normalize_into, store_typed_from};
 use crate::jit::runtime::{self, IcCell};
 use crate::klass::Klass;
@@ -28,6 +28,30 @@ fn scale(bt: BasicType) -> u8 {
 impl Gen<'_> {
     pub(super) fn memory_inst(&mut self, v: V) {
         match self.g.inst(v).clone() {
+            Inst::LoadField(o, off, bt @ (BasicType::Float | BasicType::Double)) => {
+                let ro = self.reg(o, R::Rax);
+                let r = self.xout(v);
+                self.a.fload(bt == BasicType::Double, r, mem(ro, off as i32));
+                self.xput(v, r);
+            }
+            Inst::StoreField(o, off, bt @ (BasicType::Float | BasicType::Double), x) => {
+                let a = self.xreg(x, X(0));
+                let ro = self.reg(o, R::Rax);
+                self.a.fstore(bt == BasicType::Double, mem(ro, off as i32), a);
+            }
+            Inst::LoadIndexed(arr, idx, bt @ (BasicType::Float | BasicType::Double)) => {
+                let ra = self.reg(arr, R::Rax);
+                let ri = self.reg(idx, R::Rcx);
+                let r = self.xout(v);
+                self.a.fload(bt == BasicType::Double, r, mem_idx(ra, ri, scale(bt), BASE));
+                self.xput(v, r);
+            }
+            Inst::StoreIndexed(arr, idx, bt @ (BasicType::Float | BasicType::Double), x) => {
+                let ra = self.reg(arr, R::Rax);
+                let ri = self.reg(idx, R::Rcx);
+                let a = self.xreg(x, X(0));
+                self.a.fstore(bt == BasicType::Double, mem_idx(ra, ri, scale(bt), BASE), a);
+            }
             Inst::LoadField(o, off, bt) => {
                 let ro = self.reg(o, R::Rax);
                 let r = self.out(v);

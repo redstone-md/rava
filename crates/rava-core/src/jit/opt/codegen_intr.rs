@@ -16,16 +16,16 @@ impl Gen<'_> {
     pub(super) fn intrinsic(&mut self, v: V, k: Intrinsic, args: &[V], s: Option<&Rc<State>>) {
         match k {
             Intrinsic::Round(mode) => {
-                let x = self.reg(args[0], R::Rax);
-                self.a.mov_xr(true, X(0), x);
-                self.a.round_sd(X(0), X(0), mode);
-                self.float_result(v, true);
+                let a = self.xreg(args[0], X(1));
+                let r = self.xout(v);
+                self.a.round_sd(r, a, mode);
+                self.xput(v, r);
             }
             Intrinsic::Sqrt => {
-                let x = self.reg(args[0], R::Rax);
-                self.a.mov_xr(true, X(0), x);
-                self.a.fsqrt(X(0), X(0));
-                self.float_result(v, true);
+                let a = self.xreg(args[0], X(1));
+                let r = self.xout(v);
+                self.a.fsqrt(r, a);
+                self.xput(v, r);
             }
             // A null base makes the offset an absolute address.
             Intrinsic::UnsafeGet(ty) => {
@@ -55,12 +55,6 @@ impl Gen<'_> {
             Intrinsic::MinMax(ty, max) => self.min_max(v, ty, max, args[0], args[1]),
             Intrinsic::Abs(ty) => self.abs(v, ty, args[0]),
         }
-    }
-
-    fn float_result(&mut self, v: V, double: bool) {
-        let r = self.out(v);
-        self.a.mov_rx(double, r, X(0));
-        self.put(v, r);
     }
 
     /// `mirror.isInstance(o)` for a non-null mirror: null → false, a primitive mirror → false,
@@ -118,6 +112,13 @@ impl Gen<'_> {
 
     /// `Math.abs`: integers negate when negative (MIN_VALUE stays), floats clear the sign bit.
     fn abs(&mut self, v: V, ty: BasicType, x: V) {
+        if matches!(ty, BasicType::Float | BasicType::Double) {
+            let r = self.xout(v);
+            self.xload(r, x);
+            self.xmask(if ty == BasicType::Double { i64::MAX } else { 0x7fff_ffff });
+            self.a.fand(ty == BasicType::Double, r, X(1));
+            return self.xput(v, r);
+        }
         self.load(R::Rax, x);
         match ty {
             BasicType::Int | BasicType::Long => {

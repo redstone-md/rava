@@ -12,6 +12,11 @@ impl Gen<'_> {
     pub(super) fn inst(&mut self, v: V) {
         let ty = self.g.ty(v);
         match self.g.inst(v).clone() {
+            Inst::Param(slot) if matches!(ty, Ty::F | Ty::D) => {
+                let r = self.xout(v);
+                self.a.fload(true, r, self.slot(slot as i32));
+                self.xput(v, r);
+            }
             Inst::Param(slot) => {
                 let r = self.out(v);
                 self.a.load(true, r, self.slot(slot as i32));
@@ -53,6 +58,13 @@ impl Gen<'_> {
     }
 
     fn neg(&mut self, v: V, ty: Ty, x: V) {
+        if matches!(ty, Ty::F | Ty::D) {
+            let r = self.xout(v);
+            self.xload(r, x);
+            self.xmask(if ty == Ty::D { i64::MIN } else { 0x8000_0000 });
+            self.a.fxor(ty == Ty::D, r, X(1));
+            return self.xput(v, r);
+        }
         let r = self.out(v);
         self.load(r, x);
         match ty {
@@ -160,14 +172,12 @@ impl Gen<'_> {
             BinOp::Mul => 0x59,
             _ => 0x5E,
         };
-        let rx = self.reg(x, R::Rax);
-        self.a.mov_xr(double, X(0), rx);
-        let ry = self.reg(y, R::Rcx);
-        self.a.mov_xr(double, X(1), ry);
-        self.a.farith_rr(double, sse, X(0), X(1));
-        let r = self.out(v);
-        self.a.mov_rx(double, r, X(0));
-        self.put(v, r);
+        // The result register is x's own when x dies here, else not y's (x op x aside).
+        let r = self.xout(v);
+        let b = self.xreg(y, X(1));
+        self.xload(r, x);
+        self.a.farith_rr(double, sse, r, b);
+        self.xput(v, r);
     }
 
     fn convert(&mut self, v: V, op: u8, x: V) {
@@ -190,15 +200,15 @@ impl Gen<'_> {
                 let from_long = op >= 0x89;
                 let to_double = op == 0x87 || op == 0x8a;
                 let s = self.reg(x, R::Rax);
-                self.a.cvt_i2f(to_double, from_long, X(0), s);
-                self.a.mov_rx(to_double, r, X(0));
+                let r = self.xout(v);
+                self.a.cvt_i2f(to_double, from_long, r, s);
+                return self.xput(v, r);
             }
             0x8d | 0x90 => {
-                let to_double = op == 0x8d;
-                let s = self.reg(x, R::Rax);
-                self.a.mov_xr(!to_double, X(0), s);
-                self.a.cvt_f2f(to_double, X(0), X(0));
-                self.a.mov_rx(to_double, r, X(0));
+                let a = self.xreg(x, X(1));
+                let r = self.xout(v);
+                self.a.cvt_f2f(op == 0x8d, r, a);
+                return self.xput(v, r);
             }
             _ => return self.float_to_int(v, op, x),
         }
@@ -216,9 +226,8 @@ impl Gen<'_> {
             0x8e => runtime::d2i as *const () as usize,
             _ => runtime::d2l as *const () as usize,
         };
-        let s = self.reg(x, R::Rax);
-        self.a.mov_xr(from_double, X(0), s);
-        self.a.cvtt_f2i(from_double, to_long, R::Rax, X(0));
+        let a = self.xreg(x, X(0));
+        self.a.cvtt_f2i(from_double, to_long, R::Rax, a);
         let done = self.a.new_label();
         if to_long {
             self.a.mov_ri(R::Rcx, i64::MIN);
@@ -245,12 +254,10 @@ impl Gen<'_> {
         } else {
             let double = op >= 0x97;
             let nan = if op == 0x95 || op == 0x97 { -1 } else { 1 };
-            let rx = self.reg(x, R::Rax);
-            self.a.mov_xr(double, X(0), rx);
-            let ry = self.reg(y, R::Rcx);
-            self.a.mov_xr(double, X(1), ry);
+            let a = self.xreg(x, X(0));
+            let b = self.xreg(y, X(1));
             let (ordered, done) = (self.a.new_label(), self.a.new_label());
-            self.a.fcmp(double, X(0), X(1));
+            self.a.fcmp(double, a, b);
             self.a.jcc(Cond::Np, ordered);
             self.a.mov_ri(R::Rax, nan);
             self.a.jmp(done);

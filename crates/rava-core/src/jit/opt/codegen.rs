@@ -5,8 +5,8 @@
 
 use super::ir::*;
 use super::moves::{self, spill};
-use super::regalloc::{phi_input, phis, Allocation, Loc, CALLEE_SAVED, CALLER_SAVED};
-use crate::jit::asm::{mem, Alu, Asm, Cond, Label, M, R};
+use super::regalloc::{phi_input, phis, Allocation, Loc, CALLEE_SAVED, CALLER_SAVED, XMMS};
+use crate::jit::asm::{mem, Alu, Asm, Cond, Label, M, R, X};
 use crate::jit::runtime;
 use crate::method::Method;
 use crate::thread::{header, offsets};
@@ -38,6 +38,10 @@ pub(super) struct Gen<'a> {
     saved: Vec<R>,
     /// Bytes below them: spill slots and alignment.
     frame_bytes: i32,
+    /// Caller-saved registers holding values somewhere in this method (runtime calls from
+    /// slow paths preserve them).
+    live_gprs: Vec<R>,
+    live_xmms: Vec<u8>,
 }
 
 /// Emits `g` for `m`, whose frame (inlined frames included) takes `frame_slots` value-stack slots.
@@ -59,6 +63,8 @@ pub(super) fn generate(g: &Graph, al: &Allocation, m: &'static Method, frame_slo
         edge_stubs: Vec::new(),
         saved: Vec::new(),
         frame_bytes: 0,
+        live_gprs: CALLER_SAVED.into_iter().filter(|r| al.loc.contains(&Loc::Reg(*r))).collect(),
+        live_xmms: XMMS.into_iter().filter(|x| al.loc.contains(&Loc::Xmm(*x))).collect(),
     };
     // Entry rsp is 8 mod 16: an odd number of pushes realigns it, spill slots come in pairs.
     gen.saved = [R::R12, R::R13].into_iter().chain(CALLEE_SAVED.into_iter().filter(|r| al.loc.contains(&Loc::Reg(*r)))).collect();
@@ -170,10 +176,55 @@ impl Gen<'_> {
         }
     }
 
+    /// The SSE register holding `v`, or `scratch` loaded with it (constants go through r11).
+    pub fn xreg(&mut self, v: V, scratch: X) -> X {
+        match self.loc[v as usize] {
+            Loc::Xmm(x) => X(x),
+            _ => {
+                self.xload(scratch, v);
+                scratch
+            }
+        }
+    }
+
+    /// `dst := v` for a float or double value.
+    pub fn xload(&mut self, dst: X, v: V) {
+        match self.loc[v as usize] {
+            Loc::Const(c) => {
+                self.a.mov_ri(R::R11, c);
+                self.a.mov_xr(true, dst, R::R11);
+            }
+            l => moves::mov(&mut self.a, Loc::Xmm(dst.0), l),
+        }
+    }
+
+    /// The SSE register to compute `v` into: its own, or xmm0 when it is spilled.
+    pub fn xout(&self, v: V) -> X {
+        match self.loc[v as usize] {
+            Loc::Xmm(x) => X(x),
+            _ => X(0),
+        }
+    }
+
+    /// Moves a computed float or double result from `src` to the location of `v`.
+    pub fn xput(&mut self, v: V, src: X) {
+        let dst = self.loc[v as usize];
+        if dst != Loc::None {
+            moves::mov(&mut self.a, dst, Loc::Xmm(src.0));
+        }
+    }
+
+    /// A bit mask (sign or magnitude) in xmm1.
+    pub fn xmask(&mut self, bits: i64) {
+        self.a.mov_ri(R::R11, bits);
+        self.a.mov_xr(true, X(1), R::R11);
+    }
+
     /// Stores `v` (slot encoding) into the memory at `m`.
     pub fn store_val(&mut self, m: M, v: V) {
         match self.loc[v as usize] {
             Loc::Reg(r) => self.a.store(true, m, r),
+            Loc::Xmm(x) => self.a.fstore(true, m, X(x)),
             Loc::Const(c) if i32::try_from(c).is_ok() => self.a.store_imm(m, c as i32),
             Loc::None => {}
             _ => {
@@ -210,10 +261,22 @@ impl Gen<'_> {
                 _ => {}
             }
         }
-        for r in CALLER_SAVED {
+        let gprs = self.live_gprs.clone();
+        let xmms = self.live_xmms.clone();
+        for &r in &gprs {
             self.a.push(r);
         }
-        self.a.push(R::Rax);
+        let pad = gprs.len() % 2 == 1;
+        if pad {
+            self.a.push(R::Rax);
+        }
+        let xbytes = (8 * xmms.len() as i32 + 15) & !15;
+        if xbytes > 0 {
+            self.a.alu_ri(true, Alu::Sub, R::Rsp, xbytes);
+            for (i, &x) in xmms.iter().enumerate() {
+                self.a.fstore(true, mem(R::Rsp, 8 * i as i32), X(x));
+            }
+        }
         for (i, arg) in args.iter().enumerate() {
             match *arg {
                 Arg::Thread => self.a.mov_rr(true, PARAMS[i], R::R12),
@@ -223,8 +286,16 @@ impl Gen<'_> {
             }
         }
         self.a.call_abs(addr);
-        self.a.pop(R::R11);
-        for r in CALLER_SAVED.iter().rev() {
+        if xbytes > 0 {
+            for (i, &x) in xmms.iter().enumerate() {
+                self.a.fload(true, X(x), mem(R::Rsp, 8 * i as i32));
+            }
+            self.a.alu_ri(true, Alu::Add, R::Rsp, xbytes);
+        }
+        if pad {
+            self.a.pop(R::R11);
+        }
+        for r in gprs.iter().rev() {
             self.a.pop(*r);
         }
     }
@@ -402,11 +473,16 @@ impl Gen<'_> {
         for r in super::deopt::SAVED {
             self.a.push(r);
         }
+        let xbytes = 8 * XMMS.len() as i32;
+        self.a.alu_ri(true, Alu::Sub, R::Rsp, xbytes);
+        for (i, &x) in XMMS.iter().enumerate() {
+            self.a.fstore(true, mem(R::Rsp, 8 * i as i32), X(x));
+        }
         self.a.mov_rr(true, R::Rdi, R::R12);
         self.a.mov_rr(true, R::Rsi, R::R13);
         self.a.mov_rr(true, R::Rcx, R::Rsp);
         self.a.call_abs(super::deopt::deopt as *const () as usize);
-        self.a.alu_ri(true, Alu::Add, R::Rsp, 8 * super::deopt::SAVED.len() as i32);
+        self.a.alu_ri(true, Alu::Add, R::Rsp, xbytes + 8 * super::deopt::SAVED.len() as i32);
         self.a.jmp(self.epilogue);
     }
 }
