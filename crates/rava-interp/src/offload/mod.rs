@@ -51,6 +51,8 @@
 //! (parallel forEach over an offloadable per-element method) is the next step.
 
 use rava_classfile::{BootstrapMethod, Code, ConstantPool};
+#[cfg(test)]
+mod effect_summary;
 
 /// GAP-S06: one callee admissibility query. `exact == true` means `owner` IS the
 /// exact dispatch target class: an `invokestatic`/`invokespecial` owner, a fresh
