@@ -91,13 +91,6 @@ pub(super) fn register(r: &mut NativeRegistry) {
     });
     r.add("java/util/TimeZone", "getSystemGMTOffsetID", "()Ljava/lang/String;", |t, _| ret_ref(rt::new_string(t, "GMT")?));
     register_management(r);
-    r.add("java/lang/ProcessImpl", "init", "()V", |_, _| ret_void());
-    r.add("java/lang/ProcessHandleImpl", "initNative", "()V", |_, _| ret_void());
-    r.add("java/lang/ProcessHandleImpl", "getCurrentPid0", "()J", |_, _| ret_long(std::process::id() as i64));
-    r.add("java/lang/ProcessHandleImpl", "isAlive0", "(J)J", |_, a| {
-        ret_long(if unsafe { libc::kill(a[0] as i32, 0) } == 0 { 0 } else { -1 })
-    });
-    r.add("java/lang/ProcessHandleImpl$Info", "initIDs", "()V", |_, _| ret_void());
     const PERF: &str = "jdk/internal/perf/Perf";
     r.add(PERF, "registerNatives", "()V", |_, _| ret_void());
     r.add(PERF, "createLong", "(Ljava/lang/String;IIJ)Ljava/nio/ByteBuffer;", |t, a| {

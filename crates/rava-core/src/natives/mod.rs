@@ -9,6 +9,7 @@ pub(crate) mod io;
 mod lang;
 mod misc;
 mod nio_ch;
+mod process;
 pub(crate) mod mh;
 mod module;
 mod net;
@@ -60,6 +61,7 @@ impl NativeRegistry {
         unixfs_ext::register(&mut r);
         zip::register(&mut r);
         nio_ch::register(&mut r);
+        process::register(&mut r);
         stackwalk::register(&mut r);
         net::register(&mut r);
         misc::register(&mut r);
