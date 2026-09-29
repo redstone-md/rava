@@ -9,6 +9,7 @@ pub(crate) mod io;
 mod lang;
 mod misc;
 mod nio_ch;
+mod auth;
 mod management;
 mod process;
 pub(crate) mod mh;
@@ -64,6 +65,7 @@ impl NativeRegistry {
         nio_ch::register(&mut r);
         process::register(&mut r);
         management::register(&mut r);
+        auth::register(&mut r);
         stackwalk::register(&mut r);
         net::register(&mut r);
         misc::register(&mut r);
