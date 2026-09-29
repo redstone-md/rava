@@ -39,7 +39,6 @@ impl Emitter {
             0x53 => self.array_store(pc, depth, op),
             0x5a..=0x5f => self.stack_shuffle(op, d),
             0x6c | 0x6d | 0x70 | 0x71 | 0x72 | 0x73 => self.arith(pc, depth, op)?,
-            0x8b | 0x8c | 0x8e | 0x8f => self.convert(op, d),
             0xa8 | 0xa9 | 0xc4 | 0xc9 => return None,
             0xc8 => {
                 if i4(self.code, pc + 1) <= 0 {
@@ -169,20 +168,6 @@ impl Emitter {
             _ => return None,
         }
         Some(())
-    }
-
-    /// float/double → int/long through the saturating runtime helpers.
-    fn convert(&mut self, op: u8, d: i32) {
-        let src = if op <= 0x8c { d - 1 } else { d - 2 };
-        let f = match op {
-            0x8b => runtime::f2i as *const () as usize,
-            0x8c => runtime::f2l as *const () as usize,
-            0x8e => runtime::d2i as *const () as usize,
-            _ => runtime::d2l as *const () as usize,
-        };
-        self.a.load(true, R::Rdi, self.stk(src));
-        self.a.call_abs(f);
-        self.a.store(true, self.stk(src), R::Rax);
     }
 
     /// `tableswitch` / `lookupswitch` on the key in rax (the stack already written back).
