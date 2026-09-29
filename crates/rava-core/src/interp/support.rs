@@ -308,7 +308,15 @@ pub(super) fn ldc(t: &mut Thread, f: &mut Frame, index: u16) -> JResult<()> {
             let m = rt::mirror_of(t, c)?;
             f.push_ref(m);
         }
-        _ => return Err(throw_new(t, "java/lang/UnsupportedOperationException", "ldc of a dynamic constant")),
+        Cp::MethodType(_) | Cp::MethodHandle { .. } => f.push_ref(rt::resolve_constant(t, k, index)?),
+        Cp::Dynamic { nat, .. } => {
+            let boxed = rt::resolve_constant(t, k, index)?;
+            let (_, desc) = cf.name_and_type(nat).unwrap();
+            let ty = BasicType::from_desc(desc.as_str().as_bytes()[0]);
+            let v = if ty == BasicType::Reference { boxed as u64 } else { rt::unbox_value(t, boxed, ty)? };
+            f.push_typed(ty, v);
+        }
+        _ => return Err(throw_new(t, "java/lang/VerifyError", "ldc of a non-loadable constant")),
     }
     Ok(())
 }
@@ -316,8 +324,8 @@ pub(super) fn ldc(t: &mut Thread, f: &mut Frame, index: u16) -> JResult<()> {
 /// invokevirtual / invokespecial / invokestatic / invokeinterface.
 pub(super) fn invoke(t: &mut Thread, f: &mut Frame, op: u8) -> JResult<()> {
     let m = f.holder().resolve_method(t, f.u2(f.pc + 1)).map_err(|e| link_error(t, e))?;
-    if m.access & 0x0080 != 0 && m.is_native() && !m.is_static() {
-        return Err(throw_new(t, "java/lang/UnsupportedOperationException", "signature-polymorphic call"));
+    if m.is_signature_polymorphic() {
+        return if m.is_static() { super::indy::invoke_link_to(t, f, m) } else { super::indy::invoke_polymorphic(t, f, m) };
     }
     let n = m.param_slots() as usize;
     // SAFETY: the operand stack holds the n argument slots.
@@ -370,10 +378,6 @@ fn special_target(current: &'static Klass, m: &'static Method) -> &'static Metho
         .unwrap_or(m)
 }
 
-pub(super) fn invokedynamic(t: &mut Thread, f: &mut Frame) -> JResult<()> {
-    let _ = f;
-    Err(throw_new(t, "java/lang/UnsupportedOperationException", "invokedynamic is not linked yet"))
-}
 
 pub(super) fn new_object(t: &mut Thread, f: &mut Frame) -> JResult<()> {
     let k = f.holder().resolve_class(t, f.u2(f.pc + 1)).map_err(|e| link_error(t, e))?;

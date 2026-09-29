@@ -56,9 +56,7 @@ pub(super) fn register(r: &mut NativeRegistry) {
             None => ret_ref(std::ptr::null_mut()),
         }
     });
-    r.add("java/lang/Class", "getModifiers", "()I", |_, a| {
-        ret_int(rt::klass_of_mirror(a[0] as Oop).map_or(0x0411, |k| k.access as i32 & 0x0e1f))
-    });
+    r.add("java/lang/Class", "getModifiers", "()I", |_, a| ret_int(class_modifiers(rt::klass_of_mirror(a[0] as Oop))));
     r.add("java/lang/Class", "initClassName", "()Ljava/lang/String;", class_init_name);
     r.add("java/lang/Float", "floatToRawIntBits", "(F)I", |_, a| ret_int(a[0] as u32 as i32));
     r.add("java/lang/Float", "intBitsToFloat", "(I)F", |_, a| Ok(a[0] as u32 as u64));
@@ -75,6 +73,28 @@ pub(super) fn register(r: &mut NativeRegistry) {
     r.add("jdk/internal/misc/CDS", "initializeFromArchive", "(Ljava/lang/Class;)V", |_, _| ret_void());
     r.add("jdk/internal/misc/CDS", "getRandomSeedForDumping", "()J", |_, _| ret_long(0));
     super::throwable::register(r);
+}
+
+/// `Class.getModifiers` (HotSpot `JVM_GetClassModifiers`): the `InnerClasses` flags for a
+/// member class, else the written class flags; arrays take their element's visibility.
+pub(crate) fn class_modifiers(k: Option<&'static crate::klass::Klass>) -> i32 {
+    const PUBLIC_ABSTRACT_FINAL: i32 = 0x0411;
+    let Some(k) = k else { return PUBLIC_ABSTRACT_FINAL };
+    match k.kind {
+        KlassKind::TypeArray { .. } => PUBLIC_ABSTRACT_FINAL,
+        KlassKind::ObjArray { elem } => (class_modifiers(Some(elem)) & 0x0007) | 0x0410,
+        KlassKind::Instance => {
+            let cf = k.cf.as_ref().unwrap();
+            let inner = cf.attr("InnerClasses").and_then(|a| {
+                let b = cf.attr_bytes(a);
+                let n = u16::from_be_bytes([b[0], b[1]]) as usize;
+                (0..n).map(|i| &b[2 + 8 * i..10 + 8 * i]).find_map(|e| {
+                    (cf.class_name(u16::from_be_bytes([e[0], e[1]])) == Some(cf.name)).then(|| u16::from_be_bytes([e[6], e[7]]))
+                })
+            });
+            (inner.unwrap_or(k.access & 0x7631) & !0x0020) as i32
+        }
+    }
 }
 
 const HASH_SHIFT: u32 = 8;
@@ -187,8 +207,7 @@ fn nanos_since_epoch() -> u128 {
 fn class_init_name(t: &mut Thread, a: &[u64]) -> JResult<u64> {
     let mirror = a[0] as Oop;
     let name = match rt::klass_of_mirror(mirror) {
-        Some(k) if k.is_array() => k.name.as_str().replace('/', "."),
-        Some(k) => k.name.as_str().replace('/', "."),
+        Some(k) => k.java_name(),
         None => primitive_name(rt::primitive_type_of_mirror(mirror)),
     };
     let s = rt::intern_str(t, &name)?;

@@ -6,7 +6,7 @@ use crate::classfile::ClassFile;
 use crate::heap::{obj, Oop};
 use crate::klass::Klass;
 use crate::link::LinkError;
-use crate::runtime::{self as rt, throw_new};
+use crate::runtime::{self as rt, throw_new, vm_field};
 use crate::symbol::Symbol;
 use crate::thread::{JResult, Thread};
 use crate::vm::vm;
@@ -20,6 +20,12 @@ pub(super) fn register(r: &mut NativeRegistry) {
         "defineClass1",
         "(Ljava/lang/ClassLoader;Ljava/lang/String;[BIILjava/security/ProtectionDomain;Ljava/lang/String;)Ljava/lang/Class;",
         define_class1,
+    );
+    r.add(
+        CL,
+        "defineClass0",
+        "(Ljava/lang/ClassLoader;Ljava/lang/Class;Ljava/lang/String;[BIILjava/security/ProtectionDomain;ZILjava/lang/Object;)Ljava/lang/Class;",
+        define_class0,
     );
     r.add(CL, "findBootstrapClass", "(Ljava/lang/String;)Ljava/lang/Class;", |t, a| {
         let name = internal_name(a[0] as Oop);
@@ -90,6 +96,34 @@ pub(crate) fn define_from_bytes(t: &mut Thread, loader: Oop, bytes: &'static [u8
         return Err(throw_new(t, "java/lang/LinkageError", &msg));
     }
     vm().define_class(t, cf, loader).map_err(|e| rt::link_error(t, e))
+}
+
+vm_field!(class_data, "java/lang/Class", "classData", "Ljava/lang/Object;");
+
+/// `Lookup.defineClass` / `defineHiddenClass` (flags: 1 nestmate, 2 hidden).
+fn define_class0(t: &mut Thread, a: &[u64]) -> JResult<u64> {
+    let (loader, lookup, bytes, off, len) = (a[0] as Oop, a[1] as Oop, a[3] as Oop, a[4] as i32, a[5] as i32);
+    let (initialize, flags, data) = (a[7] != 0, a[8] as i32, a[9] as Oop);
+    // SAFETY: byte[] argument.
+    let src = unsafe { obj::array_slice::<u8>(bytes) };
+    if off < 0 || len < 0 || off as usize + len as usize > src.len() {
+        return Err(throw_new(t, "java/lang/ArrayIndexOutOfBoundsException", ""));
+    }
+    let owned: &'static [u8] = Box::leak(src[off as usize..(off + len) as usize].to_vec().into_boxed_slice());
+    let k = if flags & 2 != 0 {
+        let cf = ClassFile::parse(owned).map_err(|e| throw_new(t, "java/lang/ClassFormatError", e.0))?;
+        let host = if flags & 1 != 0 { rt::klass_of_mirror(lookup).map(|l| l.nest_host(t)) } else { None };
+        vm().define_hidden_class(t, cf, loader, host).map_err(|e| rt::link_error(t, e))?
+    } else {
+        define_from_bytes(t, loader, owned, None)?
+    };
+    let mirror = rt::mirror_of(t, k)?;
+    // SAFETY: live Class mirror.
+    unsafe { obj::write::<Oop>(mirror, class_data(), data) };
+    if initialize {
+        rt::initialize(t, k)?;
+    }
+    ret_ref(mirror)
 }
 
 fn for_name0(t: &mut Thread, a: &[u64]) -> JResult<u64> {

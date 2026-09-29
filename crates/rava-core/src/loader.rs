@@ -58,7 +58,7 @@ impl Vm {
         if cf.name != name {
             return Err(LoadError::no_class(&format!("{name} (wrong name: {})", cf.name)));
         }
-        self.define_with(cf, std::ptr::null_mut(), &mut |n| self.load_boot_class(n).map_err(LinkError::from))
+        self.define_with(cf, std::ptr::null_mut(), None, &mut |n| self.load_boot_class(n).map_err(LinkError::from))
             .map_err(|e| match e {
                 LinkError::Load(e) => e,
                 other => LoadError { kind: "java/lang/LinkageError", message: format!("{other:?}") },
@@ -114,13 +114,33 @@ impl Vm {
 
     /// Defines a parsed class for `loader`, resolving its supertypes through that loader.
     pub fn define_class(&'static self, t: &mut Thread, cf: ClassFile, loader: Oop) -> LinkResult<&'static Klass> {
-        self.define_with(cf, loader, &mut |name| self.load_class(t, loader, name))
+        self.define_with(cf, loader, None, &mut |name| self.load_class(t, loader, name))
+    }
+
+    /// Defines a hidden class (`Lookup.defineHiddenClass`): it gets a unique name, is never
+    /// registered by name, and its nest host is `nest_host` when it is a nestmate.
+    pub fn define_hidden_class(
+        &'static self,
+        t: &mut Thread,
+        cf: ClassFile,
+        loader: Oop,
+        nest_host: Option<&'static Klass>,
+    ) -> LinkResult<&'static Klass> {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0x0800_0000);
+        let id = NEXT.fetch_add(0x400, std::sync::atomic::Ordering::Relaxed);
+        let name = Symbol::intern(&format!("{}/0x{id:016x}", cf.name));
+        let k = self.define_with(cf, loader, Some(name), &mut |n| self.load_class(t, loader, n))?;
+        if let Some(h) = nest_host {
+            let _ = k.nest_host.set(h);
+        }
+        Ok(k)
     }
 
     fn define_with(
         &'static self,
         cf: ClassFile,
         loader: Oop,
+        hidden_name: Option<Symbol>,
         resolve: &mut dyn FnMut(Symbol) -> LinkResult<&'static Klass>,
     ) -> LinkResult<&'static Klass> {
         let super_klass = match cf.super_name {
@@ -133,7 +153,7 @@ impl Vm {
         let interfaces = cf.interfaces.iter().map(|&i| resolve(i)).collect::<Result<Vec<_>, _>>()?;
         let layout = FieldLayout::compute(&cf, super_klass);
         let klass: &'static Klass = Box::leak(Box::new(Klass::new(KlassParts {
-            name: cf.name,
+            name: hidden_name.unwrap_or(cf.name),
             kind: KlassKind::Instance,
             access: cf.access,
             super_klass,
@@ -143,7 +163,7 @@ impl Vm {
             ref_offsets: layout.ref_offsets,
             static_slots: layout.static_slots,
             initialized: false,
-            hidden: false,
+            hidden: hidden_name.is_some(),
             cf: Some(cf),
         })));
         klass.loader.store(loader, std::sync::atomic::Ordering::Release);
@@ -152,6 +172,9 @@ impl Vm {
             cf.methods.iter().map(|m| Method::new(klass, m.name, m.desc, m.access, m.code.as_ref())).collect();
         let _ = klass.methods.set(methods);
         let _ = klass.vtable.set(build_vtable(klass));
+        if hidden_name.is_some() {
+            return Ok(klass);
+        }
         self.register_well_known(klass);
         Ok(self.publish(loader, klass))
     }

@@ -4,7 +4,6 @@ use super::{ret_int, ret_ref, NativeRegistry};
 use crate::classfile::Cp;
 use crate::method::Method;
 use crate::runtime::throw_new;
-use crate::symbol::Symbol;
 use crate::types::BasicType;
 use crate::heap::{obj, Oop};
 use crate::klass::Klass;
@@ -27,9 +26,12 @@ pub(super) fn register(r: &mut NativeRegistry) {
         r.add(c, "newInstance0", "(Ljava/lang/reflect/Constructor;[Ljava/lang/Object;)Ljava/lang/Object;", new_instance0);
     }
     r.add("jdk/internal/misc/PreviewFeatures", "isPreviewEnabled", "()Z", |_, _| Ok(0));
-    r.add("jdk/internal/reflect/Reflection", "areNestMates", "(Ljava/lang/Class;Ljava/lang/Class;)Z", |_, a| {
+    r.add("jdk/internal/reflect/Reflection", "areNestMates", "(Ljava/lang/Class;Ljava/lang/Class;)Z", |t, a| {
         let (x, y) = (rt::klass_of_mirror(a[0] as Oop), rt::klass_of_mirror(a[1] as Oop));
-        Ok(matches!((x, y), (Some(x), Some(y)) if nest_host_name(x) == nest_host_name(y) && std::ptr::eq(x.loader(), y.loader())) as u64)
+        Ok(match (x, y) {
+            (Some(x), Some(y)) => std::ptr::eq(x.nest_host(t), y.nest_host(t)),
+            _ => false,
+        } as u64)
     });
     const CP: &str = "jdk/internal/reflect/ConstantPool";
     r.add(CP, "getSize0", "(Ljava/lang/Object;)I", |_, a| ret_int(cp_class(a).cf.as_ref().map_or(0, |cf| cf.pool.len()) as i32));
@@ -103,13 +105,14 @@ fn pool_entry(a: &[u64]) -> Cp {
     cp_class(a).cf.as_ref().and_then(|cf| cf.pool.get(a[2] as usize).copied()).unwrap_or(Cp::Empty)
 }
 
-fn nest_host_name(k: &'static Klass) -> Symbol {
-    k.cf.as_ref()
-        .and_then(|cf| {
-            let b = cf.attr_bytes(cf.attr("NestHost")?);
-            cf.class_name(u16::from_be_bytes([b[0], b[1]]))
-        })
-        .unwrap_or(k.name)
+/// The `Method` behind a `java.lang.reflect.Method` or `Constructor`.
+pub(crate) fn executable_of(r: Oop) -> &'static Method {
+    // SAFETY: live reflection object.
+    if unsafe { obj::klass(r) }.name == "java/lang/reflect/Constructor" {
+        executable(r, ctor_clazz(), ctor_slot())
+    } else {
+        executable(r, method_clazz(), method_slot())
+    }
 }
 
 /// The `Method` a reflective `Method`/`Constructor` object denotes.
