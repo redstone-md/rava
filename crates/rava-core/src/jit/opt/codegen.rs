@@ -356,37 +356,46 @@ impl Gen<'_> {
             self.call_preserving(runtime::safepoint as *const () as usize, &[Arg::Thread]);
             self.a.jmp(back);
         }
-        for (l, s) in std::mem::take(&mut self.deopt_list) {
-            self.a.bind(l);
-            self.deopt_stub(&s);
+        let common = self.a.new_label();
+        let list = std::mem::take(&mut self.deopt_list);
+        for (l, s) in &list {
+            self.a.bind(*l);
+            self.deopt_stub(s, common);
+        }
+        if !list.is_empty() {
+            self.deopt_common(common);
         }
     }
 
-    /// Writes the state of every scope into the frame, then finishes the method in the
-    /// interpreter.
-    fn deopt_stub(&mut self, s: &State) {
+    /// A deoptimization point: its descriptor (where each frame slot's value is) into rdx, then
+    /// the method's common stub.
+    fn deopt_stub(&mut self, s: &State, common: Label) {
         let scopes = scopes(s);
+        let mut slots = Vec::new();
         for sc in &scopes {
-            for (i, v) in sc.locals.iter().enumerate() {
-                if let Some(v) = *v {
-                    self.store_val(self.slot(sc.frame + i as i32), v);
-                }
-            }
             let base = Self::stack_base_of(sc);
-            for (i, v) in sc.stack.iter().enumerate() {
-                if let Some(v) = *v {
-                    self.store_val(self.slot(base + i as i32), v);
-                }
-            }
+            let locals = sc.locals.iter().enumerate().map(|(i, v)| (sc.frame + i as i32, v));
+            let stack = sc.stack.iter().enumerate().map(|(i, v)| (base + i as i32, v));
+            slots.extend(locals.chain(stack).filter_map(|(slot, v)| v.map(|v| (slot, self.loc[v as usize]))));
         }
-        let frames: Vec<super::deopt::Frame> =
-            scopes.iter().map(|sc| super::deopt::Frame { method: sc.method, frame: sc.frame, bci: sc.bci, depth: sc.stack.len() as u32 }).collect();
-        let frames: &'static [super::deopt::Frame] = Box::leak(frames.into_boxed_slice());
+        let frames = scopes.iter().map(|sc| super::deopt::Frame { method: sc.method, frame: sc.frame, bci: sc.bci, depth: sc.stack.len() as u32 }).collect();
+        let desc: &'static super::deopt::Desc = Box::leak(Box::new(super::deopt::Desc { frames, slots }));
+        self.a.mov_ri(R::Rdx, desc as *const _ as i64);
+        self.a.jmp(common);
+    }
+
+    /// Saves the allocatable registers where the runtime reads the state's values from, then
+    /// finishes the method in the interpreter (`deopt.rs`).
+    fn deopt_common(&mut self, common: Label) {
+        self.a.bind(common);
+        for r in super::deopt::SAVED {
+            self.a.push(r);
+        }
         self.a.mov_rr(true, R::Rdi, R::R12);
         self.a.mov_rr(true, R::Rsi, R::R13);
-        self.a.mov_ri(R::Rdx, frames.as_ptr() as i64);
-        self.a.mov_ri(R::Rcx, frames.len() as i64);
+        self.a.mov_rr(true, R::Rcx, R::Rsp);
         self.a.call_abs(super::deopt::deopt as *const () as usize);
+        self.a.alu_ri(true, Alu::Add, R::Rsp, 8 * super::deopt::SAVED.len() as i32);
         self.a.jmp(self.epilogue);
     }
 }
