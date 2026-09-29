@@ -203,7 +203,6 @@ impl Space {
             // SAFETY: free cells of a page in use, handed to the caller only now.
             unsafe { std::ptr::write_bytes(start as *mut u8, 0, stop - start) };
         }
-        self.allocated_since_gc += stop - start;
         Some((start, stop))
     }
 

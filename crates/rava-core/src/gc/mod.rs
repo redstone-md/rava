@@ -14,12 +14,14 @@ use space::{class_of, Space, CLASSES, CLASS_SIZES, LARGE_THRESHOLD, PAGE_SIZE};
 use std::sync::Mutex;
 
 /// A thread's allocation cache for one size class: a zeroed bump range (a run of free cells) in
-/// an owned page, `page` being that page's index + 1 (0 = none yet).
+/// an owned page, `page` being that page's index + 1 (0 = none yet), and where the run started
+/// (what was bumped since is counted as allocated when the run is retired).
 #[derive(Clone, Copy, Default)]
 pub struct ClassCache {
     bump: usize,
     end: usize,
     page: usize,
+    start: usize,
 }
 
 pub struct AllocCache {
@@ -86,13 +88,18 @@ impl Heap {
     /// The next run of free cells for `t`'s `class` cache: the rest of its page, else a new page.
     #[cold]
     fn refill(&self, t: &mut Thread, class: usize) -> Option<()> {
-        let owned = t.alloc.classes[class].page;
-        if owned != 0 {
-            if let Some((bump, end)) = self.space.lock().unwrap().next_run(owned - 1) {
-                t.alloc.classes[class] = ClassCache { bump, end, page: owned };
-                return Some(());
+        let retired = t.alloc.classes[class];
+        {
+            let mut space = self.space.lock().unwrap();
+            space.allocated_since_gc += retired.bump - retired.start;
+            if retired.page != 0 {
+                if let Some((bump, end)) = space.next_run(retired.page - 1) {
+                    t.alloc.classes[class] = ClassCache { bump, end, page: retired.page, start: bump };
+                    return Some(());
+                }
             }
         }
+        t.alloc.classes[class] = ClassCache::default();
         self.maybe_collect(t);
         let mut space = self.space.lock().unwrap();
         let page = match space.take_page(class) {
@@ -105,7 +112,7 @@ impl Heap {
             }
         };
         let (bump, end) = space.next_run(page).expect("a taken page has free cells");
-        t.alloc.classes[class] = ClassCache { bump, end, page: page + 1 };
+        t.alloc.classes[class] = ClassCache { bump, end, page: page + 1, start: bump };
         Some(())
     }
 
