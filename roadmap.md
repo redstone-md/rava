@@ -1174,5 +1174,19 @@ initialization-order proof is present. An offline parse of this server jar's
 `Blocks.<clinit>` found 3,537 direct field accesses, 6,282 calls, 1,029 dynamic
 sites, and 1,029 unknown sites. This is a direct-effect inventory, not a count
 of safe work; notably, method calls carry the bulk of the remaining closure.
-Focused synthetic tests and the ignored jar-backed scan pass. No runtime module
-or admission path is changed.
+Focused synthetic tests and the ignored jar-backed scan pass. Observer types and
+plumbing are `cfg(test)`; product builds contain no added observer code or
+admission-path change.
+
+The same test-only harness now wraps the existing freshness transfer functions
+with an optional observer. It records field/array target freshness, receiver
+freshness, direct call edges, the exact/closure `CalleeQuery`, dynamic-site
+resolution, and thrown-value freshness. Emission is before the existing refusal;
+the original `Result` and every admission branch remain untouched. Reports retain
+the first rejection and set `body_walk_complete=false`; the interpreter is not
+resumed after a refusal because its current single-pass stack state is no longer
+sound for later instructions. Synthetic checks distinguish a fresh `putfield`,
+a shared-array refusal, and an exact static-call query. On `Blocks.<clinit>`, the
+freshness walk records two facts then stops at `putstatic@5`. Every following
+instruction is Unknown in that report; the direct scanner remains the complete
+inventory. Neither report makes an admission or parallel-safety claim.
