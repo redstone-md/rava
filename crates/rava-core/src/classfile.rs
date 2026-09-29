@@ -304,7 +304,13 @@ fn parse_pool(r: &mut Reader) -> Result<Vec<Cp>> {
                 let len = r.u2()?;
                 let at = r.pos as u32;
                 let raw = r.take(len as usize)?;
-                Cp::Utf8 { sym: Symbol::intern(&modified_utf8_to_string(raw)), at, len }
+                let sym = if raw.iter().all(|&b| b != 0 && b < 0x80) {
+                    // SAFETY: non-NUL ASCII is valid UTF-8 and identical in modified UTF-8.
+                    Symbol::intern(unsafe { std::str::from_utf8_unchecked(raw) })
+                } else {
+                    Symbol::intern(&modified_utf8_to_string(raw))
+                };
+                Cp::Utf8 { sym, at, len }
             }
             3 => Cp::Int(r.u4()? as i32),
             4 => Cp::Float(f32::from_bits(r.u4()?)),

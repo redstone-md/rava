@@ -4,16 +4,51 @@
 
 use std::collections::HashSet;
 use std::fmt;
-use std::hash::{Hash, Hasher};
+use std::hash::{BuildHasherDefault, Hash, Hasher};
 use std::sync::{Mutex, OnceLock};
+
+/// FxHash (rustc's hasher): a multiply-rotate per word, fine for names and addresses.
+#[derive(Default, Clone, Copy)]
+pub struct FxHasher(u64);
+
+impl Hasher for FxHasher {
+    #[inline]
+    fn write(&mut self, bytes: &[u8]) {
+        let mut chunks = bytes.chunks_exact(8);
+        for c in &mut chunks {
+            self.write_u64(u64::from_le_bytes(c.try_into().unwrap()));
+        }
+        let mut tail = [0u8; 8];
+        tail[..chunks.remainder().len()].copy_from_slice(chunks.remainder());
+        self.write_u64(u64::from_le_bytes(tail) ^ bytes.len() as u64);
+    }
+    #[inline]
+    fn write_u64(&mut self, v: u64) {
+        self.0 = (self.0.rotate_left(5) ^ v).wrapping_mul(0x51_7c_c1_b7_27_22_0a_95);
+    }
+    #[inline]
+    fn write_usize(&mut self, v: usize) {
+        self.write_u64(v as u64);
+    }
+    fn finish(&self) -> u64 {
+        self.0
+    }
+}
+
+pub type FxBuild = BuildHasherDefault<FxHasher>;
 
 #[derive(Clone, Copy)]
 pub struct Symbol(&'static str);
 
 impl Symbol {
     pub fn intern(text: &str) -> Symbol {
-        static TABLE: OnceLock<Mutex<HashSet<&'static str>>> = OnceLock::new();
-        let mut table = TABLE.get_or_init(Default::default).lock().unwrap();
+        const SHARDS: usize = 32;
+        type Shard = Mutex<HashSet<&'static str, BuildHasherDefault<FxHasher>>>;
+        static TABLE: OnceLock<Vec<Shard>> = OnceLock::new();
+        let shards = TABLE.get_or_init(|| (0..SHARDS).map(|_| Mutex::new(HashSet::default())).collect());
+        let mut h = FxHasher::default();
+        h.write(text.as_bytes());
+        let mut table = shards[h.finish() as usize % SHARDS].lock().unwrap();
         if let Some(&existing) = table.get(text) {
             return Symbol(existing);
         }
