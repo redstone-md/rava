@@ -54,6 +54,7 @@ impl Emitter {
             0xba => self.invokedynamic(pc, depth),
             0xbb => self.new_object(pc, depth),
             0xbc | 0xbd => self.new_array(pc, depth, op),
+            0xc2 | 0xc3 => self.monitor(pc, depth, op == 0xc2),
             // athrow, monitors, multianewarray and anything unresolved: the interpreter's
             // implementation, on this frame.
             _ => self.defer(pc, depth),
@@ -114,6 +115,9 @@ impl Emitter {
                     self.cf.pool[index as usize],
                     crate::classfile::Cp::String(_) | crate::classfile::Cp::MethodType(_) | crate::classfile::Cp::MethodHandle { .. }
                 ) => self.const64(d, *o as i64),
+                Some(Resolved::Class(k)) if matches!(self.cf.pool[index as usize], crate::classfile::Cp::Class(_)) && !k.mirror().is_null() => {
+                    self.const64(d, k.mirror() as i64)
+                }
                 _ => self.defer_unresolved(pc, depth),
             },
         }

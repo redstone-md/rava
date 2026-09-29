@@ -59,14 +59,7 @@ impl Emitter {
 
     /// Jumps to `slow` unless `k` is initialized (the slow path initializes it).
     pub(super) fn init_check(&mut self, k: &'static Klass, slow: Label) {
-        if k.init.state() == InitState::Initialized {
-            return;
-        }
-        let state = offset_of!(Klass, init) + crate::klass::InitLock::state_offset();
-        self.a.mov_ri(R::Rsi, k as *const Klass as i64);
-        self.a.load_zx(1, R::Rsi, mem(R::Rsi, state as i32));
-        self.a.alu_ri(false, Alu::Cmp, R::Rsi, InitState::Initialized as i32);
-        self.a.jcc(Cond::Ne, slow);
+        init_check(&mut self.a, k, R::Rsi, slow);
     }
 
     /// With the object's class in `rdi`: sets `rax` to 1 if it is a subtype of `k`, else 0.
@@ -83,6 +76,20 @@ impl Emitter {
         self.a.jcc(Cond::E, done);
         self.a.call_abs(runtime::subtype_cached as *const () as usize);
         self.a.bind(done);
+    }
+
+    /// `monitorenter` / `monitorexit`: the thin-lock fast paths; anything else (null,
+    /// recursion, contention) runs in the interpreter.
+    pub(super) fn monitor(&mut self, pc: usize, depth: u16, enter: bool) {
+        let slow = self.slow_path(pc, depth);
+        self.a.load(true, R::Rcx, self.stk(depth as i32 - 1));
+        self.a.test_rr(true, R::Rcx, R::Rcx);
+        self.a.jcc(Cond::E, slow);
+        if enter {
+            monitor_enter_fast(&mut self.a, R::Rcx, slow);
+        } else {
+            monitor_exit_fast(&mut self.a, R::Rcx, slow);
+        }
     }
 
     pub(super) fn checkcast(&mut self, pc: usize, depth: u16) {
@@ -188,6 +195,61 @@ impl Emitter {
         self.a.load(true, R::Rdx, value);
         self.a.bind(ok);
     }
+}
+
+/// Jumps to `slow` unless `k` is initialized or being initialized by this thread (`r12`), using
+/// `scratch`.
+pub(super) fn init_check(a: &mut Asm, k: &'static Klass, scratch: R, slow: Label) {
+    if k.init.state() == InitState::Initialized {
+        return;
+    }
+    let lock = offset_of!(Klass, init);
+    let ok = a.new_label();
+    a.mov_ri(scratch, k as *const Klass as i64);
+    a.cmp8_mi(mem(scratch, (lock + crate::klass::InitLock::state_offset()) as i32), InitState::Initialized as u8);
+    a.jcc(Cond::E, ok);
+    a.alu_rm(true, Alu::Cmp, R::R12, mem(scratch, (lock + crate::klass::InitLock::initializer_offset()) as i32));
+    a.jcc(Cond::Ne, slow);
+    a.bind(ok);
+}
+
+/// Takes the thin lock of the non-null object in `o` (not rax, rdx or r11) when it is unlocked,
+/// else jumps to `slow` (recursion, contention, inflated monitors).
+pub(super) fn monitor_enter_fast(a: &mut Asm, o: R, slow: Label) {
+    use crate::sync::{HASH_BITS, OWNER_SHIFT, THIN};
+    let mark = mem(o, 8);
+    a.load(true, R::Rax, mark);
+    a.mov_rr(false, R::Rdx, R::Rax);
+    a.alu_ri(false, Alu::And, R::Rdx, 3);
+    a.jcc(Cond::Ne, slow);
+    a.load(true, R::Rdx, mem(R::R12, offset_of!(crate::thread::Thread, lock_token) as i32));
+    a.shift_ri(true, super::asm::Shift::Shl, R::Rdx, OWNER_SHIFT as u8);
+    a.alu_ri(true, Alu::Or, R::Rdx, THIN as i32);
+    a.mov_ri(R::R11, HASH_BITS as i64);
+    a.alu_rr(true, Alu::And, R::R11, R::Rax);
+    a.alu_rr(true, Alu::Or, R::Rdx, R::R11);
+    a.lock_cmpxchg(mark, R::Rdx);
+    a.jcc(Cond::Ne, slow);
+}
+
+/// Releases the thin lock this thread holds once on the non-null object in `o` (not rax or
+/// rdx), else jumps to `slow`.
+pub(super) fn monitor_exit_fast(a: &mut Asm, o: R, slow: Label) {
+    use crate::sync::{HASH_BITS, OWNER_SHIFT, THIN};
+    let mark = mem(o, 8);
+    a.load(true, R::Rax, mark);
+    a.mov_rr(false, R::Rdx, R::Rax);
+    a.alu_ri(false, Alu::And, R::Rdx, 0xff);
+    a.alu_ri(false, Alu::Cmp, R::Rdx, THIN as i32);
+    a.jcc(Cond::Ne, slow);
+    a.mov_rr(true, R::Rdx, R::Rax);
+    a.shift_ri(true, super::asm::Shift::Shr, R::Rdx, OWNER_SHIFT as u8);
+    a.alu_rm(true, Alu::Cmp, R::Rdx, mem(R::R12, offset_of!(crate::thread::Thread, lock_token) as i32));
+    a.jcc(Cond::Ne, slow);
+    a.mov_ri(R::Rdx, HASH_BITS as i64);
+    a.alu_rr(true, Alu::And, R::Rdx, R::Rax);
+    a.lock_cmpxchg(mark, R::Rdx);
+    a.jcc(Cond::Ne, slow);
 }
 
 /// Loads a field of type `ty` at `m` into rax in slot encoding.

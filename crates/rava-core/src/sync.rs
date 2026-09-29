@@ -17,13 +17,13 @@ use std::time::Duration;
 
 const STATE_MASK: u64 = 0b11;
 const UNLOCKED: u64 = 0;
-const THIN: u64 = 1;
+pub(crate) const THIN: u64 = 1;
 const INFLATED: u64 = 2;
 const COUNT_SHIFT: u32 = 2;
 const COUNT_MASK: u64 = 0x3f << COUNT_SHIFT;
-const OWNER_SHIFT: u32 = 40;
+pub(crate) const OWNER_SHIFT: u32 = 40;
 /// Bits a lock transition must preserve (the identity hash).
-const HASH_BITS: u64 = 0xff_ffff_ff00;
+pub(crate) const HASH_BITS: u64 = 0xff_ffff_ff00;
 
 fn mark(o: Oop) -> &'static AtomicU64 {
     // SAFETY: callers pass live objects.

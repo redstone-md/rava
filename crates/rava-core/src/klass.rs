@@ -57,13 +57,16 @@ pub enum InitState {
 /// JVMS 5.5 initialization lock.
 pub struct InitLock {
     state: AtomicU8,
+    /// The `Thread` running the initializers while `BeingInitialized` (0 otherwise), so compiled
+    /// code of that thread can use the class as initialized (JVMS 5.5 step 3).
+    initializer: std::sync::atomic::AtomicUsize,
     pub(crate) owner: Mutex<Option<ThreadId>>,
     pub(crate) cv: Condvar,
 }
 
 impl InitLock {
     fn new(state: InitState) -> Self {
-        Self { state: AtomicU8::new(state as u8), owner: Mutex::new(None), cv: Condvar::new() }
+        Self { state: AtomicU8::new(state as u8), initializer: Default::default(), owner: Mutex::new(None), cv: Condvar::new() }
     }
 
     #[inline(always)]
@@ -83,6 +86,15 @@ impl InitLock {
 
     pub(crate) fn set(&self, s: InitState) {
         self.state.store(s as u8, Ordering::Release)
+    }
+
+    /// Byte offset of the initializing thread, read by generated code.
+    pub(crate) const fn initializer_offset() -> usize {
+        std::mem::offset_of!(InitLock, initializer)
+    }
+
+    pub(crate) fn set_initializer(&self, t: usize) {
+        self.initializer.store(t, Ordering::Relaxed)
     }
 }
 

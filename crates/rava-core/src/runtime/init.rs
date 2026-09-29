@@ -41,6 +41,7 @@ fn initialize_slow(t: &mut Thread, k: &'static Klass) -> JResult<()> {
                 return Err(throw_new(t, "java/lang/NoClassDefFoundError", &msg));
             }
             InitState::Linked => {
+                k.init.set_initializer(t as *const Thread as usize);
                 k.init.set(InitState::BeingInitialized);
                 *owner = Some(me);
                 break;
@@ -50,6 +51,7 @@ fn initialize_slow(t: &mut Thread, k: &'static Klass) -> JResult<()> {
     let result = run_initializers(t, k);
     let mut owner = k.init.owner.lock().unwrap();
     *owner = None;
+    k.init.set_initializer(0);
     k.init.set(if result.is_ok() { InitState::Initialized } else { InitState::Erroneous });
     k.init.cv.notify_all();
     drop(owner);
