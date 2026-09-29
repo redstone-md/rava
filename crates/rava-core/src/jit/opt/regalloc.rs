@@ -216,7 +216,8 @@ fn liveness(g: &Graph, order: &[B]) -> Vec<Set> {
     }
 }
 
-/// Assigns registers in interval start order, spilling the interval that ends last.
+/// Assigns registers in interval start order, spilling the interval that ends last. A value
+/// may share its first operand's register when that operand dies at its definition.
 fn scan(g: &Graph, iv: &Intervals) -> (Vec<Loc>, i32) {
     let n = g.values.len();
     let mut loc = vec![Loc::None; n];
@@ -236,6 +237,23 @@ fn scan(g: &Graph, iv: &Intervals) -> (Vec<Loc>, i32) {
         let crossing = iv.crosses_call(v);
         let taken = |r: R, active: &[usize], loc: &[Loc]| active.iter().any(|&a| loc[a] == Loc::Reg(r));
         let pools: &[&[R]] = if crossing { &[&CALLEE_SAVED] } else { &[&CALLER_SAVED, &CALLEE_SAVED] };
+        let allowed = |r: R| pools.iter().any(|p| p.contains(&r));
+        // Coalescing: the result takes the register of its first operand when that dies here
+        // (code generation computes into the first operand's register).
+        let first = match g.values[v].inst {
+            Inst::Phi(_) => None,
+            ref inst => inputs(g, inst).first().copied(),
+        };
+        let hint = first.filter(|&x| iv.end[x as usize] == iv.start[v]).and_then(|x| match loc[x as usize] {
+            Loc::Reg(r) if allowed(r) && !active.iter().any(|&a| a != x as usize && loc[a] == Loc::Reg(r)) => Some((x as usize, r)),
+            _ => None,
+        });
+        if let Some((x, r)) = hint {
+            loc[v] = Loc::Reg(r);
+            active.retain(|&a| a != x);
+            active.push(v);
+            continue;
+        }
         let free = pools.iter().flat_map(|p| p.iter()).copied().find(|&r| !taken(r, &active, &loc));
         if let Some(r) = free {
             loc[v] = Loc::Reg(r);
@@ -243,7 +261,6 @@ fn scan(g: &Graph, iv: &Intervals) -> (Vec<Loc>, i32) {
             continue;
         }
         // Steal from the active interval ending last, if it outlives this one.
-        let allowed = |r: R| pools.iter().any(|p| p.contains(&r));
         let victim = active.iter().copied().filter(|&a| matches!(loc[a], Loc::Reg(r) if allowed(r))).max_by_key(|&a| iv.end[a]);
         match victim {
             Some(a) if iv.end[a] > iv.end[v] => {
