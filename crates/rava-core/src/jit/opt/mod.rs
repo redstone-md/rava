@@ -3,6 +3,7 @@
 //! not support are refused and keep the baseline compiler's code. See `docs/core/opt-tier.md`.
 
 mod build;
+mod build_mh;
 mod build_ops;
 mod codegen;
 mod codegen_intr;

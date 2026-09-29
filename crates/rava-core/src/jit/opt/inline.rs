@@ -14,7 +14,7 @@ use std::rc::Rc;
 
 /// What the inlined body assumes about the receiver.
 #[derive(Clone, Copy)]
-enum Guard {
+pub(super) enum Guard {
     /// Nothing: the target is statically bound.
     None,
     /// The receiver's vtable entry `index` is the target.
@@ -39,12 +39,18 @@ impl Builder {
     /// after the pop) as an inlined body when possible, else as a call. Returns whether the
     /// current block continues (false when every path through the callee left compiled code).
     pub(super) fn call_or_inline(&mut self, pc: usize, op: u8, m: &'static Method, callee: Callee, args: Vec<V>, s: Rc<State>) -> bool {
-        let ret = m.sig.ret;
+        let plan = self.inline_target(pc, op, m);
+        self.emit_call(plan, callee, args, s, m.sig.ret)
+    }
+
+    /// The call `callee(args)` returning `ret`, with `plan` (a target and what it needs checked)
+    /// inlined when the policy agrees. Returns whether the current block continues.
+    pub(super) fn emit_call(&mut self, plan: Option<(&'static Method, Guard)>, callee: Callee, args: Vec<V>, s: Rc<State>, ret: BasicType) -> bool {
         let first = args.first().and_then(|&a| self.g.constant(a));
-        let plan = self.inline_target(pc, op, m).filter(|&(t, _)| decide(t, first, &self.chain, 2, self.spent).is_some());
+        let plan = plan.filter(|&(t, _)| decide(t, first, &self.chain, 2, self.spent).is_some());
         if std::env::var_os("RAVA_CORE_INLINE_LOG").is_some() {
             let indent = "  ".repeat(self.chain.len());
-            eprintln!("[opt-inline] {indent}{} @{pc} -> {m} {}", self.sc.m, if plan.is_some() { "inlined" } else { "call" });
+            eprintln!("[opt-inline] {indent}{} @{} -> {callee:?} {}", self.sc.m, s.bci, if plan.is_some() { "inlined" } else { "call" });
         }
         let Some((target, guard)) = plan else {
             self.call_push(callee, args, s, ret);

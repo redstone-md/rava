@@ -100,8 +100,9 @@ impl Builder {
                 return Some(false);
             }
             0xb2..=0xb5 => self.field(pc, op)?,
-            0xb6..=0xb9 => {
-                if !self.invoke(pc, op)? {
+            0xb6..=0xb9 | 0xba => {
+                let continues = if op == 0xba { self.invokedynamic(pc)? } else { self.invoke(pc, op)? };
+                if !continues {
                     return Some(false);
                 }
             }
@@ -143,6 +144,19 @@ impl Builder {
                 let Some(Resolved::Class(k)) = self.resolved(self.u2(pc)) else { return None };
                 let s = self.state();
                 let v = self.pop();
+                if let Some(o) = self.g.constant(v) {
+                    let is = o != 0 && crate::jit::fold::class_of(o as usize).is_subtype_of(k);
+                    match op {
+                        0xc1 => self.push_const(Ty::I, is as i64),
+                        _ if o == 0 || is => self.push(v),
+                        _ => {
+                            self.push(v);
+                            self.deopt();
+                            return Some(false);
+                        }
+                    }
+                    return Some(true);
+                }
                 let r = if op == 0xc0 { self.add(Inst::CheckCast(v, k, s), Ty::A) } else { self.add(Inst::InstanceOf(v, k), Ty::I) };
                 self.push(r);
             }
@@ -326,7 +340,25 @@ impl Builder {
     }
 
     fn field(&mut self, pc: usize, op: u8) -> Option<()> {
-        match (op, self.resolved(self.u2(pc))?) {
+        // Constant fields fold (`jit/fold.rs`).
+        let index = self.u2(pc);
+        let resolved = self.resolved(index)?;
+        let folded = match (op, resolved) {
+            (0xb2, Resolved::StaticField { .. }) => crate::jit::fold::static_field(self.sc.m, index),
+            (0xb4, Resolved::InstanceField { .. }) => {
+                let o = self.sc.stack.last().copied().flatten().and_then(|v| self.g.constant(v));
+                o.and_then(|o| crate::jit::fold::instance_field(self.sc.m, index, o as usize))
+            }
+            _ => None,
+        };
+        if let (Some(c), Resolved::StaticField { ty, .. } | Resolved::InstanceField { ty, .. }) = (folded, resolved) {
+            if op == 0xb4 {
+                self.pop();
+            }
+            self.push_const(Ty::of(ty), c);
+            return Some(());
+        }
+        match (op, resolved) {
             (0xb2, Resolved::StaticField { holder, slot, ty }) => {
                 let s = self.state();
                 self.init_check(holder, &s);
@@ -361,7 +393,11 @@ impl Builder {
     /// Returns whether the current block continues after the call.
     fn invoke(&mut self, pc: usize, op: u8) -> Option<bool> {
         let Resolved::Method(m) = self.resolved(self.u2(pc))? else { return None };
-        if m.is_signature_polymorphic() || (op == 0xb8) != m.is_static() {
+        if m.is_signature_polymorphic() {
+            let (_, _, desc) = self.sc.cf.member_ref(self.u2(pc))?;
+            return self.polymorphic(pc, op, m, desc);
+        }
+        if (op == 0xb8) != m.is_static() {
             return None;
         }
         // Checks fail before the call (arguments still on the stack); an exception thrown by
