@@ -32,13 +32,35 @@ fn mark(o: Oop) -> &'static AtomicU64 {
 
 const SHARDS: usize = 64;
 
+/// A monitor's owner and wait set. Waiters take consecutive tickets; `notify` releases the
+/// oldest ticket still waiting and `notifyAll` every ticket issued so far, so a notification
+/// always goes to a thread that was waiting when it was sent.
 #[derive(Default)]
 struct State {
     owner: u64,
     count: u32,
-    /// Pending notifications not yet consumed by a waiter.
-    notified: u32,
-    waiters: u32,
+    /// The next ticket to hand out, and every ticket below `released` may leave.
+    next_ticket: u64,
+    released: u64,
+    /// Tickets whose waiter left on its own (timeout, interrupt) before being released.
+    abandoned: Vec<u64>,
+}
+
+impl State {
+    /// Releases the oldest waiting ticket; false if nobody waits.
+    fn release_one(&mut self) -> bool {
+        while self.released < self.next_ticket {
+            let t = self.released;
+            self.released += 1;
+            match self.abandoned.iter().position(|&a| a == t) {
+                Some(i) => {
+                    self.abandoned.swap_remove(i);
+                }
+                None => return true,
+            }
+        }
+        false
+    }
 }
 
 #[derive(Default)]
@@ -245,11 +267,12 @@ fn wait_blocking(o: Oop, millis: i64, interrupted: &dyn Fn() -> bool) -> Result<
     }
     let count = std::mem::replace(&mut s.count, 0);
     s.owner = 0;
-    s.waiters += 1;
+    let ticket = s.next_ticket;
+    s.next_ticket += 1;
     m.entry.notify_one();
     let deadline = (millis > 0).then(|| std::time::Instant::now() + Duration::from_millis(millis as u64));
     let mut was_interrupted = false;
-    while s.notified == 0 {
+    while ticket >= s.released {
         if interrupted() {
             was_interrupted = true;
             break;
@@ -265,10 +288,10 @@ fn wait_blocking(o: Oop, millis: i64, interrupted: &dyn Fn() -> bool) -> Result<
             }
         }
     }
-    if s.notified > 0 && !was_interrupted {
-        s.notified -= 1;
+    if ticket >= s.released {
+        // Left without a notification: a later notify must go to another waiter.
+        s.abandoned.push(ticket);
     }
-    s.waiters -= 1;
     while s.owner != 0 {
         s = m.entry.wait(s).unwrap();
     }
@@ -295,14 +318,17 @@ pub fn notify(o: Oop, all: bool) -> Result<(), WaitError> {
     if s.owner != thread_token() {
         return Err(WaitError::NotOwner);
     }
-    if s.waiters > s.notified {
-        if all {
-            s.notified = s.waiters;
-            m.waiting.notify_all();
-        } else {
-            s.notified += 1;
-            m.waiting.notify_one();
-        }
+    let woke = if all {
+        s.abandoned.clear();
+        let woke = s.released < s.next_ticket;
+        s.released = s.next_ticket;
+        woke
+    } else {
+        s.release_one()
+    };
+    if woke {
+        // Waiters share the condition variable and each checks its own ticket.
+        m.waiting.notify_all();
     }
     Ok(())
 }
@@ -326,6 +352,17 @@ mod tests {
     }
 
     #[test]
+    fn notify_releases_the_oldest_ticket_still_waiting() {
+        // Tickets 0, 1 and 2 wait; 1 timed out.
+        let mut s = State { next_ticket: 3, abandoned: vec![1], ..State::default() };
+        assert!(s.release_one());
+        assert_eq!(s.released, 1);
+        assert!(s.release_one());
+        assert_eq!(s.released, 3);
+        assert!(!s.release_one());
+    }
+
+    #[test]
     fn notify_wakes_a_waiter() {
         let header = Box::leak(Box::new([0u64; 2]));
         let o = header.as_mut_ptr() as Oop;
@@ -340,7 +377,7 @@ mod tests {
         let t = Thread::new();
         loop {
             enter(&t, o);
-            let waiting = monitor_of(o).state.lock().unwrap().waiters;
+            let waiting = monitor_of(o).state.lock().unwrap().next_ticket;
             if waiting == 1 {
                 notify(o, false).unwrap();
                 exit(o);
