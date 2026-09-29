@@ -35,15 +35,18 @@ pub(super) enum Kind {
     Framed,
 }
 
-/// How to inline `target` into the scope chain `chain` (outermost first), if at all.
-pub(super) fn decide(target: &'static Method, chain: &[&'static Method]) -> Option<Kind> {
+/// The bodies being emitted, outermost first, with their first argument when constant.
+pub(super) type Chain = [(&'static Method, Option<i64>)];
+
+/// How to inline `target` (first argument `first`) into `chain`, if at all.
+pub(super) fn decide(target: &'static Method, first: Option<i64>, chain: &Chain) -> Option<Kind> {
     if std::env::var_os("RAVA_CORE_NO_INLINE").is_some() || target.is_abstract() || target.is_native() || intrinsic(target).is_some() {
         return None;
     }
     if is_leaf(target) {
         return Some(Kind::Leaf);
     }
-    framed_ok(target, chain).then_some(Kind::Framed)
+    framed_ok(target, first, chain).then_some(Kind::Framed)
 }
 
 /// The statically bound target of the call at `pc`, excluding method-handle invokers.
@@ -61,9 +64,16 @@ pub(super) fn bound_target(caller: &'static Method, code: &[u8], pc: usize) -> O
     }
 }
 
-fn framed_ok(t: &'static Method, chain: &[&'static Method]) -> bool {
+/// Recursion is refused, except for a lambda-form body applied to a different constant method
+/// handle (HotSpot bounds lambda-form recursion by receiver identity the same way).
+fn recursive(t: &'static Method, first: Option<i64>, chain: &Chain) -> bool {
+    let lambda_form = t.holder.is_hidden() && t.holder.name.as_str().starts_with("java/lang/invoke/LambdaForm$");
+    chain.iter().any(|(c, f)| std::ptr::eq(*c, t) && !(lambda_form && first.is_some() && *f != first))
+}
+
+fn framed_ok(t: &'static Method, first: Option<i64>, chain: &Chain) -> bool {
     let Some(info) = t.code else { return false };
-    if chain.len() > MAX_DEPTH || chain.iter().any(|c| std::ptr::eq(*c, t)) || t.is_synchronized() || !info.handlers.is_empty() {
+    if chain.len() > MAX_DEPTH || recursive(t, first, chain) || t.is_synchronized() || !info.handlers.is_empty() {
         return false;
     }
     if t.has_annotation("Ljdk/internal/vm/annotation/DontInline;") {

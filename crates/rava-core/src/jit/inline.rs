@@ -31,6 +31,10 @@ pub(super) struct InlineCtx {
     pub result: i32,
     /// For framed bodies, the absolute slot of their frame header.
     pub frame: Option<i32>,
+    /// Whether that frame is linked into `Thread::top`. Hidden frames (method-handle plumbing,
+    /// which stack traces and walks leave out anyway) are not: calls made from them link to
+    /// the nearest visible frame, and their slow paths still run on their memory frame.
+    pub linked: bool,
 }
 
 /// The per-body state swapped while emitting a callee in place.
@@ -49,6 +53,19 @@ pub(super) struct Body {
     pub vs: Vec<Slot>,
     pub lregs: Vec<Option<R>>,
     pub slow: Vec<(Label, usize, u16, Vec<(R, i32)>)>,
+    pub lconst_base: Vec<Option<i64>>,
+    pub lconst: Vec<Option<i64>>,
+}
+
+/// The checks before an inlined body; any failure takes the ordinary call sequence.
+#[derive(Clone, Copy)]
+pub(super) enum Entry {
+    /// A static callee: its class must be initialized.
+    Static(&'static Klass),
+    /// A statically bound instance callee: the receiver must not be null.
+    Receiver,
+    /// A virtual callee: the receiver's vtable entry `index` must be this very method.
+    Vtable(i32),
 }
 
 impl Emitter {
@@ -60,16 +77,32 @@ impl Emitter {
     /// Emits `callee` in place for the call at operand slot `args`, after the entry checks (a
     /// null receiver, an uninitialized class) that branch to the ordinary call sequence, which
     /// the caller emits next. Returns the label to bind after that sequence.
-    pub(super) fn inline_call(&mut self, args: i32, callee: &'static Method, kind: Kind, receiver: bool, holder: &'static Klass) -> Option<Label> {
+    /// `consts` are the arguments known to be constant; they stay constant in the callee's
+    /// locals it never writes.
+    pub(super) fn inline_call(&mut self, args: i32, callee: &'static Method, kind: Kind, entry: Entry, consts: &[Option<i64>]) -> Option<Label> {
         let an = analyze(callee)?;
         let info = callee.code?;
         let (restart, done) = (self.a.new_label(), self.a.new_label());
-        if receiver {
-            self.a.load(true, R::Rcx, self.stk(args));
-            self.a.test_rr(true, R::Rcx, R::Rcx);
-            self.a.jcc(super::asm::Cond::E, restart);
-        } else {
-            self.init_check(holder, restart);
+        let unwritten = super::fold::unwritten_locals(callee);
+        let lconst_base: Vec<Option<i64>> = (0..info.max_locals as usize).map(|i| consts.get(i).copied().flatten().filter(|_| unwritten[i])).collect();
+        // At entry every constant argument is known, written later or not.
+        let lconst = (0..info.max_locals as usize).map(|i| consts.get(i).copied().flatten()).collect();
+        let known_receiver = consts.first().copied().flatten().is_some_and(|v| v != 0);
+        match entry {
+            Entry::Static(holder) => self.init_check(holder, restart),
+            Entry::Receiver if known_receiver => {}
+            Entry::Receiver | Entry::Vtable(_) => {
+                self.a.load(true, R::Rcx, self.stk(args));
+                self.a.test_rr(true, R::Rcx, R::Rcx);
+                self.a.jcc(super::asm::Cond::E, restart);
+            }
+        }
+        if let Entry::Vtable(index) = entry {
+            self.a.load(true, R::Rax, mem(R::Rcx, 0));
+            self.a.load(true, R::Rax, mem(R::Rax, std::mem::offset_of!(Klass, vtable_ptr) as i32));
+            self.a.mov_ri(R::Rdx, callee as *const Method as i64);
+            self.a.alu_rm(true, super::asm::Alu::Cmp, R::Rdx, mem(R::Rax, 8 * index));
+            self.a.jcc(super::asm::Cond::Ne, restart);
         }
         let result = self.stack_base + args;
         let (local_base, frame) = match kind {
@@ -84,10 +117,13 @@ impl Emitter {
             }
             Kind::Framed => {
                 let hdr = result + info.max_locals as i32;
-                self.link_frame(callee, hdr);
+                if !callee.is_hidden_frame() {
+                    self.link_frame(callee, hdr);
+                }
                 (result, Some(hdr))
             }
         };
+        let linked = frame.is_some() && !callee.is_hidden_frame();
         let stack_base = local_base + info.max_locals as i32 + if frame.is_some() { header::SLOTS as i32 } else { 0 };
         self.extent = self.extent.max(stack_base + info.max_stack as i32 + 2);
         let body = Body {
@@ -101,20 +137,24 @@ impl Emitter {
             stack_base,
             scratch_base: stack_base + info.max_stack as i32 + 2,
             exc: self.a.new_label(),
-            inl: Some(InlineCtx { restart, done, result, frame }),
+            inl: Some(InlineCtx { restart, done, result, frame, linked }),
             vs: Vec::new(),
             lregs: Vec::new(),
             slow: Vec::new(),
+            lconst_base,
+            lconst,
         };
         let caller = self.swap_body(body);
-        self.chain.push(callee);
+        self.chain.push((callee, consts.first().copied().flatten()));
         let ok = self.emit_body(None);
         self.chain.pop();
         if ok.is_some() && frame.is_some() {
             self.emit_slow_paths();
             // Exceptions leave the inlined frame and continue in the caller's dispatch.
             self.a.bind(self.exc);
-            self.unlink_frame(frame.unwrap());
+            if linked {
+                self.unlink_frame(frame.unwrap());
+            }
             self.a.jmp(caller.exc);
         }
         self.swap_body(caller);
@@ -161,6 +201,8 @@ impl Emitter {
             vs: replace(&mut self.vs, b.vs),
             lregs: replace(&mut self.lregs, b.lregs),
             slow: replace(&mut self.slow, b.slow),
+            lconst_base: replace(&mut self.lconst_base, b.lconst_base),
+            lconst: replace(&mut self.lconst, b.lconst),
         }
     }
 
@@ -172,7 +214,7 @@ impl Emitter {
                 if value {
                     self.a.store(true, mem(R::R13, 8 * ctx.result), R::Rax);
                 }
-                if let Some(hdr) = ctx.frame {
+                if let (Some(hdr), true) = (ctx.frame, ctx.linked) {
                     self.unlink_frame(hdr);
                 }
                 self.a.jmp(ctx.done);

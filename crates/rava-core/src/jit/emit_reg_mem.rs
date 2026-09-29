@@ -97,7 +97,25 @@ impl Emitter {
     }
 
     fn field_reg(&mut self, pc: usize, depth: u16, op: u8) -> bool {
-        let resolved = self.m.holder.resolved[self.cp_index(pc) as usize].get().copied();
+        let index = self.cp_index(pc);
+        let resolved = self.m.holder.resolved[index as usize].get().copied();
+        // Constant fields fold (fold.rs).
+        match (op, resolved, self.vs.last().map(|s| s.loc)) {
+            (0xb4, Some(Resolved::InstanceField { ty, .. }), Some(Loc::Imm(o))) if o != 0 => {
+                if let Some(v) = super::fold::instance_field(self.m, index, o as usize) {
+                    self.pop();
+                    self.push_w(ty.slots() == 2, Loc::Imm(v));
+                    return true;
+                }
+            }
+            (0xb2, Some(Resolved::StaticField { ty, .. }), _) => {
+                if let Some(v) = super::fold::static_field(self.m, index) {
+                    self.push_w(ty.slots() == 2, Loc::Imm(v));
+                    return true;
+                }
+            }
+            _ => {}
+        }
         match (op, resolved) {
             (0xb4, Some(Resolved::InstanceField { offset, ty })) => {
                 self.flush();
