@@ -20,7 +20,19 @@ public class MathIntrinsicSem {
                 h = mix(h, Double.doubleToRawLongBits(Math.max(a, b)));
             }
         }
+        for (double a : new double[] {1e10, -1e10, 1e19, -1e19, 2147483647.9, -2147483648.9, 0.9, -0.9}) {
+            h = mix(h, (int) a);
+            h = mix(h, (long) a);
+            h = mix(h, (int) (float) a);
+            h = mix(h, (long) (float) a);
+        }
+        for (double a : D) {
+            h = mix(h, (int) a);
+            h = mix(h, (long) a);
+        }
         for (float a : F) {
+            h = mix(h, (int) a);
+            h = mix(h, (long) a);
             h = mix(h, Float.floatToRawIntBits(Math.abs(a)));
             for (float b : F) {
                 h = mix(h, Float.floatToRawIntBits(Math.min(a, b)));

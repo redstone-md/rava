@@ -347,10 +347,46 @@ impl Emitter {
                 self.a.mov_rx(to_double, d, X(0));
                 self.push_w(to_double, Loc::Reg(d));
             }
-            // float/double → int/long saturate through a runtime helper.
+            0x8b | 0x8c | 0x8e | 0x8f => self.float_to_int(op),
             _ => return false,
         }
         true
+    }
+
+    /// f2i/f2l/d2i/d2l: `cvtt` is exact except for NaN and out-of-range values, which yield the
+    /// minimum value; only then the saturating runtime helper decides (with the stack written
+    /// back beforehand, so the registers it clobbers can be reloaded).
+    fn float_to_int(&mut self, op: u8) {
+        let from_double = op >= 0x8e;
+        let to_long = op == 0x8c || op == 0x8f;
+        let helper = match op {
+            0x8b => super::runtime::f2i as *const () as usize,
+            0x8c => super::runtime::f2l as *const () as usize,
+            0x8e => super::runtime::d2i as *const () as usize,
+            _ => super::runtime::d2l as *const () as usize,
+        };
+        self.flush();
+        let a = self.pop_w(from_double);
+        let r = self.read(a, R::Rax);
+        self.a.mov_xr(from_double, X(0), r);
+        let d = self.alloc(&[]);
+        self.a.cvtt_f2i(from_double, to_long, d, X(0));
+        let done = self.a.new_label();
+        if to_long {
+            self.a.mov_ri(R::Rax, i64::MIN);
+            self.a.alu_rr(true, Alu::Cmp, d, R::Rax);
+        } else {
+            self.a.alu_ri(false, Alu::Cmp, d, i32::MIN);
+        }
+        self.a.jcc(Cond::Ne, done);
+        self.a.mov_rx(from_double, R::Rdi, X(0));
+        self.a.call_abs(helper);
+        self.a.mov_rr(true, d, R::Rax);
+        for (reg, slot) in self.live_regs() {
+            self.a.load(true, reg, self.stk(slot));
+        }
+        self.a.bind(done);
+        self.finish_int(to_long, d);
     }
 
     /// Leaves -1/0/1 from the flags of a completed compare in a fresh register.
