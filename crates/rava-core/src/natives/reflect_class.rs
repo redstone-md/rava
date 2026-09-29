@@ -61,7 +61,7 @@ pub(super) fn register(r: &mut NativeRegistry) {
     r.add(C, "getPermittedSubclasses0", "()[Ljava/lang/Class;", |_, _| ret_ref(std::ptr::null_mut()));
 }
 
-fn klass(mirror: u64) -> Option<&'static Klass> {
+pub(super) fn klass(mirror: u64) -> Option<&'static Klass> {
     rt::klass_of_mirror(mirror as Oop)
 }
 
@@ -85,12 +85,12 @@ fn member_attr(attrs: &[Attr], name: &str) -> Option<Attr> {
 
 /// A fresh `elem[]` of `len` nulls. Build Java arrays first and fill them in place: a Rust
 /// `Vec` of references is not a collector root, but the array (held in a local) is.
-fn new_object_array(t: &mut Thread, elem: &'static Klass, len: usize) -> JResult<Oop> {
+pub(super) fn new_object_array(t: &mut Thread, elem: &'static Klass, len: usize) -> JResult<Oop> {
     let array_class = vm().array_class_of(elem).map_err(|e| rt::link_error(t, e.into()))?;
     rt::alloc_array(t, array_class, len as i32)
 }
 
-fn store(array: Oop, i: usize, value: Oop) {
+pub(super) fn store(array: Oop, i: usize, value: Oop) {
     // SAFETY: `array` is a reference array with more than `i` elements.
     unsafe { *obj::array_data::<Oop>(array).add(i) = value };
 }
@@ -137,7 +137,7 @@ fn exception_mirrors(t: &mut Thread, m: &'static Method) -> JResult<Oop> {
     Ok(arr)
 }
 
-fn optional_string(t: &mut Thread, s: Option<&'static str>) -> JResult<Oop> {
+pub(super) fn optional_string(t: &mut Thread, s: Option<&'static str>) -> JResult<Oop> {
     s.map_or(Ok(std::ptr::null_mut()), |s| rt::new_string(t, s))
 }
 
@@ -180,7 +180,6 @@ fn declared_executables(t: &mut Thread, a: &[u64], constructors: bool) -> JResul
     rt::initialize(t, exec_class)?;
     let Some(k) = klass(a[0]).filter(|k| !k.is_array()) else { return ret_ref(new_object_array(t, exec_class, 0)?) };
     let public_only = a[1] != 0;
-    let cf = k.cf.as_ref().unwrap();
     let slots: Vec<usize> = k
         .methods()
         .iter()
@@ -190,34 +189,37 @@ fn declared_executables(t: &mut Thread, a: &[u64], constructors: bool) -> JResul
         .collect();
     let out = new_object_array(t, exec_class, slots.len())?;
     for (n, slot) in slots.into_iter().enumerate() {
-        let m = &k.methods()[slot];
-        let info = &cf.methods[slot];
-        let (params, ret) = signature_mirrors(t, m)?;
-        let exceptions = exception_mirrors(t, m)?;
-        let sig = optional_string(t, member_attr(&info.attrs, "Signature").and_then(|at| attr_utf8(k, at)))?;
-        let ann = optional_bytes(t, k, member_attr(&info.attrs, "RuntimeVisibleAnnotations"))?;
-        let pann = optional_bytes(t, k, member_attr(&info.attrs, "RuntimeVisibleParameterAnnotations"))?;
-        let mods = (m.access & 0x1dff) as u64;
-        let o = if constructors {
-            crate::boot::construct(
-                t,
-                class_name,
-                "(Ljava/lang/Class;[Ljava/lang/Class;[Ljava/lang/Class;IILjava/lang/String;[B[B)V",
-                &[a[0], params as u64, exceptions as u64, mods, slot as u64, sig as u64, ann as u64, pann as u64],
-            )?
-        } else {
-            let name = rt::intern_str(t, m.name.as_str())?;
-            let dflt = optional_bytes(t, k, member_attr(&info.attrs, "AnnotationDefault"))?;
-            crate::boot::construct(
-                t,
-                class_name,
-                "(Ljava/lang/Class;Ljava/lang/String;[Ljava/lang/Class;Ljava/lang/Class;[Ljava/lang/Class;IILjava/lang/String;[B[B[B)V",
-                &[a[0], name as u64, params as u64, ret as u64, exceptions as u64, mods, slot as u64, sig as u64, ann as u64, pann as u64, dflt as u64],
-            )?
-        };
+        let o = executable_object(t, a[0], k, slot, constructors)?;
         store(out, n, o);
     }
     ret_ref(out)
+}
+
+/// The `Method` or `Constructor` object for `k`'s method `slot` (`mirror` is `k`'s mirror).
+pub(super) fn executable_object(t: &mut Thread, mirror: u64, k: &'static Klass, slot: usize, constructors: bool) -> JResult<Oop> {
+    let (m, info) = (&k.methods()[slot], &k.cf.as_ref().unwrap().methods[slot]);
+    let (params, ret) = signature_mirrors(t, m)?;
+    let exceptions = exception_mirrors(t, m)?;
+    let sig = optional_string(t, member_attr(&info.attrs, "Signature").and_then(|at| attr_utf8(k, at)))?;
+    let ann = optional_bytes(t, k, member_attr(&info.attrs, "RuntimeVisibleAnnotations"))?;
+    let pann = optional_bytes(t, k, member_attr(&info.attrs, "RuntimeVisibleParameterAnnotations"))?;
+    let mods = (m.access & 0x1dff) as u64;
+    if constructors {
+        return crate::boot::construct(
+            t,
+            "java/lang/reflect/Constructor",
+            "(Ljava/lang/Class;[Ljava/lang/Class;[Ljava/lang/Class;IILjava/lang/String;[B[B)V",
+            &[mirror, params as u64, exceptions as u64, mods, slot as u64, sig as u64, ann as u64, pann as u64],
+        );
+    }
+    let name = rt::intern_str(t, m.name.as_str())?;
+    let dflt = optional_bytes(t, k, member_attr(&info.attrs, "AnnotationDefault"))?;
+    crate::boot::construct(
+        t,
+        "java/lang/reflect/Method",
+        "(Ljava/lang/Class;Ljava/lang/String;[Ljava/lang/Class;Ljava/lang/Class;[Ljava/lang/Class;IILjava/lang/String;[B[B[B)V",
+        &[mirror, name as u64, params as u64, ret as u64, exceptions as u64, mods, slot as u64, sig as u64, ann as u64, pann as u64, dflt as u64],
+    )
 }
 
 enum InnerQuery {
