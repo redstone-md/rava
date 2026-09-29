@@ -141,7 +141,7 @@ impl Builder {
                 return Some(false);
             }
             0xc0 | 0xc1 => {
-                let Some(Resolved::Class(k)) = self.resolved(self.u2(pc)) else { return None };
+                let Some(Resolved::Class(k)) = self.resolved(self.u2(pc)) else { return self.unresolved_type_check(op) };
                 let s = self.state();
                 let v = self.pop();
                 if let Some(o) = self.g.constant(v) {
@@ -435,4 +435,27 @@ impl Builder {
 
 fn int_cmp(c: u8) -> Cmp {
     [Cmp::Eq, Cmp::Ne, Cmp::Lt, Cmp::Ge, Cmp::Gt, Cmp::Le][c as usize]
+}
+
+impl Builder {
+    /// `checkcast` / `instanceof` of a class not resolved yet: null passes (without resolving,
+    /// as in the interpreter), anything else deoptimizes to resolve it.
+    fn unresolved_type_check(&mut self, op: u8) -> Option<bool> {
+        let s = self.state();
+        let v = self.pop();
+        let null = self.konst(Ty::A, 0);
+        let (ok, resolve) = (self.g.new_block(-1), self.g.new_block(-1));
+        self.g.blocks[ok as usize].preds.push(self.cur);
+        self.g.blocks[resolve as usize].preds.push(self.cur);
+        self.g.blocks[self.cur as usize].term = Term::If { cmp: Cmp::Eq, ty: Ty::A, a: v, b: null, then: ok, other: resolve };
+        self.start_block(resolve);
+        self.g.blocks[resolve as usize].term = Term::Deopt(s);
+        self.start_block(ok);
+        if op == 0xc0 {
+            self.push(v);
+        } else {
+            self.push_const(Ty::I, 0);
+        }
+        Some(true)
+    }
 }

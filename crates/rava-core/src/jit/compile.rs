@@ -66,6 +66,15 @@ pub fn compile(m: &'static Method, tier: u8) -> Option<CompiledMethod> {
     if m.is_synchronized() || m.is_native() {
         return None;
     }
+    let started = std::time::Instant::now();
+    let cm = compile_timed(m, tier);
+    if let Some(s) = super::stats::get() {
+        s.baseline_nanos.fetch_add(started.elapsed().as_nanos() as u64, std::sync::atomic::Ordering::Relaxed);
+    }
+    cm
+}
+
+fn compile_timed(m: &'static Method, tier: u8) -> Option<CompiledMethod> {
     let info: &'static CodeInfo = m.code?;
     let an = analyze(m)?;
     let stack_base = info.max_locals as i32 + header::SLOTS as i32;

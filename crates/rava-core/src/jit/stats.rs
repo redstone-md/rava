@@ -12,6 +12,9 @@ pub struct Stats {
     pub compiled_methods: AtomicU64,
     pub tier2_methods: AtomicU64,
     pub opt_methods: AtomicU64,
+    /// Time spent compiling, in nanoseconds: baseline and optimized.
+    pub baseline_nanos: AtomicU64,
+    pub opt_nanos: AtomicU64,
     pub deopts: AtomicU64,
 }
 
@@ -26,6 +29,8 @@ pub fn get() -> Option<&'static Stats> {
                 compiled_methods: AtomicU64::new(0),
                 tier2_methods: AtomicU64::new(0),
                 opt_methods: AtomicU64::new(0),
+                baseline_nanos: AtomicU64::new(0),
+                opt_nanos: AtomicU64::new(0),
                 deopts: AtomicU64::new(0),
             }))
         })
@@ -50,6 +55,11 @@ impl Stats {
             self.opt_methods.load(Ordering::Relaxed),
             self.deopts.load(Ordering::Relaxed),
             self.interpreted_calls.load(Ordering::Relaxed)
+        );
+        eprintln!(
+            "[jit-stats] compile time: baseline {} ms, optimized {} ms",
+            self.baseline_nanos.load(Ordering::Relaxed) / 1_000_000,
+            self.opt_nanos.load(Ordering::Relaxed) / 1_000_000
         );
         for (n, op) in rows.iter().take(16) {
             eprintln!("[jit-stats] deferred opcode {op:#04x}: {n}");

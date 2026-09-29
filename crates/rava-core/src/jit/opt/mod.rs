@@ -58,6 +58,15 @@ pub fn compile(m: &'static Method) -> Option<CompiledMethod> {
     if m.is_synchronized() || m.is_native() {
         return None;
     }
+    let started = std::time::Instant::now();
+    let cm = compile_timed(m);
+    if let Some(s) = super::stats::get() {
+        s.opt_nanos.fetch_add(started.elapsed().as_nanos() as u64, std::sync::atomic::Ordering::Relaxed);
+    }
+    cm
+}
+
+fn compile_timed(m: &'static Method) -> Option<CompiledMethod> {
     let log = std::env::var_os("RAVA_CORE_OPT_LOG").is_some();
     let Some((g, extent)) = build::build(m) else {
         if log {
