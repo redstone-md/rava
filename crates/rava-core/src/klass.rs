@@ -86,6 +86,9 @@ impl InitLock {
     }
 }
 
+/// One interface's block of a class's itable.
+pub(crate) type Itable = (usize, Box<[Option<&'static Method>]>);
+
 pub struct Klass {
     pub name: Symbol,
     pub kind: KlassKind,
@@ -108,7 +111,9 @@ pub struct Klass {
     pub(crate) resolved: Box<[OnceLock<Resolved>]>,
     pub(crate) array_klass: OnceLock<&'static Klass>,
     /// Interface method → implementation, sorted by method address (see `link::select_method`).
-    pub(crate) itable: OnceLock<Box<[(usize, Option<&'static Method>)]>>,
+    /// Per implemented interface: its class and, by the interface method's index, the
+    /// implementation (as HotSpot's itable: a short scan, then an indexed load).
+    pub(crate) itable: OnceLock<Box<[Itable]>>,
     /// Defined by `Lookup.defineHiddenClass` (not findable by name).
     hidden: bool,
     /// Nest host fixed at definition (hidden nestmates); otherwise from `NestHost`.
