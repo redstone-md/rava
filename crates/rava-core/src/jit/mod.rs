@@ -93,14 +93,14 @@ pub(crate) fn on_invoke(m: &'static Method) -> Option<&'static CompiledMethod> {
     if let Some(cm) = m.compiled() {
         return Some(cm);
     }
+    if let Some(s) = stats::get() {
+        s.interpreted(m);
+    }
     if !enabled() || m.is_native() || m.not_compilable.load(Ordering::Relaxed) {
         return None;
     }
     let n = m.invocations.load(Ordering::Relaxed) + 1;
     m.invocations.store(n, Ordering::Relaxed);
-    if let Some(s) = stats::get() {
-        s.interpreted_calls.fetch_add(1, Ordering::Relaxed);
-    }
     if n < threshold() || m.queued.swap(true, Ordering::AcqRel) {
         return None;
     }

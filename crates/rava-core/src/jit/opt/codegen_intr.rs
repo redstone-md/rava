@@ -53,6 +53,21 @@ impl Gen<'_> {
                 self.put(v, R::Rax);
             }
             Intrinsic::MinMax(ty, max) => self.min_max(v, ty, max, args[0], args[1]),
+            Intrinsic::CompareAndSet(ty) => {
+                // [unsafe, o, offset, expected, x]; a null base makes the offset absolute.
+                self.load(R::R11, args[4]);
+                self.load(R::Rax, args[3]);
+                let (b, o) = (self.reg(args[1], R::Rcx), self.reg(args[2], R::Rdx));
+                self.a.lock_cmpxchg_w(ty != BasicType::Int, mem_idx(b, o, 1, 0), R::R11);
+                self.a.setcc(Cond::E, R::Rax);
+                self.a.movzx8(R::Rax, R::Rax);
+                self.put(v, R::Rax);
+            }
+            Intrinsic::CurrentThread => {
+                let r = self.out(v);
+                self.a.load(true, r, mem(R::R12, offset_of!(crate::thread::Thread, java_thread) as i32));
+                self.put(v, r);
+            }
             Intrinsic::Abs(ty) => self.abs(v, ty, args[0]),
         }
     }

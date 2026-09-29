@@ -6,8 +6,9 @@ use std::sync::OnceLock;
 
 pub struct Stats {
     deferred: [AtomicU64; 256],
-    /// Deferrals per (method, bci).
+    /// Deferrals per (method, bci), and interpreted (or native) invocations per method.
     sites: std::sync::Mutex<std::collections::HashMap<(usize, u32), u64>>,
+    interpreted: std::sync::Mutex<std::collections::HashMap<usize, u64>>,
     pub interpreted_calls: AtomicU64,
     pub compiled_methods: AtomicU64,
     pub tier2_methods: AtomicU64,
@@ -25,6 +26,7 @@ pub fn get() -> Option<&'static Stats> {
             &*Box::leak(Box::new(Stats {
                 deferred: std::array::from_fn(|_| AtomicU64::new(0)),
                 sites: Default::default(),
+                interpreted: Default::default(),
                 interpreted_calls: AtomicU64::new(0),
                 compiled_methods: AtomicU64::new(0),
                 tier2_methods: AtomicU64::new(0),
@@ -38,6 +40,11 @@ pub fn get() -> Option<&'static Stats> {
 }
 
 impl Stats {
+    pub fn interpreted(&self, m: &crate::method::Method) {
+        self.interpreted_calls.fetch_add(1, Ordering::Relaxed);
+        *self.interpreted.lock().unwrap().entry(m as *const _ as usize).or_default() += 1;
+    }
+
     pub fn deferred(&self, m: &crate::method::Method, bci: usize) {
         let op = m.code.map_or(0, |c| c.code[bci]);
         self.deferred[op as usize].fetch_add(1, Ordering::Relaxed);
@@ -63,6 +70,13 @@ impl Stats {
         );
         for (n, op) in rows.iter().take(16) {
             eprintln!("[jit-stats] deferred opcode {op:#04x}: {n}");
+        }
+        let mut calls: Vec<(usize, u64)> = self.interpreted.lock().unwrap().iter().map(|(k, v)| (*k, *v)).collect();
+        calls.sort_unstable_by(|a, b| b.1.cmp(&a.1));
+        for (m, n) in calls.iter().take(8) {
+            // SAFETY: methods are immortal.
+            let m = unsafe { &*(*m as *const crate::method::Method) };
+            eprintln!("[jit-stats] interpreted {m}: {n}");
         }
         let mut sites: Vec<((usize, u32), u64)> = self.sites.lock().unwrap().iter().map(|(k, v)| (*k, *v)).collect();
         sites.sort_unstable_by(|a, b| b.1.cmp(&a.1));
