@@ -172,6 +172,13 @@ fn sweep(space: &mut Space) -> usize {
     for index in 0..space.pages.len() {
         let page = space.page_addr(index);
         let Some(meta) = space.pages[index].as_mut() else { continue };
+        if meta.marks.iter().all(|&w| w == 0) {
+            // Nothing survived: the page is freed whole without touching its cells (it is
+            // zeroed again when reused, and without metadata no reference resolves into it).
+            space.pages[index] = None;
+            space.empty.push(page);
+            continue;
+        }
         let cell = meta.cell_size as usize;
         let mut free_head = 0usize;
         let mut live_cells = 0;
