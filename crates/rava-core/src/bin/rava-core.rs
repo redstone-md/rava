@@ -71,7 +71,13 @@ fn run_main(options: VmOptions, jar: bool, rest: &[String]) -> ExitCode {
         }
         rava_core::boot::run_launched(&mut t, &rest[0], jar, &rest[1..])
     });
-    report(result.map(|_| 0), started, vm)
+    // An exception out of main is reported at once; the VM still waits for its other threads.
+    let failed = result.is_err();
+    let code = report(result.map(|_| 0), started, vm);
+    if let Err(ex) = rava_core::boot::destroy(&mut t) {
+        eprint!("Exception in thread \"DestroyJavaVM\" {}", describe_throwable(ex.0));
+    }
+    if failed { ExitCode::from(1) } else { code }
 }
 
 fn run_call(options: VmOptions, rest: &[String]) -> ExitCode {

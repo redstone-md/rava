@@ -14,6 +14,30 @@ vm_field!(eetop_offset, "java/lang/Thread", "eetop", "J");
 vm_field!(holder_offset, "java/lang/Thread", "holder", "Ljava/lang/Thread$FieldHolder;");
 vm_field!(status_offset, "java/lang/Thread$FieldHolder", "threadStatus", "I");
 vm_field!(interrupted_offset, "java/lang/Thread", "interrupted", "Z");
+vm_field!(daemon_offset, "java/lang/Thread$FieldHolder", "daemon", "Z");
+
+/// The started non-daemon threads still running: the VM ends only when none is left.
+fn non_daemon() -> &'static (std::sync::Mutex<usize>, std::sync::Condvar) {
+    static LIVE: (std::sync::Mutex<usize>, std::sync::Condvar) = (std::sync::Mutex::new(0), std::sync::Condvar::new());
+    &LIVE
+}
+
+fn non_daemon_ended() {
+    let (live, ended) = non_daemon();
+    *live.lock().unwrap() -= 1;
+    ended.notify_all();
+}
+
+/// Blocks until every non-daemon thread has finished, as the launcher's `DestroyJavaVM` does.
+pub fn await_non_daemon(t: &Thread) {
+    let (live, ended) = non_daemon();
+    crate::gc::safepoint::blocking(t, || {
+        let mut n = live.lock().unwrap();
+        while *n > 0 {
+            n = ended.wait(n).unwrap();
+        }
+    });
+}
 
 /// Reads `jt`'s interrupt status; when set and `clear`, resets it (HotSpot `is_interrupted`).
 pub(crate) fn is_interrupted(jt: Oop, clear: bool) -> bool {
@@ -160,10 +184,18 @@ fn start0(t: &mut Thread, a: &[u64]) -> JResult<u64> {
     let jt = a[0] as Oop;
     // SAFETY: live receiver.
     unsafe { obj::write::<i64>(jt, eetop_offset(), -1) };
+    // SAFETY: a started thread has its field holder.
+    let daemon = unsafe { obj::read::<bool>(obj::read::<Oop>(jt, holder_offset()), daemon_offset()) };
+    if !daemon {
+        *non_daemon().0.lock().unwrap() += 1;
+    }
     let addr = jt as usize;
     starting().lock().unwrap().push(addr);
-    let spawned = std::thread::Builder::new().stack_size(512 << 20).spawn(move || run_thread(addr as Oop));
+    let spawned = std::thread::Builder::new().stack_size(512 << 20).spawn(move || run_thread(addr as Oop, daemon));
     if spawned.is_err() {
+        if !daemon {
+            non_daemon_ended();
+        }
         starting().lock().unwrap().retain(|&o| o != addr);
         mark_terminated(jt);
         return Err(throw_new(t, "java/lang/OutOfMemoryError", "unable to create native thread"));
@@ -171,7 +203,7 @@ fn start0(t: &mut Thread, a: &[u64]) -> JResult<u64> {
     ret_void()
 }
 
-fn run_thread(jt: Oop) {
+fn run_thread(jt: Oop, daemon: bool) {
     let mut t = Thread::new();
     t.java_thread = jt;
     t.attach();
@@ -198,6 +230,9 @@ fn run_thread(jt: Oop) {
     let _ = sync::notify(jt, true);
     sync::exit(jt);
     t.detach();
+    if !daemon {
+        non_daemon_ended();
+    }
 }
 
 /// The collector record of a started, attached thread (from `eetop`).
