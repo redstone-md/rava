@@ -39,12 +39,39 @@ A C1-class compiler is enough for parity. Every mechanism below is a generic JVM
   callee-saved registers or spill slots on the native stack. Oops in native frames are found by
   the collector's conservative scan.
 
-## Tracer bullets
+## Implementation (`crates/rava-core/src/jit/opt/`)
 
-1. Leaf and loop methods with int/long/double arithmetic, locals, array and field access, and
-   static calls without inlining. Guards deoptimize. Target: `BigInteger` loops and noise code.
-2. Virtual and interface calls through the baseline's inline caches and itables. Counter-based
-   trigger from baseline code.
-3. Inlining with scope chains in frame states: stack traces expand inlined frames, and deopt
-   resumes nested scopes.
-4. Method-handle chains: `invokeBasic` and `linkTo*` on constant receivers are inlined.
+| File | Role |
+|---|---|
+| `ir.rs` | Typed SSA values, blocks, terminators, frame states (`State`, chained for inlined scopes) |
+| `build.rs`, `build_ops.rs` | Abstract interpretation of bytecode per `Scope`; phis at merges; deopt at unsupported or unresolved instructions |
+| `build_mh.rs` | `invokedynamic`, `invokeBasic`, `linkTo*`, `MethodHandle.invoke*` (constant handles fold to direct calls) |
+| `inline.rs` | Inlining (baseline policy at tier 2): direct targets, vtable-guarded and profile-guarded ones with a call on the guard's failure path |
+| `canon.rs`, `phis.rs` | Constant folding and known-branch removal; trivial phi aliases |
+| `regalloc.rs`, `moves.rs` | Liveness, linear scan over one interval per value, parallel moves on edges |
+| `codegen*.rs` | x86-64 emission in the baseline frame protocol; intrinsics; calls with inline caches |
+| `deopt.rs` | Deopt descriptors, the per-method common stub, resuming scopes innermost first |
+
+Rules that keep it correct:
+
+- **Frames**: compiled code keeps the baseline layout; a call stores its arguments where the
+  interpreter would, and visible inlined frames are linked into `Thread::top` around calls, so
+  stack walks and exceptions see every Java frame.
+- **Deoptimization** finishes the method in the interpreter (`interp::resume`); an exception in a
+  callee deoptimizes with it pending, so no exception handler is ever compiled. Frequent deopts
+  recompile the method (constants resolved since), then fall back to baseline tier-2 code.
+- **Baseline code stays** (`Method::baseline`): exception dispatch and loop entry (OSR) of frames
+  still running baseline code, and interpreted loops after a deoptimization, use it.
+- **GC**: values live in registers and native spill slots, which the conservative stack scan
+  covers; the collector never moves objects.
+
+Debugging: `RAVA_CORE_OPT=0` (baseline tier 2 only), `RAVA_CORE_OPT=all` (compile everything
+with this tier), `RAVA_CORE_OPT_LOG`, `RAVA_CORE_OPT_IR=<method>`, `RAVA_CORE_INLINE_LOG`,
+`RAVA_CORE_DEOPT_LOG`, `RAVA_CORE_JIT_DUMP=<method>`, `RAVA_CORE_JIT_STATS`.
+
+## Next
+
+1. SSE registers for float and double values (noise code moves them through GPRs today).
+2. Value numbering of pure instructions and field loads along dominating paths.
+3. Background compilation (compiles run on the thread that got hot today).
+4. On-stack replacement entries into optimized code.
