@@ -14,6 +14,7 @@ mod deopt;
 mod inline;
 mod ir;
 mod moves;
+mod phis;
 mod regalloc;
 
 use super::{code_cache, CompiledMethod};
@@ -69,12 +70,13 @@ pub fn compile(m: &'static Method) -> Option<CompiledMethod> {
 
 fn compile_timed(m: &'static Method) -> Option<CompiledMethod> {
     let log = std::env::var_os("RAVA_CORE_OPT_LOG").is_some();
-    let Some((g, extent)) = build::build(m) else {
+    let Some((mut g, extent)) = build::build(m) else {
         if log {
             eprintln!("[opt] refused {m}");
         }
         return None;
     };
+    phis::simplify(&mut g);
     if std::env::var_os("RAVA_CORE_OPT_IR").is_some_and(|f| m.to_string().contains(f.to_str().unwrap_or(""))) {
         eprintln!("[opt-ir] {m}\n{}", g.dump());
     }

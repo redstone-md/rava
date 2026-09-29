@@ -234,6 +234,8 @@ pub struct Value {
 pub struct Graph {
     pub values: Vec<Value>,
     pub blocks: Vec<Block>,
+    /// The value each value stands for (itself, or what a simplified phi equals; `phis.rs`).
+    pub alias: Vec<V>,
 }
 
 impl Graph {
@@ -247,6 +249,14 @@ impl Graph {
         self.values.push(Value { inst, ty });
         let v = self.values.len() as V - 1;
         self.blocks[b as usize].insts.push(v);
+        v
+    }
+
+    /// The value `v` stands for.
+    pub fn resolve(&self, mut v: V) -> V {
+        while let Some(&a) = self.alias.get(v as usize).filter(|&&a| a != v) {
+            v = a;
+        }
         v
     }
 
