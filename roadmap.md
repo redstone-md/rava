@@ -11,6 +11,18 @@ paired wall deltas +0.163/+0.893 seconds. Runtime restored; further work must
 address execution coverage rather than pursue this refusal-cache experiment.
 See docs/handler-direct-refusal.md. Full no-adapt and wall below five seconds remain unmet.
 
+### 2026-09-29: hash-verified product recheck; strict gates remain open
+
+Re-ran the recorded `85f7d415…` exact-source profile-use product from
+`target/x86_64-unknown-linux-gnu/release-fat/rava` in a disposable root. One
+discarded warm-up plus one same-binary pair reached `Done` in 22.6/22.2 s
+(process-leader CPU 39.7/38.9 s). The benchmark used fresh `world_pristine`
+copies without snapshots, restore, or prepared-AOT; its clean env does not
+disable source-level runtime adaptation. This reconfirms the ~22 s baseline:
+strict no-adapt and <5 s remain unproven/unmet. Prior fixed-policy audits find
+no measured local seam large enough to close that gap, so no speculative runtime
+change or tracer was added.
+
 Current-source fixed-profile smoke, 2026-09-28: source `b5d7b83` built as
 `release-fat` with `target-cpu=native` and the existing
 `target/pgo-current-head.profdata` reached guest `Done` in 25.0 s in an
