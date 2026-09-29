@@ -75,6 +75,27 @@ pub(crate) fn interpreter_entry() -> usize {
     interpreter_adapter as *const () as usize
 }
 
+/// The initial `Method::entry` of a native method: straight to its implementation.
+pub(crate) fn native_entry() -> usize {
+    native_adapter as *const () as usize
+}
+
+/// Compiled-code ABI entry of a native method (natives are never compiled).
+extern "sysv64" fn native_adapter(t: *mut Thread, locals: *mut u64, m: *const Method) -> u64 {
+    // SAFETY: generated code passes the current thread and a live native method.
+    let (t, m) = unsafe { (&mut *t, &*m) };
+    if let Some(s) = stats::get() {
+        s.interpreted(m);
+    }
+    match crate::interp::call_native(t, m, locals) {
+        Ok(v) => v,
+        Err(e) => {
+            t.pending = e.0;
+            0
+        }
+    }
+}
+
 /// Compiled-code ABI entry that runs a method in the interpreter (or its native).
 extern "sysv64" fn interpreter_adapter(t: *mut Thread, locals: *mut u64, m: *const Method) -> u64 {
     // SAFETY: generated code passes the current thread and a live method.
