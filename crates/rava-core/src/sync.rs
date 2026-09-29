@@ -1,15 +1,34 @@
 //! Java monitors (`synchronized`, `wait`/`notify`).
 //!
-//! Objects never move, so a monitor is found by the object's address in a sharded table. Each
-//! monitor records its owner and recursion count; blocked entrants and waiters sleep on condition
-//! variables. (Thin locks in the mark word are a later optimisation behind this interface.)
+//! Uncontended locking is a compare-and-swap on the object's mark word (a *thin* lock: owner
+//! token and recursion count, next to the identity hash). A thin lock is *inflated* into a full
+//! monitor — owner, count, condition variables, found by the object's address (objects never
+//! move) — by its owner when it must wait, when recursion overflows, or when it was acquired
+//! after contention. Contenders on a thin lock back off until it is released or inflated.
+//!
+//! Mark word: bits 0-1 lock state, 2-7 recursion count - 1, 8-38 identity hash, 40-63 owner.
 
-use crate::heap::Oop;
+use crate::heap::{obj, Oop};
 use crate::thread::Thread;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
+
+const STATE_MASK: u64 = 0b11;
+const UNLOCKED: u64 = 0;
+const THIN: u64 = 1;
+const INFLATED: u64 = 2;
+const COUNT_SHIFT: u32 = 2;
+const COUNT_MASK: u64 = 0x3f << COUNT_SHIFT;
+const OWNER_SHIFT: u32 = 40;
+/// Bits a lock transition must preserve (the identity hash).
+const HASH_BITS: u64 = 0xff_ffff_ff00;
+
+fn mark(o: Oop) -> &'static AtomicU64 {
+    // SAFETY: callers pass live objects.
+    unsafe { obj::mark(o) }
+}
 
 const SHARDS: usize = 64;
 
@@ -53,6 +72,75 @@ pub fn thread_token() -> u64 {
 
 pub fn enter(t: &Thread, o: Oop) {
     let me = thread_token();
+    let word = mark(o);
+    let mut spins = 0u32;
+    loop {
+        let m = word.load(Ordering::Relaxed);
+        match m & STATE_MASK {
+            UNLOCKED => {
+                let locked = (m & HASH_BITS) | THIN | me << OWNER_SHIFT;
+                if word.compare_exchange_weak(m, locked, Ordering::Acquire, Ordering::Relaxed).is_ok() {
+                    if spins > 0 {
+                        // Contended: inflate so later contenders block instead of spinning.
+                        inflate_owned(o);
+                    }
+                    return;
+                }
+            }
+            THIN if m >> OWNER_SHIFT == me => {
+                if m & COUNT_MASK == COUNT_MASK {
+                    inflate_owned(o);
+                    continue;
+                }
+                if word.compare_exchange_weak(m, m + (1 << COUNT_SHIFT), Ordering::Relaxed, Ordering::Relaxed).is_ok() {
+                    return;
+                }
+            }
+            THIN => {
+                spins += 1;
+                back_off(t, spins);
+            }
+            _ => return enter_inflated(t, o, me),
+        }
+    }
+}
+
+/// Waiting for another thread's thin lock: spin briefly, then yield, then sleep (in the native
+/// state, so a collection can proceed).
+fn back_off(t: &Thread, spins: u32) {
+    if spins < 64 {
+        std::hint::spin_loop();
+    } else if spins < 256 {
+        std::thread::yield_now();
+    } else {
+        crate::gc::safepoint::blocking(t, || std::thread::sleep(Duration::from_micros(100)));
+    }
+}
+
+/// Converts the caller's thin lock on `o` into a full monitor with the same count.
+fn inflate_owned(o: Oop) {
+    let word = mark(o);
+    let m = word.load(Ordering::Relaxed);
+    if m & STATE_MASK != THIN {
+        return;
+    }
+    let mon = monitor_of(o);
+    {
+        let mut s = mon.state.lock().unwrap();
+        s.owner = m >> OWNER_SHIFT;
+        s.count = ((m & COUNT_MASK) >> COUNT_SHIFT) as u32 + 1;
+    }
+    // Only the owner changes a thin mark (others only read it), so a plain store suffices; the
+    // hash may have been set concurrently, so keep the latest hash bits.
+    loop {
+        let cur = word.load(Ordering::Relaxed);
+        if word.compare_exchange_weak(cur, (cur & HASH_BITS) | INFLATED, Ordering::Release, Ordering::Relaxed).is_ok() {
+            return;
+        }
+    }
+}
+
+fn enter_inflated(t: &Thread, o: Oop, me: u64) {
     let m = monitor_of(o);
     let mut s = m.state.lock().unwrap();
     if s.owner != 0 && s.owner != me {
@@ -70,6 +158,24 @@ pub fn enter(t: &Thread, o: Oop) {
 
 /// Releases one level of ownership. Returns false if the caller does not own the monitor.
 pub fn exit(o: Oop) -> bool {
+    let word = mark(o);
+    let me = thread_token();
+    loop {
+        let m = word.load(Ordering::Relaxed);
+        match m & STATE_MASK {
+            THIN if m >> OWNER_SHIFT == me => {
+                let next = if m & COUNT_MASK == 0 { m & HASH_BITS } else { m - (1 << COUNT_SHIFT) };
+                if word.compare_exchange_weak(m, next, Ordering::Release, Ordering::Relaxed).is_ok() {
+                    return true;
+                }
+            }
+            INFLATED => return exit_inflated(o),
+            _ => return false,
+        }
+    }
+}
+
+fn exit_inflated(o: Oop) -> bool {
     let m = monitor_of(o);
     let mut s = m.state.lock().unwrap();
     if s.owner != thread_token() || s.count == 0 {
@@ -84,7 +190,12 @@ pub fn exit(o: Oop) -> bool {
 }
 
 pub fn holds_lock(o: Oop) -> bool {
-    monitor_of(o).state.lock().unwrap().owner == thread_token()
+    let m = mark(o).load(Ordering::Relaxed);
+    match m & STATE_MASK {
+        THIN => m >> OWNER_SHIFT == thread_token(),
+        INFLATED => monitor_of(o).state.lock().unwrap().owner == thread_token(),
+        _ => false,
+    }
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -94,6 +205,10 @@ pub enum WaitError {
 
 /// `Object.wait(millis)`; 0 waits until notified. The thread is blocked outside Java meanwhile.
 pub fn wait(t: &Thread, o: Oop, millis: i64) -> Result<(), WaitError> {
+    if !holds_lock(o) {
+        return Err(WaitError::NotOwner);
+    }
+    inflate_owned(o);
     crate::gc::safepoint::blocking(t, || wait_blocking(o, millis))
 }
 
@@ -134,6 +249,14 @@ fn wait_blocking(o: Oop, millis: i64) -> Result<(), WaitError> {
 }
 
 pub fn notify(o: Oop, all: bool) -> Result<(), WaitError> {
+    let word = mark(o).load(Ordering::Relaxed);
+    if word & STATE_MASK == THIN {
+        // Waiters always inflate first, so a thin lock has nobody to notify.
+        return if word >> OWNER_SHIFT == thread_token() { Ok(()) } else { Err(WaitError::NotOwner) };
+    }
+    if word & STATE_MASK == UNLOCKED {
+        return Err(WaitError::NotOwner);
+    }
     let m = monitor_of(o);
     let mut s = m.state.lock().unwrap();
     if s.owner != thread_token() {
@@ -158,7 +281,8 @@ mod tests {
     #[test]
     fn reentrant_enter_exit_and_ownership() {
         let t = Thread::new();
-        let o = 0x1000usize as Oop;
+        let header = Box::leak(Box::new([0u64; 2]));
+        let o = header.as_mut_ptr() as Oop;
         enter(&t, o);
         enter(&t, o);
         assert!(holds_lock(o));
@@ -170,7 +294,8 @@ mod tests {
 
     #[test]
     fn notify_wakes_a_waiter() {
-        let o = 0x2000usize as Oop;
+        let header = Box::leak(Box::new([0u64; 2]));
+        let o = header.as_mut_ptr() as Oop;
         let addr = o as usize;
         let waiter = std::thread::spawn(move || {
             let t = Thread::new();
