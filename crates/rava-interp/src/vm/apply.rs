@@ -29,10 +29,9 @@ thread_local! {
     /// pair out of the SHARED class cache) and then LINEARLY scans that level's method table
     /// comparing name, `code.is_some()` and `count_args(descriptor)`.
     ///
-    ///     was:  O(candidate names x superclasses in the chain x methods declared per class),
-    ///           plus one malloc per (name, level), EVERY apply
-    ///     is:   one hash probe, and the walk only on the first apply of a (class, arity)
-    ///
+    /// **Previously:** O(candidate names × superclasses in the chain × methods declared per class),
+    /// plus one allocation per (name, level) on every apply. **Now:** one hash probe; the walk
+    /// runs only on the first apply for a (class, arity).
     /// Every term of that walk is fixed by the receiver's class the moment it is loaded: classes
     /// are never unloaded, a loaded class's method table is immutable, and the walk returns at the
     /// FIRST level that declares a body — so nothing below the winner can change the answer later.
@@ -281,8 +280,8 @@ impl Vm {
     /// back, and `invoke_idx` returns whatever it is given to the same pool. A SAM apply can
     /// therefore pass through the call path allocating nothing at all.
     ///
-    ///     was: 2 allocations + 1 free per apply, the memcpy growing with the SAM's arity;
-    ///     is:  0 — a pooled buffer out, the caller's buffer back in.
+    /// **Previously:** 2 allocations + 1 free per apply, plus memcpy proportional to SAM arity.
+    /// **Now:** 0 allocations — a pooled buffer in, the caller's buffer back.
     ///
     /// The argument values are MOVED (`drain`), not copied, so the vector handed to the pool is
     /// empty: no `Value` outlives this call inside a pooled buffer, and the drop order of the

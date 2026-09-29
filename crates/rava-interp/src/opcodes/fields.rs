@@ -194,9 +194,9 @@ pub(crate) fn getstatic_resolve(
 /// measured at -15% when one relaxed atomic came off the interpreter's push path, and the shape
 /// `tlcache::cflags` records for the dispatch probes ("four switches, one plain load").
 ///
-///     was: one acquire-ordered switch read per diagnostic family per field access
-///          (two in an arena `getfield`, two in `putfield`, two in `object_field_by_id`);
-///      is: one, hoisted into a local and shared by all of them.
+/// **Previously:** one acquire-ordered switch read per diagnostic family per field access (two in
+/// an arena `getfield`, two in `putfield`, two in `object_field_by_id`). **Now:** one read, hoisted
+/// into a local and shared by all of them.
 ///
 /// What grows is field accesses per boot. No table — this is a single `bool`.
 ///
