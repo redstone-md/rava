@@ -353,6 +353,11 @@ impl Asm {
     pub fn fsqrt(&mut self, x: X, src: X) {
         self.sse_rr(0xF2, false, 0x51, x.0, src.0);
     }
+    pub fn mfence(&mut self) {
+        self.b(0x0F);
+        self.b(0xAE);
+        self.b(0xF0);
+    }
     /// `roundsd x, src, mode` (SSE4.1; mode 0 nearest-even, 1 floor, 2 ceil).
     pub fn round_sd(&mut self, x: X, src: X, mode: u8) {
         self.b(0x66);

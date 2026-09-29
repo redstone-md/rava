@@ -10,6 +10,7 @@ pub use boxing::{box_value, unbox_value};
 pub use constants::{bootstrap_specifier, method_type, mirror_for_desc, resolve_constant};
 pub use init::initialize;
 pub use mirror::{klass_of_mirror, mirror_of, primitive_by_name, primitive_mirror, primitive_mirrors, primitive_type_of_mirror};
+pub(crate) use mirror::klass_offset as mirror_klass_offset;
 pub use strings::{intern, intern_modified_utf8 as intern_literal, intern_str, java_string_to_rust, new_string, new_string_utf16, string_units};
 
 use crate::heap::{obj, Oop};

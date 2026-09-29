@@ -2,7 +2,7 @@
 //!
 //! A call whose target is statically known (static, private, final, `invokespecial`) to a small
 //! *leaf* method is compiled in place. A leaf may only read the heap (`getfield`, `getstatic`,
-//! array loads) and compute; it has no stores, calls (other than intrinsics), allocation, locks
+//! array loads) and compute; it has no stores, calls (other than pure intrinsics), allocation, locks
 //! or loops. Its body therefore has no side effects, so any slow path inside it (a null, an
 //! index out of bounds, an uninitialized class) abandons the inlined attempt and *restarts* the
 //! call as an ordinary one, which then behaves exactly as if nothing had been inlined. No frame
@@ -12,13 +12,13 @@
 //! stack; the arguments are copied there, so the caller's slots stay intact for the restart.
 
 use super::analysis::{analyze, i2, i4, insn_len, Analysis};
-use super::asm::{mem, Label, R, X};
+use super::asm::{mem, Label, R};
+use super::intrinsics::intrinsic;
 use super::compile::Emitter;
 use crate::classfile::{ClassFile, Cp};
 use crate::klass::{Klass, ACC_FINAL};
 use crate::link::Resolved;
 use crate::method::Method;
-use crate::types::BasicType;
 use std::sync::atomic::Ordering;
 
 /// HotSpot's `MaxInlineSize`: always inline leaves this small.
@@ -48,29 +48,6 @@ struct Body {
     local_base: i32,
     stack_base: i32,
     inl: Option<InlineCtx>,
-}
-
-/// A JDK method compiled to a single instruction (as HotSpot's intrinsics do).
-#[derive(Clone, Copy)]
-enum Intrinsic {
-    /// `roundsd` with the given rounding mode (floor 1, ceil 2, rint 0).
-    Round(u8),
-    Sqrt,
-}
-
-fn intrinsic(m: &Method) -> Option<Intrinsic> {
-    let holder = m.holder.name.as_str();
-    if !(holder == "java/lang/Math" || holder == "java/lang/StrictMath") || m.desc != "(D)D" {
-        return None;
-    }
-    match m.name.as_str() {
-        "sqrt" => Some(Intrinsic::Sqrt),
-        _ if !std::arch::is_x86_feature_detected!("sse4.1") => None,
-        "floor" => Some(Intrinsic::Round(1)),
-        "ceil" => Some(Intrinsic::Round(2)),
-        "rint" => Some(Intrinsic::Round(0)),
-        _ => None,
-    }
 }
 
 /// The statically bound target of the call at `pc`, if the call can be inlined.
@@ -115,7 +92,7 @@ fn is_leaf(m: &'static Method) -> bool {
             0xaa | 0xab => switch_targets(code, pc).iter().all(|&t| t > pc),
             0xb2 => is(pc, |r| matches!(r, Resolved::StaticField { .. })),
             0xb4 => is(pc, |r| matches!(r, Resolved::InstanceField { .. })),
-            0xb8 => is(pc, |r| matches!(r, Resolved::Method(t) if t.is_static() && intrinsic(t).is_some())),
+            0xb6 | 0xb8 => is(pc, |r| matches!(r, Resolved::Method(t) if intrinsic(t).is_some_and(|i| i.is_pure()))),
             _ => false,
         };
         if !ok {
@@ -227,18 +204,5 @@ impl Emitter {
                 self.a.jmp(self.epilogue);
             }
         }
-    }
-
-    /// Compiles a call to an intrinsic JDK method in place; false if `m` is not one.
-    pub(super) fn try_intrinsic(&mut self, m: &'static Method, args: i32) -> bool {
-        let Some(k) = intrinsic(m) else { return false };
-        debug_assert_eq!(m.sig.ret, BasicType::Double);
-        self.a.fload(true, X(0), self.stk(args));
-        match k {
-            Intrinsic::Round(mode) => self.a.round_sd(X(0), X(0), mode),
-            Intrinsic::Sqrt => self.a.fsqrt(X(0), X(0)),
-        }
-        self.a.fstore(true, self.stk(args), X(0));
-        true
     }
 }
