@@ -1134,3 +1134,45 @@ Those are a large effect surface, not a ready-made execution plan.
 The next question is whether a generic structural effect summary can identify
 enough order-safe work in that surface. The <5 s, strict no-adapt, no-snapshot
 objective remains unmet and none of its gates are relaxed.
+
+### 2026-09-29: ordered registration leaves zero currently proven parallel CPU
+
+The dominant `Blocks.<clinit>` work is not a batch of independent field writes.
+Each of its 1,059 `register` calls reaches `MappedRegistry.register`, which
+checks duplicate keys/values, mutates `byKey`/`byLocation`/`byValue`, appends to
+`byId`, writes `toId` using the previous list size, and folds registration
+lifecycle state. Those updates are shared and insertion order is observable.
+The initializer's tail loop likewise calls `IdMapper.add` (sequential state IDs)
+before `BlockState.initCache`.
+
+`initCache` writes fields on each state object, but calls virtual block methods
+(`getFluidState`, `isRandomlyTicking`, `hasDynamicShape`,
+`getOcclusionShape`) and computes caches through further guest methods. This is
+not a proved-pure map over distinct receivers: the prior name-free loop audit
+refused all 775/775 `Block.getFluidState` candidates; the `Comparable.equals`
+dispatch closure has 840 loaded implementors with 737 failures, with additional
+unloadable-interface leaves. `method_fork_safe` also serial-diverts reachable
+indy/athrow paths.
+
+Therefore the current **proven** order-safe parallel-work bound is zero; this
+does not prove that no mathematically separable work exists. Fresh
+`BlockBehaviour.Properties.of()` builders and their receiver-local setters are
+one possible preparatory seam, but their CPU share is unmeasured and their
+captured lambdas, field reads, constructor edges, and publication boundary are
+not yet summarized. The next justified step is an offline, name-free effect
+summary prototype with Unknown as the default. Reuse the existing classfile
+decoder, `structural_loop_eager` CFG work, `offload::analyze` freshness domain,
+bootstrap-method lambda resolver, and default-reject native contracts. This is
+research only: no scheduling/admission change and no performance claim.
+
+The first test-only scanner prototype now walks instruction boundaries with
+`jit::insn_len_at` and records direct field references, call edges, array stores,
+monitor operations, dynamic sites, and malformed/unknown bytecode. It does not
+load or execute guest classes, and its `proven_parallel_safe` result is
+deliberately constant false: no freshness, transitive-call, bootstrap, or class
+initialization-order proof is present. An offline parse of this server jar's
+`Blocks.<clinit>` found 3,537 direct field accesses, 6,282 calls, 1,029 dynamic
+sites, and 1,029 unknown sites. This is a direct-effect inventory, not a count
+of safe work; notably, method calls carry the bulk of the remaining closure.
+Focused synthetic tests and the ignored jar-backed scan pass. No runtime module
+or admission path is changed.
