@@ -44,6 +44,7 @@ impl Emitter {
             0xc8 => {
                 if i4(self.code, pc + 1) <= 0 {
                     self.poll();
+                    self.count_backedge(rel(pc, i4(self.code, pc + 1)));
                 }
                 self.a.jmp(self.label(rel(pc, i4(self.code, pc + 1))));
             }
@@ -73,6 +74,7 @@ impl Emitter {
             let skip = self.a.new_label();
             self.a.jcc(invert(c), skip);
             self.poll();
+            self.count_backedge(target);
             self.a.jmp(self.label(target));
             self.a.bind(skip);
         } else {

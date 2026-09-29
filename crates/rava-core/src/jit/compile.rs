@@ -40,6 +40,9 @@ pub(super) struct Emitter {
     pub extent: i32,
     /// An inlined body could not be compiled: the method is refused.
     pub failed: bool,
+    pub tier: u8,
+    /// Bytecode inlined so far (bounded per compilation).
+    pub inlined_bytes: usize,
     /// Constant operand-stack values at the current call site, captured before the stack is
     /// written back (they become constant locals of an inlined callee).
     pub site_consts: Vec<Option<i64>>,
@@ -54,7 +57,8 @@ pub(super) struct Emitter {
     pub lregs: Vec<Option<R>>,
 }
 
-pub fn compile(m: &'static Method) -> Option<CompiledMethod> {
+/// Compiles `m` at `tier` (1, or 2 for hot methods: larger inlining budget).
+pub fn compile(m: &'static Method, tier: u8) -> Option<CompiledMethod> {
     if m.is_synchronized() || m.is_native() {
         return None;
     }
@@ -82,6 +86,8 @@ pub fn compile(m: &'static Method) -> Option<CompiledMethod> {
         chain: vec![(m, None)],
         extent: stack_base + info.max_stack as i32 + 2,
         failed: false,
+        tier,
+        inlined_bytes: 0,
         site_consts: Vec::new(),
         lconst_base: vec![None; info.max_locals as usize],
         lconst: vec![None; info.max_locals as usize],
@@ -122,7 +128,7 @@ pub fn compile(m: &'static Method) -> Option<CompiledMethod> {
     if std::env::var_os("RAVA_CORE_JIT_LOG").is_some() {
         eprintln!("[jit] {m} {} bytes of bytecode -> {} bytes", info.code.len(), code.len());
     }
-    Some(CompiledMethod { entry, unresolved_deferrals: Default::default(), size: code.len(), blocks, frame_slots: frame_slots as usize })
+    Some(CompiledMethod { entry, unresolved_deferrals: Default::default(), size: code.len(), blocks, frame_slots: frame_slots as usize, tier })
 }
 
 impl Emitter {
@@ -274,6 +280,7 @@ impl Emitter {
         a.store(true, mem(R::R12, offsets::TOP), R::Rcx);
         a.store(true, mem(R::R12, offsets::SP), R::Rax);
         self.poll();
+        self.count_invocation();
         self.load_local_regs();
         frame_patch
     }

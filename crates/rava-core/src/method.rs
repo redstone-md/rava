@@ -32,6 +32,8 @@ pub struct Method {
     /// Set once compilation was attempted and refused, so it is not retried.
     pub(crate) not_compilable: std::sync::atomic::AtomicBool,
     hidden: OnceLock<bool>,
+    /// Set once tier-2 compilation was requested.
+    pub(crate) tiered: std::sync::atomic::AtomicBool,
 }
 
 impl Method {
@@ -52,6 +54,7 @@ impl Method {
             recompiles: AtomicU32::new(0),
             not_compilable: std::sync::atomic::AtomicBool::new(false),
             hidden: OnceLock::new(),
+            tiered: std::sync::atomic::AtomicBool::new(false),
         }
     }
 

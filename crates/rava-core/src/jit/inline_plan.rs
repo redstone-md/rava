@@ -38,15 +38,28 @@ pub(super) enum Kind {
 /// The bodies being emitted, outermost first, with their first argument when constant.
 pub(super) type Chain = [(&'static Method, Option<i64>)];
 
-/// How to inline `target` (first argument `first`) into `chain`, if at all.
-pub(super) fn decide(target: &'static Method, first: Option<i64>, chain: &Chain) -> Option<Kind> {
+/// Hot callees inlined at tier 2 up to HotSpot's `FreqInlineSize`, within a per-compilation
+/// budget of inlined bytecode.
+const HOT_INLINE_SIZE: usize = 325;
+const HOT_INVOCATIONS: u32 = 2000;
+const TIER2_BUDGET: usize = 6000;
+const TIER1_BUDGET: usize = 2000;
+
+/// How to inline `target` (first argument `first`) into `chain` at `tier`, having inlined
+/// `spent` bytes of bytecode already, if at all.
+pub(super) fn decide(target: &'static Method, first: Option<i64>, chain: &Chain, tier: u8, spent: usize) -> Option<Kind> {
+    let size = target.code.map_or(0, |c| c.code.len());
+    if spent + size > if tier >= 2 { TIER2_BUDGET } else { TIER1_BUDGET } {
+        return None;
+    }
     if std::env::var_os("RAVA_CORE_NO_INLINE").is_some() || target.is_abstract() || target.is_native() || intrinsic(target).is_some() {
         return None;
     }
     if is_leaf(target) {
         return Some(Kind::Leaf);
     }
-    framed_ok(target, first, chain).then_some(Kind::Framed)
+    let hot = tier >= 2 && target.invocations.load(Ordering::Relaxed) >= HOT_INVOCATIONS;
+    framed_ok(target, first, chain, hot).then_some(Kind::Framed)
 }
 
 /// The statically bound target of the call at `pc`, excluding method-handle invokers.
@@ -71,7 +84,7 @@ fn recursive(t: &'static Method, first: Option<i64>, chain: &Chain) -> bool {
     chain.iter().any(|(c, f)| std::ptr::eq(*c, t) && !(lambda_form && first.is_some() && *f != first))
 }
 
-fn framed_ok(t: &'static Method, first: Option<i64>, chain: &Chain) -> bool {
+fn framed_ok(t: &'static Method, first: Option<i64>, chain: &Chain, hot: bool) -> bool {
     let Some(info) = t.code else { return false };
     if chain.len() > MAX_DEPTH || recursive(t, first, chain) || t.is_synchronized() || !info.handlers.is_empty() {
         return false;
@@ -80,7 +93,7 @@ fn framed_ok(t: &'static Method, first: Option<i64>, chain: &Chain) -> bool {
         return false;
     }
     let forced = t.has_annotation("Ljdk/internal/vm/annotation/ForceInline;");
-    if info.code.len() > if forced { MAX_FORCED_SIZE } else { MAX_INLINE_SIZE } {
+    if info.code.len() > if forced { MAX_FORCED_SIZE } else if hot { HOT_INLINE_SIZE } else { MAX_INLINE_SIZE } {
         return false;
     }
     let mut pc = 0;
