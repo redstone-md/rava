@@ -66,7 +66,11 @@ pub extern "sysv64" fn deopt(t: *mut Thread, base: *mut u64, desc: *const Desc, 
     };
     if std::env::var_os("RAVA_CORE_DEOPT_LOG").is_some() {
         let scopes: Vec<String> = frames.iter().map(|f| format!("{}@{} depth {} frame {}", f.method, f.bci, f.depth, f.frame)).collect();
-        eprintln!("[deopt] {} pending={}", scopes.join(" <- "), outcome.is_err());
+        let pending = match &outcome {
+            Err(e) => crate::runtime::class_name_of(e.0),
+            Ok(_) => "-".into(),
+        };
+        eprintln!("[deopt] {} pending={pending}", scopes.join(" <- "));
     }
     for (i, f) in frames.iter().enumerate() {
         let code = f.method.code.expect("compiled scope has code");

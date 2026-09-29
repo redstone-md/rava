@@ -13,6 +13,15 @@ use crate::thread::{header, offsets};
 use std::collections::HashMap;
 use std::rc::Rc;
 
+/// The monitor a synchronized method holds while it runs.
+#[derive(Clone, Copy)]
+pub(super) enum Monitor {
+    /// The receiver (instance methods).
+    Receiver,
+    /// The class's mirror (static methods).
+    Mirror(usize),
+}
+
 /// An argument of a runtime helper call.
 #[derive(Clone, Copy)]
 pub enum Arg {
@@ -42,10 +51,14 @@ pub(super) struct Gen<'a> {
     /// slow paths preserve them).
     live_gprs: Vec<R>,
     live_xmms: Vec<u8>,
+    /// A synchronized method's monitor and where on the native stack (from rsp) it is kept for
+    /// the exit (not in the frame: callees' frames start at the outgoing arguments).
+    lock: Option<(Monitor, i32)>,
 }
 
-/// Emits `g` for `m`, whose frame (inlined frames included) takes `frame_slots` value-stack slots.
-pub(super) fn generate(g: &Graph, al: &Allocation, m: &'static Method, frame_slots: i32) -> Vec<u8> {
+/// Emits `g` for `m`, whose frame (inlined frames included) takes `frame_slots` value-stack slots;
+/// a synchronized method holds `monitor` while it runs.
+pub(super) fn generate(g: &Graph, al: &Allocation, m: &'static Method, frame_slots: i32, monitor: Option<Monitor>) -> Vec<u8> {
     let max_locals = m.code.expect("compiled method has code").max_locals as i32;
     let mut a = Asm::default();
     let labels = (0..g.blocks.len()).map(|_| a.new_label()).collect();
@@ -65,10 +78,13 @@ pub(super) fn generate(g: &Graph, al: &Allocation, m: &'static Method, frame_slo
         frame_bytes: 0,
         live_gprs: CALLER_SAVED.into_iter().filter(|r| al.loc.contains(&Loc::Reg(*r))).collect(),
         live_xmms: XMMS.into_iter().filter(|x| al.loc.contains(&Loc::Xmm(*x))).collect(),
+        lock: None,
     };
     // Entry rsp is 8 mod 16: an odd number of pushes realigns it, spill slots come in pairs.
     gen.saved = [R::R12, R::R13].into_iter().chain(CALLEE_SAVED.into_iter().filter(|r| al.loc.contains(&Loc::Reg(*r)))).collect();
-    gen.frame_bytes = 8 * (al.spill_slots + (al.spill_slots & 1)) + if gen.saved.len() % 2 == 0 { 8 } else { 0 };
+    let spill_bytes = 8 * (al.spill_slots + (al.spill_slots & 1));
+    gen.lock = monitor.map(|mon| (mon, spill_bytes));
+    gen.frame_bytes = spill_bytes + if monitor.is_some() { 16 } else { 0 } + if gen.saved.len() % 2 == 0 { 8 } else { 0 };
     let overflow = gen.a.new_label();
     gen.prologue(frame_slots, overflow);
     for (i, &b) in al.order.iter().enumerate() {
@@ -117,11 +133,45 @@ impl Gen<'_> {
         a.store(true, mem(R::R12, offsets::TOP), R::Rcx);
         a.store(true, mem(R::R12, offsets::SP), R::Rax);
         self.poll();
+        if let Some((mon, at)) = self.lock {
+            match mon {
+                Monitor::Receiver => self.a.load(true, R::Rcx, self.slot(0)),
+                Monitor::Mirror(o) => self.a.mov_ri(R::Rcx, o as i64),
+            }
+            self.a.store(true, mem(R::Rsp, at), R::Rcx);
+            self.method_monitor(true);
+        }
+    }
+
+    /// Enters or exits the synchronized method's monitor in rcx: the thin-lock fast path, else
+    /// the runtime.
+    fn method_monitor(&mut self, enter: bool) {
+        let (slow, done) = (self.a.new_label(), self.a.new_label());
+        if enter {
+            crate::jit::emit_obj::monitor_enter_fast(&mut self.a, R::Rcx, slow);
+        } else {
+            crate::jit::emit_obj::monitor_exit_fast(&mut self.a, R::Rcx, slow);
+        }
+        self.a.jmp(done);
+        self.a.bind(slow);
+        let helper = if enter { runtime::monitor_enter as *const () as usize } else { runtime::monitor_exit as *const () as usize };
+        self.call_preserving(helper, &[Arg::Thread, Arg::Reg(R::Rcx)]);
+        self.a.bind(done);
     }
 
     fn emit_epilogue(&mut self, overflow: Label) {
         let restore = self.a.new_label();
         self.a.bind(self.epilogue);
+        if let Some((_, at)) = self.lock {
+            // Every exit (return, exception, deoptimization) releases the monitor; the result
+            // stays in rax, and an IllegalMonitorStateException replaces it.
+            self.a.load(true, R::Rcx, mem(R::Rsp, at));
+            self.a.push(R::Rax);
+            self.a.push(R::Rax);
+            self.method_monitor(false);
+            self.a.pop(R::Rax);
+            self.a.pop(R::Rax);
+        }
         self.a.load(true, R::Rcx, self.hdr(header::CALLER));
         self.a.store(true, mem(R::R12, offsets::TOP), R::Rcx);
         self.a.load(true, R::Rcx, self.hdr(header::SAVED_SP));

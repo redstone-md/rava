@@ -196,7 +196,8 @@ pub(crate) fn note_unresolved_deferral(m: &'static Method) {
 
 pub(super) fn compile_now(m: &'static Method) -> Option<&'static CompiledMethod> {
     let optimized = opt::everywhere().then(|| opt::compile(m)).flatten();
-    match optimized.or_else(|| compile::compile(m, 1)) {
+    // Synchronized methods only have optimized code.
+    match optimized.or_else(|| compile::compile(m, 1)).or_else(|| (m.is_synchronized() && opt::enabled()).then(|| opt::compile(m)).flatten()) {
         Some(cm) => {
             if let Some(s) = stats::get() {
                 s.compiled_methods.fetch_add(1, Ordering::Relaxed);
