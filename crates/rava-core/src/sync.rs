@@ -142,18 +142,25 @@ fn inflate_owned(o: Oop) {
 
 fn enter_inflated(t: &Thread, o: Oop, me: u64) {
     let m = monitor_of(o);
-    let mut s = m.state.lock().unwrap();
-    if s.owner != 0 && s.owner != me {
-        // Blocked on another owner: let a collection proceed meanwhile.
-        s = crate::gc::safepoint::blocking(t, || {
-            while s.owner != 0 && s.owner != me {
-                s = m.entry.wait(s).unwrap();
-            }
-            s
-        });
+    {
+        let mut s = m.state.lock().unwrap();
+        if s.owner == 0 || s.owner == me {
+            s.owner = me;
+            s.count += 1;
+            return;
+        }
     }
-    s.owner = me;
-    s.count += 1;
+    // Blocked on another owner: wait in the native state so a collection can proceed. The
+    // monitor is claimed, and the Rust lock released, before leaving it: a thread stopped at a
+    // safepoint must never hold a lock a running thread could be waiting for.
+    crate::gc::safepoint::blocking(t, || {
+        let mut s = m.state.lock().unwrap();
+        while s.owner != 0 && s.owner != me {
+            s = m.entry.wait(s).unwrap();
+        }
+        s.owner = me;
+        s.count += 1;
+    });
 }
 
 /// Releases one level of ownership. Returns false if the caller does not own the monitor.
