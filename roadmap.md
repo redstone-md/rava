@@ -29,6 +29,30 @@ exception order therefore remains unproved, and the builder subgraph's CPU share
 is unmeasured. Do not implement speculative parallel initialization. No
 qualifying full-boot path has been found under the retained constraints.
 
+### 2026-09-29: method-level PMU pricing rejects `initCache` as a wall-sized lever
+
+A fresh isolated boot of the hash-verified current PGO product reached `Done`
+with `RAVA_PERF_MAP=1`; `perf record -F 99 -e cycles:u` captured 2,206 samples
+through the launch milestone. Manual address-to-map attribution resolved 324
+samples (15.54% of weighted user-cycle events) to compiled guest methods.
+`BlockBehaviour$BlockStateBase.initCache()V` accounted for 0.07% of all sampled
+cycles; the mapped `BlockBehaviour` methods together accounted for 0.47%.
+The whole `net/minecraft/world/phys/shapes` package was 8.68%, spread across
+46 methods, with the largest method at 1.73%. This is diagnostic attribution,
+not a boot A/B or a removable-work claim; the profiler also does not price
+interpreted `Properties` builder bytecode, which had no method entry in the
+compiled map.
+
+The separate `RAVA_PROF` crumb sample labeled `initCache` as 24% of a compiled
+wall window, but that crumb remains set while compiled code is inside native
+callbacks. It is an inclusive active-compiled-method label, not method self
+time; the PMU sample is the better bound for the method's own emitted code.
+`initCache` bytecode is only a few hundred bytes and dispatches through owner
+virtual methods. No priced compiled-method self-time approaches the required
+>7.6 CPU-s reduction. Interpreted builder bytecode is still unpriced, and the
+fixed-policy/no-snapshot acceptance gates remain open. No runtime change is
+justified.
+
 ### 2026-09-29: fixed-policy execution is not a <5 s escape hatch
 
 A fresh isolated copy of `world_pristine` ran the same server JAR under
