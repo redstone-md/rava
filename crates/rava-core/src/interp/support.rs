@@ -101,7 +101,7 @@ impl Frame {
 pub(super) fn on_backedge(t: &mut Thread, f: &mut Frame) -> JResult<Option<u64>> {
     let Some(address) = crate::jit::on_backedge(f.method, f.pc) else { return Ok(None) };
     // The compiled frame may be larger than this one (inlined frames); it must fit.
-    let slots = f.method.compiled().map_or(usize::MAX, |cm| cm.frame_slots);
+    let slots = f.method.baseline().map_or(usize::MAX, |cm| cm.frame_slots);
     if slots > (t.stack_limit() as usize).saturating_sub(f.locals as usize) / 8 {
         return Ok(None);
     }
