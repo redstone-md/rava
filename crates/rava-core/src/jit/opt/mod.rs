@@ -22,6 +22,7 @@ mod nullcheck;
 mod operands;
 mod phis;
 mod regalloc;
+mod split;
 
 use super::{code_cache, CompiledMethod};
 use crate::method::Method;
@@ -102,10 +103,18 @@ fn compile_timed(m: &'static Method) -> Option<CompiledMethod> {
     };
     phis::simplify(&mut g);
     nullcheck::eliminate(&mut g);
-    if std::env::var_os("RAVA_CORE_OPT_IR").is_some_and(|f| m.to_string().contains(f.to_str().unwrap_or(""))) {
+    if std::env::var_os("RAVA_CORE_OPT_SPLIT").map_or(true, |v| v != "0") {
+        split::split(&mut g);
+    }
+    let dump = std::env::var_os("RAVA_CORE_OPT_IR").is_some_and(|f| m.to_string().contains(f.to_str().unwrap_or("")));
+    if dump {
         eprintln!("[opt-ir] {m}\n{}", g.dump());
     }
     let al = regalloc::allocate(&g);
+    if dump {
+        let locs: Vec<String> = al.loc.iter().enumerate().filter(|(_, l)| !matches!(l, regalloc::Loc::None | regalloc::Loc::Const(_))).map(|(v, l)| format!("v{v}={l:?}")).collect();
+        eprintln!("[opt-alloc] {}", locs.join(" "));
+    }
     let (code, main) = codegen::generate(&g, &al, m, extent, monitor);
     let entry = code_cache::install(&code);
     code_cache::perf_map(entry, code.len(), &format!("{m} [opt]"));

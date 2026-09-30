@@ -104,6 +104,8 @@ pub enum Inst {
     /// The method's local `slot` on entry (read from the frame).
     Param(u16),
     Const(i64),
+    /// The same value under another name, so it can live elsewhere (`split.rs`).
+    Copy(V),
     /// Block parameter: one input per predecessor, in `Block::preds` order.
     Phi(Vec<V>),
     Neg(V),
@@ -146,6 +148,43 @@ pub enum Inst {
 }
 
 impl Inst {
+    /// Replaces each value this instruction reads (not its state) by `f` of it.
+    pub fn map_inputs(&mut self, mut f: impl FnMut(V) -> V) {
+        let mut one = |v: &mut V| *v = f(*v);
+        match self {
+            Inst::Param(_) | Inst::Const(_) | Inst::LoadStatic(..) | Inst::InitCheck(..) | Inst::FlagCheck(..) | Inst::New(..) => {}
+            Inst::Call(c, v, _) => {
+                v.iter_mut().for_each(&mut one);
+                if let Callee::Method(t) | Callee::Select(t) = c {
+                    one(t);
+                }
+            }
+            Inst::Phi(v) | Inst::Intrinsic(_, v, _) => v.iter_mut().for_each(one),
+            Inst::Copy(a) | Inst::Neg(a) | Inst::Convert(_, a) | Inst::NullCheck(a, _) | Inst::ZeroCheck(a, _) | Inst::ArrayLength(a) => one(a),
+            Inst::LoadField(a, ..) | Inst::StoreStatic(_, _, a) | Inst::NewArray(_, a, _) | Inst::NewMulti(_, a, _) => one(a),
+            Inst::CheckCast(a, ..) | Inst::InstanceOf(a, _) | Inst::Monitor(_, a, _) => one(a),
+            Inst::Bin(_, a, b) | Inst::Compare(_, a, b) | Inst::BoundsCheck(a, b, _) | Inst::LoadIndexed(a, b, _) | Inst::StoreCheck(a, b, _) | Inst::StoreField(a, _, _, b) => {
+                one(a);
+                one(b);
+            }
+            Inst::StoreIndexed(a, b, _, c) => {
+                one(a);
+                one(b);
+                one(c);
+            }
+        }
+    }
+
+    /// Replaces the state this instruction deoptimizes to.
+    pub fn set_state(&mut self, new: Rc<State>) {
+        match self {
+            Inst::NullCheck(_, s) | Inst::ZeroCheck(_, s) | Inst::BoundsCheck(_, _, s) | Inst::InitCheck(_, s) | Inst::FlagCheck(_, s) => *s = new,
+            Inst::Call(_, _, s) | Inst::New(_, s) | Inst::NewArray(_, _, s) | Inst::NewMulti(_, _, s) => *s = new,
+            Inst::CheckCast(_, _, s) | Inst::StoreCheck(_, _, s) | Inst::Intrinsic(_, _, Some(s)) | Inst::Monitor(_, _, s) => *s = new,
+            _ => {}
+        }
+    }
+
     /// The state a failure of this instruction deoptimizes to.
     pub fn state(&self) -> Option<&Rc<State>> {
         match self {
@@ -162,7 +201,7 @@ impl Inst {
             Inst::Param(_) | Inst::Const(_) | Inst::LoadStatic(..) | Inst::InitCheck(..) | Inst::FlagCheck(..) | Inst::New(..) => vec![],
             Inst::Call(c, v, _) => v.iter().copied().chain(c.input()).collect(),
             Inst::Phi(v) | Inst::Intrinsic(_, v, _) => v.clone(),
-            Inst::Neg(a) | Inst::Convert(_, a) | Inst::NullCheck(a, _) | Inst::ZeroCheck(a, _) | Inst::ArrayLength(a) => vec![*a],
+            Inst::Copy(a) | Inst::Neg(a) | Inst::Convert(_, a) | Inst::NullCheck(a, _) | Inst::ZeroCheck(a, _) | Inst::ArrayLength(a) => vec![*a],
             Inst::LoadField(a, ..) | Inst::StoreStatic(_, _, a) | Inst::NewArray(_, a, _) | Inst::NewMulti(_, a, _) => vec![*a],
             Inst::CheckCast(a, ..) | Inst::InstanceOf(a, _) | Inst::Monitor(_, a, _) => vec![*a],
             Inst::Bin(_, a, b) | Inst::Compare(_, a, b) | Inst::BoundsCheck(a, b, _) | Inst::LoadIndexed(a, b, _) => vec![*a, *b],
@@ -205,6 +244,18 @@ impl Term {
             Term::If { then, other, .. } => vec![*then, *other],
             Term::Switch { cases, default, .. } => cases.iter().map(|c| c.1).chain(std::iter::once(*default)).collect(),
             _ => vec![],
+        }
+    }
+
+    pub fn map_inputs(&mut self, mut f: impl FnMut(V) -> V) {
+        match self {
+            Term::If { a, b, .. } => {
+                *a = f(*a);
+                *b = f(*b);
+            }
+            Term::Switch { key, .. } => *key = f(*key),
+            Term::Return(Some(v)) => *v = f(*v),
+            _ => {}
         }
     }
 
