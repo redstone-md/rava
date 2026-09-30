@@ -158,16 +158,7 @@ impl Builder {
         let (entry, expect) = match guard {
             Guard::None => return None,
             Guard::Unique(pre) => {
-                let flag = self.konst(Ty::J, target.overridden_flag() as i64);
-                let set = self.add(Inst::LoadField(flag, 0, BasicType::Byte), Ty::I);
-                let zero = self.konst(Ty::I, 0);
-                let (then, other) = (self.g.new_block(-1), self.g.new_block(-1));
-                self.g.blocks[then as usize].preds.push(self.cur);
-                self.g.blocks[other as usize].preds.push(self.cur);
-                self.g.blocks[self.cur as usize].term = Term::If { cmp: Cmp::Eq, ty: Ty::I, a: set, b: zero, then, other, unordered: false };
-                self.start_block(other);
-                self.g.blocks[other as usize].term = Term::Deopt(pre);
-                self.start_block(then);
+                self.add(Inst::FlagCheck(target.overridden_flag(), pre), Ty::I);
                 return None;
             }
             Guard::Klass(k) => (self.klass_of(receiver?), k as *const Klass as i64),

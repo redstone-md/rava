@@ -64,6 +64,8 @@ pub(super) struct Gen<'a> {
     restore_stubs: Vec<(Label, V, Label)>,
     /// Constants placed after the code for RIP-relative operands.
     consts: HashMap<u64, Label>,
+    /// Out-of-line runtime calls: (entry, helper, argument, where to continue with rax).
+    pub slow_calls: Vec<(Label, usize, V, Label)>,
 }
 
 /// Whether `g` qualifies for a frameless body: straight-line or branching code (no loops,
@@ -110,6 +112,7 @@ pub(super) fn generate(g: &Graph, al: &Allocation, m: &'static Method, frame_slo
         save_base: al.save_base,
         restore_stubs: Vec::new(),
         consts: HashMap::new(),
+        slow_calls: Vec::new(),
     };
     // Entry rsp is 8 mod 16: an odd number of pushes realigns it, spill slots come in pairs.
     gen.saved = [R::R12, R::R13].into_iter().chain(CALLEE_SAVED.into_iter().filter(|r| al.loc.contains(&Loc::Reg(*r)))).collect();
@@ -457,6 +460,11 @@ impl Gen<'_> {
     }
 
     fn emit_stubs(&mut self) {
+        for (l, helper, x, back) in std::mem::take(&mut self.slow_calls) {
+            self.a.bind(l);
+            self.call_preserving(helper, &[Arg::Val(x)]);
+            self.a.jmp(back);
+        }
         for (l, v, target) in std::mem::take(&mut self.restore_stubs) {
             self.a.bind(l);
             self.restore_around(v);
