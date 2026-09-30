@@ -395,7 +395,7 @@ impl Builder {
             return None;
         }
         let cold = if taken == 0 { target } else { next };
-        (!crate::jit::profile::trapped(self.sc.m, cold)).then_some(taken == 0)
+        self.speculates(self.sc.m, cold).then_some(taken == 0)
     }
 
     fn switch(&mut self, pc: usize, op: u8) {

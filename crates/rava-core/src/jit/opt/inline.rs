@@ -62,7 +62,7 @@ impl Builder {
         // a site that trapped before calls instead.
         let profiled = !plans.is_empty()
             && plans.iter().all(|(_, g)| matches!(g, Guard::Klass(_)))
-            && !crate::jit::profile::trapped(self.sc.m, pc);
+            && self.speculates(self.sc.m, pc);
         self.emit_miss(plans, callee, args, s, m.sig.ret, profiled.then_some(pre))
     }
 
