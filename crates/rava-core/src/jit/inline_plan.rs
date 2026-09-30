@@ -61,7 +61,7 @@ pub(super) fn decide(target: &'static Method, first: Option<i64>, chain: &Chain,
     if std::env::var_os("RAVA_CORE_NO_INLINE").is_some() || target.is_abstract() || target.is_native() || intrinsic(target).is_some() {
         return None;
     }
-    if tier >= 3 && target.compiled().is_some_and(|c| c.tier >= 2 && c.size > INLINE_SMALL_CODE) {
+    if tier >= 3 && compiled_too_large(target) {
         return None;
     }
     if is_leaf(target) {
@@ -73,6 +73,12 @@ pub(super) fn decide(target: &'static Method, first: Option<i64>, chain: &Chain,
     framed_ok(target, first, chain, hot, tier >= 3).then_some(Kind::Framed)
 }
 
+/// Whether `target` already has optimized code too large to inline again (C2's InlineSmallCode:
+/// it probably inlined much itself). `@ForceInline` methods are exempt, as in C2.
+fn compiled_too_large(target: &'static Method) -> bool {
+    target.compiled().is_some_and(|c| c.tier >= 2 && c.size > INLINE_SMALL_CODE) && !target.has_annotation("Ljdk/internal/vm/annotation/ForceInline;")
+}
+
 /// Why `decide` refuses `target` (for `RAVA_CORE_INLINE_LOG`).
 pub(super) fn refusal(target: &'static Method, chain: &Chain, tier: u8, spent: usize) -> &'static str {
     let size = target.code.map_or(0, |c| c.code.len());
@@ -82,7 +88,7 @@ pub(super) fn refusal(target: &'static Method, chain: &Chain, tier: u8, spent: u
     if target.is_abstract() || target.is_native() {
         return "no bytecode";
     }
-    if tier >= 3 && target.compiled().is_some_and(|c| c.tier >= 2 && c.size > INLINE_SMALL_CODE) {
+    if tier >= 3 && compiled_too_large(target) {
         return "compiled code too large";
     }
     let Some(info) = target.code else { return "no bytecode" };
