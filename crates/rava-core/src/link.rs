@@ -13,7 +13,7 @@ use std::sync::atomic::AtomicU64;
 #[derive(Clone, Copy, Debug)]
 pub enum Resolved {
     Class(&'static Klass),
-    InstanceField { offset: u32, ty: BasicType },
+    InstanceField { offset: u32, ty: BasicType, volatile: bool },
     StaticField { holder: &'static Klass, slot: &'static AtomicU64, ty: BasicType },
     Method(&'static Method),
     /// An interned `java.lang.String` literal.
@@ -83,7 +83,7 @@ impl Klass {
         let r = if f.access & ACC_STATIC != 0 {
             Resolved::StaticField { holder, slot: &holder.statics[f.offset as usize], ty: f.ty }
         } else {
-            Resolved::InstanceField { offset: f.offset, ty: f.ty }
+            Resolved::InstanceField { offset: f.offset, ty: f.ty, volatile: f.access & 0x0040 != 0 }
         };
         Ok(*self.resolved[index as usize].get_or_init(|| r))
     }

@@ -10,6 +10,7 @@ use super::ir::*;
 use crate::classfile::ClassFile;
 use crate::jit::analysis::{analyze, insn_len, successors, Analysis};
 use crate::method::Method;
+use crate::types::BasicType;
 use crate::thread::header;
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -90,12 +91,14 @@ pub(super) struct Builder {
     pub nonnull: Vec<V>,
     /// Pure instructions of the current block, for value numbering within it.
     pub numbered: HashMap<(u8, u8, V, V, u8), V>,
+    /// Field values of the current block, by (object, offset), valid until a memory effect.
+    pub loads: HashMap<(V, u32), V>,
 }
 
 /// Builds the graph of `m`; `None` if some instruction is not supported. Returns the frame size.
 pub(super) fn build(m: &'static Method) -> Option<(Graph, i32)> {
     let sc = Scope::new(m, None, 0)?;
-    let mut b = Builder { g: Graph::default(), extent: sc.frame_end(), sc, cur: 0, spent: 0, chain: vec![(m, None)], seq: 0, nonnull: Vec::new(), numbered: HashMap::new() };
+    let mut b = Builder { g: Graph::default(), extent: sc.frame_end(), sc, cur: 0, spent: 0, chain: vec![(m, None)], seq: 0, nonnull: Vec::new(), numbered: HashMap::new(), loads: HashMap::new() };
     // The entry block reads the parameters, then enters bci 0 like any other edge.
     let start = b.g.new_block(-1);
     b.start_block(start);
@@ -121,6 +124,7 @@ impl Builder {
     pub fn start_block(&mut self, block: B) {
         self.cur = block;
         self.numbered.clear();
+        self.loads.clear();
         self.g.blocks[block as usize].order = self.seq;
         self.seq += 1;
     }
@@ -272,6 +276,19 @@ impl Builder {
         };
         if let Some(&v) = key.and_then(|k| self.numbered.get(&k)) {
             return v;
+        }
+        match inst {
+            Inst::Call(..) | Inst::Monitor(..) => self.loads.clear(),
+            Inst::Intrinsic(k, ..) if !k.is_pure() => self.loads.clear(),
+            // Another object's field at this offset may be the same one.
+            Inst::StoreField(o, off, bt, x) => {
+                self.loads.retain(|&(_, f), _| f != off);
+                // A stored value reads back unchanged unless the field narrows it.
+                if matches!(bt, BasicType::Int | BasicType::Long | BasicType::Float | BasicType::Double | BasicType::Reference) {
+                    self.loads.insert((o, off), x);
+                }
+            }
+            _ => {}
         }
         let v = self.g.add(self.cur, inst, ty);
         if let Some(k) = key {
