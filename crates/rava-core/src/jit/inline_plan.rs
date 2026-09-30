@@ -50,10 +50,19 @@ const TIER2_BUDGET: usize = 8000;
 /// what it calls. Optimized code here takes about three times C2's bytes per bytecode.
 const INLINE_SMALL_CODE: usize = 7500;
 const TIER1_BUDGET: usize = 2000;
+/// Call-site frequencies (executions per entry of the compiled method, `opt/freq.rs`) for the
+/// optimizing tier, as C2's: at least `InlineFrequencyRatio` inlines up to `FreqInlineSize`,
+/// less only `MaxInlineSize`, and below `MinInlineFrequencyRatio` only trivial methods.
+const HOT_SITE: f32 = 0.25;
+const COLD_SITE: f32 = 0.0085;
+/// HotSpot's `MaxTrivialSize`.
+const MAX_TRIVIAL_SIZE: usize = 6;
 
 /// How to inline `target` (first argument `first`) into `chain` at `tier` (1 and 2 baseline, 3
 /// optimized), having inlined `spent` bytes of bytecode already, if at all.
-pub(super) fn decide(target: &'static Method, first: Option<i64>, chain: &Chain, tier: u8, spent: usize) -> Option<Kind> {
+/// `freq`: executions of the call site per entry of the compiled method (the optimizing tier's
+/// estimate; baseline tiers pass 1).
+pub(super) fn decide(target: &'static Method, first: Option<i64>, chain: &Chain, tier: u8, spent: usize, freq: f32) -> Option<Kind> {
     let size = target.code.map_or(0, |c| c.code.len());
     if spent + size > if tier >= 2 { TIER2_BUDGET } else { TIER1_BUDGET } {
         return None;
@@ -61,16 +70,21 @@ pub(super) fn decide(target: &'static Method, first: Option<i64>, chain: &Chain,
     if env_once!("RAVA_CORE_NO_INLINE").is_some() || target.is_abstract() || target.is_native() || intrinsic(target).is_some() {
         return None;
     }
-    if tier >= 3 && compiled_too_large(target) {
+    if tier >= 3 && (compiled_too_large(target) || cold_site(target, freq)) {
         return None;
     }
     if is_leaf(target) {
         return Some(Kind::Leaf);
     }
-    // Tier 3 (the optimizing tier) compiles a method because it is hot, so its call sites are:
-    // counting the callee's own invocations misses calls inlined into baseline code.
-    let hot = tier >= 3 || (tier >= 2 && target.invocations.load(Ordering::Relaxed) >= HOT_INVOCATIONS);
+    // Tier 3 (the optimizing tier) weighs its call sites by their estimated frequency; tier 2
+    // by the callee's invocations.
+    let hot = if tier >= 3 { freq >= HOT_SITE } else { tier >= 2 && target.invocations.load(Ordering::Relaxed) >= HOT_INVOCATIONS };
     framed_ok(target, first, chain, hot, tier >= 3).then_some(Kind::Framed)
+}
+
+/// A call site too rarely run to inline more than a trivial method there (`@ForceInline` aside).
+fn cold_site(target: &'static Method, freq: f32) -> bool {
+    freq < COLD_SITE && target.code.is_some_and(|c| c.code.len() > MAX_TRIVIAL_SIZE) && !target.has_annotation("Ljdk/internal/vm/annotation/ForceInline;")
 }
 
 /// Whether `target` already has optimized code too large to inline again (C2's InlineSmallCode:
@@ -80,7 +94,7 @@ fn compiled_too_large(target: &'static Method) -> bool {
 }
 
 /// Why `decide` refuses `target` (for `RAVA_CORE_INLINE_LOG`).
-pub(super) fn refusal(target: &'static Method, chain: &Chain, tier: u8, spent: usize) -> &'static str {
+pub(super) fn refusal(target: &'static Method, chain: &Chain, tier: u8, spent: usize, freq: f32) -> &'static str {
     let size = target.code.map_or(0, |c| c.code.len());
     if spent + size > if tier >= 2 { TIER2_BUDGET } else { TIER1_BUDGET } {
         return "inlining budget spent";
@@ -90,6 +104,9 @@ pub(super) fn refusal(target: &'static Method, chain: &Chain, tier: u8, spent: u
     }
     if tier >= 3 && compiled_too_large(target) {
         return "compiled code too large";
+    }
+    if tier >= 3 && cold_site(target, freq) {
+        return "cold call site";
     }
     let Some(info) = target.code else { return "no bytecode" };
     if chain.len() > if tier >= 3 { MAX_DEPTH_OPT } else { MAX_DEPTH } {
@@ -104,7 +121,7 @@ pub(super) fn refusal(target: &'static Method, chain: &Chain, tier: u8, spent: u
     if target.has_annotation("Ljdk/internal/vm/annotation/DontInline;") {
         return "@DontInline";
     }
-    if info.code.len() > HOT_INLINE_SIZE {
+    if info.code.len() > HOT_INLINE_SIZE || (tier >= 3 && freq < HOT_SITE && info.code.len() > MAX_INLINE_SIZE) {
         return "bytecode too large";
     }
     "jsr or other"

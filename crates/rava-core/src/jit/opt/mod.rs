@@ -15,6 +15,7 @@ mod codegen_obj;
 mod codegen_ops;
 mod deopt;
 mod dom;
+mod freq;
 mod inline;
 mod ir;
 mod liveness;

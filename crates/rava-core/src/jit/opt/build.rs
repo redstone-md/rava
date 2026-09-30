@@ -51,16 +51,22 @@ pub(super) struct Scope {
     /// For an inlined scope: the continuation block and the (block, value) of each return.
     pub cont: Option<B>,
     pub returns: Vec<(B, Option<V>)>,
+    /// Estimated executions of each instruction per entry of this scope (`freq.rs`), and of
+    /// this scope per entry of the compiled method.
+    freq: Vec<f32>,
+    pub weight: f32,
 }
 
 impl Scope {
     pub fn new(m: &'static Method, caller: Option<Rc<State>>, frame: i32) -> Option<Scope> {
         let info = m.code?;
+        let an = analyze(m)?;
+        let freq = super::freq::frequencies(m, info.code, |pc| an.depth[pc].is_some());
         Some(Scope {
             m,
             cf: m.holder.cf.as_ref()?,
             code: info.code,
-            an: analyze(m)?,
+            an,
             throws: crate::jit::analysis::throw_paths(info.code),
             pruned: HashMap::new(),
             blocks: HashMap::new(),
@@ -77,7 +83,14 @@ impl Scope {
             frame,
             cont: None,
             returns: Vec::new(),
+            freq,
+            weight: 1.0,
         })
+    }
+
+    /// Estimated executions of the instruction at `pc` per entry of the compiled method.
+    pub fn frequency(&self, pc: usize) -> f32 {
+        self.weight * self.freq.get(pc).copied().unwrap_or(0.0)
     }
 
     /// The frame slot after this scope's frame.
