@@ -95,7 +95,12 @@ impl Builder {
             }
             0xa7 | 0xc8 => {
                 let off = if op == 0xa7 { i2(self.sc.code, pc + 1) as i32 } else { i4(self.sc.code, pc + 1) };
-                self.goto((pc as i64 + off as i64) as usize);
+                let target = (pc as i64 + off as i64) as usize;
+                // A jump to the next instruction is a fall-through: it starts no block.
+                if target == pc + insn_len(self.sc.code, pc) {
+                    return Some(true);
+                }
+                self.goto(target);
                 return Some(false);
             }
             0xaa | 0xab => {
