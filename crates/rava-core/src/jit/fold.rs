@@ -82,6 +82,37 @@ pub(super) fn static_field(m: &'static Method, index: u16) -> Option<i64> {
     (f.access & ACC_FINAL != 0 || (v != 0 && is_stable(holder, f))).then_some(v)
 }
 
+/// The array dimensions of field reference `index` whose elements are constant once set: those
+/// of a `@Stable` array field (HotSpot's stable dimension), else 0.
+pub(super) fn stable_dims(m: &'static Method, index: u16) -> u8 {
+    let Some((holder, f)) = field_decl(m, index) else { return 0 };
+    let dims = f.desc.as_str().bytes().take_while(|&b| b == b'[').count() as u8;
+    if dims > 0 && is_stable(holder, f) { dims } else { 0 }
+}
+
+/// Element `i` of the constant array `a` of a stable dimension, when within bounds and set
+/// (non-default), in operand-slot encoding.
+pub(super) fn stable_element(a: usize, i: i64, ty: BasicType) -> Option<i64> {
+    if a == 0 {
+        return None;
+    }
+    let o = a as crate::heap::Oop;
+    // SAFETY: a live array of `ty` elements.
+    let len = unsafe { obj::array_length(o) } as i64;
+    if !(0..len).contains(&i) {
+        return None;
+    }
+    let size = match ty {
+        BasicType::Boolean | BasicType::Byte => 1,
+        BasicType::Char | BasicType::Short => 2,
+        BasicType::Int | BasicType::Float => 4,
+        _ => 8,
+    };
+    // SAFETY: an element within bounds.
+    let v = unsafe { read_slot(obj::array_data::<u8>(o) as usize + i as usize * size, ty) };
+    (v != 0).then_some(v)
+}
+
 /// The class of the constant object `o`.
 pub(super) fn class_of(o: usize) -> &'static Klass {
     // SAFETY: a live object's header holds its immortal class.

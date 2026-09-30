@@ -32,6 +32,10 @@ impl Builder {
             if op == 0xb4 {
                 self.pop();
             }
+            let dims = crate::jit::fold::stable_dims(self.sc.m, index);
+            if dims > 0 && c != 0 {
+                self.stable.insert(c, dims);
+            }
             self.push_const(Ty::of(ty), c);
             return Some(());
         }

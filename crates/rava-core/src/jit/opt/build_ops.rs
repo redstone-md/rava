@@ -18,6 +18,24 @@ impl Builder {
         u16::from_be_bytes([self.sc.code[pc + 1], self.sc.code[pc + 2]])
     }
 
+    /// An element load from a constant `@Stable` array at a constant index, when the element is
+    /// set: the element as a constant (HotSpot's stable-array folding).
+    fn stable_load(&mut self, op: u8) -> Option<()> {
+        let n = self.sc.stack.len();
+        let (arr, idx) = (self.sc.stack.get(n.checked_sub(2)?).copied().flatten()?, self.sc.stack[n - 1]?);
+        let (a, i) = (self.g.constant(arr)?, self.g.constant(idx)?);
+        let dims = *self.stable.get(&a)?;
+        let bt = ARRAY_ELEMS[(op - 0x2e) as usize];
+        let e = crate::jit::fold::stable_element(a as usize, i, bt)?;
+        self.pop();
+        self.pop();
+        if dims > 1 && bt == BasicType::Reference {
+            self.stable.insert(e, dims - 1);
+        }
+        self.push_const(Ty::of(bt), e);
+        Some(())
+    }
+
     pub(super) fn resolved(&self, index: u16) -> Option<Resolved> {
         self.sc.m.holder.peek_resolved(index)
     }
@@ -38,6 +56,7 @@ impl Builder {
             0x12..=0x14 => self.ldc(pc)?,
             0x15..=0x19 => self.load_local(self.sc.code[pc + 1] as usize),
             0x1a..=0x2d => self.load_local(((op - 0x1a) % 4) as usize),
+            0x2e..=0x35 if self.stable_load(op).is_some() => {}
             0x2e..=0x35 => {
                 let s = self.state();
                 let (idx, arr) = (self.pop(), self.pop());
