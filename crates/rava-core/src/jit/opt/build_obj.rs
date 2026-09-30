@@ -109,7 +109,7 @@ impl Builder {
             }
             return Some(true);
         }
-        Some(self.call_or_inline(pc, op, m, callee, args, s))
+        Some(self.call_or_inline(pc, op, m, callee, args, s, pre))
     }
 
     /// `Unsafe.allocateInstance` of a constant, instantiable class (as method-handle plumbing

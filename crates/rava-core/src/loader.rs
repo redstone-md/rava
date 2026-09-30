@@ -327,6 +327,9 @@ fn build_vtable(klass: &'static Klass) -> Box<[&'static Method]> {
         let mut placed = false;
         for (i, slot) in vt.iter_mut().enumerate() {
             if overrides(m, slot) {
+                // Before any instance of this class exists, so code that assumed the method
+                // unique deoptimizes first.
+                slot.mark_overridden();
                 *slot = m;
                 if !placed {
                     m.set_vtable_index(i as i32);

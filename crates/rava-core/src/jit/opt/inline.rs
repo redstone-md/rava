@@ -13,10 +13,14 @@ use crate::types::BasicType;
 use std::rc::Rc;
 
 /// What the inlined body assumes about the receiver.
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub(super) enum Guard {
     /// Nothing: the target is statically bound.
     None,
+    /// No loaded class overrides the target (class hierarchy analysis): only its overridden
+    /// flag is tested, and once set the code deoptimizes to the invoke (this state, with the
+    /// arguments still on the stack) instead of calling.
+    Unique(Rc<State>),
     /// The receiver's vtable entry `index` is the target.
     Vtable(i32),
     /// The receiver's class is exactly this one.
@@ -39,8 +43,9 @@ impl Builder {
     /// Builds the invoke at `pc` of the resolved `m` (arguments popped into `args`, `s` the state
     /// after the pop) as an inlined body when possible, else as a call. Returns whether the
     /// current block continues (false when every path through the callee left compiled code).
-    pub(super) fn call_or_inline(&mut self, pc: usize, op: u8, m: &'static Method, callee: Callee, args: Vec<V>, s: Rc<State>) -> bool {
-        let plans = self.inline_targets(pc, op, m);
+    /// `pre` is the state before the invoke, for a guard that deoptimizes.
+    pub(super) fn call_or_inline(&mut self, pc: usize, op: u8, m: &'static Method, callee: Callee, args: Vec<V>, s: Rc<State>, pre: Rc<State>) -> bool {
+        let plans = self.inline_targets(pc, op, m, pre);
         self.emit_call(plans, callee, args, s, m.sig.ret)
     }
 
@@ -65,7 +70,7 @@ impl Builder {
                 continue;
             }
             let mark = self.mark();
-            let slow = self.guard(guard, target, args.first().copied());
+            let slow = self.guard(guard.clone(), target, args.first().copied());
             let Some(r) = self.inline_body(target, &args, s.clone(), k, first) else {
                 self.undo(mark);
                 continue;
@@ -118,11 +123,14 @@ impl Builder {
 
     /// The methods to inline for this site and what each needs checked: the statically bound
     /// target, the vtable's current target, or the targets for the receiver classes profiled.
-    fn inline_targets(&self, pc: usize, op: u8, m: &'static Method) -> Vec<(&'static Method, Guard)> {
+    fn inline_targets(&self, pc: usize, op: u8, m: &'static Method, pre: Rc<State>) -> Vec<(&'static Method, Guard)> {
         if let Some(t) = bound_target(self.sc.m, self.sc.code, pc) {
             return vec![(t, Guard::None)];
         }
         if op == 0xb6 && m.vtable_index() >= 0 && !m.is_abstract() && !m.holder.is_interface() {
+            if !m.is_overridden() {
+                return vec![(m, Guard::Unique(pre))];
+            }
             return vec![(m, Guard::Vtable(m.vtable_index()))];
         }
         let profiled = crate::jit::profile::receivers(self.sc.m, pc).into_iter();
@@ -134,6 +142,19 @@ impl Builder {
     fn guard(&mut self, guard: Guard, target: &'static Method, receiver: Option<V>) -> Option<B> {
         let (entry, expect) = match guard {
             Guard::None => return None,
+            Guard::Unique(pre) => {
+                let flag = self.konst(Ty::J, target.overridden_flag() as i64);
+                let set = self.add(Inst::LoadField(flag, 0, BasicType::Byte), Ty::I);
+                let zero = self.konst(Ty::I, 0);
+                let (then, other) = (self.g.new_block(-1), self.g.new_block(-1));
+                self.g.blocks[then as usize].preds.push(self.cur);
+                self.g.blocks[other as usize].preds.push(self.cur);
+                self.g.blocks[self.cur as usize].term = Term::If { cmp: Cmp::Eq, ty: Ty::I, a: set, b: zero, then, other };
+                self.start_block(other);
+                self.g.blocks[other as usize].term = Term::Deopt(pre);
+                self.start_block(then);
+                return None;
+            }
             Guard::Klass(k) => (self.klass_of(receiver?), k as *const Klass as i64),
             Guard::Vtable(i) => {
                 let k = self.klass_of(receiver?);
