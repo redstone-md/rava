@@ -90,8 +90,9 @@ fn frameless(g: &Graph) -> bool {
 }
 
 /// Emits `g` for `m`, whose frame (inlined frames included) takes `frame_slots` value-stack slots;
-/// a synchronized method holds `monitor` while it runs.
-pub(super) fn generate(g: &Graph, al: &Allocation, m: &'static Method, frame_slots: i32, monitor: Option<Monitor>) -> Vec<u8> {
+/// a synchronized method holds `monitor` while it runs. Returns the code and the size of its
+/// main part (without the out-of-line stubs after it, as C2 sizes code for inlining).
+pub(super) fn generate(g: &Graph, al: &Allocation, m: &'static Method, frame_slots: i32, monitor: Option<Monitor>) -> (Vec<u8>, usize) {
     let max_locals = m.code.expect("compiled method has code").max_locals as i32;
     let mut a = Asm::default();
     a.enable_peephole();
@@ -139,6 +140,8 @@ pub(super) fn generate(g: &Graph, al: &Allocation, m: &'static Method, frame_slo
         }
         gen.term(b, al.order.get(i + 1).copied());
     }
+    let stubs = gen.a.new_label();
+    gen.a.bind(stubs);
     gen.emit_stubs();
     gen.emit_epilogue(overflow);
     let mut pool: Vec<(u64, Label)> = gen.consts.drain().collect();
@@ -146,7 +149,8 @@ pub(super) fn generate(g: &Graph, al: &Allocation, m: &'static Method, frame_slo
     for (bits, l) in pool {
         gen.a.data8(l, bits);
     }
-    gen.a.finish()
+    let (code, main) = gen.a.finish_at(stubs);
+    (code, main as usize)
 }
 
 impl Gen<'_> {
