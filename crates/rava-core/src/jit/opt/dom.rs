@@ -6,8 +6,6 @@ use super::ir::*;
 pub struct Dom {
     /// Reachable built blocks in reverse postorder.
     pub rpo: Vec<B>,
-    /// Each block's position in `rpo` (`usize::MAX` when unreachable).
-    pub index: Vec<usize>,
     /// Immediate dominator of each `rpo` position (the entry dominates itself).
     pub idom: Vec<usize>,
 }
@@ -59,20 +57,8 @@ impl Dom {
                 }
             }
             if !changed {
-                return Dom { rpo, index, idom };
+                return Dom { rpo, idom };
             }
         }
-    }
-
-    /// Whether block `a` dominates block `b` (both reachable).
-    pub fn dominates(&self, a: B, b: B) -> bool {
-        let (a, mut b) = (self.index[a as usize], self.index[b as usize]);
-        if a == usize::MAX || b == usize::MAX {
-            return false;
-        }
-        while b > a {
-            b = self.idom[b];
-        }
-        a == b
     }
 }
