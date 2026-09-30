@@ -261,13 +261,16 @@ impl Gen<'_> {
     /// the target into rdx, then `Method::entry`. Only values in callee-saved registers and
     /// spill slots survive it (`regalloc.rs`).
     fn call(&mut self, v: V, callee: Callee, args: &[V], s: &Rc<State>) {
-        let fail = self.deopt(s);
+        let deopt = self.deopt(s);
         let base = Self::stack_base_of(s) + s.stack.len() as i32;
         let mut slot = base;
         for &x in args {
             self.store_val(self.slot(slot), x);
             slot += if self.g.ty(x).wide() { 2 } else { 1 };
         }
+        // From here until the restore, values live across the call are only in their save slots.
+        self.save_around(v);
+        let fail = self.restoring(v, deopt);
         let linked = self.link(s);
         match callee {
             Callee::Direct(m) => self.a.mov_ri(R::Rdx, m as *const Method as i64),
@@ -285,8 +288,9 @@ impl Gen<'_> {
         self.a.lea(R::Rsi, self.slot(base));
         self.a.call_m(mem(R::Rdx, offset_of!(Method, entry) as i32));
         self.unlink(linked);
+        self.restore_around(v);
         self.a.alu_mi(true, Alu::Cmp, mem(R::R12, offsets::PENDING), 0);
-        self.a.jcc(Cond::Ne, fail);
+        self.a.jcc(Cond::Ne, deopt);
         self.put(v, R::Rax);
     }
 

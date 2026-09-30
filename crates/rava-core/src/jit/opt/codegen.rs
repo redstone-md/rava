@@ -57,6 +57,11 @@ pub(super) struct Gen<'a> {
     /// A leaf that cannot stop, throw, deoptimize or call Java: no frame header is written or
     /// linked (nothing walks the stack while it runs), no poll or stack check is needed.
     frameless: bool,
+    /// Registers to save around each call (`Allocation::saves`), in spill slots from `save_base`.
+    saves: &'a HashMap<V, Vec<Loc>>,
+    save_base: i32,
+    /// Stubs restoring a call's saved registers before a deoptimization: (entry, call, target).
+    restore_stubs: Vec<(Label, V, Label)>,
 }
 
 /// Whether `g` qualifies for a frameless body: straight-line or branching code (no loops,
@@ -99,6 +104,9 @@ pub(super) fn generate(g: &Graph, al: &Allocation, m: &'static Method, frame_slo
         live_xmms: XMMS.into_iter().filter(|x| al.loc.contains(&Loc::Xmm(*x))).collect(),
         lock: None,
         frameless: monitor.is_none() && frameless(g),
+        saves: &al.saves,
+        save_base: al.save_base,
+        restore_stubs: Vec::new(),
     };
     // Entry rsp is 8 mod 16: an odd number of pushes realigns it, spill slots come in pairs.
     gen.saved = [R::R12, R::R13].into_iter().chain(CALLEE_SAVED.into_iter().filter(|r| al.loc.contains(&Loc::Reg(*r)))).collect();
@@ -407,7 +415,38 @@ impl Gen<'_> {
         }
     }
 
+    /// Saves the registers call `v` clobbers that hold values live across it.
+    pub fn save_around(&mut self, v: V) {
+        let base = self.save_base;
+        for (i, &l) in self.saves.get(&v).into_iter().flatten().enumerate() {
+            moves::mov(&mut self.a, Loc::Stack(base + i as i32), l);
+        }
+    }
+
+    /// Restores what `save_around(v)` saved.
+    pub fn restore_around(&mut self, v: V) {
+        let base = self.save_base;
+        for (i, &l) in self.saves.get(&v).into_iter().flatten().enumerate() {
+            moves::mov(&mut self.a, l, Loc::Stack(base + i as i32));
+        }
+    }
+
+    /// A label that restores call `v`'s saved registers, then goes to `target`.
+    pub fn restoring(&mut self, v: V, target: Label) -> Label {
+        if self.saves.get(&v).is_none_or(|s| s.is_empty()) {
+            return target;
+        }
+        let l = self.a.new_label();
+        self.restore_stubs.push((l, v, target));
+        l
+    }
+
     fn emit_stubs(&mut self) {
+        for (l, v, target) in std::mem::take(&mut self.restore_stubs) {
+            self.a.bind(l);
+            self.restore_around(v);
+            self.a.jmp(target);
+        }
         while let Some((l, from, to)) = self.edge_stubs.pop() {
             self.a.bind(l);
             self.edge(from, to, false);

@@ -1,7 +1,8 @@
 //! Linear-scan register allocation over SSA values (Poletto & Sarkar): one contiguous interval
 //! per value from block liveness, then a single pass in start order. Values live across a call
-//! get callee-saved registers or spill slots on the native stack; constants are never allocated.
-//! Spilled values stay in their slot for the whole interval.
+//! prefer callee-saved registers; in a caller-saved or SSE register, code generation saves them
+//! around each such call (`Allocation::saves`). Constants are never allocated. Spilled values
+//! stay in their slot for the whole interval.
 
 use super::ir::*;
 use crate::jit::asm::R;
@@ -30,7 +31,12 @@ pub struct Allocation {
     pub loc: Vec<Loc>,
     /// Blocks in code order.
     pub order: Vec<B>,
+    /// Spill slots, then the save slots of calls.
     pub spill_slots: i32,
+    /// For each call, the caller-saved and SSE registers holding values live across it, to save
+    /// in spill slots `save_base..` around the call.
+    pub saves: std::collections::HashMap<V, Vec<Loc>>,
+    pub save_base: i32,
 }
 
 /// A set of values as a bit vector.
@@ -88,6 +94,8 @@ struct Intervals {
     used: Vec<bool>,
     /// Positions of instructions that clobber caller-saved registers.
     calls: Vec<u32>,
+    /// The calls, with their positions.
+    call_values: Vec<(u32, V)>,
 }
 
 impl Intervals {
@@ -124,7 +132,7 @@ pub fn allocate(g: &Graph) -> Allocation {
         p += 2;
     }
     let live_in = liveness(g, &order);
-    let mut iv = Intervals { start: vec![u32::MAX; n], end: vec![0; n], used: vec![false; n], calls: Vec::new() };
+    let mut iv = Intervals { start: vec![u32::MAX; n], end: vec![0; n], used: vec![false; n], calls: Vec::new(), call_values: Vec::new() };
     for &b in &order {
         let (from, to) = range[b as usize];
         let blk = &g.blocks[b as usize];
@@ -158,6 +166,7 @@ pub fn allocate(g: &Graph) -> Allocation {
             }
             if matches!(inst, Inst::Call(..)) {
                 iv.calls.push(p);
+                iv.call_values.push((p, v));
             }
         }
         blk.term.inputs().into_iter().for_each(|u| iv.used_at(g.resolve(u), to - 1));
@@ -169,10 +178,22 @@ pub fn allocate(g: &Graph) -> Allocation {
     }
     iv.calls.sort_unstable();
     let (mut loc, spill_slots) = scan(g, &iv);
+    // Registers a call clobbers that hold values live across it.
+    let mut saves = std::collections::HashMap::new();
+    let mut most = 0;
+    for &(p, call) in &iv.call_values {
+        let live: Vec<Loc> = (0..n)
+            .filter(|&v| iv.used[v] && iv.start[v] < p && iv.end[v] > p)
+            .map(|v| loc[v])
+            .filter(|l| matches!(l, Loc::Xmm(_)) || matches!(l, Loc::Reg(r) if CALLER_SAVED.contains(r)))
+            .collect();
+        most = most.max(live.len() as i32);
+        saves.insert(call, live);
+    }
     for v in 0..g.values.len() as V {
         loc[v as usize] = loc[g.resolve(v) as usize];
     }
-    Allocation { loc, order, spill_slots }
+    Allocation { loc, order, spill_slots: spill_slots + most, saves, save_base: spill_slots }
 }
 
 /// Values live on entry to each block (backward dataflow to a fixpoint).
@@ -242,10 +263,11 @@ fn scan(g: &Graph, iv: &Intervals) -> (Vec<Loc>, i32) {
         let crossing = iv.crosses_call(v);
         let taken = |c: Loc, active: &[usize], loc: &[Loc]| active.iter().any(|&a| loc[a] == c);
         // Candidate registers in preference order: none survives a call but the callee-saved.
+        // Across calls, callee-saved registers come first (caller-saved ones cost a save and a
+        // restore at each call).
         let cands: Vec<Loc> = match (matches!(g.values[v].ty, Ty::F | Ty::D), crossing) {
-            (true, true) => Vec::new(),
-            (true, false) => XMMS.iter().map(|&x| Loc::Xmm(x)).collect(),
-            (false, true) => CALLEE_SAVED.iter().map(|&r| Loc::Reg(r)).collect(),
+            (true, _) => XMMS.iter().map(|&x| Loc::Xmm(x)).collect(),
+            (false, true) => CALLEE_SAVED.iter().chain(CALLER_SAVED.iter()).map(|&r| Loc::Reg(r)).collect(),
             (false, false) => CALLER_SAVED.iter().chain(CALLEE_SAVED.iter()).map(|&r| Loc::Reg(r)).collect(),
         };
         let allowed = |c: Loc| cands.contains(&c);
