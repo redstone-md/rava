@@ -64,3 +64,27 @@ pub(crate) fn note_trap(m: &'static Method, bci: usize) {
 pub(crate) fn trapped(m: &'static Method, bci: usize) -> bool {
     traps().lock().unwrap().contains(&(m as *const Method as usize, bci as u32))
 }
+
+/// Executions of a conditional branch by baseline code: taken, then not taken (HotSpot's
+/// `BranchData`).
+#[derive(Default)]
+pub struct BranchCell {
+    pub counts: [std::sync::atomic::AtomicU32; 2],
+}
+
+fn branches() -> &'static Mutex<HashMap<(usize, u32), &'static BranchCell>> {
+    static BRANCHES: OnceLock<Mutex<HashMap<(usize, u32), &'static BranchCell>>> = OnceLock::new();
+    BRANCHES.get_or_init(Default::default)
+}
+
+/// The counters of `m`'s branch at `bci`, created on first use.
+pub(super) fn branch_cell(m: &'static Method, bci: usize) -> &'static BranchCell {
+    branches().lock().unwrap().entry((m as *const Method as usize, bci as u32)).or_insert_with(|| Box::leak(Box::default()))
+}
+
+/// (taken, not taken) counts of `m`'s branch at `bci`, if baseline code profiled it.
+pub(super) fn branch_counts(m: &'static Method, bci: usize) -> Option<(u32, u32)> {
+    use std::sync::atomic::Ordering;
+    let cell = *branches().lock().unwrap().get(&(m as *const Method as usize, bci as u32))?;
+    Some((cell.counts[0].load(Ordering::Relaxed), cell.counts[1].load(Ordering::Relaxed)))
+}

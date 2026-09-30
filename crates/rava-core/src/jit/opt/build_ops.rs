@@ -13,6 +13,10 @@ use crate::types::BasicType;
 const ARRAY_ELEMS: [BasicType; 8] =
     [BasicType::Int, BasicType::Long, BasicType::Float, BasicType::Double, BasicType::Reference, BasicType::Byte, BasicType::Char, BasicType::Short];
 
+/// Executions a branch needs in baseline code before a direction it never took is trusted
+/// to stay untaken.
+const MIN_BRANCH_PROFILE: u32 = 64;
+
 impl Builder {
     pub(super) fn u2(&self, pc: usize) -> u16 {
         u16::from_be_bytes([self.sc.code[pc + 1], self.sc.code[pc + 2]])
@@ -363,10 +367,35 @@ impl Builder {
             self.g.blocks[self.cur as usize].term = Term::Goto(to);
             return;
         }
-        self.edge(then);
-        self.edge(other);
         let (ty, a, b, unordered) = self.fuse_compare(cmp, ty, a, b);
+        let (then, other) = match self.never_taken(pc, target, next) {
+            Some(true) => (self.untaken(target), {
+                self.edge(other);
+                other
+            }),
+            Some(false) => {
+                self.edge(then);
+                (then, self.untaken(next))
+            }
+            None => {
+                self.edge(then);
+                self.edge(other);
+                (then, other)
+            }
+        };
         self.g.blocks[self.cur as usize].term = Term::If { cmp, ty, a, b, then, other, unordered };
+    }
+
+    /// Which direction of the branch at `pc` baseline code never took (true: the jump to
+    /// `target`, false: the fall-through to `next`), when it ran often enough to tell and the
+    /// untaken side has not trapped before.
+    fn never_taken(&self, pc: usize, target: usize, next: usize) -> Option<bool> {
+        let (taken, not) = crate::jit::profile::branch_counts(self.sc.m, pc)?;
+        if taken + not < MIN_BRANCH_PROFILE || (taken != 0 && not != 0) {
+            return None;
+        }
+        let cold = if taken == 0 { target } else { next };
+        (!crate::jit::profile::trapped(self.sc.m, cold)).then_some(taken == 0)
     }
 
     fn switch(&mut self, pc: usize, op: u8) {
