@@ -45,10 +45,14 @@ A C1-class compiler is enough for parity. Every mechanism below is a generic JVM
 |---|---|
 | `ir.rs` | Typed SSA values, blocks, terminators, frame states (`State`, chained for inlined scopes) |
 | `build.rs`, `build_ops.rs` | Abstract interpretation of bytecode per `Scope`; phis at merges; deopt at unsupported or unresolved instructions |
+| `build_arr.rs` | Array accesses; bounds checks dropped for known lengths and index ranges, merged per block for constant indices (range-check smearing) |
 | `build_mh.rs` | `invokedynamic`, `invokeBasic`, `linkTo*`, `MethodHandle.invoke*` (constant handles fold to direct calls) |
 | `inline.rs` | Inlining (baseline policy at tier 2): direct targets, methods no loaded class overrides (class hierarchy analysis: a flag test that deoptimizes), vtable-guarded and profile-guarded ones with a call on the guard's failure path |
 | `canon.rs`, `phis.rs` | Constant folding and known-branch removal; trivial phi aliases |
-| `regalloc.rs`, `moves.rs` | Liveness, linear scan over one interval per value, parallel moves on edges |
+| `split.rs` | Live-range splitting at innermost loops by SSA copies (entry copies of values used in the loop and live after it, exit copies of values defined in it) |
+| `regalloc.rs`, `moves.rs` | Liveness, linear scan over one interval per value (spill order: idle in the loop at hand, then loop-weighted use density), parallel moves on edges |
+| `barrier.rs` | Card marks elided for stores initializing an object allocated earlier in the block (ReduceInitialCardMarks) |
+| `dom.rs`, `nullcheck.rs` | Dominators and natural loops; dominated null checks dropped |
 | `codegen*.rs` | x86-64 emission in the baseline frame protocol; intrinsics; calls with inline caches |
 | `deopt.rs` | Deopt descriptors, the per-method common stub, resuming scopes innermost first |
 
@@ -82,7 +86,7 @@ Rules that keep it correct:
   covers; the collector never moves objects.
 
 Debugging: `RAVA_CORE_OPT=0` (baseline tier 2 only), `RAVA_CORE_OPT=all` (compile everything
-with this tier), `RAVA_CORE_OPT_LOG`, `RAVA_CORE_OPT_IR=<method>`, `RAVA_CORE_INLINE_LOG`,
+with this tier), `RAVA_CORE_OPT_LOG`, `RAVA_CORE_OPT_IR=<method>` (IR and allocation), `RAVA_CORE_OPT_SPLIT=0`, `RAVA_CORE_INLINE_LOG`,
 `RAVA_CORE_DEOPT_LOG`, `RAVA_CORE_JIT_DUMP=<method>`, `RAVA_CORE_JIT_STATS`.
 
 ## Next

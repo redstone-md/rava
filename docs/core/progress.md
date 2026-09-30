@@ -273,3 +273,35 @@ marking and allocation ~12 %, first touches of heap pages ~5 %.
 1. Cheaper compiled calls (register arguments, no interpreter-frame linking on the fast path).
 2. More allocatable registers (rcx/rdx/r11 are all scratch today) or interval splitting.
 3. Escape analysis for short-lived iterators, lambdas and positions.
+
+## 2026-09-30 — closing the start-up gap, continued: where the time really goes
+
+Whole-process profiles (all threads, `perf` with perf maps on both sides) replaced per-thread
+comparisons, which were misleading: Paper hands world-generation tasks to whichever worker is
+free, so `java`'s and `rava-core`'s `Worker-Main-1` did different work. Samples over all
+non-compiler threads, same run: Java methods `java` 24.8k / `rava-core` 41.8k, runtime (libjvm /
+rava-core) 12.4k / 16.7k, kernel 4.1k / 11.7k, libc 0.8k / 4.0k. Compiled code (~1.5x C2, as
+the micro benchmarks show) is the largest part; GC marking is on par with G1's threads.
+
+- Compiler threads: branch relaxation shifted positions by summing over all earlier branches,
+  and live sets were iterated bit by bit; both were the top compiler symbols (7k of 15k samples).
+  Fixed: the server start went 48.0 -> 45.6 s.
+- GC: young collections skip write-once class roots (`gc/recent.rs`), initializing stores into
+  young objects need no card mark (`opt/barrier.rs`), in-page allocation refills are cheaper
+  (13M refills per start, 42 % of at most two cells).
+- Opt code: bounds checks folded or merged (`build_arr.rs`), loop-aware spill choices and
+  live-range splitting at loops (`split.rs`); the RTree loop's accumulator and inputs now stay in
+  registers.
+- Measured and dropped: keeping freed large blocks committed and glibc arena tuning (kernel page
+  clearing is 2.5k samples, but neither change moved system time); a fixed 128 MiB young
+  generation (fewer page faults, more GC time, same wall time).
+
+Same host now: `java` ~31 s, `rava-core` ~46-47 s (noise on this host is +-1.5 s per run).
+
+### Next
+
+1. Cheaper compiled calls: the call sequence is ~50 instructions (argument stores, frame header
+   and thread links, indirect call, pending-exception check, prologue/epilogue) against ~8 in C2.
+2. Home-slot stores in FP-heavy code (values deopt states read after their last real use).
+3. Compile time: `regalloc::intervals` and allocation churn remain the top compiler costs.
+
