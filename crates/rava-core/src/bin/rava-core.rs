@@ -36,6 +36,15 @@ fn main() -> ExitCode {
             options.class_path = args.peek().cloned().unwrap_or_default();
             jar = true;
             break;
+        } else if let Some(size) = a.strip_prefix("-Xmx") {
+            args.next();
+            match parse_size(size) {
+                Some(bytes) => options.max_heap = bytes,
+                None => {
+                    eprintln!("Invalid maximum heap size: {a}");
+                    return ExitCode::from(1);
+                }
+            }
         } else if a.starts_with("-X") || a.starts_with("-XX:") {
             // HotSpot tuning flags have no meaning here.
             args.next();
@@ -58,6 +67,23 @@ fn main() -> ExitCode {
         .spawn(move || if call { run_call(options, &rest) } else { run_main(options, jar, &rest) })
         .expect("spawn main thread");
     worker.join().unwrap_or(ExitCode::from(70))
+}
+
+/// A `-Xmx`-style size: bytes, or with a k/m/g/t suffix (either case).
+fn parse_size(s: &str) -> Option<usize> {
+    let (digits, unit) = match s.char_indices().last()? {
+        (i, c) if c.is_ascii_alphabetic() => (&s[..i], c.to_ascii_lowercase()),
+        _ => (s, 'b'),
+    };
+    let shift = match unit {
+        'b' => 0,
+        'k' => 10,
+        'm' => 20,
+        'g' => 30,
+        't' => 40,
+        _ => return None,
+    };
+    digits.parse::<usize>().ok()?.checked_mul(1 << shift)
 }
 
 fn run_main(options: VmOptions, jar: bool, rest: &[String]) -> ExitCode {

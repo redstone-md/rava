@@ -57,7 +57,7 @@ fn register_memory(r: &mut NativeRegistry) {
     r.add(M, "getMemoryUsage0", "(Z)Ljava/lang/management/MemoryUsage;", |t, a| {
         // MemoryUsage(init, used, committed, max); the non-heap areas are not accounted.
         let usage = if a[1] != 0 {
-            let max = vm().options.heap_reserve as i64;
+            let max = vm().heap.max_bytes() as i64;
             let used = (vm().heap.used_bytes() as i64).min(max);
             [0, used, used.max(64 << 20).min(max), max]
         } else {
