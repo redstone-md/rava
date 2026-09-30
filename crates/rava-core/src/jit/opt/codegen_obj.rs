@@ -335,15 +335,21 @@ impl Gen<'_> {
         // The receiver from its register, not the frame slot just written (store forwarding).
         self.load(R::Rcx, receiver);
         self.a.load(true, R::Rdi, mem(R::Rcx, 0));
-        self.a.mov_ri(R::Rax, cell);
-        self.a.load(true, R::Rax, mem(R::Rax, 0));
-        self.a.alu_rm(true, Alu::Cmp, R::Rdi, mem(R::Rax, 0));
-        self.a.jcc(Cond::E, hit);
+        // A site known megamorphic goes straight to the itable scan.
+        let megamorphic = m.holder.is_interface() && crate::jit::profile::megamorphic(s.method, s.bci as usize);
+        if !megamorphic {
+            self.a.mov_ri(R::Rax, cell);
+            self.a.load(true, R::Rax, mem(R::Rax, 0));
+            self.a.alu_rm(true, Alu::Cmp, R::Rdi, mem(R::Rax, 0));
+            self.a.jcc(Cond::E, hit);
+        }
         if m.holder.is_interface() {
             let learn = self.a.new_label();
-            self.a.mov_ri(R::Rax, cell);
-            self.a.alu_mi(false, Alu::Cmp, mem(R::Rax, IcCell::misses_offset()), runtime::IC_MAX_UPDATES as i32);
-            self.a.jcc(Cond::B, learn);
+            if !megamorphic {
+                self.a.mov_ri(R::Rax, cell);
+                self.a.alu_mi(false, Alu::Cmp, mem(R::Rax, IcCell::misses_offset()), runtime::IC_MAX_UPDATES as i32);
+                self.a.jcc(Cond::B, learn);
+            }
             // Megamorphic: scan the receiver class's itable in place (`stubs::itable_lookup`).
             let scan = self.a.new_label();
             self.a.load(true, R::Rax, mem(R::Rdi, offset_of!(Klass, itable_raw) as i32));
