@@ -57,6 +57,13 @@ pub struct Asm {
     pub buf: Vec<u8>,
     labels: Vec<Option<u32>>,
     fixups: Vec<(u32, Label)>,
+    /// Branch peepholes at `bind` (see `enable_peephole`).
+    peephole: bool,
+    /// Where each `jmp` / `jcc` emitted since the last bind starts (with its fixup index).
+    branches: Vec<(u32, usize)>,
+    /// The position labels were last bound at, and those labels.
+    bound_at: u32,
+    bound: Vec<u32>,
 }
 
 fn lo(r: u8) -> u8 {
@@ -73,8 +80,127 @@ impl Asm {
         Label(self.labels.len() as u32 - 1)
     }
 
+    /// Lets `bind` drop a `jmp` to the label being bound and turn `jcc L; jmp M; L:` into
+    /// `j!cc M`. Code that records positions itself (`pos`) must not enable it.
+    pub fn enable_peephole(&mut self) {
+        self.peephole = true;
+    }
+
     pub fn bind(&mut self, l: Label) {
-        self.labels[l.0 as usize] = Some(self.pos());
+        if self.peephole {
+            self.branch_peephole(l);
+        }
+        let at = self.pos();
+        if at != self.bound_at {
+            self.bound.clear();
+            self.bound_at = at;
+        }
+        self.bound.push(l.0);
+        self.labels[l.0 as usize] = Some(at);
+    }
+
+    /// Removes the last `size` bytes (a branch), moving labels bound at the end with them.
+    fn drop_branch(&mut self, size: u32) {
+        let end = self.pos();
+        self.buf.truncate((end - size) as usize);
+        if self.bound_at == end {
+            for &b in &self.bound {
+                self.labels[b as usize] = Some(end - size);
+            }
+            self.bound_at = end - size;
+        }
+    }
+
+    /// Re-encodes branches whose target is within reach as 2-byte short branches (to a fixed
+    /// point: shortening one only brings others closer), moving labels and other fixups along.
+    fn relax(&mut self) {
+        // (start, fixup index, short) of each branch still in the code, in code order.
+        let mut br: Vec<(u32, usize, bool)> = std::mem::take(&mut self.branches).into_iter().map(|(at, fx)| (at, fx, false)).collect();
+        br.sort_by_key(|b| b.0);
+        let saving = |buf: &[u8], at: u32| if buf[at as usize] == 0xE9 { 3 } else { 4 };
+        // New position of old position `p`: minus the savings of short branches before it.
+        let shift = |br: &[(u32, usize, bool)], buf: &[u8], p: u32| -> u32 {
+            p - br.iter().take_while(|b| b.0 < p).filter(|b| b.2).map(|b| saving(buf, b.0)).sum::<u32>()
+        };
+        loop {
+            let mut changed = false;
+            for i in 0..br.len() {
+                if br[i].2 {
+                    continue;
+                }
+                let (at, fx, _) = br[i];
+                let Some(target) = self.labels[self.fixups[fx].1 .0 as usize] else { continue };
+                let from = shift(&br, &self.buf, at) as i64 + 2;
+                let to = shift(&br, &self.buf, target) as i64;
+                if (-128..128).contains(&(to - from)) {
+                    br[i].2 = true;
+                    changed = true;
+                }
+            }
+            if !changed {
+                break;
+            }
+        }
+        if !br.iter().any(|b| b.2) {
+            return;
+        }
+        // Rebuild: short branches get their final displacement now, other references move.
+        let old = std::mem::take(&mut self.buf);
+        let new_pos = |p: u32| shift(&br, &old, p);
+        let mut out = Vec::with_capacity(old.len());
+        let mut short_fixups = vec![false; self.fixups.len()];
+        let mut from = 0usize;
+        for &(at, fx, short) in &br {
+            if !short {
+                continue;
+            }
+            out.extend_from_slice(&old[from..at as usize]);
+            let target = new_pos(self.labels[self.fixups[fx].1 .0 as usize].unwrap()) as i64;
+            let rel = (target - (out.len() as i64 + 2)) as i8;
+            if old[at as usize] == 0xE9 {
+                out.extend_from_slice(&[0xEB, rel as u8]);
+                from = at as usize + 5;
+            } else {
+                out.extend_from_slice(&[0x70 + (old[at as usize + 1] - 0x80), rel as u8]);
+                from = at as usize + 6;
+            }
+            short_fixups[fx] = true;
+        }
+        out.extend_from_slice(&old[from..]);
+        let fixups = std::mem::take(&mut self.fixups);
+        self.fixups = fixups.into_iter().enumerate().filter(|(i, _)| !short_fixups[*i]).map(|(_, (at, l))| (new_pos(at), l)).collect();
+        for p in self.labels.iter_mut().flatten() {
+            *p = new_pos(*p);
+        }
+        self.buf = out;
+    }
+
+    fn branch_peephole(&mut self, l: Label) {
+        let end = self.pos();
+        // A jump to the next instruction.
+        if let Some(&(at, fx)) = self.branches.last() {
+            if at + 5 == end && self.buf[at as usize] == 0xE9 && fx + 1 == self.fixups.len() && self.fixups[fx].1 == l {
+                self.fixups.pop();
+                self.branches.pop();
+                self.drop_branch(5);
+            }
+        }
+        // A conditional jump over an unconditional one to here, no label bound between them.
+        let end = self.pos();
+        let n = self.branches.len();
+        if n >= 2 {
+            let ((jcc, fc), (jmp, fj)) = (self.branches[n - 2], self.branches[n - 1]);
+            if jmp + 5 == end && jcc + 6 == jmp && self.buf[jmp as usize] == 0xE9 && self.buf[jcc as usize] == 0x0F
+                && fj + 1 == self.fixups.len() && fc + 2 == self.fixups.len() && self.fixups[fc].1 == l && self.bound_at < jmp
+            {
+                let far = self.fixups[fj].1;
+                self.buf[jcc as usize + 1] ^= 1;
+                self.fixups[fc].1 = far;
+                self.fixups.pop();
+                self.branches.pop();
+                self.drop_branch(5);
+            }
+        }
     }
 
     pub fn label_pos(&self, l: Label) -> Option<u32> {
@@ -92,6 +218,9 @@ impl Asm {
     }
 
     pub fn finish(mut self) -> Vec<u8> {
+        if self.peephole {
+            self.relax();
+        }
         for (at, l) in std::mem::take(&mut self.fixups) {
             let target = self.labels[l.0 as usize].expect("unbound label") as i64;
             let rel = (target - (at as i64 + 4)) as i32;
@@ -340,11 +469,13 @@ impl Asm {
 
     // ---- control flow ----
     pub fn jmp(&mut self, l: Label) {
+        self.branches.push((self.pos(), self.fixups.len()));
         self.b(0xE9);
         self.fixups.push((self.pos(), l));
         self.d32(0);
     }
     pub fn jcc(&mut self, c: Cond, l: Label) {
+        self.branches.push((self.pos(), self.fixups.len()));
         self.b(0x0F);
         self.b(0x80 + c as u8);
         self.fixups.push((self.pos(), l));

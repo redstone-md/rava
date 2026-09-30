@@ -91,6 +91,7 @@ fn frameless(g: &Graph) -> bool {
 pub(super) fn generate(g: &Graph, al: &Allocation, m: &'static Method, frame_slots: i32, monitor: Option<Monitor>) -> Vec<u8> {
     let max_locals = m.code.expect("compiled method has code").max_locals as i32;
     let mut a = Asm::default();
+    a.enable_peephole();
     let labels = (0..g.blocks.len()).map(|_| a.new_label()).collect();
     let epilogue = a.new_label();
     let mut gen = Gen {
