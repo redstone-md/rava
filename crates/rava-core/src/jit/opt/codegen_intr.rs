@@ -1,5 +1,6 @@
 //! Code generation of intrinsics (`jit/intrinsics.rs`): `Math` rounding, square root, min, max
-//! and abs, `Unsafe` memory access, `Class.isInstance` and `Object.getClass`.
+//! and abs, `Unsafe` memory access, `Class.isInstance`, `Object.getClass`, float bit
+//! conversions and the identity hash.
 
 use super::codegen::{Arg, Gen};
 use super::ir::*;
@@ -15,6 +16,32 @@ use std::rc::Rc;
 impl Gen<'_> {
     pub(super) fn intrinsic(&mut self, v: V, k: Intrinsic, args: &[V], s: Option<&Rc<State>>) {
         match k {
+            Intrinsic::Bits(to) => {
+                let (from_float, wide) = (matches!(to, BasicType::Int | BasicType::Long), matches!(to, BasicType::Long | BasicType::Double));
+                if from_float {
+                    let x = self.xreg(args[0], X(1));
+                    let r = self.out(v);
+                    self.a.mov_rx(wide, r, x);
+                    self.put(v, r);
+                } else {
+                    let a = self.reg(args[0], R::Rax);
+                    let r = self.xout(v);
+                    self.a.mov_xr(wide, r, a);
+                    self.xput(v, r);
+                }
+            }
+            Intrinsic::IdentityHash => {
+                let done = self.a.new_label();
+                self.load(R::Rcx, args[0]);
+                self.a.alu_rr(false, Alu::Xor, R::Rax, R::Rax);
+                self.a.test_rr(true, R::Rcx, R::Rcx);
+                self.a.jcc(Cond::E, done);
+                crate::jit::intrinsics::identity_hash_fast(&mut self.a, R::Rcx);
+                self.a.jcc(Cond::Ne, done);
+                self.call_preserving(runtime::identity_hash as *const () as usize, &[Arg::Reg(R::Rcx)]);
+                self.a.bind(done);
+                self.put(v, R::Rax);
+            }
             Intrinsic::Round(mode) => {
                 let a = self.xreg(args[0], X(1));
                 let r = self.xout(v);

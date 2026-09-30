@@ -97,8 +97,8 @@ pub(crate) fn class_modifiers(k: Option<&'static crate::klass::Klass>) -> i32 {
     }
 }
 
-const HASH_SHIFT: u32 = 8;
-const HASH_MASK: u64 = 0x7FFF_FFFF;
+pub(crate) const HASH_SHIFT: u32 = 8;
+pub(crate) const HASH_MASK: u64 = 0x7FFF_FFFF;
 
 /// Identity hash stored in the mark word on first request (xor-shift, never 0).
 pub(crate) fn identity_hash(o: Oop) -> i32 {

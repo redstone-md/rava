@@ -111,7 +111,7 @@ impl Builder {
         if self.allocate_instance(m, &args, &pre, &s) {
             return Some(true);
         }
-        if let (0xb6 | 0xb8, Some(k)) = (op, crate::jit::intrinsics::intrinsic(m)) {
+        if let (0xb6 | 0xb8, Some(k)) = (op, crate::jit::intrinsics::bound_intrinsic(m)) {
             let ret = m.sig.ret;
             let s = matches!(k, crate::jit::intrinsics::Intrinsic::GetClass).then_some(pre);
             let v = self.add(Inst::Intrinsic(k, args, s), if ret == BasicType::Void { Ty::I } else { Ty::of(ret) });

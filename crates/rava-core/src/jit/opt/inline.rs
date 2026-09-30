@@ -85,7 +85,10 @@ impl Builder {
         // `open`: the current block (the last guard's failure path) still needs the call.
         let (mut open, mut inlined, mut done) = (true, false, 0);
         for (target, guard) in plans {
-            let ok = decide(target, first, &self.chain, 3, self.spent).is_some();
+            // A guarded target the VM compiles in place (`Object.hashCode` for a class that
+            // does not override it).
+            let intrinsic = crate::jit::intrinsics::intrinsic(target).filter(|k| k.is_stateless());
+            let ok = intrinsic.is_some() || decide(target, first, &self.chain, 3, self.spent).is_some();
             if std::env::var_os("RAVA_CORE_INLINE_LOG").is_some() {
                 let indent = "  ".repeat(self.chain.len());
                 eprintln!("[opt-inline] {indent}{} @{} -> {target} {}", self.sc.m, s.bci, if ok { "inlined" } else { "call" });
@@ -100,7 +103,10 @@ impl Builder {
             if let (Guard::Klass(c), Some(&r)) = (&guard, args.first()) {
                 self.exact.push((r, c));
             }
-            let body = self.inline_body(target, &args, s.clone(), k, first);
+            let body = match intrinsic {
+                Some(i) => Some(self.intrinsic_body(i, target, &args, k)),
+                None => self.inline_body(target, &args, s.clone(), k, first),
+            };
             self.exact.truncate(exact_mark);
             let Some(r) = body else {
                 self.undo(mark);
@@ -214,6 +220,15 @@ impl Builder {
 
     fn klass_of(&mut self, receiver: V) -> V {
         self.add(Inst::LoadField(receiver, 0, BasicType::Long), Ty::J)
+    }
+
+    /// `target` as intrinsic `i` on `args` in the current block, which then goes to `k`.
+    fn intrinsic_body(&mut self, i: crate::jit::intrinsics::Intrinsic, target: &'static Method, args: &[V], k: B) -> Vec<(B, Option<V>)> {
+        let ret = target.sig.ret;
+        let v = self.add(Inst::Intrinsic(i, args.to_vec(), None), if ret == BasicType::Void { Ty::I } else { Ty::of(ret) });
+        self.g.blocks[self.cur as usize].term = Term::Goto(k);
+        self.g.blocks[k as usize].preds.push(self.cur);
+        vec![(self.cur, (ret != BasicType::Void).then_some(v))]
     }
 
     /// Builds `target` from the current block with `args` as its locals; returns its exits into
