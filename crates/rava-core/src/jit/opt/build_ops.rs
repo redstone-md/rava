@@ -130,6 +130,7 @@ impl Builder {
                 let s = self.state();
                 self.init_check(k, &s);
                 let v = self.add(Inst::New(k, s), Ty::A);
+                self.exact.push((v, k));
                 self.nonnull.push(v);
                 self.push(v);
             }

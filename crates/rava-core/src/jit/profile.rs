@@ -39,3 +39,12 @@ pub(crate) fn note_receiver(m: &'static Method, bci: usize, k: &'static Klass) {
         cell.note(k as *const Klass as usize);
     }
 }
+
+/// What the profile of `m`'s call at `bci` holds, for diagnostics.
+pub(crate) fn describe(m: &'static Method, bci: usize) -> String {
+    let Some(cell) = sites().lock().unwrap().get(&(m as *const Method as usize, bci as u32)).copied() else { return "no profile".into() };
+    match cell.receivers() {
+        None => "megamorphic".into(),
+        Some(v) => format!("{} receivers", v.len()),
+    }
+}

@@ -99,12 +99,15 @@ pub(super) struct Builder {
     pub numbered: HashMap<(u8, u8, V, V, u8), V>,
     /// Field values of the current block, by (object, offset), valid until a memory effect.
     pub loads: HashMap<(V, u32), V>,
+    /// Values whose class is known exactly where they are used (allocations, and receivers
+    /// inside a body inlined behind an exact class check), innermost last.
+    pub exact: Vec<(V, &'static crate::klass::Klass)>,
 }
 
 /// Builds the graph of `m`; `None` if some instruction is not supported. Returns the frame size.
 pub(super) fn build(m: &'static Method) -> Option<(Graph, i32)> {
     let sc = Scope::new(m, None, 0)?;
-    let mut b = Builder { g: Graph::default(), extent: sc.frame_end(), sc, cur: 0, spent: 0, chain: vec![(m, None)], seq: 0, nonnull: Vec::new(), numbered: HashMap::new(), loads: HashMap::new() };
+    let mut b = Builder { g: Graph::default(), extent: sc.frame_end(), sc, cur: 0, spent: 0, chain: vec![(m, None)], seq: 0, nonnull: Vec::new(), numbered: HashMap::new(), loads: HashMap::new(), exact: Vec::new() };
     // The entry block reads the parameters, then enters bci 0 like any other edge.
     let start = b.g.new_block(-1);
     b.start_block(start);
