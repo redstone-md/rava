@@ -138,7 +138,7 @@ impl Heap {
     /// the live data, so collection work stays proportional to allocation, within the maximum
     /// heap size.
     fn budget(&self, live: usize) -> usize {
-        const GROWTH: usize = 3;
+        const GROWTH: usize = 1;
         (live * GROWTH).min(self.max_heap.saturating_sub(live)).max(self.min_trigger)
     }
 
