@@ -13,9 +13,11 @@ fn sites() -> &'static Mutex<HashMap<(usize, u32), &'static IcCell>> {
     SITES.get_or_init(Default::default)
 }
 
-/// Remembers the inline cache of `m`'s call at `bci`.
-pub(super) fn record(m: &'static Method, bci: usize, cell: &'static IcCell) {
-    sites().lock().unwrap().insert((m as *const Method as usize, bci as u32), cell);
+/// The inline cache of `m`'s call at `bci`, shared by every compiled copy of that call (inlined
+/// ones and optimized code included), so the site has one receiver profile as HotSpot's method
+/// data has.
+pub(super) fn cell(m: &'static Method, bci: usize) -> &'static IcCell {
+    *sites().lock().unwrap().entry((m as *const Method as usize, bci as u32)).or_insert_with(IcCell::new)
 }
 
 /// The receiver classes seen at `m`'s call at `bci`, when there were one or two.
