@@ -104,6 +104,8 @@ pub(super) struct Builder {
     speculate: bool,
     /// Values known non-null at the current point (checked on every path to it).
     pub nonnull: Vec<V>,
+    /// Constant arrays read from `@Stable` fields, with their stable dimensions left.
+    pub stable: HashMap<i64, u8>,
     /// Pure instructions of the current block, for value numbering within it.
     pub numbered: HashMap<(u8, u8, V, V, u8), V>,
     /// Field values of the current block, by (object, offset), valid until a memory effect.
@@ -116,7 +118,7 @@ pub(super) struct Builder {
 /// Builds the graph of `m`; `None` if some instruction is not supported. Returns the frame size.
 pub(super) fn build(m: &'static Method) -> Option<(Graph, i32)> {
     let sc = Scope::new(m, None, 0)?;
-    let mut b = Builder { g: Graph::default(), extent: sc.frame_end(), sc, cur: 0, spent: 0, chain: vec![(m, None)], seq: 0, speculate: m.deopt_recompiles.load(std::sync::atomic::Ordering::Relaxed) < super::SPECULATIVE_RECOMPILES, nonnull: Vec::new(), numbered: HashMap::new(), loads: HashMap::new(), exact: Vec::new() };
+    let mut b = Builder { g: Graph::default(), extent: sc.frame_end(), sc, cur: 0, spent: 0, chain: vec![(m, None)], seq: 0, speculate: m.deopt_recompiles.load(std::sync::atomic::Ordering::Relaxed) < super::SPECULATIVE_RECOMPILES, nonnull: Vec::new(), stable: HashMap::new(), numbered: HashMap::new(), loads: HashMap::new(), exact: Vec::new() };
     // The entry block reads the parameters, then enters bci 0 like any other edge.
     let start = b.g.new_block(-1);
     b.start_block(start);
