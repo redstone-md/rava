@@ -53,7 +53,10 @@ pub(super) fn register(r: &mut NativeRegistry) {
         let clazz = unsafe { obj::read::<Oop>(a[0] as Oop, mn_clazz()) };
         let object = crate::loader::load("java/lang/Object").expect("Object");
         let arr = rt::alloc_array(t, crate::vm::vm().array_class_of(object).expect("Object[]"), 2)?;
-        unsafe { obj::array_slice::<Oop>(arr).copy_from_slice(&[index, clazz]) };
+        unsafe {
+            obj::store_elem(arr, 0, index);
+            obj::store_elem(arr, 1, clazz);
+        }
         ret_ref(arr)
     });
     for name in ["setCallSiteTargetNormal", "setCallSiteTargetVolatile"] {

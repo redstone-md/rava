@@ -37,6 +37,12 @@ pub mod offsets {
     pub const LIMIT: i32 = 8;
     pub const TOP: i32 = 16;
     pub const PENDING: i32 = 24;
+    /// The card table biased by the heap base, the heap base and span, and the table itself
+    /// (`gc::cards::layout`), for the write barrier of compiled code.
+    pub const CARDS: i32 = 32;
+    pub const HEAP_BASE: i32 = 40;
+    pub const HEAP_SPAN: i32 = 48;
+    pub const CARD_TABLE: i32 = 56;
 }
 
 #[repr(C)]
@@ -49,6 +55,8 @@ pub struct Thread {
     pub(crate) top: *mut u64,
     /// Exception thrown by compiled code, awaiting its handler (null otherwise).
     pub(crate) pending: Oop,
+    /// Write-barrier constants (see `offsets::CARDS`).
+    cards: [usize; 4],
     stack: Box<[u64]>,
     pub java_thread: Oop,
     /// `Thread.scopedValueCache` of the current thread.
@@ -76,6 +84,10 @@ impl Thread {
             limit,
             top: std::ptr::null_mut(),
             pending: std::ptr::null_mut(),
+            cards: {
+                let (biased, base, span, table) = crate::gc::cards::layout();
+                [biased, base, span, table]
+            },
             stack,
             java_thread: std::ptr::null_mut(),
             scoped_value_cache: std::ptr::null_mut(),

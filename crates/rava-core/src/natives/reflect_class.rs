@@ -92,7 +92,7 @@ pub(super) fn new_object_array(t: &mut Thread, elem: &'static Klass, len: usize)
 
 pub(super) fn store(array: Oop, i: usize, value: Oop) {
     // SAFETY: `array` is a reference array with more than `i` elements.
-    unsafe { *obj::array_data::<Oop>(array).add(i) = value };
+    unsafe { obj::store_elem(array, i as usize, value) };
 }
 
 /// A `Class[]` of the given classes.

@@ -1,6 +1,6 @@
 //! Templates for fields, type checks and allocation.
 
-use super::asm::{mem, Alu, Asm, Cond, Label, M, R};
+use super::asm::{mem, Alu, Asm, Cond, Label, Shift, M, R};
 use super::compile::Emitter;
 use super::runtime;
 use crate::klass::{InitState, Klass, ACC_ABSTRACT, ACC_INTERFACE};
@@ -274,8 +274,41 @@ pub(super) fn store_typed(a: &mut Asm, ty: BasicType, m: M) {
     store_typed_from(a, R::Rdx, ty, m)
 }
 
-/// Stores `src` (slot encoding) into a field of type `ty` at `m`; a boolean store masks `src`.
-pub(super) fn store_typed_from(a: &mut Asm, src: R, ty: BasicType, m: M) {
+/// Stores `src` (slot encoding) into a field of type `ty` at `m`, which lies in a heap object;
+/// a boolean store masks `src`, a reference store marks its card. Clobbers r11.
+pub(crate) fn store_typed_from(a: &mut Asm, src: R, ty: BasicType, m: M) {
+    store_raw(a, src, ty, m);
+    if ty == BasicType::Reference {
+        card_mark(a, m);
+    }
+}
+
+/// The write barrier of a reference store to `m`, inside the heap: marks its card
+/// (`gc::cards`). Clobbers r11; `m` must not use r11.
+pub(crate) fn card_mark(a: &mut Asm, m: M) {
+    a.lea(R::R11, m);
+    a.shift_ri(true, Shift::Shr, R::R11, crate::gc::cards::CARD_SHIFT as u8);
+    a.alu_rm(true, Alu::Add, R::R11, mem(R::R12, crate::thread::offsets::CARDS));
+    a.store8_imm(mem(R::R11, 0), 1);
+}
+
+/// The write barrier of a reference store to `m`, which may be off-heap (Unsafe with a null
+/// base addresses static fields). Clobbers r11 and the flags.
+pub(crate) fn card_mark_checked(a: &mut Asm, m: M) {
+    use crate::thread::offsets;
+    let skip = a.new_label();
+    a.lea(R::R11, m);
+    a.alu_rm(true, Alu::Sub, R::R11, mem(R::R12, offsets::HEAP_BASE));
+    a.alu_rm(true, Alu::Cmp, R::R11, mem(R::R12, offsets::HEAP_SPAN));
+    a.jcc(Cond::Ae, skip);
+    a.shift_ri(true, Shift::Shr, R::R11, crate::gc::cards::CARD_SHIFT as u8);
+    a.alu_rm(true, Alu::Add, R::R11, mem(R::R12, offsets::CARD_TABLE));
+    a.store8_imm(mem(R::R11, 0), 1);
+    a.bind(skip);
+}
+
+/// Stores `src` into a field of type `ty` at `m` without a write barrier.
+pub(crate) fn store_raw(a: &mut Asm, src: R, ty: BasicType, m: M) {
     match ty {
         BasicType::Boolean => {
             a.alu_ri(false, Alu::And, src, 1);

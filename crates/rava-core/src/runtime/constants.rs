@@ -41,7 +41,7 @@ pub fn method_type(t: &mut Thread, k: &'static Klass, desc: &str) -> JResult<Oop
         let end = skip_field_desc(b, i);
         let p = mirror_for_desc(t, k, &desc[i..end])?;
         // SAFETY: `arr` has `count` elements.
-        unsafe { *obj::array_data::<Oop>(arr).add(n) = p };
+        unsafe { obj::store_elem(arr, n as usize, p) };
         (i, n) = (end, n + 1);
     }
     let ret = mirror_for_desc(t, k, &desc[i + 1..])?;
@@ -112,7 +112,7 @@ pub fn bootstrap_specifier(t: &mut Thread, k: &'static Klass, bsm: u16) -> JResu
     for (i, &a) in args.iter().enumerate() {
         let v = resolve_constant(t, k, a)?;
         // SAFETY: `arr` has args.len() elements.
-        unsafe { *obj::array_data::<Oop>(arr).add(i) = v };
+        unsafe { obj::store_elem(arr, i as usize, v) };
     }
     Ok((mh, arr))
 }

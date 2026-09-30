@@ -1,6 +1,9 @@
 //! Marking: conservative roots (thread stacks, value stacks, statics), precise VM roots, and a
 //! precise trace of the heap by class layout. The trace runs on every core: mark bits are set
 //! atomically, and workers share packets of objects still to scan.
+//!
+//! A young collection keeps the marks of old objects (those that survived a collection): the
+//! trace stops at them, and the old objects on dirty cards are scanned as extra roots.
 
 use super::safepoint;
 use super::space::Space;
@@ -63,9 +66,8 @@ impl Shared<'_> {
         Some(packet)
     }
 
-    /// Scans objects until no worker has any left.
-    fn work(&self) {
-        let mut stack: Vec<usize> = Vec::with_capacity(4 * PACKET);
+    /// Scans objects, starting with `stack`, until no worker has any left.
+    fn work(&self, mut stack: Vec<usize>) {
         let mut scanned = 0;
         loop {
             while let Some(o) = stack.pop() {
@@ -121,51 +123,132 @@ impl Shared<'_> {
     }
 }
 
-/// The roots: marks each and returns the newly marked ones.
-fn roots(shared: &Shared) -> Vec<usize> {
-    let mut found = Vec::new();
-    let space = shared.space;
-    let precise = |r: usize, found: &mut Vec<usize>| {
-        if r != 0 && shared.mark_start(r) {
-            found.push(r);
-        }
-    };
-    let maybe = |w: usize, found: &mut Vec<usize>| {
-        if let Some(start) = space.find_object(w) {
-            if shared.mark_start(start) {
-                found.push(start);
-            }
-        }
-    };
-    for rec in safepoint::all_threads() {
-        // SAFETY: the thread is stopped; its record and Thread outlive the collection.
-        let t = unsafe { &*rec.thread.load(Ordering::SeqCst) };
-        let rsp = rec.rsp.load(Ordering::SeqCst);
-        let (lo, hi) = t.stack_range();
-        let mut ranges = vec![(lo as usize, hi as usize)];
-        if rsp != 0 {
-            ranges.push((rsp, rec.stack_top));
-        }
-        for (lo, hi) in ranges {
-            let mut p = lo & !7;
-            while p + 8 <= hi {
-                // SAFETY: an address range of a stopped thread's stack or value stack.
-                maybe(unsafe { *(p as *const usize) }, &mut found);
-                p += 8;
-            }
-        }
-        for r in [t.java_thread, t.scoped_value_cache, t.pending] {
-            precise(r as usize, &mut found);
-        }
-        for &h in t.handles.iter() {
-            precise(h as usize, &mut found);
+/// A unit of root marking, taken by whichever worker is free.
+enum Task {
+    /// A thread's stacks (conservatively) and its precise references.
+    Thread(&'static safepoint::Record),
+    /// The roots of a range of classes.
+    Classes(usize, usize),
+    /// The VM's other roots.
+    Other,
+    /// Dirty cards of `[from, to)` in the page area (a young collection).
+    Cards(usize, usize),
+    /// Dirty cards of `[from, to)` in the large-object area.
+    LargeCards(usize, usize),
+}
+
+impl Shared<'_> {
+    /// Marks the object `r` points at exactly, queuing it if new.
+    fn precise(&self, r: usize, out: &mut Vec<usize>) {
+        if r != 0 && self.mark_start(r) {
+            out.push(r);
         }
     }
-    let (mut refs, mut words) = (Vec::new(), Vec::new());
-    crate::vm::vm().for_each_root(&mut |o| refs.push(o as usize), &mut |w| words.push(w));
-    refs.into_iter().for_each(|r| precise(r, &mut found));
-    words.into_iter().for_each(|w| maybe(w, &mut found));
-    found
+
+    /// Marks the object a word may point into, queuing it if new.
+    fn maybe(&self, w: usize, out: &mut Vec<usize>) {
+        if let Some(start) = self.space.find_object(w) {
+            if self.mark_start(start) {
+                out.push(start);
+            }
+        }
+    }
+
+    fn run(&self, task: &Task, classes: &[&'static Klass], out: &mut Vec<usize>) {
+        match *task {
+            Task::Thread(rec) => {
+                // SAFETY: the thread is stopped; its record and Thread outlive the collection.
+                let t = unsafe { &*rec.thread.load(Ordering::SeqCst) };
+                let rsp = rec.rsp.load(Ordering::SeqCst);
+                let (lo, hi) = t.stack_range();
+                let mut ranges = vec![(lo as usize, hi as usize)];
+                if rsp != 0 {
+                    ranges.push((rsp, rec.stack_top));
+                }
+                for (lo, hi) in ranges {
+                    let mut p = lo & !7;
+                    while p + 8 <= hi {
+                        // SAFETY: an address range of a stopped thread's stack or value stack.
+                        self.maybe(unsafe { *(p as *const usize) }, out);
+                        p += 8;
+                    }
+                }
+                for r in [t.java_thread, t.scoped_value_cache, t.pending] {
+                    self.precise(r as usize, out);
+                }
+                for &h in t.handles.iter() {
+                    self.precise(h as usize, out);
+                }
+            }
+            Task::Classes(from, to) => {
+                let (mut refs, mut words) = (Vec::new(), Vec::new());
+                crate::vm::vm().class_roots(&classes[from..to], &mut |o| refs.push(o as usize), &mut |w| words.push(w));
+                refs.into_iter().for_each(|r| self.precise(r, out));
+                words.into_iter().for_each(|w| self.maybe(w, out));
+            }
+            Task::Other => {
+                let mut refs = Vec::new();
+                crate::vm::vm().other_roots(&mut |o| refs.push(o as usize));
+                refs.into_iter().for_each(|r| self.precise(r, out));
+            }
+            Task::Cards(from, to) => self.page_cards(from, to, out),
+            Task::LargeCards(from, to) => {
+                let space = self.space;
+                let mut last = 0;
+                super::cards::drain(from, to, &mut |card| {
+                    if let Some((&start, l)) = space.large.range(..=card).next_back() {
+                        if card < start + l.size && l.marked && start != last {
+                            last = start;
+                            self.scan(start as Oop, out);
+                        }
+                    }
+                });
+            }
+        }
+    }
+
+    /// Scans the old objects on the dirty cards of `[from, to)` (page area), once each, and
+    /// cleans the cards.
+    fn page_cards(&self, from: usize, to: usize, out: &mut Vec<usize>) {
+        use super::cards::CARD_SIZE;
+        let space = self.space;
+        let mut last = 0;
+        super::cards::drain(from, to, &mut |card| {
+            let Some(index) = space.page_index(card) else { return };
+            let Some(meta) = space.pages[index].as_ref() else { return };
+            let page = space.page_addr(index);
+            let first = meta.cell_of(card - page);
+            let end = (meta.cell_of(card + CARD_SIZE - 1 - page) + 1).min(meta.cells());
+            for cell in first..end {
+                let start = page + cell * meta.cell_size as usize;
+                // SAFETY: inside a page in use; old objects have their mark set.
+                let old = unsafe { (*(meta.marks.as_ptr().add(cell / 64) as *const AtomicU64)).load(Ordering::Relaxed) } & (1 << (cell % 64)) != 0;
+                if old && start != last && unsafe { *(start as *const usize) } != 0 {
+                    last = start;
+                    self.scan(start as Oop, out);
+                }
+            }
+        });
+    }
+}
+
+/// The root tasks of a collection: threads, classes in chunks, other roots, and (young) the
+/// card table in chunks.
+fn tasks(space: &Space, classes: usize, young: bool) -> Vec<Task> {
+    const CLASS_CHUNK: usize = 512;
+    let mut tasks: Vec<Task> = safepoint::all_threads().into_iter().map(Task::Thread).collect();
+    tasks.extend((0..classes).step_by(CLASS_CHUNK).map(|c| Task::Classes(c, (c + CLASS_CHUNK).min(classes))));
+    tasks.push(Task::Other);
+    if young {
+        // Chunks of whole pages, so no object spans two tasks.
+        let chunk = 64 * super::space::PAGE_SIZE;
+        tasks.extend((space.base..space.fresh).step_by(chunk).map(|c| Task::Cards(c, (c + chunk).min(space.fresh))));
+        let area = &space.large_area;
+        if area.fresh > area.base {
+            tasks.push(Task::LargeCards(area.base, area.fresh));
+        }
+    }
+    tasks
 }
 
 /// Marking threads: the collecting thread and helpers, one per core in all.
@@ -177,8 +260,10 @@ fn workers() -> usize {
     })
 }
 
-/// Marks everything reachable; returns the number of marked objects.
-pub(super) fn mark(space: &mut Space) -> usize {
+/// Marks everything reachable (with `young`, what is reachable without passing through old
+/// objects, plus what old objects on dirty cards reference); returns the number of newly
+/// marked objects.
+pub(super) fn mark(space: &mut Space, young: bool) -> usize {
     let workers = workers();
     let shared = Shared {
         space,
@@ -188,14 +273,24 @@ pub(super) fn mark(space: &mut Space) -> usize {
         workers,
         marked: AtomicUsize::new(0),
     };
-    for packet in roots(&shared).chunks(PACKET) {
-        shared.give(packet.to_vec());
-    }
+    let classes = crate::vm::vm().all_classes();
+    let tasks = tasks(shared.space, classes.len(), young);
+    let next = AtomicUsize::new(0);
+    // Each worker takes root tasks until none is left, then traces from what it found.
+    let worker = || {
+        let mut found = Vec::with_capacity(4 * PACKET);
+        loop {
+            let i = next.fetch_add(1, Ordering::Relaxed);
+            let Some(task) = tasks.get(i) else { break };
+            shared.run(task, &classes, &mut found);
+        }
+        shared.work(found);
+    };
     std::thread::scope(|s| {
         for _ in 1..workers {
-            s.spawn(|| shared.work());
+            s.spawn(worker);
         }
-        shared.work();
+        worker();
     });
     shared.marked.into_inner()
 }

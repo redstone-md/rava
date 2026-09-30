@@ -213,7 +213,7 @@ pub(super) fn aastore(t: &mut Thread, f: &mut Frame) -> JResult<()> {
         }
     }
     // SAFETY: bounds checked.
-    unsafe { *obj::array_data::<Oop>(a).add(i) = v };
+    unsafe { obj::store_elem(a, i as usize, v) };
     Ok(())
 }
 
@@ -450,7 +450,7 @@ fn build_multi(t: &mut Thread, k: &'static Klass, counts: &[i32]) -> JResult<Oop
         for i in 0..counts[0] as usize {
             let sub = build_multi(t, elem, &counts[1..])?;
             // SAFETY: `a` has counts[0] reference elements.
-            unsafe { *obj::array_data::<Oop>(a).add(i) = sub };
+            unsafe { obj::store_elem(a, i as usize, sub) };
         }
     }
     Ok(a)

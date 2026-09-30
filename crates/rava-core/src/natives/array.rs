@@ -70,7 +70,7 @@ fn build(t: &mut Thread, k: &'static Klass, dims: &[i32]) -> JResult<Oop> {
         for i in 0..dims[0] as usize {
             let sub = build(t, elem, &dims[1..])?;
             // SAFETY: `arr` has dims[0] reference elements.
-            unsafe { *obj::array_data::<Oop>(arr).add(i) = sub };
+            unsafe { obj::store_elem(arr, i as usize, sub) };
         }
     }
     Ok(arr)

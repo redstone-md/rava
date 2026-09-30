@@ -135,7 +135,7 @@ pub fn string_array(t: &mut Thread, values: &[Option<String>]) -> JResult<Oop> {
         if let Some(s) = v {
             let js = rt::new_string(t, s)?;
             // SAFETY: `arr` has values.len() reference elements.
-            unsafe { *obj::array_data::<Oop>(arr).add(i) = js };
+            unsafe { obj::store_elem(arr, i as usize, js) };
         }
     }
     Ok(arr)

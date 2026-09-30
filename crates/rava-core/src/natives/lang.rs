@@ -182,7 +182,7 @@ fn arraycopy(t: &mut Thread, a: &[u64]) -> JResult<u64> {
                 if !v.is_null() && !unsafe { obj::klass(v) }.is_subtype_of(de) {
                     return Err(throw_new(t, "java/lang/ArrayStoreException", &rt::class_name_of(v)));
                 }
-                unsafe { *obj::array_data::<Oop>(dst).add(dp as usize + i) = v };
+                unsafe { obj::store_elem(dst, dp as usize + i as usize, v) };
             }
             return ret_void();
         }
@@ -196,6 +196,10 @@ fn arraycopy(t: &mut Thread, a: &[u64]) -> JResult<u64> {
             len as usize * es,
         )
     };
+    if matches!(dk.kind, KlassKind::ObjArray { .. }) {
+        // SAFETY: as above.
+        crate::gc::cards::dirty_range(unsafe { obj::array_data::<u8>(dst).add(dp as usize * es) } as usize, len as usize * es);
+    }
     ret_void()
 }
 

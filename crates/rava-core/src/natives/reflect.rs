@@ -123,7 +123,7 @@ fn parameters(t: &mut Thread, a: &[u64]) -> JResult<u64> {
         let args = [name as u64, flags as u64, exec as u64, i as u64];
         let p = crate::boot::construct(t, "java/lang/reflect/Parameter", "(Ljava/lang/String;ILjava/lang/reflect/Executable;I)V", &args)?;
         // SAFETY: `arr` has `count` reference elements.
-        unsafe { *obj::array_data::<Oop>(arr).add(i) = p };
+        unsafe { obj::store_elem(arr, i as usize, p) };
     }
     ret_ref(arr)
 }
@@ -138,7 +138,7 @@ fn class_context(t: &mut Thread, _: &[u64]) -> JResult<u64> {
     for (i, k) in holders.into_iter().enumerate() {
         let mirror = rt::mirror_of(t, k)?;
         // SAFETY: `arr` has one reference element per holder.
-        unsafe { *obj::array_data::<Oop>(arr).add(i) = mirror };
+        unsafe { obj::store_elem(arr, i as usize, mirror) };
     }
     ret_ref(arr)
 }
