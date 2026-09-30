@@ -26,7 +26,7 @@ impl Emitter {
         let n = target.param_slots() as usize;
         let consts = consts.unwrap_or_else(|| (0..n).map(|i| self.site_consts.get(args as usize + i).copied().flatten()).collect());
         let kind = decide(target, consts.first().copied().flatten(), &self.chain, self.tier, self.inlined_bytes);
-        if std::env::var_os("RAVA_CORE_INLINE_LOG").is_some() {
+        if env_once!("RAVA_CORE_INLINE_LOG").is_some() {
             let indent = "  ".repeat(self.chain.len());
             eprintln!("[inline] {indent}{} @{pc} -> {target} {}", self.m, if kind.is_some() { "inlined" } else { "call" });
         }

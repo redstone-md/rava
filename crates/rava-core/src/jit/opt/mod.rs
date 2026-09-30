@@ -90,7 +90,7 @@ pub fn compile(m: &'static Method) -> Option<CompiledMethod> {
 }
 
 fn compile_timed(m: &'static Method) -> Option<CompiledMethod> {
-    let log = std::env::var_os("RAVA_CORE_OPT_LOG").is_some();
+    let log = env_once!("RAVA_CORE_OPT_LOG").is_some();
     let monitor = match (m.is_synchronized(), m.is_static()) {
         (false, _) => None,
         (true, false) => Some(codegen::Monitor::Receiver),
@@ -104,10 +104,10 @@ fn compile_timed(m: &'static Method) -> Option<CompiledMethod> {
     };
     phis::simplify(&mut g);
     nullcheck::eliminate(&mut g);
-    if std::env::var_os("RAVA_CORE_OPT_SPLIT").map_or(true, |v| v != "0") {
+    if env_once!("RAVA_CORE_OPT_SPLIT").map_or(true, |v| v != "0") {
         split::split(&mut g);
     }
-    let dump = std::env::var_os("RAVA_CORE_OPT_IR").is_some_and(|f| m.to_string().contains(f.to_str().unwrap_or("")));
+    let dump = env_once!("RAVA_CORE_OPT_IR").is_some_and(|f| m.to_string().contains(f.to_str().unwrap_or("")));
     if dump {
         eprintln!("[opt-ir] {m}\n{}", g.dump());
     }
@@ -122,7 +122,7 @@ fn compile_timed(m: &'static Method) -> Option<CompiledMethod> {
     if log {
         eprintln!("[opt] {m}: {} values, {} blocks, {} spill slots -> {} bytes ({main} main)", g.values.len(), al.order.len(), al.spill_slots, code.len());
     }
-    if std::env::var_os("RAVA_CORE_JIT_DUMP").is_some_and(|f| m.to_string().contains(f.to_str().unwrap_or(""))) {
+    if env_once!("RAVA_CORE_JIT_DUMP").is_some_and(|f| m.to_string().contains(f.to_str().unwrap_or(""))) {
         let file = format!("/tmp/rava-opt-{entry:x}.bin");
         let _ = std::fs::write(&file, &code);
         eprintln!("[opt-dump] {m} -> {file}");
