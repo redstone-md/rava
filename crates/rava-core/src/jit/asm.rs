@@ -259,6 +259,11 @@ impl Asm {
     pub fn imul_rr(&mut self, w: bool, dst: R, src: R) {
         self.op_rr(w, &[0x0F, 0xAF], dst as u8, src as u8);
     }
+    /// `imul dst, src, imm32`.
+    pub fn imul_rri(&mut self, w: bool, dst: R, src: R, imm: i32) {
+        self.op_rr(w, &[0x69], dst as u8, src as u8);
+        self.d32(imm);
+    }
     /// `cdq` / `cqo` then `idiv src` (quotient rax, remainder rdx).
     pub fn idiv(&mut self, w: bool, src: R) {
         if w {
