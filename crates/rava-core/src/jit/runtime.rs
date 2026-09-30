@@ -112,7 +112,7 @@ impl IcCell {
         Some(self.seen.iter().map(|s| s.load(Ordering::Relaxed)).filter(|&k| k != 0).collect())
     }
 
-    fn note(&self, k: usize) {
+    pub(super) fn note(&self, k: usize) {
         use std::sync::atomic::Ordering;
         for s in &self.seen {
             match s.compare_exchange(0, k, Ordering::Relaxed, Ordering::Relaxed) {

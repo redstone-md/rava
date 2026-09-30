@@ -31,3 +31,11 @@ pub(super) fn monomorphic(m: &'static Method, bci: usize) -> Option<&'static Kla
     // SAFETY: cached classes are immortal.
     cell.observed().map(|k| unsafe { &*(k as *const Klass) })
 }
+
+/// Adds `k` to the receivers seen at `m`'s call at `bci` (optimized code that deoptimized on
+/// a receiver its profile did not have, so the recompilation knows it).
+pub(crate) fn note_receiver(m: &'static Method, bci: usize, k: &'static Klass) {
+    if let Some(cell) = sites().lock().unwrap().get(&(m as *const Method as usize, bci as u32)).copied() {
+        cell.note(k as *const Klass as usize);
+    }
+}
