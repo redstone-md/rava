@@ -73,6 +73,37 @@ pub(super) fn decide(target: &'static Method, first: Option<i64>, chain: &Chain,
     framed_ok(target, first, chain, hot, tier >= 3).then_some(Kind::Framed)
 }
 
+/// Why `decide` refuses `target` (for `RAVA_CORE_INLINE_LOG`).
+pub(super) fn refusal(target: &'static Method, chain: &Chain, tier: u8, spent: usize) -> &'static str {
+    let size = target.code.map_or(0, |c| c.code.len());
+    if spent + size > if tier >= 2 { TIER2_BUDGET } else { TIER1_BUDGET } {
+        return "inlining budget spent";
+    }
+    if target.is_abstract() || target.is_native() {
+        return "no bytecode";
+    }
+    if tier >= 3 && target.compiled().is_some_and(|c| c.tier >= 2 && c.size > INLINE_SMALL_CODE) {
+        return "compiled code too large";
+    }
+    let Some(info) = target.code else { return "no bytecode" };
+    if chain.len() > if tier >= 3 { MAX_DEPTH_OPT } else { MAX_DEPTH } {
+        return "too deep";
+    }
+    if recursive(target, None, chain, (tier >= 3) as usize) {
+        return "recursive";
+    }
+    if target.is_synchronized() {
+        return "synchronized";
+    }
+    if target.has_annotation("Ljdk/internal/vm/annotation/DontInline;") {
+        return "@DontInline";
+    }
+    if info.code.len() > HOT_INLINE_SIZE {
+        return "bytecode too large";
+    }
+    "jsr or other"
+}
+
 /// The statically bound target of the call at `pc`, excluding method-handle invokers.
 pub(super) fn bound_target(caller: &'static Method, code: &[u8], pc: usize) -> Option<&'static Method> {
     let index = u16::from_be_bytes([code[pc + 1], code[pc + 2]]);

@@ -91,7 +91,8 @@ impl Builder {
             let ok = intrinsic.is_some() || decide(target, first, &self.chain, 3, self.spent).is_some();
             if std::env::var_os("RAVA_CORE_INLINE_LOG").is_some() {
                 let indent = "  ".repeat(self.chain.len());
-                eprintln!("[opt-inline] {indent}{} @{} -> {target} {}", self.sc.m, s.bci, if ok { "inlined" } else { "call" });
+                let why = if ok { String::new() } else { format!(" ({})", crate::jit::inline_plan::refusal(target, &self.chain, 3, self.spent)) };
+                eprintln!("[opt-inline] {indent}{} @{} -> {target} {}{why}", self.sc.m, s.bci, if ok { "inlined" } else { "call" });
             }
             if !ok {
                 continue;
