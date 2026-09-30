@@ -24,8 +24,10 @@ const HOT_LEAF_SIZE: usize = 128;
 const HOT_CALLEE: u32 = 1000;
 /// Scratch slots one leaf body may use.
 const MAX_LEAF_SLOTS: usize = 48;
-/// Nesting of inlined frames (cf. `C1MaxInlineLevel`).
+/// Nesting of inlined frames (cf. `C1MaxInlineLevel`, and C2's `MaxInlineLevel` for the
+/// optimizing tier).
 const MAX_DEPTH: usize = 9;
+const MAX_DEPTH_OPT: usize = 15;
 /// `@ForceInline` bodies above this size are still left as calls.
 const MAX_FORCED_SIZE: usize = 400;
 
@@ -67,7 +69,7 @@ pub(super) fn decide(target: &'static Method, first: Option<i64>, chain: &Chain,
     // Tier 3 (the optimizing tier) compiles a method because it is hot, so its call sites are:
     // counting the callee's own invocations misses calls inlined into baseline code.
     let hot = tier >= 3 || (tier >= 2 && target.invocations.load(Ordering::Relaxed) >= HOT_INVOCATIONS);
-    framed_ok(target, first, chain, hot).then_some(Kind::Framed)
+    framed_ok(target, first, chain, hot, tier >= 3).then_some(Kind::Framed)
 }
 
 /// The statically bound target of the call at `pc`, excluding method-handle invokers.
@@ -92,9 +94,12 @@ fn recursive(t: &'static Method, first: Option<i64>, chain: &Chain) -> bool {
     chain.iter().any(|(c, f)| std::ptr::eq(*c, t) && !(lambda_form && first.is_some() && *f != first))
 }
 
-fn framed_ok(t: &'static Method, first: Option<i64>, chain: &Chain, hot: bool) -> bool {
+/// `opt`: for the optimizing tier, whose exceptions leave compiled code by deoptimizing into
+/// the interpreter, so inlined bodies may have exception handlers.
+fn framed_ok(t: &'static Method, first: Option<i64>, chain: &Chain, hot: bool, opt: bool) -> bool {
     let Some(info) = t.code else { return false };
-    if chain.len() > MAX_DEPTH || recursive(t, first, chain) || t.is_synchronized() || !info.handlers.is_empty() {
+    let depth = if opt { MAX_DEPTH_OPT } else { MAX_DEPTH };
+    if chain.len() > depth || recursive(t, first, chain) || t.is_synchronized() || (!opt && !info.handlers.is_empty()) {
         return false;
     }
     if t.has_annotation("Ljdk/internal/vm/annotation/DontInline;") {
