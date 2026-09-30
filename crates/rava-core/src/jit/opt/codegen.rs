@@ -47,7 +47,7 @@ pub(super) struct Gen<'a> {
     deopt_list: Vec<(Label, Rc<State>)>,
     polls: Vec<(Label, Label)>,
     edge_stubs: Vec<(Label, B, B)>,
-    /// Callee-saved registers the prologue saves (the thread, the frame, and those allocated).
+    /// Callee-saved registers the prologue saves (the frame, and those allocated).
     saved: Vec<R>,
     /// Bytes below them: spill slots and alignment.
     frame_bytes: i32,
@@ -122,7 +122,8 @@ pub(super) fn generate(g: &Graph, al: &Allocation, m: &'static Method, frame_slo
         slow_calls: Vec::new(),
     };
     // Entry rsp is 8 mod 16: an odd number of pushes realigns it, spill slots come in pairs.
-    gen.saved = [R::R12, R::R13].into_iter().chain(CALLEE_SAVED.into_iter().filter(|r| al.loc.contains(&Loc::Reg(*r)))).collect();
+    // r12 holds the thread in all compiled code (Rust enters through `jit::enter_trampoline`).
+    gen.saved = [R::R13].into_iter().chain(CALLEE_SAVED.into_iter().filter(|r| al.loc.contains(&Loc::Reg(*r)))).collect();
     let spill_bytes = 8 * (al.spill_slots + (al.spill_slots & 1));
     gen.lock = monitor.map(|mon| (mon, spill_bytes));
     gen.frame_bytes = spill_bytes + if monitor.is_some() { 16 } else { 0 } + if gen.saved.len() % 2 == 0 { 8 } else { 0 };
@@ -166,7 +167,6 @@ impl Gen<'_> {
         if self.frame_bytes > 0 {
             a.alu_ri(true, Alu::Sub, R::Rsp, self.frame_bytes);
         }
-        a.mov_rr(true, R::R12, R::Rdi);
         a.mov_rr(true, R::R13, R::Rsi);
         if self.frameless {
             return;

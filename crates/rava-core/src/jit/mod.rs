@@ -202,6 +202,24 @@ pub(crate) fn osr(t: &mut Thread, address: usize, locals: *mut u64) -> JResult<u
     }
 }
 
+/// `(thread, locals, method, entry)`: calls compiled code from Rust. Compiled code keeps the
+/// thread in r12 from here on (optimized code neither saves nor sets it), so this saves every
+/// callee-saved register Rust expects kept.
+fn enter_trampoline() -> usize {
+    static T: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *T.get_or_init(|| {
+        use asm::R;
+        let mut a = asm::Asm::default();
+        // Six pushes and eight bytes realign the stack for the call.
+        compile::save_registers(&mut a);
+        a.mov_rr(true, R::R12, R::Rdi);
+        a.call_r(R::Rcx);
+        compile::restore_registers(&mut a);
+        a.ret();
+        code_cache::install(&a.finish())
+    })
+}
+
 /// `(thread, locals, address)`: sets up the compiled-code registers and jumps into a body.
 fn osr_trampoline() -> usize {
     static T: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
@@ -252,9 +270,10 @@ pub(super) fn compile_now(m: &'static Method) -> Option<&'static CompiledMethod>
 
 /// Calls compiled code for `m` from Rust.
 pub(crate) fn call(t: &mut Thread, m: &'static Method, cm: &CompiledMethod, locals: *mut u64) -> JResult<u64> {
-    // SAFETY: `cm.entry` is code emitted for `m` with the `EntryFn` ABI.
-    let f: EntryFn = unsafe { std::mem::transmute(cm.entry) };
-    let r = f(t, locals, m);
+    type Enter = extern "sysv64" fn(*mut Thread, *mut u64, *const Method, usize) -> u64;
+    // SAFETY: the trampoline below has this ABI; `cm.entry` is code for `m` with `EntryFn`'s.
+    let f: Enter = unsafe { std::mem::transmute(enter_trampoline()) };
+    let r = f(t, locals, m, cm.entry);
     match t.take_pending() {
         Some(e) => Err(e),
         None => Ok(r),
