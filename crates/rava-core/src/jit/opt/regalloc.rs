@@ -2,7 +2,8 @@
 //! per value from block liveness, then a single pass in start order. Values live across a call
 //! prefer callee-saved registers; in a caller-saved or SSE register, code generation saves them
 //! around each such call (`Allocation::saves`). Constants are never allocated. Spilled values
-//! stay in their slot for the whole interval.
+//! stay in their slot for the whole interval; `split.rs` cuts intervals at loop boundaries so
+//! that a hot loop's part of a value can stay in a register.
 //!
 //! Deoptimization states read values without needing them in registers (C2's debug-info uses):
 //! registers are allocated over each value's intervals of real uses only. A value a state reads
@@ -115,6 +116,9 @@ struct Intervals {
     calls: Vec<u32>,
     /// The calls, with their positions.
     call_values: Vec<(u32, V)>,
+    /// Real uses weighted by loop depth (8 per level), and the weight of the block at hand.
+    weight: Vec<f32>,
+    block_weight: f32,
 }
 
 impl Intervals {
@@ -124,6 +128,11 @@ impl Intervals {
         self.end[i] = self.end[i].max(p);
     }
     fn used_at(&mut self, v: V, p: u32) {
+        self.weight[v as usize] += self.block_weight;
+        self.read_at(v, p);
+    }
+    /// A read that needs no register (a state's, a phi's own back-edge input): no weight.
+    fn read_at(&mut self, v: V, p: u32) {
         self.used[v as usize] = true;
         self.touch(v, p);
     }
@@ -150,8 +159,9 @@ pub fn allocate(g: &Graph) -> Allocation {
         range[b as usize] = (from, p + 1);
         p += 2;
     }
-    let full = intervals(g, &order, &pos, &range, true);
-    let iv = intervals(g, &order, &pos, &range, false);
+    let depth = super::dom::Dom::new(g).loop_depth(g);
+    let full = intervals(g, &order, &pos, &range, &depth, true);
+    let iv = intervals(g, &order, &pos, &range, &depth, false);
     let (mut loc, spill_slots, home) = scan(g, &iv, &full);
     // Registers a call clobbers that hold values live across it.
     let mut saves = std::collections::HashMap::new();
@@ -185,12 +195,13 @@ pub fn allocate(g: &Graph) -> Allocation {
 
 /// Live intervals from block liveness; with `states`, uses by deoptimization states count
 /// (they always do for phis, which get no home slot).
-fn intervals(g: &Graph, order: &[B], pos: &[u32], range: &[(u32, u32)], states: bool) -> Intervals {
+fn intervals(g: &Graph, order: &[B], pos: &[u32], range: &[(u32, u32)], depth: &[u32], states: bool) -> Intervals {
     let n = g.values.len();
     let live_in = liveness(g, order, states);
-    let mut iv = Intervals { start: vec![u32::MAX; n], end: vec![0; n], used: vec![false; n], calls: Vec::new(), call_values: Vec::new() };
+    let mut iv = Intervals { start: vec![u32::MAX; n], end: vec![0; n], used: vec![false; n], calls: Vec::new(), call_values: Vec::new(), weight: vec![0.0; n], block_weight: 1.0 };
     for &b in order {
         let (from, to) = range[b as usize];
+        iv.block_weight = 8f32.powi(depth[b as usize].min(5) as i32);
         let blk = &g.blocks[b as usize];
         for v in live_in[b as usize].iter() {
             iv.touch(v, from);
@@ -200,7 +211,10 @@ fn intervals(g: &Graph, order: &[B], pos: &[u32], range: &[(u32, u32)], states: 
                 iv.touch(v, to);
             }
             for ph in phis(g, s) {
-                iv.used_at(phi_input(g, ph, b, s), to);
+                match phi_input(g, ph, b, s) {
+                    x if x == ph => iv.read_at(x, to),
+                    x => iv.used_at(x, to),
+                }
             }
         }
         let mut sv = Vec::new();
@@ -218,7 +232,7 @@ fn intervals(g: &Graph, order: &[B], pos: &[u32], range: &[(u32, u32)], states: 
                 sv.clear();
                 state_values(g, s, &mut sv);
                 let at = if matches!(inst, Inst::Call(..)) { p + 1 } else { p };
-                sv.iter().filter(|&&u| states || is_phi(g, u)).for_each(|&u| iv.used_at(u, at));
+                sv.iter().filter(|&&u| states || is_phi(g, u)).for_each(|&u| iv.read_at(u, at));
             }
             if matches!(inst, Inst::Call(..)) {
                 iv.calls.push(p);
@@ -229,7 +243,7 @@ fn intervals(g: &Graph, order: &[B], pos: &[u32], range: &[(u32, u32)], states: 
         if let Term::Deopt(s) = &blk.term {
             sv.clear();
             state_values(g, s, &mut sv);
-            sv.iter().filter(|&&u| states || is_phi(g, u)).for_each(|&u| iv.used_at(u, to - 1));
+            sv.iter().filter(|&&u| states || is_phi(g, u)).for_each(|&u| iv.read_at(u, to - 1));
         }
     }
     iv.calls.sort_unstable();
@@ -287,7 +301,8 @@ fn liveness(g: &Graph, order: &[B], states: bool) -> Vec<Set> {
     }
 }
 
-/// Assigns registers in interval start order, spilling the interval that ends last. A value
+/// Assigns registers in interval start order; out of registers, it spills whichever of the new
+/// interval and the active ones has the fewest loop-weighted uses per position covered. A value
 /// may share its first operand's register when that operand dies at its definition.
 /// `iv` has the intervals of real uses, `full` those including state uses: a value only states
 /// read lives in a spill slot, one read beyond its real uses gets a home slot as well.
@@ -340,10 +355,12 @@ fn scan(g: &Graph, iv: &Intervals, full: &Intervals) -> (Vec<Loc>, i32, Vec<Opti
             active.push(v);
             continue;
         }
-        // Steal from the active interval ending last, if it outlives this one.
-        let victim = active.iter().copied().filter(|&a| allowed(loc[a])).max_by_key(|&a| iv.end[a]);
+        // Spill the cheapest of this interval and the active ones in its register class:
+        // fewest loop-weighted uses per position covered.
+        let cost = |x: usize| iv.weight[x] / (iv.end[x] - iv.start[x] + 1) as f32;
+        let victim = active.iter().copied().filter(|&a| allowed(loc[a])).min_by(|&a, &b| cost(a).total_cmp(&cost(b)).then(iv.end[b].cmp(&iv.end[a])));
         match victim {
-            Some(a) if iv.end[a] > iv.end[v] => {
+            Some(a) if cost(a) < cost(v) || (cost(a) == cost(v) && iv.end[a] > iv.end[v]) => {
                 loc[v] = loc[a];
                 spilled.push(a);
                 active.retain(|&x| x != a);
