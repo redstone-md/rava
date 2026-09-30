@@ -66,6 +66,9 @@ pub struct Asm {
     bound: Vec<u32>,
 }
 
+mod relax;
+mod sse;
+
 fn lo(r: u8) -> u8 {
     r & 7
 }
@@ -97,110 +100,6 @@ impl Asm {
         }
         self.bound.push(l.0);
         self.labels[l.0 as usize] = Some(at);
-    }
-
-    /// Removes the last `size` bytes (a branch), moving labels bound at the end with them.
-    fn drop_branch(&mut self, size: u32) {
-        let end = self.pos();
-        self.buf.truncate((end - size) as usize);
-        if self.bound_at == end {
-            for &b in &self.bound {
-                self.labels[b as usize] = Some(end - size);
-            }
-            self.bound_at = end - size;
-        }
-    }
-
-    /// Re-encodes branches whose target is within reach as 2-byte short branches (to a fixed
-    /// point: shortening one only brings others closer), moving labels and other fixups along.
-    fn relax(&mut self) {
-        // (start, fixup index, short) of each branch still in the code, in code order.
-        let mut br: Vec<(u32, usize, bool)> = std::mem::take(&mut self.branches).into_iter().map(|(at, fx)| (at, fx, false)).collect();
-        br.sort_by_key(|b| b.0);
-        let saving = |buf: &[u8], at: u32| if buf[at as usize] == 0xE9 { 3 } else { 4 };
-        // New position of old position `p`: minus the savings of short branches before it.
-        let shift = |br: &[(u32, usize, bool)], buf: &[u8], p: u32| -> u32 {
-            p - br.iter().take_while(|b| b.0 < p).filter(|b| b.2).map(|b| saving(buf, b.0)).sum::<u32>()
-        };
-        loop {
-            let mut changed = false;
-            for i in 0..br.len() {
-                if br[i].2 {
-                    continue;
-                }
-                let (at, fx, _) = br[i];
-                let Some(target) = self.labels[self.fixups[fx].1 .0 as usize] else { continue };
-                let from = shift(&br, &self.buf, at) as i64 + 2;
-                let to = shift(&br, &self.buf, target) as i64;
-                if (-128..128).contains(&(to - from)) {
-                    br[i].2 = true;
-                    changed = true;
-                }
-            }
-            if !changed {
-                break;
-            }
-        }
-        if !br.iter().any(|b| b.2) {
-            return;
-        }
-        // Rebuild: short branches get their final displacement now, other references move.
-        let old = std::mem::take(&mut self.buf);
-        let new_pos = |p: u32| shift(&br, &old, p);
-        let mut out = Vec::with_capacity(old.len());
-        let mut short_fixups = vec![false; self.fixups.len()];
-        let mut from = 0usize;
-        for &(at, fx, short) in &br {
-            if !short {
-                continue;
-            }
-            out.extend_from_slice(&old[from..at as usize]);
-            let target = new_pos(self.labels[self.fixups[fx].1 .0 as usize].unwrap()) as i64;
-            let rel = (target - (out.len() as i64 + 2)) as i8;
-            if old[at as usize] == 0xE9 {
-                out.extend_from_slice(&[0xEB, rel as u8]);
-                from = at as usize + 5;
-            } else {
-                out.extend_from_slice(&[0x70 + (old[at as usize + 1] - 0x80), rel as u8]);
-                from = at as usize + 6;
-            }
-            short_fixups[fx] = true;
-        }
-        out.extend_from_slice(&old[from..]);
-        let fixups = std::mem::take(&mut self.fixups);
-        self.fixups = fixups.into_iter().enumerate().filter(|(i, _)| !short_fixups[*i]).map(|(_, (at, l))| (new_pos(at), l)).collect();
-        for p in self.labels.iter_mut().flatten() {
-            *p = new_pos(*p);
-        }
-        self.buf = out;
-    }
-
-    fn branch_peephole(&mut self, l: Label) {
-        let end = self.pos();
-        // A jump to the next instruction.
-        if let Some(&(at, fx)) = self.branches.last() {
-            if at + 5 == end && self.buf[at as usize] == 0xE9 && fx + 1 == self.fixups.len() && self.fixups[fx].1 == l {
-                self.fixups.pop();
-                self.branches.pop();
-                self.drop_branch(5);
-            }
-        }
-        // A conditional jump over an unconditional one to here, no label bound between them.
-        let end = self.pos();
-        let n = self.branches.len();
-        if n >= 2 {
-            let ((jcc, fc), (jmp, fj)) = (self.branches[n - 2], self.branches[n - 1]);
-            if jmp + 5 == end && jcc + 6 == jmp && self.buf[jmp as usize] == 0xE9 && self.buf[jcc as usize] == 0x0F
-                && fj + 1 == self.fixups.len() && fc + 2 == self.fixups.len() && self.fixups[fc].1 == l && self.bound_at < jmp
-            {
-                let far = self.fixups[fj].1;
-                self.buf[jcc as usize + 1] ^= 1;
-                self.fixups[fc].1 = far;
-                self.fixups.pop();
-                self.branches.pop();
-                self.drop_branch(5);
-            }
-        }
     }
 
     pub fn label_pos(&self, l: Label) -> Option<u32> {
@@ -508,102 +407,6 @@ impl Asm {
     }
 
     // ---- SSE (f64 when `double`, else f32) ----
-    fn sse_rm(&mut self, prefix: u8, w: bool, op: u8, reg: u8, m: M) {
-        self.b(prefix);
-        self.rex_m(w, reg, m, false);
-        self.b(0x0F);
-        self.b(op);
-        self.modrm_m(reg, m);
-    }
-    fn sse_rr(&mut self, prefix: u8, w: bool, op: u8, reg: u8, rm: u8) {
-        if prefix != 0 {
-            self.b(prefix);
-        }
-        self.rex(w, reg, 0, rm, false);
-        self.b(0x0F);
-        self.b(op);
-        self.b(0xC0 | lo(reg) << 3 | lo(rm));
-    }
-    fn fp(double: bool) -> u8 {
-        if double { 0xF2 } else { 0xF3 }
-    }
-    pub fn fload(&mut self, double: bool, x: X, m: M) {
-        self.sse_rm(Self::fp(double), false, 0x10, x.0, m);
-    }
-    pub fn fstore(&mut self, double: bool, m: M, x: X) {
-        self.sse_rm(Self::fp(double), false, 0x11, x.0, m);
-    }
-    /// `addsd/subsd/mulsd/divsd x, [m]` by opcode (0x58, 0x5C, 0x59, 0x5E).
-    pub fn farith_m(&mut self, double: bool, op: u8, x: X, m: M) {
-        self.sse_rm(Self::fp(double), false, op, x.0, m);
-    }
-    /// `addsd/subsd/mulsd/divsd x, y` by opcode.
-    pub fn farith_rr(&mut self, double: bool, op: u8, x: X, y: X) {
-        self.sse_rr(Self::fp(double), false, op, x.0, y.0);
-    }
-    pub fn fsqrt(&mut self, x: X, src: X) {
-        self.sse_rr(0xF2, false, 0x51, x.0, src.0);
-    }
-    /// `lock cmpxchg [m], src` (compares with rax).
-    pub fn lock_cmpxchg(&mut self, m: M, src: R) {
-        self.lock_cmpxchg_w(true, m, src);
-    }
-    /// `lock cmpxchg` on a 64-bit (`w`) or 32-bit memory operand.
-    pub fn lock_cmpxchg_w(&mut self, w: bool, m: M, src: R) {
-        self.b(0xF0);
-        self.op_rm(w, &[0x0F, 0xB1], src as u8, m);
-    }
-    pub fn mfence(&mut self) {
-        self.b(0x0F);
-        self.b(0xAE);
-        self.b(0xF0);
-    }
-    /// `roundsd x, src, mode` (SSE4.1; mode 0 nearest-even, 1 floor, 2 ceil).
-    pub fn round_sd(&mut self, x: X, src: X, mode: u8) {
-        self.b(0x66);
-        self.rex(false, x.0, 0, src.0, false);
-        self.b(0x0F);
-        self.b(0x3A);
-        self.b(0x0B);
-        self.b(0xC0 | lo(x.0) << 3 | lo(src.0));
-        self.b(mode);
-    }
-    /// `ucomisd/ucomiss a, b`.
-    pub fn fcmp(&mut self, double: bool, a: X, b: X) {
-        self.sse_rr(if double { 0x66 } else { 0 }, false, 0x2E, a.0, b.0);
-    }
-    /// Integer (`w`: 64-bit) to float/double.
-    pub fn cvt_i2f(&mut self, double: bool, w: bool, x: X, r: R) {
-        self.sse_rr(Self::fp(double), w, 0x2A, x.0, r as u8);
-    }
-    /// float↔double.
-    pub fn cvt_f2f(&mut self, to_double: bool, dst: X, src: X) {
-        self.sse_rr(if to_double { 0xF3 } else { 0xF2 }, false, 0x5A, dst.0, src.0);
-    }
-    /// Truncating float/double to integer (`w`: 64-bit).
-    pub fn cvtt_f2i(&mut self, double: bool, w: bool, r: R, x: X) {
-        self.sse_rr(Self::fp(double), w, 0x2C, r as u8, x.0);
-    }
-    /// `movaps dst, src` (a register copy).
-    pub fn mov_xx(&mut self, dst: X, src: X) {
-        self.sse_rr(0, false, 0x28, dst.0, src.0);
-    }
-    /// `xorpd/xorps x, y`.
-    pub fn fxor(&mut self, double: bool, x: X, y: X) {
-        self.sse_rr(if double { 0x66 } else { 0 }, false, 0x57, x.0, y.0);
-    }
-    /// `andpd/andps x, y`.
-    pub fn fand(&mut self, double: bool, x: X, y: X) {
-        self.sse_rr(if double { 0x66 } else { 0 }, false, 0x54, x.0, y.0);
-    }
-    /// `movq/movd x, r`.
-    pub fn mov_xr(&mut self, w: bool, x: X, r: R) {
-        self.sse_rr(0x66, w, 0x6E, x.0, r as u8);
-    }
-    /// `movq/movd r, x`.
-    pub fn mov_rx(&mut self, w: bool, r: R, x: X) {
-        self.sse_rr(0x66, w, 0x7E, x.0, r as u8);
-    }
 }
 
 #[cfg(test)]
