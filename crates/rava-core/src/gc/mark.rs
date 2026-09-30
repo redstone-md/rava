@@ -197,13 +197,38 @@ impl Shared<'_> {
                 let mut last = 0;
                 super::cards::drain(from, to, &mut |card| {
                     if let Some((&start, l)) = space.large.range(..=card).next_back() {
-                        if card < start + l.size && l.marked && start != last {
-                            last = start;
-                            self.scan(start as Oop, out);
+                        if card < start + l.size && l.marked {
+                            self.scan_old(start, card, &mut last, out);
                         }
                     }
                 });
             }
+        }
+    }
+
+    /// Scans the old object at `start` for a dirty card at `card`: an object array only in the
+    /// card's elements, anything else whole and once (`last` is the last one scanned whole).
+    fn scan_old(&self, start: usize, card: usize, last: &mut usize, out: &mut Vec<usize>) {
+        use super::cards::CARD_SIZE;
+        // SAFETY: a live old object.
+        let k: &'static Klass = unsafe { obj::klass(start as Oop) };
+        if let KlassKind::ObjArray { .. } = k.kind {
+            let len = unsafe { obj::read::<i32>(start as Oop, ARRAY_LENGTH_OFFSET) } as usize;
+            let base = start + ARRAY_BASE_OFFSET as usize;
+            let from = card.max(base).saturating_sub(base).div_ceil(8);
+            let to = ((card + CARD_SIZE).saturating_sub(base) / 8).min(len);
+            for i in from..to {
+                // SAFETY: an element of the array.
+                let r = unsafe { *((base + 8 * i) as *const usize) };
+                if r != 0 && self.mark_start(r) {
+                    out.push(r);
+                }
+            }
+            return;
+        }
+        if start != *last {
+            *last = start;
+            self.scan(start as Oop, out);
         }
     }
 
@@ -223,9 +248,8 @@ impl Shared<'_> {
                 let start = page + cell * meta.cell_size as usize;
                 // SAFETY: inside a page in use; old objects have their mark set.
                 let old = unsafe { (*(meta.marks.as_ptr().add(cell / 64) as *const AtomicU64)).load(Ordering::Relaxed) } & (1 << (cell % 64)) != 0;
-                if old && start != last && unsafe { *(start as *const usize) } != 0 {
-                    last = start;
-                    self.scan(start as Oop, out);
+                if old && unsafe { *(start as *const usize) } != 0 {
+                    self.scan_old(start, card, &mut last, out);
                 }
             }
         });
