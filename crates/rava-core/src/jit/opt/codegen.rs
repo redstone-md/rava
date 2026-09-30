@@ -393,6 +393,9 @@ impl Gen<'_> {
             Term::Return(v) => {
                 if let Some(v) = v {
                     self.load(R::Rax, v);
+                    if self.g.ty(v) == Ty::I {
+                        self.a.movsxd(R::Rax, R::Rax);
+                    }
                 }
                 self.a.jmp(self.epilogue);
             }
@@ -505,7 +508,7 @@ impl Gen<'_> {
             let base = Self::stack_base_of(sc);
             let locals = sc.locals.iter().enumerate().map(|(i, v)| (sc.frame + i as i32, v));
             let stack = sc.stack.iter().enumerate().map(|(i, v)| (base + i as i32, v));
-            slots.extend(locals.chain(stack).filter_map(|(slot, v)| v.map(|v| (slot, self.home[v as usize].map_or(self.loc[v as usize], Loc::Stack)))));
+            slots.extend(locals.chain(stack).filter_map(|(slot, v)| v.map(|v| (slot, self.home[v as usize].map_or(self.loc[v as usize], Loc::Stack), self.g.ty(v) == Ty::I))));
         }
         let frames = scopes.iter().map(|sc| super::deopt::Frame { method: sc.method, frame: sc.frame, bci: sc.bci, depth: sc.stack.len() as u32 }).collect();
         let desc: &'static super::deopt::Desc = Box::leak(Box::new(super::deopt::Desc { frames, slots }));

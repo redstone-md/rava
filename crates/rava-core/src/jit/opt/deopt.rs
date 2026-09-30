@@ -18,8 +18,8 @@ pub const SAVED: [R; 10] = [R::Rbx, R::Rbp, R::R14, R::R15, R::Rsi, R::Rdi, R::R
 pub struct Desc {
     /// Innermost first.
     pub frames: Vec<Frame>,
-    /// (frame slot, location) of every value to write back.
-    pub slots: Vec<(i32, Loc)>,
+    /// (frame slot, location, whether an int to sign-extend) of every value to write back.
+    pub slots: Vec<(i32, Loc, bool)>,
 }
 
 /// One scope of a deoptimization point.
@@ -63,7 +63,7 @@ pub extern "sysv64" fn deopt(t: *mut Thread, base: *mut u64, desc: *const Desc, 
     // SAFETY: called by compiled code with its own thread, frame, descriptor and saved registers.
     let (t, desc) = unsafe { (&mut *t, &*desc) };
     let gprs = XMMS.len();
-    for &(slot, loc) in &desc.slots {
+    for &(slot, loc, int) in &desc.slots {
         // SAFETY: the stub stored the SSE registers, and above them pushed `SAVED` last to first,
         // below the spill slots.
         let v = unsafe {
@@ -75,6 +75,7 @@ pub extern "sysv64" fn deopt(t: *mut Thread, base: *mut u64, desc: *const Desc, 
                 Loc::None => continue,
             }
         };
+        let v = if int { v as i32 as i64 as u64 } else { v };
         // SAFETY: a slot of the compiled frame.
         unsafe { *base.add(slot as usize) = v };
     }

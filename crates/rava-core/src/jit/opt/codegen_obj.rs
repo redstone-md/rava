@@ -274,7 +274,7 @@ impl Gen<'_> {
         let base = Self::stack_base_of(s) + s.stack.len() as i32;
         let mut slot = base;
         for &x in args {
-            self.store_val(self.slot(slot), x);
+            self.store_frame(self.slot(slot), x);
             slot += if self.g.ty(x).wide() { 2 } else { 1 };
         }
         // From here until the restore, values live across the call are only in their save slots.
