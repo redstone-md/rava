@@ -11,6 +11,7 @@
 //! deoptimization reads it from there.
 
 use super::ir::*;
+use super::liveness::{liveness, StateReads};
 use crate::jit::asm::R;
 
 /// SSE registers for float and double values (all caller-saved; xmm0 and xmm1 are scratch).
@@ -48,45 +49,6 @@ pub struct Allocation {
     /// Where a register-allocated value is also kept for states: a spill slot it is stored to
     /// at its definition, or for a parameter the frame slot it arrived in.
     pub home: Vec<Option<Loc>>,
-}
-
-/// A set of values as a bit vector.
-#[derive(Clone, PartialEq)]
-struct Set(Vec<u64>);
-
-impl Set {
-    fn new(n: usize) -> Set {
-        Set(vec![0; n.div_ceil(64)])
-    }
-    fn insert(&mut self, v: V) {
-        self.0[v as usize / 64] |= 1 << (v % 64);
-    }
-    fn remove(&mut self, v: V) {
-        self.0[v as usize / 64] &= !(1 << (v % 64));
-    }
-    fn union(&mut self, o: &Set) {
-        self.0.iter_mut().zip(&o.0).for_each(|(a, b)| *a |= b);
-    }
-    fn iter(&self) -> impl Iterator<Item = V> + '_ {
-        self.0.iter().enumerate().filter(|(_, &w)| w != 0).flat_map(|(i, &w)| {
-            let mut w = w;
-            std::iter::from_fn(move || {
-                (w != 0).then(|| {
-                    let b = w.trailing_zeros();
-                    w &= w - 1;
-                    (i * 64) as V + b
-                })
-            })
-        })
-    }
-}
-
-/// Every value a state reads, callers included (aliases resolved).
-pub fn state_values(g: &Graph, s: &State, out: &mut Vec<V>) {
-    out.extend(s.locals.iter().chain(s.stack.iter()).flatten().map(|&v| g.resolve(v)));
-    if let Some(c) = &s.caller {
-        state_values(g, c, out);
-    }
 }
 
 /// The values an instruction reads, aliases resolved.
@@ -211,8 +173,9 @@ pub fn allocate(g: &Graph) -> Allocation {
         p += 2;
     }
     let loops = LoopMap::new(g, &order, &range);
-    let full = intervals(g, &order, &pos, &range, &loops.depth, true);
-    let iv = intervals(g, &order, &pos, &range, &loops.depth, false);
+    let mut reads = StateReads::new();
+    let full = intervals(g, &order, &pos, &range, &loops.depth, &mut reads, true);
+    let iv = intervals(g, &order, &pos, &range, &loops.depth, &mut reads, false);
     let (mut loc, spill_slots, home) = scan(g, &iv, &full, &loops);
     // Registers a call clobbers that hold values live across it.
     let mut saves = std::collections::HashMap::new();
@@ -246,9 +209,9 @@ pub fn allocate(g: &Graph) -> Allocation {
 
 /// Live intervals from block liveness; with `states`, uses by deoptimization states count
 /// (they always do for phis, which get no home slot).
-fn intervals(g: &Graph, order: &[B], pos: &[u32], range: &[(u32, u32)], depth: &[u32], states: bool) -> Intervals {
+fn intervals(g: &Graph, order: &[B], pos: &[u32], range: &[(u32, u32)], depth: &[u32], reads: &mut StateReads, states: bool) -> Intervals {
     let n = g.values.len();
-    let live_in = liveness(g, order, states);
+    let live_in = liveness(g, order, reads, states);
     let mut iv = Intervals { start: vec![u32::MAX; n], end: vec![0; n], used: vec![false; n], calls: Vec::new(), call_values: Vec::new(), weight: vec![0.0; n], block_weight: 1.0, use_blocks: vec![Vec::new(); n], block: 0 };
     for &b in order {
         let (from, to) = range[b as usize];
@@ -269,7 +232,6 @@ fn intervals(g: &Graph, order: &[B], pos: &[u32], range: &[(u32, u32)], depth: &
                 }
             }
         }
-        let mut sv = Vec::new();
         for &v in &blk.insts {
             let p = pos[v as usize];
             if g.resolve(v) != v {
@@ -281,10 +243,8 @@ fn intervals(g: &Graph, order: &[B], pos: &[u32], range: &[(u32, u32)], depth: &
                 inputs(g, inst).into_iter().for_each(|u| iv.used_at(u, p));
             }
             if let Some(s) = inst.state() {
-                sv.clear();
-                state_values(g, s, &mut sv);
                 let at = if matches!(inst, Inst::Call(..)) { p + 1 } else { p };
-                sv.iter().filter(|&&u| states || is_phi(g, u)).for_each(|&u| iv.read_at(u, at));
+                reads.of(g, s).iter().filter(|&&u| states || is_phi(g, u)).for_each(|&u| iv.read_at(u, at));
             }
             if matches!(inst, Inst::Call(..)) {
                 iv.calls.push(p);
@@ -293,9 +253,7 @@ fn intervals(g: &Graph, order: &[B], pos: &[u32], range: &[(u32, u32)], depth: &
         }
         blk.term.inputs().into_iter().for_each(|u| iv.used_at(g.resolve(u), to - 1));
         if let Term::Deopt(s) = &blk.term {
-            sv.clear();
-            state_values(g, s, &mut sv);
-            sv.iter().filter(|&&u| states || is_phi(g, u)).for_each(|&u| iv.read_at(u, to - 1));
+            reads.of(g, s).iter().filter(|&&u| states || is_phi(g, u)).for_each(|&u| iv.read_at(u, to - 1));
         }
     }
     iv.calls.sort_unstable();
@@ -306,52 +264,6 @@ fn is_phi(g: &Graph, v: V) -> bool {
     matches!(g.inst(v), Inst::Phi(_))
 }
 
-
-/// Values live on entry to each block (backward dataflow to a fixpoint).
-fn liveness(g: &Graph, order: &[B], states: bool) -> Vec<Set> {
-    let n = g.values.len();
-    let mut live_in = vec![Set::new(n); g.blocks.len()];
-    let mut sv = Vec::new();
-    loop {
-        let mut changed = false;
-        for &b in order.iter().rev() {
-            let blk = &g.blocks[b as usize];
-            let mut live = Set::new(n);
-            for s in blk.term.successors() {
-                live.union(&live_in[s as usize]);
-                for ph in phis(g, s) {
-                    live.insert(phi_input(g, ph, b, s));
-                }
-            }
-            blk.term.inputs().into_iter().for_each(|u| live.insert(g.resolve(u)));
-            if let Term::Deopt(s) = &blk.term {
-                sv.clear();
-                state_values(g, s, &mut sv);
-                sv.iter().filter(|&&u| states || is_phi(g, u)).for_each(|&u| live.insert(u));
-            }
-            for &v in blk.insts.iter().rev() {
-                live.remove(v);
-                let inst = g.inst(v);
-                if matches!(inst, Inst::Phi(_)) || g.resolve(v) != v {
-                    continue;
-                }
-                inputs(g, inst).into_iter().for_each(|u| live.insert(u));
-                if let Some(s) = inst.state() {
-                    sv.clear();
-                    state_values(g, s, &mut sv);
-                    sv.iter().filter(|&&u| states || is_phi(g, u)).for_each(|&u| live.insert(u));
-                }
-            }
-            if live != live_in[b as usize] {
-                live_in[b as usize] = live;
-                changed = true;
-            }
-        }
-        if !changed {
-            return live_in;
-        }
-    }
-}
 
 /// Assigns registers in interval start order; out of registers, it spills whichever of the new
 /// interval and the active ones has the fewest loop-weighted uses per position covered. A value
