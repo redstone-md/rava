@@ -4,6 +4,7 @@
 
 mod barrier;
 mod build;
+mod build_arr;
 mod build_mh;
 mod build_obj;
 mod build_ops;

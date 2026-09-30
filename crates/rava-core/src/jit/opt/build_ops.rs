@@ -10,8 +10,7 @@ use crate::klass::{ACC_ABSTRACT, ACC_INTERFACE};
 use crate::link::Resolved;
 use crate::types::BasicType;
 
-const ARRAY_ELEMS: [BasicType; 8] =
-    [BasicType::Int, BasicType::Long, BasicType::Float, BasicType::Double, BasicType::Reference, BasicType::Byte, BasicType::Char, BasicType::Short];
+use super::build_arr::ARRAY_ELEMS;
 
 impl Builder {
     pub(super) fn u2(&self, pc: usize) -> u16 {
@@ -57,15 +56,7 @@ impl Builder {
             0x15..=0x19 => self.load_local(self.sc.code[pc + 1] as usize),
             0x1a..=0x2d => self.load_local(((op - 0x1a) % 4) as usize),
             0x2e..=0x35 if self.stable_load(op).is_some() => {}
-            0x2e..=0x35 => {
-                let s = self.state();
-                let (idx, arr) = (self.pop(), self.pop());
-                self.null_check(arr, s.clone());
-                self.add(Inst::BoundsCheck(arr, idx, s), Ty::I);
-                let bt = ARRAY_ELEMS[(op - 0x2e) as usize];
-                let v = self.add(Inst::LoadIndexed(arr, idx, bt), Ty::of(bt));
-                self.push(v);
-            }
+            0x2e..=0x35 => self.array_load(op),
             0x36..=0x3a => self.store_local(self.sc.code[pc + 1] as usize),
             0x3b..=0x4e => self.store_local(((op - 0x3b) % 4) as usize),
             0x4f..=0x56 => self.array_store(op),
@@ -180,13 +171,7 @@ impl Builder {
                 let v = self.add(Inst::NewMulti(k, counts, s), Ty::A);
                 self.push(v);
             }
-            0xbe => {
-                let s = self.state();
-                let arr = self.pop();
-                self.null_check(arr, s);
-                let v = self.add(Inst::ArrayLength(arr), Ty::I);
-                self.push(v);
-            }
+            0xbe => self.array_length(),
             0xbf => {
                 self.deopt();
                 return Some(false);
@@ -261,19 +246,6 @@ impl Builder {
         let v = self.sc.locals[n].expect("iinc of an assigned local");
         let c = self.konst(Ty::I, delta);
         self.sc.locals[n] = Some(self.add(Inst::Bin(BinOp::Add, v, c), Ty::I));
-    }
-
-    fn array_store(&mut self, op: u8) {
-        let s = self.state();
-        let v = self.pop();
-        let (idx, arr) = (self.pop(), self.pop());
-        self.null_check(arr, s.clone());
-        self.add(Inst::BoundsCheck(arr, idx, s.clone()), Ty::I);
-        let bt = ARRAY_ELEMS[(op - 0x4f) as usize];
-        if bt == BasicType::Reference {
-            self.add(Inst::StoreCheck(arr, v, s), Ty::A);
-        }
-        self.add(Inst::StoreIndexed(arr, idx, bt, v), Ty::I);
     }
 
     /// dup / dup_x1 / dup_x2 / dup2 / dup2_x1 / dup2_x2 / swap on raw slots.

@@ -40,17 +40,15 @@ impl Gen<'_> {
                 self.a.fstore(bt == BasicType::Double, mem(ro, off as i32), a);
             }
             Inst::LoadIndexed(arr, idx, bt @ (BasicType::Float | BasicType::Double)) => {
-                let ra = self.reg(arr, R::Rax);
-                let ri = self.reg(idx, R::Rcx);
+                let at = self.element(arr, idx, bt);
                 let r = self.xout(v);
-                self.a.fload(bt == BasicType::Double, r, mem_idx(ra, ri, scale(bt), BASE));
+                self.a.fload(bt == BasicType::Double, r, at);
                 self.xput(v, r);
             }
             Inst::StoreIndexed(arr, idx, bt @ (BasicType::Float | BasicType::Double), x) => {
-                let ra = self.reg(arr, R::Rax);
-                let ri = self.reg(idx, R::Rcx);
+                let at = self.element(arr, idx, bt);
                 let a = self.xreg(x, X(0));
-                self.a.fstore(bt == BasicType::Double, mem_idx(ra, ri, scale(bt), BASE), a);
+                self.a.fstore(bt == BasicType::Double, at, a);
             }
             Inst::LoadField(o, off, bt) => {
                 let ro = self.reg(o, R::Rax);
@@ -82,10 +80,9 @@ impl Gen<'_> {
                 self.put(v, r);
             }
             Inst::LoadIndexed(arr, idx, bt) => {
-                let ra = self.reg(arr, R::Rax);
-                let ri = self.reg(idx, R::Rcx);
+                let at = self.element(arr, idx, bt);
                 let r = self.out(v);
-                load_typed_to(&mut self.a, r, bt, mem_idx(ra, ri, scale(bt), BASE));
+                load_typed_to(&mut self.a, r, bt, at);
                 self.put(v, r);
             }
             Inst::StoreIndexed(arr, idx, bt, x) => self.store_indexed(v, arr, idx, bt, x),
@@ -166,6 +163,18 @@ impl Gen<'_> {
         self.reg(x, R::Rdx)
     }
 
+    /// The address of element `idx` of `arr` (a constant index folded into the displacement).
+    fn element(&mut self, arr: V, idx: V, bt: BasicType) -> M {
+        let ra = self.reg(arr, R::Rax);
+        if let Loc::Const(c) = self.loc[idx as usize] {
+            if let Some(d) = c.checked_mul(scale(bt) as i64).and_then(|d| i32::try_from(d + BASE as i64).ok()) {
+                return mem(ra, d);
+            }
+        }
+        let ri = self.reg(idx, R::Rcx);
+        mem_idx(ra, ri, scale(bt), BASE)
+    }
+
     /// The store `v` of `src` to `m`, with a card mark unless it initializes a young object.
     fn store_typed(&mut self, v: V, src: R, bt: BasicType, m: M) {
         if self.unbarriered[v as usize] {
@@ -176,14 +185,13 @@ impl Gen<'_> {
     }
 
     fn store_indexed(&mut self, v: V, arr: V, idx: V, bt: BasicType, x: V) {
-        let ra = self.reg(arr, R::Rax);
-        let ri = self.reg(idx, R::Rcx);
-        let at = mem_idx(ra, ri, scale(bt), BASE);
+        let at = self.element(arr, idx, bt);
         if bt != BasicType::Byte {
             let rx = self.value_reg(x, bt);
             return self.store_typed(v, rx, bt, at);
         }
         // bastore: boolean[] stores value & 1, byte[] the low byte.
+        let ra = self.reg(arr, R::Rax);
         self.load(R::Rdx, x);
         let bools = crate::vm::vm().primitive_array_class(BasicType::Boolean).ok().map_or(0, |k| k as *const Klass as i64);
         let plain = self.a.new_label();
