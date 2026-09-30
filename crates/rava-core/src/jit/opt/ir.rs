@@ -130,6 +130,9 @@ pub enum Inst {
     Call(Callee, Vec<V>, Rc<State>),
     New(&'static Klass, Rc<State>),
     NewArray(&'static Klass, V, Rc<State>),
+    /// A two-dimensional `multianewarray`: the counts packed into a long, the first in the
+    /// low half.
+    NewMulti(&'static Klass, V, Rc<State>),
     /// The value itself, once it is null or a `Klass`.
     CheckCast(V, &'static Klass, Rc<State>),
     InstanceOf(V, &'static Klass),
@@ -147,7 +150,7 @@ impl Inst {
     pub fn state(&self) -> Option<&Rc<State>> {
         match self {
             Inst::NullCheck(_, s) | Inst::ZeroCheck(_, s) | Inst::BoundsCheck(_, _, s) | Inst::InitCheck(_, s) | Inst::FlagCheck(_, s) => Some(s),
-            Inst::Call(_, _, s) | Inst::New(_, s) | Inst::NewArray(_, _, s) => Some(s),
+            Inst::Call(_, _, s) | Inst::New(_, s) | Inst::NewArray(_, _, s) | Inst::NewMulti(_, _, s) => Some(s),
             Inst::CheckCast(_, _, s) | Inst::StoreCheck(_, _, s) | Inst::Intrinsic(_, _, Some(s)) | Inst::Monitor(_, _, s) => Some(s),
             _ => None,
         }
@@ -160,7 +163,7 @@ impl Inst {
             Inst::Call(c, v, _) => v.iter().copied().chain(c.input()).collect(),
             Inst::Phi(v) | Inst::Intrinsic(_, v, _) => v.clone(),
             Inst::Neg(a) | Inst::Convert(_, a) | Inst::NullCheck(a, _) | Inst::ZeroCheck(a, _) | Inst::ArrayLength(a) => vec![*a],
-            Inst::LoadField(a, ..) | Inst::StoreStatic(_, _, a) | Inst::NewArray(_, a, _) => vec![*a],
+            Inst::LoadField(a, ..) | Inst::StoreStatic(_, _, a) | Inst::NewArray(_, a, _) | Inst::NewMulti(_, a, _) => vec![*a],
             Inst::CheckCast(a, ..) | Inst::InstanceOf(a, _) | Inst::Monitor(_, a, _) => vec![*a],
             Inst::Bin(_, a, b) | Inst::Compare(_, a, b) | Inst::BoundsCheck(a, b, _) | Inst::LoadIndexed(a, b, _) => vec![*a, *b],
             Inst::StoreCheck(a, b, _) => vec![*a, *b],
@@ -293,7 +296,7 @@ impl Graph {
             for &v in &blk.insts {
                 let inst = match &self.values[v as usize].inst {
                     Inst::Call(c, args, s) => format!("Call({c:?}, {args:?}) @{}", s.bci),
-                    i @ (Inst::NullCheck(..) | Inst::FlagCheck(..) | Inst::ZeroCheck(..) | Inst::BoundsCheck(..) | Inst::InitCheck(..) | Inst::CheckCast(..) | Inst::StoreCheck(..) | Inst::New(..) | Inst::NewArray(..) | Inst::Monitor(..)) => {
+                    i @ (Inst::NullCheck(..) | Inst::FlagCheck(..) | Inst::ZeroCheck(..) | Inst::BoundsCheck(..) | Inst::InitCheck(..) | Inst::CheckCast(..) | Inst::StoreCheck(..) | Inst::New(..) | Inst::NewArray(..) | Inst::NewMulti(..) | Inst::Monitor(..)) => {
                         let s = i.state().unwrap();
                         format!("{} @{}:{}", format!("{i:?}").split(", State").next().unwrap_or(""), s.method.name, s.bci)
                     }

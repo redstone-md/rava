@@ -264,6 +264,25 @@ pub extern "sysv64" fn new_array(t: *mut Thread, k: *const Klass, length: u64) -
     }
 }
 
+/// `multianewarray` of two dimensions (`counts`: the first in the low half, the second in the
+/// high half); null with an exception pending on failure.
+pub extern "sysv64" fn new_multi2(t: *mut Thread, k: *const Klass, counts: u64) -> u64 {
+    // SAFETY: the current thread and an immortal class.
+    let (t, k): (&mut Thread, &'static Klass) = unsafe { (&mut *t, &*k) };
+    let counts = [counts as u32 as i32, (counts >> 32) as u32 as i32];
+    let made = match counts.iter().find(|&&c| c < 0) {
+        Some(bad) => Err(crate::runtime::throw_new(t, "java/lang/NegativeArraySizeException", &bad.to_string())),
+        None => crate::interp::support::build_multi(t, k, &counts),
+    };
+    match made {
+        Ok(o) => o as u64,
+        Err(e) => {
+            t.pending = e.0;
+            0
+        }
+    }
+}
+
 /// Safepoint poll slow path: stops for a collection in progress.
 pub extern "sysv64" fn safepoint(t: *mut Thread) {
     // SAFETY: the current thread.
