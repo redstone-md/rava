@@ -242,3 +242,31 @@ Start-up to "Done" on a 4-core cloud VM (timings vary by 30 % between runs of ei
 2. Deoptimizing instead of calling on profiled guard misses (needs interpreter profiling).
 3. Fewer fresh pages touched while the heap grows (page faults are expensive on this VM).
 
+
+## 2026-09-30 — closing the start-up gap: profiles, speculation limits, register pressure
+
+Measurement first: the server's `level-seed` was empty, so every run generated a different
+world (villages near spawn or not) and runs differed by up to 30 %. Benchmarks now fix the seed
+(`level-seed=20260930`); with it, same host: `java` 30.9 s, `rava-core` 55 s -> 51 s.
+
+- Deoptimization: per-bytecode trap history, compile-time resolution of loaded classes' constants,
+  retiring code at the deopt threshold, `multianewarray`; throw-only paths and never-taken
+  branches (first-tier branch profiles) become uncommon traps; a method that deoptimizes twice is
+  recompiled without profile speculation (the hottest world-generation method had been falling
+  back to baseline code after four recompilations).
+- Profiles: one receiver profile per call site across all compiled copies (inlined copies used
+  to replace it with a cold one), and receiver profiles for virtual calls; the optimizing tier
+  inlines by them.
+- Register allocation: values only deoptimization states read stay out of registers (a home
+  slot written at the definition); ints stay 32-bit without `movsxd` after every operation.
+- Code: branch peepholes and short branches (4 % smaller).
+
+Where the world-generation thread's time goes now (`java` 12 s CPU, `rava-core` 30 s): compiled
+code is ~2x C2 (spills, call overhead: prologue pushes and frame linking, larger code), GC
+marking and allocation ~12 %, first touches of heap pages ~5 %.
+
+### Next
+
+1. Cheaper compiled calls (register arguments, no interpreter-frame linking on the fast path).
+2. More allocatable registers (rcx/rdx/r11 are all scratch today) or interval splitting.
+3. Escape analysis for short-lived iterators, lambdas and positions.
