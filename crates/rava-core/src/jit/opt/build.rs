@@ -96,6 +96,8 @@ pub(super) struct Builder {
     pub chain: Vec<(&'static Method, Option<i64>)>,
     /// Code order of the next block to build.
     seq: u32,
+    /// Whether this compilation may speculate (see `speculates`).
+    speculate: bool,
     /// Values known non-null at the current point (checked on every path to it).
     pub nonnull: Vec<V>,
     /// Pure instructions of the current block, for value numbering within it.
@@ -110,7 +112,7 @@ pub(super) struct Builder {
 /// Builds the graph of `m`; `None` if some instruction is not supported. Returns the frame size.
 pub(super) fn build(m: &'static Method) -> Option<(Graph, i32)> {
     let sc = Scope::new(m, None, 0)?;
-    let mut b = Builder { g: Graph::default(), extent: sc.frame_end(), sc, cur: 0, spent: 0, chain: vec![(m, None)], seq: 0, nonnull: Vec::new(), numbered: HashMap::new(), loads: HashMap::new(), exact: Vec::new() };
+    let mut b = Builder { g: Graph::default(), extent: sc.frame_end(), sc, cur: 0, spent: 0, chain: vec![(m, None)], seq: 0, speculate: m.deopt_recompiles.load(std::sync::atomic::Ordering::Relaxed) < super::SPECULATIVE_RECOMPILES, nonnull: Vec::new(), numbered: HashMap::new(), loads: HashMap::new(), exact: Vec::new() };
     // The entry block reads the parameters, then enters bci 0 like any other edge.
     let start = b.g.new_block(-1);
     b.start_block(start);
@@ -215,7 +217,7 @@ impl Builder {
         // A block that can only throw is left to the interpreter (C2's uncommon trap for an
         // untaken path) until it has trapped once: `athrow` deoptimizes anyway, and compiling
         // the exception's construction (message concatenation and all) only bloats the code.
-        if self.sc.throws[pc] && !crate::jit::profile::trapped(self.sc.m, pc) {
+        if self.sc.throws[pc] && self.speculates(self.sc.m, pc) {
             self.sc.bci = pc;
             self.deopt();
             return Some(());
@@ -402,6 +404,13 @@ impl Builder {
         self.g.blocks[b as usize].order = self.seq;
         self.seq += 1;
         b
+    }
+
+    /// Whether code may leave for the interpreter at `m`'s instruction `bci` when an assumption
+    /// from the profile fails there: not where it trapped before, nor anywhere in a method that
+    /// kept deoptimizing (HotSpot's per-bytecode and per-method trap limits).
+    pub fn speculates(&self, m: &'static Method, bci: usize) -> bool {
+        self.speculate && !crate::jit::profile::trapped(m, bci)
     }
 
     /// Ends the block by leaving compiled code at the current instruction.

@@ -41,7 +41,9 @@ pub fn everywhere() -> bool {
 /// Deoptimizations of one compiled version before its method is recompiled, and the
 /// recompilations before it keeps the baseline compiler's tier-2 code instead.
 const DEOPTS_BEFORE_RECOMPILE: u32 = 8;
-const MAX_RECOMPILES: u32 = 4;
+const MAX_RECOMPILES: u32 = 8;
+/// Recompilations after which a method is compiled without speculating on its profile.
+pub(super) const SPECULATIVE_RECOMPILES: u32 = 2;
 
 /// Counts a deoptimization of `m`'s optimized code. Frequent ones recompile it: constants have
 /// been resolved and profiles updated since; a method that keeps deoptimizing gets baseline
