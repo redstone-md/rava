@@ -206,3 +206,39 @@ the initializing thread failing compiled class-init checks, and `wait`/`notify` 
 | DfTree (in `main`) | 93-102 ms | 99-149 ms |
 | ParGen, 1 thread / 4 threads | 405-439 / 239-265 ms | 950-1215 / 344-375 ms |
 | BootLike (in `main`) | 392-607 ms | 793-865 ms |
+
+## 2026-09-30 — the Paper server boots to "Done"
+
+Paper 1.21.1 (Minecraft server, fresh world) now starts on `rava-core -jar paper.jar --nogui`.
+What it took, all general VM behavior: waiting for non-daemon threads and running shutdown
+hooks after `main` (DestroyJavaVM); child processes (`forkAndExec`), file keys, mount entries,
+xattrs and buffered copies; management beans; `UnixSystem`; headless AWT `initIDs`;
+`getClassContext` and `getParameters0`; Flight Recorder event registration (classes register as
+they initialize, as HotSpot's load-time transformation arranges; recording is unavailable).
+
+Performance work driven by profiling the server:
+
+- GC: the budget between collections is three times the live data within the maximum heap
+  (`-Xmx`, else a quarter of RAM); marking runs on every core (770 ms to 145 ms on a 450 MiB
+  live heap). Total GC time at start-up went from 16 s to 1.4 s.
+- VM stubs for `@IntrinsicCandidate` JDK methods (`NativeRegistry::add_stub`): SHA-1/2/5
+  compression, which dominated the jar hashing before bootstrap.
+- Optimizing tier: class hierarchy analysis instead of vtable guards, frameless leaves, a
+  bailout instead of a lost compiler thread when a compilation fails, and `goto` to the next
+  instruction.
+
+Start-up to "Done" on a 4-core cloud VM (timings vary by 30 % between runs of either VM):
+
+| | `java` (JDK 21) | `rava-core` |
+|---|---:|---:|
+| Paper 1.21.1, fresh world, to "Done" | 24-44 s | 46-57 s (was 95 s at first boot) |
+| Perlin noise micro (double math) | ~700 ms | ~850 ms |
+| Megamorphic function tree micro | ~270 ms | ~390 ms |
+
+### Next
+
+1. Cheaper compiled calls: register arguments and lighter frame headers (call-heavy code is
+   still ~1.5x C2).
+2. Deoptimizing instead of calling on profiled guard misses (needs interpreter profiling).
+3. Fewer fresh pages touched while the heap grows (page faults are expensive on this VM).
+

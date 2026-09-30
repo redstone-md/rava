@@ -46,7 +46,7 @@ A C1-class compiler is enough for parity. Every mechanism below is a generic JVM
 | `ir.rs` | Typed SSA values, blocks, terminators, frame states (`State`, chained for inlined scopes) |
 | `build.rs`, `build_ops.rs` | Abstract interpretation of bytecode per `Scope`; phis at merges; deopt at unsupported or unresolved instructions |
 | `build_mh.rs` | `invokedynamic`, `invokeBasic`, `linkTo*`, `MethodHandle.invoke*` (constant handles fold to direct calls) |
-| `inline.rs` | Inlining (baseline policy at tier 2): direct targets, vtable-guarded and profile-guarded ones with a call on the guard's failure path |
+| `inline.rs` | Inlining (baseline policy at tier 2): direct targets, methods no loaded class overrides (class hierarchy analysis: a flag test that deoptimizes), vtable-guarded and profile-guarded ones with a call on the guard's failure path |
 | `canon.rs`, `phis.rs` | Constant folding and known-branch removal; trivial phi aliases |
 | `regalloc.rs`, `moves.rs` | Liveness, linear scan over one interval per value, parallel moves on edges |
 | `codegen*.rs` | x86-64 emission in the baseline frame protocol; intrinsics; calls with inline caches |
@@ -62,6 +62,12 @@ Rules that keep it correct:
   recompile the method (constants resolved since), then fall back to baseline tier-2 code.
 - **Baseline code stays** (`Method::baseline`): exception dispatch and loop entry (OSR) of frames
   still running baseline code, and interpreted loops after a deoptimization, use it.
+- **Class hierarchy analysis**: `Method::mark_overridden` runs while an overriding class is
+  linked, before any instance of it exists; code that inlined the method without a receiver
+  check tests that flag and deoptimizes once it is set, then recompiles with a vtable guard.
+- **Frameless leaves**: code without loops, calls, allocation, throwing checks, monitors or
+  deopts writes no frame header and skips the stack check and entry poll (nothing can walk or
+  stop it while it runs).
 - **GC**: values live in registers and native spill slots, which the conservative stack scan
   covers; the collector never moves objects.
 
