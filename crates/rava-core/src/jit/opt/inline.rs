@@ -88,11 +88,12 @@ impl Builder {
             // A guarded target the VM compiles in place (`Object.hashCode` for a class that
             // does not override it).
             let intrinsic = crate::jit::intrinsics::intrinsic(target).filter(|k| k.is_stateless());
-            let ok = intrinsic.is_some() || decide(target, first, &self.chain, 3, self.spent).is_some();
+            let freq = self.sc.frequency(s.bci as usize);
+            let ok = intrinsic.is_some() || decide(target, first, &self.chain, 3, self.spent, freq).is_some();
             if env_once!("RAVA_CORE_INLINE_LOG").is_some() {
                 let indent = "  ".repeat(self.chain.len());
-                let why = if ok { String::new() } else { format!(" ({})", crate::jit::inline_plan::refusal(target, &self.chain, 3, self.spent)) };
-                eprintln!("[opt-inline] {indent}{} @{} -> {target} {}{why}", self.sc.m, s.bci, if ok { "inlined" } else { "call" });
+                let why = if ok { String::new() } else { format!(" ({})", crate::jit::inline_plan::refusal(target, &self.chain, 3, self.spent, freq)) };
+                eprintln!("[opt-inline] {indent}{} @{} (freq {freq:.3}) -> {target} {}{why}", self.sc.m, s.bci, if ok { "inlined" } else { "call" });
             }
             if !ok {
                 continue;
@@ -236,7 +237,9 @@ impl Builder {
     /// the continuation block `k`.
     fn inline_body(&mut self, target: &'static Method, args: &[V], s: Rc<State>, k: B, first: Option<i64>) -> Option<Vec<(B, Option<V>)>> {
         let frame = self.sc.frame + self.sc.m.code?.max_locals as i32 + crate::thread::header::SLOTS as i32 + s.stack.len() as i32;
+        let weight = self.sc.frequency(s.bci as usize);
         let mut sc = Scope::new(target, Some(s), frame)?;
+        sc.weight = weight;
         let mut slot = 0;
         for &a in args {
             sc.locals[slot] = Some(a);
