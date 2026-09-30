@@ -116,15 +116,4 @@ impl Dom {
         }
         loops
     }
-
-    /// Loop nesting depth of each block (0 outside loops).
-    pub fn loop_depth(&self, g: &Graph) -> Vec<u32> {
-        let mut depth = vec![0u32; g.blocks.len()];
-        for l in self.loops(g) {
-            for (b, inside) in l.body.into_iter().enumerate() {
-                depth[b] += inside as u32;
-            }
-        }
-        depth
-    }
 }
