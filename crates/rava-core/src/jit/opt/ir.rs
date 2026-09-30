@@ -181,8 +181,9 @@ pub enum Cmp {
 #[derive(Clone, Debug)]
 pub enum Term {
     Goto(B),
-    /// `a cmp b` on values of type `ty` (I, J or A).
-    If { cmp: Cmp, ty: Ty, a: V, b: V, then: B, other: B },
+    /// `a cmp b` on values of type `ty` (I, J, F, D or A).
+    /// With F or D, `unordered` is the outcome when either value is NaN.
+    If { cmp: Cmp, ty: Ty, a: V, b: V, then: B, other: B, unordered: bool },
     Switch { key: V, cases: Vec<(i32, B)>, default: B },
     Return(Option<V>),
     /// Leave compiled code: continue in the interpreter at the state.

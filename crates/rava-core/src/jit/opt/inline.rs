@@ -149,7 +149,7 @@ impl Builder {
                 let (then, other) = (self.g.new_block(-1), self.g.new_block(-1));
                 self.g.blocks[then as usize].preds.push(self.cur);
                 self.g.blocks[other as usize].preds.push(self.cur);
-                self.g.blocks[self.cur as usize].term = Term::If { cmp: Cmp::Eq, ty: Ty::I, a: set, b: zero, then, other };
+                self.g.blocks[self.cur as usize].term = Term::If { cmp: Cmp::Eq, ty: Ty::I, a: set, b: zero, then, other, unordered: false };
                 self.start_block(other);
                 self.g.blocks[other as usize].term = Term::Deopt(pre);
                 self.start_block(then);
@@ -166,7 +166,7 @@ impl Builder {
         let (then, other) = (self.g.new_block(-1), self.g.new_block(-1));
         self.g.blocks[then as usize].preds.push(self.cur);
         self.g.blocks[other as usize].preds.push(self.cur);
-        self.g.blocks[self.cur as usize].term = Term::If { cmp: Cmp::Eq, ty: Ty::J, a: entry, b: c, then, other };
+        self.g.blocks[self.cur as usize].term = Term::If { cmp: Cmp::Eq, ty: Ty::J, a: entry, b: c, then, other, unordered: false };
         self.start_block(then);
         Some(other)
     }

@@ -336,7 +336,8 @@ impl Builder {
         }
         self.edge(then);
         self.edge(other);
-        self.g.blocks[self.cur as usize].term = Term::If { cmp, ty, a, b, then, other };
+        let (ty, a, b, unordered) = self.fuse_compare(cmp, ty, a, b);
+        self.g.blocks[self.cur as usize].term = Term::If { cmp, ty, a, b, then, other, unordered };
     }
 
     fn switch(&mut self, pc: usize, op: u8) {
@@ -367,6 +368,28 @@ impl Builder {
 
     /// The outcome of a branch decided at compile time: constant operands, or a null test of
     /// a value known to be non-null.
+    /// `lcmp`/`fcmp`/`dcmp` just computed and tested against zero becomes a comparison of its
+    /// operands: `(ty, a, b, unordered)` of the branch. The compare is dropped when nothing
+    /// else holds its result.
+    fn fuse_compare(&mut self, cmp: Cmp, ty: Ty, a: V, b: V) -> (Ty, V, V, bool) {
+        let block = &self.g.blocks[self.cur as usize];
+        let (Ty::I, Some(0), Some(&last)) = (ty, self.g.constant(b), block.insts.last()) else { return (ty, a, b, false) };
+        let Inst::Compare(op, x, y) = self.g.values[a as usize].inst else { return (ty, a, b, false) };
+        let held = self.sc.stack.iter().chain(self.sc.locals.iter()).any(|&s| s == Some(a));
+        if last != a || held {
+            return (ty, a, b, false);
+        }
+        self.g.blocks[self.cur as usize].insts.pop();
+        let operand = match op {
+            0x94 => Ty::J,
+            0x95 | 0x96 => Ty::F,
+            _ => Ty::D,
+        };
+        // fcmpl/dcmpl give -1 for NaN, fcmpg/dcmpg 1.
+        let nan = if matches!(op, 0x95 | 0x97) { -1 } else { 1 };
+        (operand, x, y, canon::branch(cmp, Ty::I, nan, 0))
+    }
+
     fn known_branch(&self, cmp: Cmp, ty: Ty, a: V, b: V) -> Option<bool> {
         if let (Some(x), Some(y)) = (self.g.constant(a), self.g.constant(b)) {
             return Some(canon::branch(cmp, ty, x, y));
