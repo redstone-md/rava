@@ -55,6 +55,8 @@ pub(super) struct Scope {
     /// this scope per entry of the compiled method.
     freq: Vec<f32>,
     pub weight: f32,
+    /// Locals the interpreter may still read at each instruction (`locals.rs`).
+    live: super::locals::LiveLocals,
 }
 
 impl Scope {
@@ -85,6 +87,7 @@ impl Scope {
             returns: Vec::new(),
             freq,
             weight: 1.0,
+            live: super::locals::LiveLocals::compute(info),
         })
     }
 
@@ -361,7 +364,9 @@ impl Builder {
     /// The interpreter state before the current instruction.
     pub fn state(&self) -> Rc<State> {
         let sc = &self.sc;
-        Rc::new(State { method: sc.m, bci: sc.bci as u32, locals: sc.locals.clone(), stack: sc.stack.clone(), caller: sc.caller.clone(), frame: sc.frame })
+        // Locals the interpreter will not read again from here are dead in the state.
+        let locals = sc.locals.iter().enumerate().map(|(i, &v)| v.filter(|_| sc.live.live(sc.bci, i))).collect();
+        Rc::new(State { method: sc.m, bci: sc.bci as u32, locals, stack: sc.stack.clone(), caller: sc.caller.clone(), frame: sc.frame })
     }
 
     /// Adds `inst` to the current block, or reuses an identical pure instruction the block

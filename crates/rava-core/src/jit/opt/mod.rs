@@ -19,6 +19,7 @@ mod freq;
 mod inline;
 mod ir;
 mod liveness;
+mod locals;
 mod moves;
 mod nullcheck;
 mod operands;
