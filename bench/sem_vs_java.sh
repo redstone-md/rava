@@ -15,6 +15,7 @@ for f in "$(dirname "$0")"/*Sem.java; do
   n=$(basename "$f" .java); d=$W/$n
   # Probes in a package (DynClassSem) have their own harness.
   grep -q "^package " "$f" && continue
+  if [ -z "$SEM_CP" ] && grep -qE "^import (com\.google|it\.unimi)" "$f"; then echo "skip $n (needs SEM_CP)"; continue; fi
   mkdir -p "$d"
   cp="$d${SEM_CP:+:$SEM_CP}"
   if [ ! -f "$d/$n.class" ] || [ "$f" -nt "$d/$n.class" ]; then
