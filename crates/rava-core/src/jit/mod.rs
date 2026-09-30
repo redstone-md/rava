@@ -87,6 +87,15 @@ extern "sysv64" fn native_adapter(t: *mut Thread, locals: *mut u64, m: *const Me
     if let Some(s) = stats::get() {
         s.interpreted(m);
     }
+    if let Some(f) = leaf_native(m) {
+        // SAFETY: the caller placed the argument slots at `locals`, below its stack top.
+        let args = unsafe { std::slice::from_raw_parts(locals, m.param_slots() as usize) };
+        // An exception is raised again by the framed call, so the native's frame is in its stack
+        // trace (these natives fail before changing anything, or redo the same copy).
+        if let Ok(v) = f(t, args) {
+            return v;
+        }
+    }
     match crate::interp::call_native(t, m, locals) {
         Ok(v) => v,
         Err(e) => {
@@ -94,6 +103,36 @@ extern "sysv64" fn native_adapter(t: *mut Thread, locals: *mut u64, m: *const Me
             0
         }
     }
+}
+
+/// Natives compiled code calls without an interpreter frame of their own, as HotSpot runs its
+/// intrinsics in the caller's frame: they never look at the calling frame (no caller-sensitive
+/// stack walks) and hold no monitor.
+const LEAF_NATIVES: &[(&str, &str, &str)] = &[
+    ("java/lang/System", "arraycopy", "(Ljava/lang/Object;ILjava/lang/Object;II)V"),
+    ("java/lang/ref/Reference", "refersTo0", "(Ljava/lang/Object;)Z"),
+    ("java/lang/ref/PhantomReference", "refersTo0", "(Ljava/lang/Object;)Z"),
+    ("java/lang/Object", "clone", "()Ljava/lang/Object;"),
+    ("java/lang/Class", "isPrimitive", "()Z"),
+    ("java/lang/Class", "isArray", "()Z"),
+    ("java/lang/Class", "isInterface", "()Z"),
+    ("java/lang/reflect/Array", "newArray", "(Ljava/lang/Class;I)Ljava/lang/Object;"),
+    ("java/lang/System", "nanoTime", "()J"),
+    ("java/lang/System", "currentTimeMillis", "()J"),
+];
+
+/// The implementation of `m` when it is a leaf native (see `LEAF_NATIVES`).
+fn leaf_native(m: &'static Method) -> Option<crate::natives::NativeFn> {
+    let leaf = *m.leaf_native.get_or_init(|| {
+        !m.is_synchronized() && LEAF_NATIVES.iter().any(|&(h, n, d)| m.holder.name.as_str() == h && m.name.as_str() == n && m.desc.as_str() == d)
+    });
+    if !leaf {
+        return None;
+    }
+    Some(match m.native.get() {
+        Some(f) => *f,
+        None => *m.native.get_or_init(|| crate::vm::vm().natives.lookup(m).expect("a registered leaf native")),
+    })
 }
 
 /// Compiled-code ABI entry that runs a method in the interpreter (or its native).
