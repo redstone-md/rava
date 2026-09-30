@@ -289,7 +289,7 @@ impl Gen<'_> {
                 self.a.load(true, R::Rax, mem(R::Rax, offset_of!(Klass, vtable_ptr) as i32));
                 self.a.load(true, R::Rdx, mem(R::Rax, 8 * m.vtable_index()));
             }
-            Callee::Interface(m) => self.interface_target(m, base, fail, linked),
+            Callee::Interface(m) => self.interface_target(m, s, base, fail, linked),
             Callee::Method(t) => self.load(R::Rdx, t),
             Callee::Select(t) => self.select_target(t, base, fail, linked),
         }
@@ -328,8 +328,9 @@ impl Gen<'_> {
 
     /// rdx := the implementation of interface method `m` for the receiver at frame slot `base`:
     /// an inline cache, the itable stub once the site is megamorphic, else the runtime.
-    fn interface_target(&mut self, m: &'static Method, base: i32, fail: crate::jit::asm::Label, linked: bool) {
-        let cell = IcCell::new() as *const IcCell as i64;
+    /// Its inline cache is the profile's cell for the call at `s`.
+    fn interface_target(&mut self, m: &'static Method, s: &State, base: i32, fail: crate::jit::asm::Label, linked: bool) {
+        let cell = crate::jit::profile::cell(s.method, s.bci as usize) as *const IcCell as i64;
         let (hit, done, found, missing) = (self.a.new_label(), self.a.new_label(), self.a.new_label(), self.a.new_label());
         self.a.load(true, R::Rcx, self.slot(base));
         self.a.load(true, R::Rdi, mem(R::Rcx, 0));

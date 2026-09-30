@@ -64,8 +64,7 @@ impl Emitter {
             self.a.load(true, R::Rdx, mem(R::Rax, 8 * m.vtable_index()));
         } else {
             // Inline cache: compare the receiver class with the cached pair, else miss handler.
-            let cell = runtime::IcCell::new();
-            super::profile::record(self.m, pc, cell);
+            let cell = super::profile::cell(self.m, pc);
             let (hit, done, found) = (self.a.new_label(), self.a.new_label(), self.a.new_label());
             self.a.load(true, R::Rdi, mem(R::Rcx, 0));
             self.a.mov_ri(R::Rax, cell as *const runtime::IcCell as i64);
