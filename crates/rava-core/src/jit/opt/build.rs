@@ -389,6 +389,21 @@ impl Builder {
         }
     }
 
+    /// A block leaving compiled code for the interpreter at `bci` (C2's uncommon trap), as a
+    /// successor of the current block with its state.
+    pub fn untaken(&mut self, bci: usize) -> B {
+        let at = self.sc.bci;
+        self.sc.bci = bci;
+        let s = self.state();
+        self.sc.bci = at;
+        let b = self.g.new_block(-1);
+        self.g.blocks[b as usize].preds.push(self.cur);
+        self.g.blocks[b as usize].term = Term::Deopt(s);
+        self.g.blocks[b as usize].order = self.seq;
+        self.seq += 1;
+        b
+    }
+
     /// Ends the block by leaving compiled code at the current instruction.
     pub fn deopt(&mut self) {
         let s = self.state();

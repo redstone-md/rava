@@ -69,14 +69,26 @@ impl Emitter {
 
     pub(super) fn branch(&mut self, pc: usize, c: Cond) {
         let target = rel(pc, i2(self.code, pc + 1) as i32);
-        if target <= pc {
-            // Poll only when the backward branch is taken.
+        // First-tier code profiles each direction for the optimizing tier (rax is free here).
+        let cell = (self.tier == 1).then(|| super::profile::branch_cell(self.m, pc));
+        let count = |e: &mut Self, taken: usize| {
+            if let Some(cell) = cell {
+                e.a.mov_ri(R::Rax, &cell.counts[taken] as *const _ as i64);
+                e.a.alu_mi(false, Alu::Add, mem(R::Rax, 0), 1);
+            }
+        };
+        if target <= pc || cell.is_some() {
+            // A backward branch polls only when taken.
             let skip = self.a.new_label();
             self.a.jcc(invert(c), skip);
-            self.poll();
-            self.count_backedge(target);
+            count(self, 0);
+            if target <= pc {
+                self.poll();
+                self.count_backedge(target);
+            }
             self.a.jmp(self.label(target));
             self.a.bind(skip);
+            count(self, 1);
         } else {
             self.a.jcc(c, self.label(target));
         }
