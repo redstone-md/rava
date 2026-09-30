@@ -25,6 +25,10 @@ pub(super) struct Scope {
     blocks: HashMap<usize, B>,
     /// Predecessor edges each block will get (from the bytecode).
     npreds: HashMap<B, usize>,
+    /// Of those, the forward ones (not a loop's back edge), and how many have been built.
+    fwd: HashMap<B, (usize, usize)>,
+    /// The edge into bci 0 has been made (later edges are the scope's own).
+    entered: bool,
     /// Entry state of each block reached so far: locals, stack and the values known non-null.
     entry: HashMap<B, (Vec<Option<V>>, Vec<Option<V>>, Vec<V>)>,
     /// The phi of each slot (locals, then stack) of merge blocks.
@@ -54,6 +58,8 @@ impl Scope {
             an: analyze(m)?,
             blocks: HashMap::new(),
             npreds: HashMap::new(),
+            fwd: HashMap::new(),
+            entered: false,
             entry: HashMap::new(),
             phis: HashMap::new(),
             ready: Vec::new(),
@@ -134,6 +140,7 @@ impl Builder {
     pub fn enter_scope(&mut self) {
         self.make_blocks();
         self.goto(0);
+        self.sc.entered = true;
     }
 
     /// Builds the scope's blocks as their first predecessor reaches them (lowest bytecode index
@@ -143,7 +150,11 @@ impl Builder {
             let ready = &self.sc.ready;
             let i = (0..ready.len()).min_by_key(|&i| self.g.blocks[ready[i] as usize].bci).unwrap();
             let block = self.sc.ready.swap_remove(i);
-            let (locals, stack, nonnull) = self.sc.entry[&block].clone();
+            let (locals, stack, mut nonnull) = self.sc.entry[&block].clone();
+            // Facts need every forward edge in: one still to come may bring a path without them.
+            if self.sc.fwd.get(&block).is_some_and(|&(expected, arrived)| arrived < expected) {
+                nonnull.clear();
+            }
             self.start_block(block);
             self.sc.locals = locals;
             self.sc.stack = stack;
@@ -167,6 +178,7 @@ impl Builder {
         }
         // Predecessors: the entry edge into bci 0, block ends, and fall-through into leaders.
         *sc.npreds.entry(sc.blocks[&0]).or_default() += 1;
+        sc.fwd.entry(sc.blocks[&0]).or_default().0 += 1;
         let mut pc = 0;
         while pc < sc.code.len() {
             let len = insn_len(sc.code, pc);
@@ -179,6 +191,8 @@ impl Builder {
                             *sc.npreds.entry(t).or_default() += 1;
                             if s <= pc {
                                 self.g.blocks[t as usize].loop_header = true;
+                            } else {
+                                sc.fwd.entry(t).or_default().0 += 1;
                             }
                         }
                     }
@@ -223,6 +237,16 @@ impl Builder {
         let from = self.cur;
         self.g.blocks[to as usize].preds.push(from);
         let slots: Vec<Option<V>> = self.sc.locals.iter().chain(self.sc.stack.iter()).copied().collect();
+        // A forward edge into a merge keeps only the facts every path to it has; a loop's
+        // back edge adds none but takes none away (values checked before the loop stay checked).
+        let back = self.sc.entered && self.sc.bci >= self.g.blocks[to as usize].bci as usize;
+        if !back {
+            self.sc.fwd.entry(to).or_default().1 += 1;
+            if let Some(entry) = self.sc.entry.get_mut(&to) {
+                let known = &self.nonnull;
+                entry.2.retain(|v| known.contains(v));
+            }
+        }
         if let Some(phis) = self.sc.phis.get(&to).cloned() {
             for (i, phi) in phis.iter().enumerate() {
                 let Some(p) = *phi else { continue };
@@ -247,8 +271,8 @@ impl Builder {
         }
         let phis: Vec<Option<V>> = slots.iter().map(|s| s.map(|v| self.g.add(to, Inst::Phi(vec![v]), self.g.ty(v)))).collect();
         let (l, s) = phis.split_at(self.sc.locals.len());
-        // Facts from one predecessor need not hold on the others.
-        self.sc.entry.insert(to, (l.to_vec(), s.to_vec(), Vec::new()));
+        // The first edge's facts; later forward edges narrow them to what holds on every path.
+        self.sc.entry.insert(to, (l.to_vec(), s.to_vec(), self.nonnull.clone()));
         self.sc.phis.insert(to, phis);
     }
 
