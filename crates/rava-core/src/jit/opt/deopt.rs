@@ -88,6 +88,7 @@ pub extern "sysv64" fn deopt(t: *mut Thread, base: *mut u64, desc: *const Desc, 
         None => Ok(0),
     };
     if outcome.is_ok() {
+        crate::jit::profile::note_trap(frames[0].method, frames[0].bci as usize);
         note_receiver(&frames[0], base);
     }
     if std::env::var_os("RAVA_CORE_DEOPT_LOG").is_some() {
@@ -96,7 +97,8 @@ pub extern "sysv64" fn deopt(t: *mut Thread, base: *mut u64, desc: *const Desc, 
             Err(e) => crate::runtime::class_name_of(e.0),
             Ok(_) => "-".into(),
         };
-        eprintln!("[deopt] {} pending={pending}", scopes.join(" <- "));
+        let op = frames[0].method.code.map_or(0, |c| c.code[frames[0].bci as usize]);
+        eprintln!("[deopt] {} op={op:#04x} pending={pending}", scopes.join(" <- "));
     }
     // The inlined scopes get their interpreter frames linked first, outermost first and each at
     // its call site, so every scope running (and stack traces taken in it) sees its callers.
