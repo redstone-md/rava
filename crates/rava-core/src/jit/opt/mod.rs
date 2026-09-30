@@ -50,6 +50,7 @@ pub(super) fn note_deopt(m: &'static Method) {
     use std::sync::atomic::Ordering;
     let Some(cm) = m.compiled().filter(|c| c.tier >= 2) else { return };
     if cm.deopts.fetch_add(1, Ordering::Relaxed) + 1 == DEOPTS_BEFORE_RECOMPILE {
+        m.retire(cm);
         super::queue::submit(super::queue::Job::Recompile(m));
     }
 }

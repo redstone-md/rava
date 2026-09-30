@@ -138,6 +138,17 @@ impl Method {
         cm
     }
 
+    /// Replaces `current` (unless newer code replaced it already) by the latest baseline code,
+    /// HotSpot's "not entrant": calls stop entering code that keeps deoptimizing while its
+    /// recompilation waits. Frames running `current` finish in it.
+    pub(crate) fn retire(&self, current: &'static crate::jit::CompiledMethod) {
+        let Some(b) = self.baseline() else { return };
+        let old = current as *const _ as *mut _;
+        if self.compiled.compare_exchange(old, b as *const _ as *mut _, Ordering::AcqRel, Ordering::Acquire).is_ok() {
+            let _ = self.entry.compare_exchange(current.entry, b.entry, Ordering::AcqRel, Ordering::Acquire);
+        }
+    }
+
     /// Slots for all arguments including the receiver.
     pub fn param_slots(&self) -> u16 {
         self.sig.arg_slots + if self.is_static() { 0 } else { 1 }
