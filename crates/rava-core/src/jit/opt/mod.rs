@@ -68,7 +68,12 @@ pub fn compile(m: &'static Method) -> Option<CompiledMethod> {
         return None;
     }
     let started = std::time::Instant::now();
-    let cm = compile_timed(m);
+    // A failure in the compiler abandons this compilation, not the compiler thread; the method
+    // keeps running at the lower tier (HotSpot's compilation bailout).
+    let cm = std::panic::catch_unwind(|| compile_timed(m)).unwrap_or_else(|_| {
+        eprintln!("[opt] compilation of {m} failed; it stays at the lower tier");
+        None
+    });
     if let Some(s) = super::stats::get() {
         s.opt_nanos.fetch_add(started.elapsed().as_nanos() as u64, std::sync::atomic::Ordering::Relaxed);
     }
