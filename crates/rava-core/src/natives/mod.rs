@@ -11,6 +11,7 @@ mod misc;
 mod nio_ch;
 mod auth;
 mod desktop;
+mod digest;
 mod jfr;
 mod management;
 mod process;
@@ -44,11 +45,14 @@ pub type NativeFn = fn(&mut Thread, &[u64]) -> JResult<u64>;
 
 pub struct NativeRegistry {
     table: HashMap<(&'static str, &'static str, &'static str), NativeFn>,
+    /// Bodies the VM supplies for JDK methods that have bytecode (HotSpot's intrinsic stubs for
+    /// `@IntrinsicCandidate` methods): the method runs as if native.
+    stubs: HashMap<(&'static str, &'static str, &'static str), NativeFn>,
 }
 
 impl NativeRegistry {
     pub fn with_builtins() -> NativeRegistry {
-        let mut r = NativeRegistry { table: HashMap::new() };
+        let mut r = NativeRegistry { table: HashMap::new(), stubs: HashMap::new() };
         lang::register(&mut r);
         reflect::register(&mut r);
         unsafe_mem::register(&mut r);
@@ -74,6 +78,7 @@ impl NativeRegistry {
         stackwalk::register(&mut r);
         net::register(&mut r);
         misc::register(&mut r);
+        digest::register(&mut r);
         r
     }
 
@@ -81,8 +86,18 @@ impl NativeRegistry {
         self.table.insert((class, name, desc), f);
     }
 
+    pub(crate) fn add_stub(&mut self, class: &'static str, name: &'static str, desc: &'static str, f: NativeFn) {
+        self.stubs.insert((class, name, desc), f);
+    }
+
     pub fn lookup(&self, m: &Method) -> Option<NativeFn> {
-        self.table.get(&(m.holder.name.as_str(), m.name.as_str(), m.desc.as_str())).copied()
+        let key = (m.holder.name.as_str(), m.name.as_str(), m.desc.as_str());
+        self.table.get(&key).or_else(|| self.stubs.get(&key)).copied()
+    }
+
+    /// Whether the VM supplies the body of this method, which has bytecode of its own.
+    pub fn has_stub(&self, class: &str, name: &str, desc: &str) -> bool {
+        !self.stubs.is_empty() && self.stubs.contains_key(&(class, name, desc))
     }
 }
 
