@@ -17,6 +17,7 @@ mod deopt;
 mod dom;
 mod inline;
 mod ir;
+mod liveness;
 mod moves;
 mod nullcheck;
 mod operands;
