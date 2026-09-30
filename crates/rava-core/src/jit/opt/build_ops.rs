@@ -383,7 +383,7 @@ impl Builder {
             return;
         }
         let (ty, a, b, unordered) = self.fuse_compare(cmp, ty, a, b);
-        let (then, other) = match self.never_taken(pc, target, next) {
+        let (then, other) = match self.sc.pruned.get(&pc).copied() {
             Some(true) => (self.untaken(target), {
                 self.edge(other);
                 other

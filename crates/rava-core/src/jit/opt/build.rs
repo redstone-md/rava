@@ -23,6 +23,9 @@ pub(super) struct Scope {
     an: Analysis,
     /// Instructions from which every path throws (`analysis::throw_paths`).
     throws: Vec<bool>,
+    /// Conditional branches with a direction left to the interpreter (true: the jump), decided
+    /// once per scope as its blocks are made, since profiles change while it compiles.
+    pub pruned: HashMap<usize, bool>,
     /// The block starting at each leader.
     blocks: HashMap<usize, B>,
     /// Predecessor edges each block will get (from the bytecode).
@@ -59,6 +62,7 @@ impl Scope {
             code: info.code,
             an: analyze(m)?,
             throws: crate::jit::analysis::throw_paths(info.code),
+            pruned: HashMap::new(),
             blocks: HashMap::new(),
             npreds: HashMap::new(),
             fwd: HashMap::new(),
@@ -190,17 +194,19 @@ impl Builder {
             }
             pc += insn_len(sc.code, pc);
         }
+        let (pruned, live) = self.reachable();
+        let sc = &mut self.sc;
         // Predecessors: the entry edge into bci 0, block ends, and fall-through into leaders.
         *sc.npreds.entry(sc.blocks[&0]).or_default() += 1;
         sc.fwd.entry(sc.blocks[&0]).or_default().0 += 1;
         let mut pc = 0;
         while pc < sc.code.len() {
             let len = insn_len(sc.code, pc);
-            if sc.an.depth[pc].is_some() {
+            if sc.an.depth[pc].is_some() && live[pc] {
                 let succ = successors(sc.code, pc, len);
                 let ends_block = succ.len() != 1 || succ[0] != pc + len || sc.blocks.contains_key(&(pc + len));
                 if ends_block {
-                    for s in succ {
+                    for s in succ.into_iter().filter(|&s| !prunes(&pruned, sc.code, pc, s)) {
                         if let Some(&t) = sc.blocks.get(&s) {
                             *sc.npreds.entry(t).or_default() += 1;
                             if s <= pc {
@@ -214,6 +220,39 @@ impl Builder {
             }
             pc += len;
         }
+    }
+
+    /// The scope's pruned branch directions, and the instructions compiled code can reach given
+    /// them and the throw-only blocks left to the interpreter; edges from elsewhere never come.
+    fn reachable(&mut self) -> (HashMap<usize, bool>, Vec<bool>) {
+        let code = self.sc.code;
+        let mut pruned = HashMap::new();
+        let mut pc = 0;
+        while pc < code.len() {
+            let len = insn_len(code, pc);
+            if self.sc.an.depth[pc].is_some() && matches!(code[pc], 0x99..=0xa6 | 0xc6 | 0xc7) {
+                let target = (pc as i64 + crate::jit::analysis::i2(code, pc + 1) as i64) as usize;
+                if let Some(taken) = self.never_taken(pc, target, pc + len) {
+                    pruned.insert(pc, taken);
+                }
+            }
+            pc += len;
+        }
+        let mut live = vec![false; code.len()];
+        let mut work = vec![0];
+        while let Some(pc) = work.pop() {
+            if pc >= code.len() || live[pc] {
+                continue;
+            }
+            live[pc] = true;
+            if self.sc.throws[pc] && self.sc.blocks.contains_key(&pc) && self.speculates(self.sc.m, pc) {
+                continue;
+            }
+            let len = insn_len(code, pc);
+            work.extend(successors(code, pc, len).into_iter().filter(|&s| !prunes(&pruned, code, pc, s)));
+        }
+        self.sc.pruned = pruned.clone();
+        (pruned, live)
     }
 
     /// Builds instructions from `pc` until the block ends. An instruction the builder does not
@@ -435,5 +474,13 @@ impl Builder {
     pub fn deopt(&mut self) {
         let s = self.state();
         self.g.blocks[self.cur as usize].term = Term::Deopt(s);
+    }
+}
+
+/// Whether the edge from the branch at `pc` to `s` is a pruned direction.
+fn prunes(pruned: &HashMap<usize, bool>, code: &[u8], pc: usize, s: usize) -> bool {
+    match pruned.get(&pc) {
+        Some(&taken) => (s == pc + insn_len(code, pc)) != taken,
+        None => false,
     }
 }
