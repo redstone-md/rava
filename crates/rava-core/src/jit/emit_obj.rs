@@ -23,7 +23,7 @@ impl Emitter {
     pub(super) fn field(&mut self, pc: usize, depth: u16, op: u8) {
         let d = depth as i32;
         match (op, self.m.holder.resolved[self.cp_index(pc) as usize].get().copied()) {
-            (0xb4, Some(Resolved::InstanceField { offset, ty })) => {
+            (0xb4, Some(Resolved::InstanceField { offset, ty, .. })) => {
                 let slow = self.slow_path(pc, depth);
                 self.a.load(true, R::Rax, self.stk(d - 1));
                 self.a.test_rr(true, R::Rax, R::Rax);
@@ -31,7 +31,7 @@ impl Emitter {
                 load_typed(&mut self.a, ty, mem(R::Rax, offset as i32));
                 self.a.store(true, self.stk(d - 1), R::Rax);
             }
-            (0xb5, Some(Resolved::InstanceField { offset, ty })) => {
+            (0xb5, Some(Resolved::InstanceField { offset, ty, .. })) => {
                 let slots = ty.slots() as i32;
                 let slow = self.slow_path(pc, depth);
                 self.a.load(true, R::Rax, self.stk(d - 1 - slots));
@@ -260,7 +260,9 @@ pub(super) fn load_typed(a: &mut Asm, ty: BasicType, m: M) {
 /// Loads a field of type `ty` at `m` into `dst` in slot encoding.
 pub(super) fn load_typed_to(a: &mut Asm, dst: R, ty: BasicType, m: M) {
     match ty {
-        BasicType::Boolean | BasicType::Byte => a.load_sx(1, dst, m),
+        // Booleans hold 0 or 1, so their loads zero-extend, which also serves `b[i] & 0xff`.
+        BasicType::Boolean => a.load_zx(1, dst, m),
+        BasicType::Byte => a.load_sx(1, dst, m),
         BasicType::Char => a.load_zx(2, dst, m),
         BasicType::Short => a.load_sx(2, dst, m),
         BasicType::Int => a.load_sx(4, dst, m),

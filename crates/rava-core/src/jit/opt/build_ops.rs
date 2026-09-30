@@ -299,6 +299,13 @@ impl Builder {
             self.push_const(ty, c);
             return Some(());
         }
+        // `a[i] & 0xff` of a byte array (and `& 0xffff` of a short array) is a zero-extending load.
+        if let (BinOp::And, Some(mask), Ty::I) = (bin, self.g.constant(b), ty) {
+            if let Some(v) = self.unsigned_load(a, mask) {
+                self.push(v);
+                return Some(());
+            }
+        }
         // Division by a power of two is multiplication by its (exact) reciprocal.
         if let (BinOp::Div, Some(recip)) = (bin, self.g.constant(b).and_then(|c| exact_reciprocal(ty, c))) {
             let c = self.konst(ty, recip);
@@ -375,6 +382,23 @@ impl Builder {
 
     /// The outcome of a branch decided at compile time: constant operands, or a null test of
     /// a value known to be non-null.
+    /// Replaces the signed byte or short array load `a`, just made and held nowhere else, by
+    /// the zero-extending load `a & mask` amounts to.
+    fn unsigned_load(&mut self, a: V, mask: i64) -> Option<V> {
+        let Inst::LoadIndexed(arr, idx, bt) = self.g.values[a as usize].inst else { return None };
+        let unsigned = match (bt, mask) {
+            (BasicType::Byte, 0xff) => BasicType::Boolean,
+            (BasicType::Short, 0xffff) => BasicType::Char,
+            _ => return None,
+        };
+        let held = self.sc.stack.iter().chain(self.sc.locals.iter()).any(|&s| s == Some(a));
+        if self.g.blocks[self.cur as usize].insts.last() != Some(&a) || held {
+            return None;
+        }
+        self.g.values[a as usize].inst = Inst::LoadIndexed(arr, idx, unsigned);
+        Some(a)
+    }
+
     /// `lcmp`/`fcmp`/`dcmp` just computed and tested against zero becomes a comparison of its
     /// operands: `(ty, a, b, unordered)` of the branch. The compare is dropped when nothing
     /// else holds its result.
