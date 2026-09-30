@@ -71,6 +71,8 @@ pub(super) struct Gen<'a> {
     consts: HashMap<u64, Label>,
     /// Out-of-line runtime calls: (entry, helper, argument, where to continue with rax).
     pub slow_calls: Vec<(Label, usize, V, Label)>,
+    /// Reference stores that need no card mark (`barrier.rs`).
+    pub unbarriered: Vec<bool>,
 }
 
 /// Whether `g` qualifies for a frameless body: straight-line or branching code (no loops,
@@ -121,6 +123,7 @@ pub(super) fn generate(g: &Graph, al: &Allocation, m: &'static Method, frame_slo
         restore_stubs: Vec::new(),
         consts: HashMap::new(),
         slow_calls: Vec::new(),
+        unbarriered: super::barrier::unbarriered(g),
     };
     // Entry rsp is 8 mod 16: an odd number of pushes realigns it, spill slots come in pairs.
     // r12 holds the thread in all compiled code (Rust enters through `jit::enter_trampoline`).

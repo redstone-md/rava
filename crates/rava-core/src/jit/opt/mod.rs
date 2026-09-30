@@ -2,6 +2,7 @@
 //! (`regalloc.rs`) and code generation (`codegen*.rs`). Methods using anything the builder does
 //! not support are refused and keep the baseline compiler's code. See `docs/core/opt-tier.md`.
 
+mod barrier;
 mod build;
 mod build_mh;
 mod build_obj;
