@@ -54,6 +54,25 @@ pub(super) struct Gen<'a> {
     /// A synchronized method's monitor and where on the native stack (from rsp) it is kept for
     /// the exit (not in the frame: callees' frames start at the outgoing arguments).
     lock: Option<(Monitor, i32)>,
+    /// A leaf that cannot stop, throw, deoptimize or call Java: no frame header is written or
+    /// linked (nothing walks the stack while it runs), no poll or stack check is needed.
+    frameless: bool,
+}
+
+/// Whether `g` qualifies for a frameless body: straight-line or branching code (no loops,
+/// hence no polls) without calls, allocation, checks that throw, monitors or deoptimization.
+fn frameless(g: &Graph) -> bool {
+    g.blocks.iter().filter(|b| !matches!(b.term, Term::None)).all(|b| {
+        !b.loop_header
+            && matches!(b.term, Term::Goto(_) | Term::If { .. } | Term::Switch { .. } | Term::Return(_))
+            && b.insts.iter().all(|&v| match &g.values[v as usize].inst {
+                Inst::Param(_) | Inst::Const(_) | Inst::Phi(_) | Inst::Neg(_) | Inst::Bin(..) | Inst::Convert(..) | Inst::Compare(..) => true,
+                Inst::LoadField(..) | Inst::StoreField(..) | Inst::LoadStatic(..) | Inst::StoreStatic(..) | Inst::ArrayLength(_) => true,
+                Inst::LoadIndexed(..) | Inst::InstanceOf(..) => true,
+                Inst::Intrinsic(k, _, s) => s.is_none() && k.is_pure(),
+                _ => false,
+            })
+    })
 }
 
 /// Emits `g` for `m`, whose frame (inlined frames included) takes `frame_slots` value-stack slots;
@@ -79,6 +98,7 @@ pub(super) fn generate(g: &Graph, al: &Allocation, m: &'static Method, frame_slo
         live_gprs: CALLER_SAVED.into_iter().filter(|r| al.loc.contains(&Loc::Reg(*r))).collect(),
         live_xmms: XMMS.into_iter().filter(|x| al.loc.contains(&Loc::Xmm(*x))).collect(),
         lock: None,
+        frameless: monitor.is_none() && frameless(g),
     };
     // Entry rsp is 8 mod 16: an odd number of pushes realigns it, spill slots come in pairs.
     gen.saved = [R::R12, R::R13].into_iter().chain(CALLEE_SAVED.into_iter().filter(|r| al.loc.contains(&Loc::Reg(*r)))).collect();
@@ -119,6 +139,9 @@ impl Gen<'_> {
         }
         a.mov_rr(true, R::R12, R::Rdi);
         a.mov_rr(true, R::R13, R::Rsi);
+        if self.frameless {
+            return;
+        }
         a.lea(R::Rax, mem(R::R13, 8 * frame_slots));
         a.alu_rm(true, Alu::Cmp, R::Rax, mem(R::R12, offsets::LIMIT));
         a.jcc(Cond::A, overflow);
@@ -172,10 +195,12 @@ impl Gen<'_> {
             self.a.pop(R::Rax);
             self.a.pop(R::Rax);
         }
-        self.a.load(true, R::Rcx, self.hdr(header::CALLER));
-        self.a.store(true, mem(R::R12, offsets::TOP), R::Rcx);
-        self.a.load(true, R::Rcx, self.hdr(header::SAVED_SP));
-        self.a.store(true, mem(R::R12, offsets::SP), R::Rcx);
+        if !self.frameless {
+            self.a.load(true, R::Rcx, self.hdr(header::CALLER));
+            self.a.store(true, mem(R::R12, offsets::TOP), R::Rcx);
+            self.a.load(true, R::Rcx, self.hdr(header::SAVED_SP));
+            self.a.store(true, mem(R::R12, offsets::SP), R::Rcx);
+        }
         self.a.bind(restore);
         if self.frame_bytes > 0 {
             self.a.alu_ri(true, Alu::Add, R::Rsp, self.frame_bytes);
