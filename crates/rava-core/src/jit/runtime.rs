@@ -162,6 +162,11 @@ pub extern "sysv64" fn ic_miss(k: *const Klass, m: *const Method, cell: *const I
     target
 }
 
+/// The identity hash of a non-null object, assigning it (the slow path of the intrinsic).
+pub extern "sysv64" fn identity_hash(o: crate::heap::Oop) -> u64 {
+    crate::natives::identity_hash(o) as u32 as u64
+}
+
 /// A receiver class new to a virtual call's profile (first-tier code checks the known ones).
 pub extern "sysv64" fn note_receiver(k: *const Klass, cell: *const IcCell) {
     // SAFETY: a leaked profile cell.

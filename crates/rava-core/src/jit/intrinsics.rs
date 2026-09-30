@@ -1,5 +1,6 @@
 //! JDK methods compiled in place, as HotSpot's intrinsics are: `Math` rounding and square root,
-//! `Unsafe` memory access, `Class.isInstance` and `Object.getClass`. Each template reads its
+//! `Unsafe` memory access, `Class.isInstance`, `Object.getClass`, float bit conversions and the
+//! identity hash. Each template reads its
 //! arguments from the call's operand slots and leaves the result in the first; a case it does
 //! not handle (a null receiver, a class without a mirror yet) takes the call's slow path.
 
@@ -31,12 +32,23 @@ pub(super) enum Intrinsic {
     CompareAndSet(BasicType),
     /// `Thread.currentThread()`.
     CurrentThread,
+    /// `Double.doubleToRawLongBits` / `longBitsToDouble` / `Float.floatToRawIntBits` /
+    /// `intBitsToFloat`: the same bits as the result type.
+    Bits(BasicType),
+    /// `Object.hashCode` / `System.identityHashCode`: the hash in the mark word once assigned
+    /// (0 for null), else the runtime assigns it.
+    IdentityHash,
 }
 
 impl Intrinsic {
+    /// Needs no deoptimization state (usable where the optimizing tier has none at hand).
+    pub(super) fn is_stateless(self) -> bool {
+        !matches!(self, Intrinsic::GetClass)
+    }
+
     /// Without side effects (usable inside inlined leaf bodies).
     pub(super) fn is_pure(self) -> bool {
-        !matches!(self, Intrinsic::UnsafePut(..) | Intrinsic::CompareAndSet(_))
+        !matches!(self, Intrinsic::UnsafePut(..) | Intrinsic::CompareAndSet(_) | Intrinsic::IdentityHash)
     }
 }
 
@@ -60,6 +72,13 @@ fn unsafe_access(rest: &str) -> Option<(BasicType, &str)> {
     ["Volatile", "Acquire", "Release", "Opaque", ""]
         .iter()
         .find_map(|order| rest.strip_suffix(order).and_then(unsafe_type).map(|ty| (ty, *order)))
+}
+
+/// The intrinsic a call site whose target is statically `m` compiles to: a virtual method only
+/// when no override can be the target (the optimizing tier also uses `intrinsic` behind guards).
+pub(super) fn bound_intrinsic(m: &Method) -> Option<Intrinsic> {
+    let bound = m.is_static() || m.is_private() || m.access & crate::klass::ACC_FINAL != 0 || m.holder.access & crate::klass::ACC_FINAL != 0;
+    intrinsic(m).filter(|_| bound)
 }
 
 pub(super) fn intrinsic(m: &Method) -> Option<Intrinsic> {
@@ -98,6 +117,15 @@ pub(super) fn intrinsic(m: &Method) -> Option<Intrinsic> {
         "java/lang/Class" if name == "isInstance" && desc == "(Ljava/lang/Object;)Z" => Some(Intrinsic::IsInstance),
         "java/lang/Object" if name == "getClass" && desc == "()Ljava/lang/Class;" => Some(Intrinsic::GetClass),
         "java/lang/Thread" if name == "currentThread" && desc == "()Ljava/lang/Thread;" => Some(Intrinsic::CurrentThread),
+        "java/lang/Double" | "java/lang/Float" => match (name, desc) {
+            ("doubleToRawLongBits", "(D)J") => Some(Intrinsic::Bits(BasicType::Long)),
+            ("longBitsToDouble", "(J)D") => Some(Intrinsic::Bits(BasicType::Double)),
+            ("floatToRawIntBits", "(F)I") => Some(Intrinsic::Bits(BasicType::Int)),
+            ("intBitsToFloat", "(I)F") => Some(Intrinsic::Bits(BasicType::Float)),
+            _ => None,
+        },
+        "java/lang/Object" if name == "hashCode" && desc == "()I" => Some(Intrinsic::IdentityHash),
+        "java/lang/System" if name == "identityHashCode" && desc == "(Ljava/lang/Object;)I" => Some(Intrinsic::IdentityHash),
         _ => None,
     }
 }
@@ -126,7 +154,7 @@ impl Emitter {
 
     /// Compiles the call at `pc` to intrinsic `m` in place; false if `m` is not one.
     pub(super) fn try_intrinsic(&mut self, pc: usize, depth: u16, m: &'static Method, args: i32) -> bool {
-        let Some(k) = intrinsic(m) else { return false };
+        let Some(k) = bound_intrinsic(m) else { return false };
         match k {
             Intrinsic::Round(mode) => {
                 self.a.fload(true, X(0), self.stk(args));
@@ -177,6 +205,30 @@ impl Emitter {
             }
             Intrinsic::CurrentThread => {
                 self.a.load(true, R::Rax, mem(R::R12, offset_of!(crate::thread::Thread, java_thread) as i32));
+                self.a.store(true, self.stk(args), R::Rax);
+            }
+            // Doubles and longs share the slot encoding; an int is sign-extended, a float's
+            // high half is clear.
+            Intrinsic::Bits(BasicType::Int) => {
+                self.a.load(true, R::Rax, self.stk(args));
+                self.a.movsxd(R::Rax, R::Rax);
+                self.a.store(true, self.stk(args), R::Rax);
+            }
+            Intrinsic::Bits(BasicType::Float) => {
+                self.a.load(true, R::Rax, self.stk(args));
+                self.a.mov_rr(false, R::Rax, R::Rax);
+                self.a.store(true, self.stk(args), R::Rax);
+            }
+            Intrinsic::Bits(_) => {}
+            Intrinsic::IdentityHash => {
+                let (slow, done) = (self.slow_path(pc, depth), self.a.new_label());
+                self.a.load(true, R::Rcx, self.stk(args));
+                self.a.alu_rr(false, Alu::Xor, R::Rax, R::Rax);
+                self.a.test_rr(true, R::Rcx, R::Rcx);
+                self.a.jcc(Cond::E, done);
+                identity_hash_fast(&mut self.a, R::Rcx);
+                self.a.jcc(Cond::E, slow);
+                self.a.bind(done);
                 self.a.store(true, self.stk(args), R::Rax);
             }
             Intrinsic::GetClass => {
@@ -274,4 +326,12 @@ impl Emitter {
         self.a.bind(done);
         self.a.store(true, self.stk(args), R::Rax);
     }
+}
+
+/// eax := the identity hash in the mark word of the non-null object in `o` (not rax), zero
+/// flag set when none is assigned yet.
+pub(super) fn identity_hash_fast(a: &mut super::asm::Asm, o: R) {
+    a.load(true, R::Rax, mem(o, 8));
+    a.shift_ri(true, super::asm::Shift::Shr, R::Rax, crate::natives::HASH_SHIFT as u8);
+    a.alu_ri(false, Alu::And, R::Rax, crate::natives::HASH_MASK as i32);
 }
