@@ -20,7 +20,7 @@ pub(super) fn register(r: &mut NativeRegistry) {
         let o = a[0] as Oop;
         ret_int(if o.is_null() { 0 } else { identity_hash(o) })
     });
-    r.add("java/lang/System", "arraycopy", "(Ljava/lang/Object;ILjava/lang/Object;II)V", arraycopy);
+    r.add("java/lang/System", "arraycopy", "(Ljava/lang/Object;ILjava/lang/Object;II)V", super::arraycopy::arraycopy);
     r.add("java/lang/System", "nanoTime", "()J", |_, _| ret_long(nanos_since_epoch() as i64));
     r.add("java/lang/System", "currentTimeMillis", "()J", |_, _| ret_long((nanos_since_epoch() / 1_000_000) as i64));
     r.add("java/lang/Class", "registerNatives", "()V", |_, _| ret_void());
@@ -151,58 +151,6 @@ fn object_clone(t: &mut Thread, a: &[u64]) -> JResult<u64> {
     ret_ref(dst)
 }
 
-fn arraycopy(t: &mut Thread, a: &[u64]) -> JResult<u64> {
-    let (src, sp, dst, dp, len) = (a[0] as Oop, a[1] as i32, a[2] as Oop, a[3] as i32, a[4] as i32);
-    if src.is_null() || dst.is_null() {
-        return Err(null_pointer(t));
-    }
-    // SAFETY: both are live objects.
-    let (sk, dk) = unsafe { (obj::klass(src), obj::klass(dst)) };
-    let compatible = match (&sk.kind, &dk.kind) {
-        (KlassKind::TypeArray { elem: x }, KlassKind::TypeArray { elem: y }) => x == y,
-        (KlassKind::ObjArray { .. }, KlassKind::ObjArray { .. }) => true,
-        _ => false,
-    };
-    if !compatible {
-        let msg = format!("arraycopy: type mismatch: can not copy {} into {}", sk.name, dk.name);
-        return Err(throw_new(t, "java/lang/ArrayStoreException", &msg));
-    }
-    // SAFETY: both are arrays.
-    let (sl, dl) = unsafe { (obj::array_length(src), obj::array_length(dst)) };
-    if len < 0 || sp < 0 || dp < 0 || sp as i64 + len as i64 > sl as i64 || dp as i64 + len as i64 > dl as i64 {
-        let msg = format!("arraycopy: last source index {} out of bounds for length {sl}", sp as i64 + len as i64);
-        return Err(throw_new(t, "java/lang/ArrayIndexOutOfBoundsException", &msg));
-    }
-    if let (KlassKind::ObjArray { .. }, KlassKind::ObjArray { elem: de }) = (&sk.kind, &dk.kind) {
-        if !sk.is_subtype_of(dk) {
-            // Element-wise store check; copies the prefix that fits, then throws.
-            for i in 0..len as usize {
-                // SAFETY: indices within the checked bounds.
-                let v = unsafe { *obj::array_data::<Oop>(src).add(sp as usize + i) };
-                if !v.is_null() && !unsafe { obj::klass(v) }.is_subtype_of(de) {
-                    return Err(throw_new(t, "java/lang/ArrayStoreException", &rt::class_name_of(v)));
-                }
-                unsafe { obj::store_elem(dst, dp as usize + i as usize, v) };
-            }
-            return ret_void();
-        }
-    }
-    let es = sk.elem_size() as usize;
-    // SAFETY: checked bounds; `copy` handles overlap (same array).
-    unsafe {
-        std::ptr::copy(
-            obj::array_data::<u8>(src).add(sp as usize * es),
-            obj::array_data::<u8>(dst).add(dp as usize * es),
-            len as usize * es,
-        )
-    };
-    if matches!(dk.kind, KlassKind::ObjArray { .. }) {
-        // SAFETY: as above.
-        crate::gc::cards::dirty_range(unsafe { obj::array_data::<u8>(dst).add(dp as usize * es) } as usize, len as usize * es);
-    }
-    ret_void()
-}
-
 fn nanos_since_epoch() -> u128 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos())
 }
@@ -222,7 +170,7 @@ fn class_init_name(t: &mut Thread, a: &[u64]) -> JResult<u64> {
     ret_ref(s)
 }
 
-fn primitive_name(ty: Option<crate::types::BasicType>) -> String {
+pub(super) fn primitive_name(ty: Option<crate::types::BasicType>) -> String {
     use crate::types::BasicType::*;
     match ty {
         Some(Boolean) => "boolean",
