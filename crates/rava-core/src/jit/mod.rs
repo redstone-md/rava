@@ -85,6 +85,7 @@ pub(crate) fn native_entry() -> usize {
 extern "sysv64" fn native_adapter(t: *mut Thread, locals: *mut u64, m: *const Method) -> u64 {
     // SAFETY: generated code passes the current thread and a live native method.
     let (t, m) = unsafe { (&mut *t, &*m) };
+    cover_arguments(t, m, locals);
     if let Some(s) = stats::get() {
         s.interpreted(m);
     }
@@ -103,6 +104,17 @@ extern "sysv64" fn native_adapter(t: *mut Thread, locals: *mut u64, m: *const Me
             t.pending = e.0;
             0
         }
+    }
+}
+
+/// Optimized code publishes `Thread::sp` only for its runtime calls, so on entry from it the
+/// published end may lie inside the caller's frame: raise it past the arguments (everything the
+/// calling frame still uses lies below them) before anything collects or runs Java code at `sp`.
+fn cover_arguments(t: &mut Thread, m: &Method, locals: *mut u64) {
+    // SAFETY: the caller placed the argument slots at `locals` in the value stack.
+    let end = unsafe { locals.add(m.param_slots() as usize) };
+    if t.sp < end {
+        t.sp = end;
     }
 }
 
@@ -140,6 +152,7 @@ fn leaf_native(m: &'static Method) -> Option<crate::natives::NativeFn> {
 extern "sysv64" fn interpreter_adapter(t: *mut Thread, locals: *mut u64, m: *const Method) -> u64 {
     // SAFETY: generated code passes the current thread and a live method.
     let (t, m) = unsafe { (&mut *t, &*m) };
+    cover_arguments(t, m, locals);
     match crate::interp::invoke(t, m, locals) {
         Ok(v) => v,
         Err(e) => {
@@ -274,7 +287,10 @@ pub(crate) fn call(t: &mut Thread, m: &'static Method, cm: &CompiledMethod, loca
     type Enter = extern "sysv64" fn(*mut Thread, *mut u64, *const Method, usize) -> u64;
     // SAFETY: the trampoline below has this ABI; `cm.entry` is code for `m` with `EntryFn`'s.
     let f: Enter = unsafe { std::mem::transmute(enter_trampoline()) };
+    // Optimized code restores `top` but leaves `sp` as it last published it.
+    let sp = t.sp;
     let r = f(t, locals, m, cm.entry);
+    t.sp = sp;
     match t.take_pending() {
         Some(e) => Err(e),
         None => Ok(r),

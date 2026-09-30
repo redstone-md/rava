@@ -59,8 +59,15 @@ A C1-class compiler is enough for parity. Every mechanism below is a generic JVM
 Rules that keep it correct:
 
 - **Frames**: compiled code keeps the baseline layout; a call stores its arguments where the
-  interpreter would, and visible inlined frames are linked into `Thread::top` around calls, so
+  interpreter would, and visible inlined frames are linked into `Thread::top` before calls, so
   stack walks and exceptions see every Java frame.
+- **Lazy anchor** (HotSpot's last Java frame): optimized code publishes `Thread::top` (its
+  innermost header) only before calls out, and `Thread::sp` only before runtime calls, polls and
+  deoptimization; it restores `top` on return. `sp` only ever rises while it runs (baseline code
+  and the interpreter need it at or above their frame's end when a call returns), the adapters
+  into the interpreter and natives raise it past the arguments, and Rust callers restore it.
+  The prologue writes METHOD, BCI and CALLER only (no SAVED_SP; deoptimization writes one for
+  code that takes the frame over).
 - **Deoptimization** finishes the method in the interpreter (`interp::resume`); an exception in a
   callee deoptimizes with it pending, so no exception handler is ever compiled. Frequent deopts
   recompile the method (constants resolved since), then fall back to baseline tier-2 code.

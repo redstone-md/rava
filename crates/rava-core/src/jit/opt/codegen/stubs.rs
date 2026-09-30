@@ -59,6 +59,7 @@ impl Gen<'_> {
         }
         for (stub, back) in std::mem::take(&mut self.polls) {
             self.a.bind(stub);
+            self.anchor();
             self.call_preserving(runtime::safepoint as *const () as usize, &[Arg::Thread]);
             self.a.jmp(back);
         }
@@ -102,6 +103,8 @@ impl Gen<'_> {
         for (i, &x) in XMMS.iter().enumerate() {
             self.a.fstore(true, mem(R::Rsp, 8 * i as i32), X(x));
         }
+        // The interpreter resumes the scopes on this frame, linked from its header.
+        self.anchor();
         self.a.mov_rr(true, R::Rdi, R::R12);
         self.a.mov_rr(true, R::Rsi, R::R13);
         self.a.mov_rr(true, R::Rcx, R::Rsp);

@@ -92,18 +92,16 @@ impl Gen<'_> {
                 let rl = self.reg(len, R::Rdx);
                 self.a.test_rr(false, rl, rl);
                 self.a.jcc(Cond::S, fail);
-                let linked = self.link(&s);
+                self.link(&s, true);
                 self.call_preserving(runtime::new_array as *const () as usize, &[Arg::Thread, Arg::Imm(k as *const Klass as i64), Arg::Val(len)]);
-                self.unlink(linked);
                 self.a.test_rr(true, R::Rax, R::Rax);
                 self.a.jcc(Cond::E, fail);
                 self.put(v, R::Rax);
             }
             Inst::NewMulti(k, counts, s) => {
                 let fail = self.deopt(&s);
-                let linked = self.link(&s);
+                self.link(&s, true);
                 self.call_preserving(runtime::new_multi2 as *const () as usize, &[Arg::Thread, Arg::Imm(k as *const Klass as i64), Arg::Val(counts)]);
-                self.unlink(linked);
                 self.a.test_rr(true, R::Rax, R::Rax);
                 self.a.jcc(Cond::E, fail);
                 self.put(v, R::Rax);
@@ -243,13 +241,11 @@ impl Gen<'_> {
         }
         self.a.jmp(done);
         self.a.bind(slow);
-        let linked = self.link(s);
+        self.link(s, true);
         if enter {
             self.call_preserving(runtime::monitor_enter as *const () as usize, &[Arg::Thread, Arg::Val(o)]);
-            self.unlink(linked);
         } else {
             self.call_preserving(runtime::monitor_exit as *const () as usize, &[Arg::Thread, Arg::Val(o)]);
-            self.unlink(linked);
             self.a.test_rr(true, R::Rax, R::Rax);
             self.a.jcc(Cond::E, fail);
         }
@@ -274,9 +270,8 @@ impl Gen<'_> {
             None => self.a.jmp(slow),
         }
         self.a.bind(slow);
-        let linked = self.link(s);
+        self.link(s, true);
         self.call_preserving(runtime::new_instance as *const () as usize, &[Arg::Thread, Arg::Imm(k as *const Klass as i64)]);
-        self.unlink(linked);
         self.a.test_rr(true, R::Rax, R::Rax);
         self.a.jcc(Cond::E, fail);
         self.a.bind(done);
@@ -297,7 +292,7 @@ impl Gen<'_> {
         // From here until the restore, values live across the call are only in their save slots.
         self.save_around(v);
         let fail = self.restoring(v, deopt);
-        let linked = self.link(s);
+        self.link(s, false);
         match callee {
             Callee::Direct(m) => self.a.mov_ri(R::Rdx, m as *const Method as i64),
             Callee::Virtual(m) => {
@@ -306,14 +301,13 @@ impl Gen<'_> {
                 self.a.load(true, R::Rax, mem(R::Rax, offset_of!(Klass, vtable_ptr) as i32));
                 self.a.load(true, R::Rdx, mem(R::Rax, 8 * m.vtable_index()));
             }
-            Callee::Interface(m) => self.interface_target(m, s, args[0], fail, linked),
+            Callee::Interface(m) => self.interface_target(m, s, args[0], fail),
             Callee::Method(t) => self.load(R::Rdx, t),
-            Callee::Select(t) => self.select_target(t, base, fail, linked),
+            Callee::Select(t) => self.select_target(t, base, fail),
         }
         self.a.mov_rr(true, R::Rdi, R::R12);
         self.a.lea(R::Rsi, self.slot(base));
         self.a.call_m(mem(R::Rdx, offset_of!(Method, entry) as i32));
-        self.unlink(linked);
         self.restore_around(v);
         self.a.alu_mi(true, Alu::Cmp, mem(R::R12, offsets::PENDING), 0);
         self.a.jcc(Cond::Ne, deopt);
@@ -321,7 +315,7 @@ impl Gen<'_> {
     }
 
     /// rdx := the implementation of the `Method*` in `t` for the receiver at frame slot `base`.
-    fn select_target(&mut self, t: V, base: i32, fail: crate::jit::asm::Label, linked: bool) {
+    fn select_target(&mut self, t: V, base: i32, fail: crate::jit::asm::Label) {
         let found = self.a.new_label();
         self.load(R::R11, t);
         self.a.load(true, R::Rcx, self.slot(base));
@@ -335,9 +329,9 @@ impl Gen<'_> {
         self.a.pop(R::Rsi);
         self.a.test_rr(true, R::Rax, R::Rax);
         self.a.jcc(Cond::Ne, found);
+        self.publish_sp();
         self.a.mov_rr(true, R::Rdi, R::R12);
         self.a.call_abs(runtime::no_target as *const () as usize);
-        self.unlink(linked);
         self.a.jmp(fail);
         self.a.bind(found);
         self.a.mov_rr(true, R::Rdx, R::Rax);
@@ -346,7 +340,7 @@ impl Gen<'_> {
     /// rdx := the implementation of interface method `m` for `receiver`:
     /// an inline cache, the itable stub once the site is megamorphic, else the runtime.
     /// Its inline cache is the profile's cell for the call at `s`.
-    fn interface_target(&mut self, m: &'static Method, s: &State, receiver: V, fail: crate::jit::asm::Label, linked: bool) {
+    fn interface_target(&mut self, m: &'static Method, s: &State, receiver: V, fail: crate::jit::asm::Label) {
         let cell = crate::jit::profile::cell(s.method, s.bci as usize) as *const IcCell as i64;
         let (hit, done, found, missing) = (self.a.new_label(), self.a.new_label(), self.a.new_label(), self.a.new_label());
         // The receiver from its register, not the frame slot just written (store forwarding).
@@ -395,10 +389,10 @@ impl Gen<'_> {
         self.a.mov_rr(true, R::Rdx, R::Rax);
         self.a.jmp(done);
         self.a.bind(missing);
+        self.publish_sp();
         self.a.mov_rr(true, R::Rdi, R::R12);
         self.a.mov_ri(R::Rsi, m as *const Method as i64);
         self.a.call_abs(runtime::no_target as *const () as usize);
-        self.unlink(linked);
         self.a.jmp(fail);
         self.a.bind(hit);
         self.a.load(true, R::Rdx, mem(R::Rax, 8));
