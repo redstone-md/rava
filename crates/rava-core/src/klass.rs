@@ -137,7 +137,15 @@ pub struct Klass {
     /// element class (null otherwise).
     pub(crate) vtable_ptr: AtomicPtr<&'static Method>,
     pub(crate) elem_klass: *const Klass,
+    /// Superclass chain length (Object: 0) and the ancestors at depths below `PRIMARY` (HotSpot's
+    /// primary supers display): a class at depth d below `PRIMARY` is a superclass of an object's
+    /// class exactly when it is that class or its `primary[d]`.
+    pub(crate) depth: u32,
+    pub(crate) primary: [*const Klass; PRIMARY],
 }
+
+/// Depths the primary supers display covers.
+pub(crate) const PRIMARY: usize = 8;
 
 pub(crate) struct KlassParts {
     pub name: Symbol,
@@ -165,7 +173,19 @@ impl Klass {
             }
         }
         let pool_len = p.cf.as_ref().map_or(0, |cf| cf.pool.len());
+        let (depth, primary) = match p.super_klass {
+            Some(sup) => {
+                let mut primary = sup.primary;
+                if (sup.depth as usize) < PRIMARY {
+                    primary[sup.depth as usize] = sup;
+                }
+                (sup.depth + 1, primary)
+            }
+            None => (0, [std::ptr::null(); PRIMARY]),
+        };
         Klass {
+            depth,
+            primary,
             name: p.name,
             access: p.access,
             super_klass: p.super_klass,
