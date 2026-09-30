@@ -334,13 +334,22 @@ impl Gen<'_> {
     fn term(&mut self, b: B, next: Option<B>) {
         match self.g.blocks[b as usize].term.clone() {
             Term::Goto(t) => self.edge(b, t, next == Some(t)),
-            Term::If { cmp, ty, a, b: y, then, other } => {
+            Term::If { cmp, ty, a, b: y, then, other, unordered } => {
                 if then == other {
                     return self.edge(b, then, next == Some(then));
                 }
-                let x = self.reg(a, R::Rax);
-                self.alu_val(ty != Ty::I, Alu::Cmp, x, y);
-                let c = cond(cmp);
+                let c = if matches!(ty, Ty::F | Ty::D) {
+                    // ucomis: unordered sets PF (and ZF, CF), ordered results read as unsigned.
+                    let (xa, xb) = (self.xreg(a, X(0)), self.xreg(y, X(1)));
+                    self.a.fcmp(ty == Ty::D, xa, xb);
+                    let nan = self.edge_target(b, if unordered { then } else { other });
+                    self.a.jcc(Cond::P, nan);
+                    unsigned(cmp)
+                } else {
+                    let x = self.reg(a, R::Rax);
+                    self.alu_val(ty != Ty::I, Alu::Cmp, x, y);
+                    cond(cmp)
+                };
                 let (c, taken, fall) = if next == Some(then) { (invert(c), other, then) } else { (c, then, other) };
                 let l = self.edge_target(b, taken);
                 self.a.jcc(c, l);
@@ -478,6 +487,18 @@ fn cond(c: Cmp) -> Cond {
         Cmp::Ge => Cond::Ge,
         Cmp::Gt => Cond::G,
         Cmp::Le => Cond::Le,
+    }
+}
+
+/// The condition of `cmp` on flags set by an unsigned-style comparison (ucomisd).
+fn unsigned(c: Cmp) -> Cond {
+    match c {
+        Cmp::Eq => Cond::E,
+        Cmp::Ne => Cond::Ne,
+        Cmp::Lt => Cond::B,
+        Cmp::Ge => Cond::Ae,
+        Cmp::Gt => Cond::A,
+        Cmp::Le => Cond::Be,
     }
 }
 

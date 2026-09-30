@@ -139,7 +139,7 @@ impl Builder {
         let (ok, resolve) = (self.g.new_block(-1), self.g.new_block(-1));
         self.g.blocks[ok as usize].preds.push(self.cur);
         self.g.blocks[resolve as usize].preds.push(self.cur);
-        self.g.blocks[self.cur as usize].term = Term::If { cmp: Cmp::Eq, ty: Ty::A, a: v, b: null, then: ok, other: resolve };
+        self.g.blocks[self.cur as usize].term = Term::If { cmp: Cmp::Eq, ty: Ty::A, a: v, b: null, then: ok, other: resolve, unordered: false };
         self.start_block(resolve);
         self.g.blocks[resolve as usize].term = Term::Deopt(s);
         self.start_block(ok);
