@@ -88,12 +88,14 @@ pub(super) struct Builder {
     seq: u32,
     /// Values known non-null at the current point (checked on every path to it).
     pub nonnull: Vec<V>,
+    /// Pure instructions of the current block, for value numbering within it.
+    pub numbered: HashMap<(u8, u8, V, V, u8), V>,
 }
 
 /// Builds the graph of `m`; `None` if some instruction is not supported. Returns the frame size.
 pub(super) fn build(m: &'static Method) -> Option<(Graph, i32)> {
     let sc = Scope::new(m, None, 0)?;
-    let mut b = Builder { g: Graph::default(), extent: sc.frame_end(), sc, cur: 0, spent: 0, chain: vec![(m, None)], seq: 0, nonnull: Vec::new() };
+    let mut b = Builder { g: Graph::default(), extent: sc.frame_end(), sc, cur: 0, spent: 0, chain: vec![(m, None)], seq: 0, nonnull: Vec::new(), numbered: HashMap::new() };
     // The entry block reads the parameters, then enters bci 0 like any other edge.
     let start = b.g.new_block(-1);
     b.start_block(start);
@@ -118,6 +120,7 @@ impl Builder {
     /// Makes `block` the current one, next in code order.
     pub fn start_block(&mut self, block: B) {
         self.cur = block;
+        self.numbered.clear();
         self.g.blocks[block as usize].order = self.seq;
         self.seq += 1;
     }
@@ -256,8 +259,25 @@ impl Builder {
         Rc::new(State { method: sc.m, bci: sc.bci as u32, locals: sc.locals.clone(), stack: sc.stack.clone(), caller: sc.caller.clone(), frame: sc.frame })
     }
 
+    /// Adds `inst` to the current block, or reuses an identical pure instruction the block
+    /// already computes (local value numbering).
     pub fn add(&mut self, inst: Inst, ty: Ty) -> V {
-        self.g.add(self.cur, inst, ty)
+        let t = ty as u8;
+        let key = match inst {
+            Inst::Bin(op, a, b) => Some((1, op as u8, a, b, t)),
+            Inst::Neg(a) => Some((2, 0, a, 0, t)),
+            Inst::Convert(op, a) => Some((3, op, a, 0, t)),
+            Inst::Compare(op, a, b) => Some((4, op, a, b, t)),
+            _ => None,
+        };
+        if let Some(&v) = key.and_then(|k| self.numbered.get(&k)) {
+            return v;
+        }
+        let v = self.g.add(self.cur, inst, ty);
+        if let Some(k) = key {
+            self.numbered.insert(k, v);
+        }
+        v
     }
 
     pub fn konst(&mut self, ty: Ty, bits: i64) -> V {
