@@ -170,7 +170,10 @@ impl Vm {
         self.record_class(klass);
         let cf = klass.cf.as_ref().unwrap();
         let methods: Box<[Method]> =
-            cf.methods.iter().map(|m| Method::new(klass, m.name, m.desc, m.access, m.code.as_ref())).collect();
+            cf.methods.iter().map(|m| {
+                let stub = loader.is_null() && self.natives.has_stub(klass.name.as_str(), m.name.as_str(), m.desc.as_str());
+                Method::new(klass, m.name, m.desc, m.access, m.code.as_ref(), stub)
+            }).collect();
         let _ = klass.methods.set(methods);
         klass.set_vtable(build_vtable(klass));
         if hidden_name.is_some() {

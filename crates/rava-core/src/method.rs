@@ -41,10 +41,14 @@ pub struct Method {
     pub(crate) tiered: std::sync::atomic::AtomicBool,
     /// The first compilation has been requested (`jit/queue.rs`).
     pub(crate) queued: std::sync::atomic::AtomicBool,
+    /// The VM supplies the body (`NativeRegistry::add_stub`).
+    stub: bool,
 }
 
 impl Method {
-    pub(crate) fn new(holder: &'static Klass, name: Symbol, desc: Symbol, access: u16, code: Option<&'static CodeInfo>) -> Method {
+    /// A method; with `stub`, one whose body the VM supplies (it runs as a native).
+    pub(crate) fn new(holder: &'static Klass, name: Symbol, desc: Symbol, access: u16, code: Option<&'static CodeInfo>, stub: bool) -> Method {
+        let native = access & crate::klass::ACC_NATIVE != 0 || stub;
         Method {
             holder,
             name,
@@ -56,7 +60,8 @@ impl Method {
             native: OnceLock::new(),
             invocations: AtomicU32::new(0),
             backedges: AtomicU32::new(0),
-            entry: AtomicUsize::new(if access & crate::klass::ACC_NATIVE != 0 { crate::jit::native_entry() } else { crate::jit::interpreter_entry() }),
+            entry: AtomicUsize::new(if native { crate::jit::native_entry() } else { crate::jit::interpreter_entry() }),
+            stub,
             compiled: std::sync::atomic::AtomicPtr::new(std::ptr::null_mut()),
             baseline: std::sync::atomic::AtomicPtr::new(std::ptr::null_mut()),
             recompiles: AtomicU32::new(0),
@@ -79,8 +84,9 @@ impl Method {
     pub fn is_static(&self) -> bool {
         self.access & ACC_STATIC != 0
     }
+    /// Runs native code: declared `native`, or a JDK method whose body the VM supplies.
     pub fn is_native(&self) -> bool {
-        self.access & ACC_NATIVE != 0
+        self.access & ACC_NATIVE != 0 || self.stub
     }
     pub fn is_abstract(&self) -> bool {
         self.access & ACC_ABSTRACT != 0
