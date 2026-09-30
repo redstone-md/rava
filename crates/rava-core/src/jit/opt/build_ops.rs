@@ -404,13 +404,15 @@ impl Builder {
     /// else holds its result.
     fn fuse_compare(&mut self, cmp: Cmp, ty: Ty, a: V, b: V) -> (Ty, V, V, bool) {
         let block = &self.g.blocks[self.cur as usize];
-        let (Ty::I, Some(0), Some(&last)) = (ty, self.g.constant(b), block.insts.last()) else { return (ty, a, b, false) };
+        // The compare is the block's last instruction but for the constant zero after it.
+        let mut tail = block.insts.iter().rev().skip_while(|&&v| v == b && self.g.constant(v).is_some());
+        let (Ty::I, Some(0), Some(&last)) = (ty, self.g.constant(b), tail.next()) else { return (ty, a, b, false) };
         let Inst::Compare(op, x, y) = self.g.values[a as usize].inst else { return (ty, a, b, false) };
         let held = self.sc.stack.iter().chain(self.sc.locals.iter()).any(|&s| s == Some(a));
         if last != a || held {
             return (ty, a, b, false);
         }
-        self.g.blocks[self.cur as usize].insts.pop();
+        self.g.blocks[self.cur as usize].insts.retain(|&v| v != a);
         self.numbered.retain(|_, &mut v| v != a);
         let operand = match op {
             0x94 => Ty::J,
