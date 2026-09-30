@@ -38,9 +38,9 @@ pub struct Allocation {
     pub order: Vec<B>,
     /// Spill slots, then the save slots of calls.
     pub spill_slots: i32,
-    /// For each call, the caller-saved and SSE registers holding values live across it, to save
-    /// in spill slots `save_base..` around the call.
-    pub saves: std::collections::HashMap<V, Vec<Loc>>,
+    /// For each call, the caller-saved and SSE registers holding values live across it, with
+    /// the slot each is kept in meanwhile: its home slot, else one of `save_base..`.
+    pub saves: std::collections::HashMap<V, Vec<(Loc, i32)>>,
     pub save_base: i32,
     /// Spill slot a register-allocated value is also stored to at its definition, for states.
     pub home: Vec<Option<i32>>,
@@ -145,12 +145,20 @@ pub fn allocate(g: &Graph) -> Allocation {
     let mut saves = std::collections::HashMap::new();
     let mut most = 0;
     for &(p, call) in &iv.call_values {
-        let live: Vec<Loc> = (0..n)
+        // A value with a home slot is already there: it is only restored from it.
+        let mut next = 0;
+        let live: Vec<(Loc, i32)> = (0..n)
             .filter(|&v| iv.used[v] && iv.start[v] < p && iv.end[v] > p)
-            .map(|v| loc[v])
-            .filter(|l| matches!(l, Loc::Xmm(_)) || matches!(l, Loc::Reg(r) if CALLER_SAVED.contains(r)))
+            .filter(|&v| matches!(loc[v], Loc::Xmm(_)) || matches!(loc[v], Loc::Reg(r) if CALLER_SAVED.contains(&r)))
+            .map(|v| {
+                let slot = home[v].unwrap_or_else(|| {
+                    next += 1;
+                    spill_slots + next - 1
+                });
+                (loc[v], slot)
+            })
             .collect();
-        most = most.max(live.len() as i32);
+        most = most.max(next);
         saves.insert(call, live);
     }
     for v in 0..g.values.len() as V {

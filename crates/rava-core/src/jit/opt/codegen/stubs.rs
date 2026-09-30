@@ -18,17 +18,17 @@ impl Gen<'_> {
 
     /// Saves the registers call `v` clobbers that hold values live across it.
     pub fn save_around(&mut self, v: V) {
-        let base = self.save_base;
-        for (i, &l) in self.saves.get(&v).into_iter().flatten().enumerate() {
-            moves::mov(&mut self.a, Loc::Stack(base + i as i32), l);
+        for &(l, slot) in self.saves.get(&v).into_iter().flatten() {
+            if slot >= self.save_base {
+                moves::mov(&mut self.a, Loc::Stack(slot), l);
+            }
         }
     }
 
     /// Restores what `save_around(v)` saved.
     pub fn restore_around(&mut self, v: V) {
-        let base = self.save_base;
-        for (i, &l) in self.saves.get(&v).into_iter().flatten().enumerate() {
-            moves::mov(&mut self.a, l, Loc::Stack(base + i as i32));
+        for &(l, slot) in self.saves.get(&v).into_iter().flatten() {
+            moves::mov(&mut self.a, l, Loc::Stack(slot));
         }
     }
 

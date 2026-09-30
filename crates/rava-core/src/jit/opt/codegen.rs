@@ -61,8 +61,9 @@ pub(super) struct Gen<'a> {
     /// A leaf that cannot stop, throw, deoptimize or call Java: no frame header is written or
     /// linked (nothing walks the stack while it runs), no poll or stack check is needed.
     frameless: bool,
-    /// Registers to save around each call (`Allocation::saves`), in spill slots from `save_base`.
-    saves: &'a HashMap<V, Vec<Loc>>,
+    /// Registers kept around each call (`Allocation::saves`) and their slots; slots from
+    /// `save_base` are written before the call, home slots already hold the value.
+    saves: &'a HashMap<V, Vec<(Loc, i32)>>,
     save_base: i32,
     /// Stubs restoring a call's saved registers before a deoptimization: (entry, call, target).
     restore_stubs: Vec<(Label, V, Label)>,
