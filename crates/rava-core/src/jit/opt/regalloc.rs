@@ -119,6 +119,9 @@ struct Intervals {
     /// Real uses weighted by loop depth (8 per level), and the weight of the block at hand.
     weight: Vec<f32>,
     block_weight: f32,
+    /// Blocks with real uses of each value (for `LoopMap::idle`), and the block at hand.
+    use_blocks: Vec<Vec<B>>,
+    block: B,
 }
 
 impl Intervals {
@@ -129,6 +132,10 @@ impl Intervals {
     }
     fn used_at(&mut self, v: V, p: u32) {
         self.weight[v as usize] += self.block_weight;
+        let blocks = &mut self.use_blocks[v as usize];
+        if blocks.last() != Some(&self.block) {
+            blocks.push(self.block);
+        }
         self.read_at(v, p);
     }
     /// A read that needs no register (a state's, a phi's own back-edge input): no weight.
@@ -139,6 +146,50 @@ impl Intervals {
     fn crosses_call(&self, v: usize) -> bool {
         let i = self.calls.partition_point(|&p| p <= self.start[v]);
         self.calls.get(i).is_some_and(|&p| p < self.end[v])
+    }
+}
+
+/// Loops by position, for spill choices.
+struct LoopMap {
+    /// Loop nesting depth of each block.
+    depth: Vec<u32>,
+    /// The innermost loop of each block, as a body mask.
+    innermost: Vec<Option<usize>>,
+    bodies: Vec<Vec<bool>>,
+    /// The block of each position.
+    block_at: Vec<B>,
+}
+
+impl LoopMap {
+    fn new(g: &Graph, order: &[B], range: &[(u32, u32)]) -> LoopMap {
+        let loops = super::dom::Dom::new(g).loops(g);
+        let n = g.blocks.len();
+        let mut depth = vec![0u32; n];
+        let mut innermost: Vec<Option<usize>> = vec![None; n];
+        let sizes: Vec<usize> = loops.iter().map(|l| l.body.iter().filter(|&&x| x).count()).collect();
+        for (i, l) in loops.iter().enumerate() {
+            for b in (0..n).filter(|&b| l.body[b]) {
+                depth[b] += 1;
+                if innermost[b].map_or(true, |j| sizes[j] > sizes[i]) {
+                    innermost[b] = Some(i);
+                }
+            }
+        }
+        let end = order.last().map_or(0, |&b| range[b as usize].1 as usize + 2);
+        let mut block_at = vec![0; end];
+        for &b in order {
+            let (from, to) = range[b as usize];
+            block_at[from as usize..=(to as usize).min(end - 1)].fill(b);
+        }
+        LoopMap { depth, innermost, bodies: loops.into_iter().map(|l| l.body).collect(), block_at }
+    }
+
+    /// Whether `v` sits idle through the innermost loop around position `p`: no real use of it
+    /// is in that loop (spilling it there costs nothing in the loop).
+    fn idle(&self, iv: &Intervals, v: usize, p: u32) -> bool {
+        let Some(&b) = self.block_at.get(p as usize) else { return false };
+        let Some(l) = self.innermost[b as usize] else { return false };
+        !iv.use_blocks[v].iter().any(|&u| self.bodies[l][u as usize])
     }
 }
 
@@ -159,10 +210,10 @@ pub fn allocate(g: &Graph) -> Allocation {
         range[b as usize] = (from, p + 1);
         p += 2;
     }
-    let depth = super::dom::Dom::new(g).loop_depth(g);
-    let full = intervals(g, &order, &pos, &range, &depth, true);
-    let iv = intervals(g, &order, &pos, &range, &depth, false);
-    let (mut loc, spill_slots, home) = scan(g, &iv, &full);
+    let loops = LoopMap::new(g, &order, &range);
+    let full = intervals(g, &order, &pos, &range, &loops.depth, true);
+    let iv = intervals(g, &order, &pos, &range, &loops.depth, false);
+    let (mut loc, spill_slots, home) = scan(g, &iv, &full, &loops);
     // Registers a call clobbers that hold values live across it.
     let mut saves = std::collections::HashMap::new();
     let mut most = 0;
@@ -198,10 +249,11 @@ pub fn allocate(g: &Graph) -> Allocation {
 fn intervals(g: &Graph, order: &[B], pos: &[u32], range: &[(u32, u32)], depth: &[u32], states: bool) -> Intervals {
     let n = g.values.len();
     let live_in = liveness(g, order, states);
-    let mut iv = Intervals { start: vec![u32::MAX; n], end: vec![0; n], used: vec![false; n], calls: Vec::new(), call_values: Vec::new(), weight: vec![0.0; n], block_weight: 1.0 };
+    let mut iv = Intervals { start: vec![u32::MAX; n], end: vec![0; n], used: vec![false; n], calls: Vec::new(), call_values: Vec::new(), weight: vec![0.0; n], block_weight: 1.0, use_blocks: vec![Vec::new(); n], block: 0 };
     for &b in order {
         let (from, to) = range[b as usize];
         iv.block_weight = 8f32.powi(depth[b as usize].min(5) as i32);
+        iv.block = b;
         let blk = &g.blocks[b as usize];
         for v in live_in[b as usize].iter() {
             iv.touch(v, from);
@@ -306,7 +358,7 @@ fn liveness(g: &Graph, order: &[B], states: bool) -> Vec<Set> {
 /// may share its first operand's register when that operand dies at its definition.
 /// `iv` has the intervals of real uses, `full` those including state uses: a value only states
 /// read lives in a spill slot, one read beyond its real uses gets a home slot as well.
-fn scan(g: &Graph, iv: &Intervals, full: &Intervals) -> (Vec<Loc>, i32, Vec<Option<Loc>>) {
+fn scan(g: &Graph, iv: &Intervals, full: &Intervals, loops: &LoopMap) -> (Vec<Loc>, i32, Vec<Option<Loc>>) {
     let n = g.values.len();
     let mut loc = vec![Loc::None; n];
     let mut todo = Vec::new();
@@ -355,12 +407,17 @@ fn scan(g: &Graph, iv: &Intervals, full: &Intervals) -> (Vec<Loc>, i32, Vec<Opti
             active.push(v);
             continue;
         }
-        // Spill the cheapest of this interval and the active ones in its register class:
-        // fewest loop-weighted uses per position covered.
-        let cost = |x: usize| iv.weight[x] / (iv.end[x] - iv.start[x] + 1) as f32;
-        let victim = active.iter().copied().filter(|&a| allowed(loc[a])).min_by(|&a, &b| cost(a).total_cmp(&cost(b)).then(iv.end[b].cmp(&iv.end[a])));
+        // Spill the cheapest of this interval and the active ones in its register class: one
+        // idle through the loop here first, then the fewest loop-weighted uses per position.
+        let p = iv.start[v];
+        let cost = |x: usize| (!loops.idle(iv, x, p), iv.weight[x] / (iv.end[x] - iv.start[x] + 1) as f32);
+        let cheaper = |a: usize, b: usize| {
+            let (ca, cb) = (cost(a), cost(b));
+            ca.0.cmp(&cb.0).then(ca.1.total_cmp(&cb.1)).then(iv.end[b].cmp(&iv.end[a]))
+        };
+        let victim = active.iter().copied().filter(|&a| allowed(loc[a])).min_by(|&a, &b| cheaper(a, b));
         match victim {
-            Some(a) if cost(a) < cost(v) || (cost(a) == cost(v) && iv.end[a] > iv.end[v]) => {
+            Some(a) if cheaper(a, v) == std::cmp::Ordering::Less => {
                 loc[v] = loc[a];
                 spilled.push(a);
                 active.retain(|&x| x != a);
