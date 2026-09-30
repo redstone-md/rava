@@ -14,6 +14,7 @@ vm_field!(eetop_offset, "java/lang/Thread", "eetop", "J");
 vm_field!(holder_offset, "java/lang/Thread", "holder", "Ljava/lang/Thread$FieldHolder;");
 vm_field!(status_offset, "java/lang/Thread$FieldHolder", "threadStatus", "I");
 vm_field!(interrupted_offset, "java/lang/Thread", "interrupted", "Z");
+vm_field!(name_offset, "java/lang/Thread", "name", "Ljava/lang/String;");
 vm_field!(daemon_offset, "java/lang/Thread$FieldHolder", "daemon", "Z");
 
 /// The started non-daemon threads still running: the VM ends only when none is left.
@@ -66,7 +67,11 @@ pub(super) fn register(r: &mut NativeRegistry) {
     });
     r.add(T, "ensureMaterializedForStackWalk", "(Ljava/lang/Object;)V", |_, _| ret_void());
     r.add(T, "setPriority0", "(I)V", |_, _| ret_void());
-    r.add(T, "setNativeName", "(Ljava/lang/String;)V", |_, _| ret_void());
+    // An instance method, called on the current thread: a[0] is the thread, a[1] the name.
+    r.add(T, "setNativeName", "(Ljava/lang/String;)V", |_, a| {
+        set_os_thread_name(&rt::java_string_to_rust(a[1] as Oop));
+        ret_void()
+    });
     r.add(T, "interrupt0", "()V", |_, a| {
         // The Java caller has set `interrupted`; wake whatever the target is blocked in.
         if let Some(rec) = record_of(a[0] as Oop) {
@@ -203,6 +208,19 @@ fn start0(t: &mut Thread, a: &[u64]) -> JResult<u64> {
     ret_void()
 }
 
+/// Names the current OS thread (as HotSpot does), for profilers and debuggers; Linux keeps
+/// the first 15 bytes.
+fn set_os_thread_name(name: &str) {
+    let mut end = name.len().min(15);
+    while !name.is_char_boundary(end) {
+        end -= 1;
+    }
+    if let Ok(c) = std::ffi::CString::new(&name[..end]) {
+        // SAFETY: names the calling thread with a NUL-terminated string.
+        unsafe { libc::pthread_setname_np(libc::pthread_self(), c.as_ptr()) };
+    }
+}
+
 fn run_thread(jt: Oop, daemon: bool) {
     let mut t = Thread::new();
     t.java_thread = jt;
@@ -210,6 +228,11 @@ fn run_thread(jt: Oop, daemon: bool) {
     // Attached, the thread keeps its own object alive.
     starting().lock().unwrap().retain(|&o| o != jt as usize);
     mark_started(&t, jt);
+    // SAFETY: the attached thread's own object; its name is a live String (or null).
+    let name = unsafe { obj::read::<Oop>(jt, name_offset()) };
+    if !name.is_null() {
+        set_os_thread_name(&rt::java_string_to_rust(name));
+    }
     // SAFETY: live receiver.
     let k = unsafe { obj::klass(jt) };
     let thread_class = crate::loader::load("java/lang/Thread").expect("Thread");
