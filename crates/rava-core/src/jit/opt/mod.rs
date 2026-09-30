@@ -15,6 +15,7 @@ mod deopt;
 mod inline;
 mod ir;
 mod moves;
+mod nullcheck;
 mod operands;
 mod phis;
 mod regalloc;
@@ -94,6 +95,7 @@ fn compile_timed(m: &'static Method) -> Option<CompiledMethod> {
         return None;
     };
     phis::simplify(&mut g);
+    nullcheck::eliminate(&mut g);
     if std::env::var_os("RAVA_CORE_OPT_IR").is_some_and(|f| m.to_string().contains(f.to_str().unwrap_or(""))) {
         eprintln!("[opt-ir] {m}\n{}", g.dump());
     }
