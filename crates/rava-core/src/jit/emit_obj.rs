@@ -71,6 +71,14 @@ impl Emitter {
         self.a.mov_ri(R::Rax, 1);
         self.a.alu_rr(true, Alu::Cmp, R::Rdi, R::Rsi);
         self.a.jcc(Cond::E, done);
+        if let Some(d) = primary_depth(k) {
+            // A class: its ancestor at k's depth is k, or the answer is no.
+            self.a.alu_rm(true, Alu::Cmp, R::Rsi, mem(R::Rdi, offset_of!(Klass, primary) as i32 + 8 * d as i32));
+            self.a.jcc(Cond::E, done);
+            self.a.alu_rr(false, Alu::Xor, R::Rax, R::Rax);
+            self.a.bind(done);
+            return;
+        }
         self.a.mov_ri(R::Rdx, cell as *const _ as i64);
         self.a.alu_rm(true, Alu::Cmp, R::Rdi, mem(R::Rdx, 0));
         self.a.jcc(Cond::E, done);
@@ -334,4 +342,11 @@ pub(super) fn normalize_into(a: &mut Asm, ty: BasicType) {
         BasicType::Float => a.mov_rr(false, R::Rdx, R::Rdx),
         _ => {}
     }
+}
+
+/// The depth of `k` when subtype checks against it can use the primary supers display (a class
+/// that is neither an interface nor an array, shallow enough): `Klass::primary`.
+pub(crate) fn primary_depth(k: &'static Klass) -> Option<usize> {
+    let class = k.access & crate::klass::ACC_INTERFACE == 0 && matches!(k.kind, crate::klass::KlassKind::Instance);
+    (class && (k.depth as usize) < crate::klass::PRIMARY).then_some(k.depth as usize)
 }

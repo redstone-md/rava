@@ -214,13 +214,22 @@ impl Gen<'_> {
         self.a.mov_ri(R::Rdx, k as *const Klass as i64);
         self.a.alu_rr(true, Alu::Cmp, R::Rcx, R::Rdx);
         self.a.jcc(Cond::E, done);
-        self.a.mov_ri(R::Rdx, cell as *const _ as i64);
-        self.a.alu_rm(true, Alu::Cmp, R::Rcx, mem(R::Rdx, 0));
-        self.a.jcc(Cond::E, done);
-        let cell = cell as *const _ as i64;
-        self.call_preserving(runtime::subtype_cached as *const () as usize, &[Arg::Reg(R::Rcx), Arg::Imm(k as *const Klass as i64), Arg::Imm(cell)]);
         let after = self.a.new_label();
-        self.a.jmp(after);
+        if let Some(d) = crate::jit::emit_obj::primary_depth(k) {
+            // A class: its ancestor at k's depth is k, or the answer is no.
+            let at = std::mem::offset_of!(Klass, primary) as i32 + 8 * d as i32;
+            self.a.alu_rm(true, Alu::Cmp, R::Rdx, mem(R::Rcx, at));
+            self.a.jcc(Cond::E, done);
+            self.a.alu_rr(false, Alu::Xor, R::Rax, R::Rax);
+            self.a.jmp(after);
+        } else {
+            self.a.mov_ri(R::Rdx, cell as *const _ as i64);
+            self.a.alu_rm(true, Alu::Cmp, R::Rcx, mem(R::Rdx, 0));
+            self.a.jcc(Cond::E, done);
+            let cell = cell as *const _ as i64;
+            self.call_preserving(runtime::subtype_cached as *const () as usize, &[Arg::Reg(R::Rcx), Arg::Imm(k as *const Klass as i64), Arg::Imm(cell)]);
+            self.a.jmp(after);
+        }
         // null passes a cast (instanceof tests null before calling this).
         self.a.bind(null_ok);
         self.a.mov_ri(R::Rax, 1);
