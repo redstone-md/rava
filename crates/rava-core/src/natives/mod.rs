@@ -6,6 +6,7 @@ mod array;
 mod classloader;
 mod fs;
 pub(crate) mod io;
+mod arraycopy;
 mod lang;
 mod misc;
 mod nio_ch;
