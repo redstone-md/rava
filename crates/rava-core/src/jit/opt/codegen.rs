@@ -71,6 +71,8 @@ pub(super) struct Gen<'a> {
     consts: HashMap<u64, Label>,
     /// Out-of-line runtime calls: (entry, helper, argument, where to continue with rax).
     pub slow_calls: Vec<(Label, usize, V, Label)>,
+    /// Value-stack slots of the frame, inlined frames included (published as `Thread::sp`).
+    frame_slots: i32,
     /// Reference stores that need no card mark (`barrier.rs`).
     pub unbarriered: Vec<bool>,
 }
@@ -124,6 +126,7 @@ pub(super) fn generate(g: &Graph, al: &Allocation, m: &'static Method, frame_slo
         consts: HashMap::new(),
         slow_calls: Vec::new(),
         unbarriered: super::barrier::unbarriered(g),
+        frame_slots,
     };
     // Entry rsp is 8 mod 16: an odd number of pushes realigns it, spill slots come in pairs.
     // r12 holds the thread in all compiled code (Rust enters through `jit::enter_trampoline`).
@@ -182,15 +185,13 @@ impl Gen<'_> {
         a.alu_rm(true, Alu::Cmp, R::Rax, mem(R::R12, offsets::LIMIT));
         a.jcc(Cond::A, overflow);
         let h = |f: usize| mem(R::R13, 8 * (self.max_locals + f as i32));
+        // The frame is linked to its caller (every caller publishes its innermost header as
+        // `Thread::top` before a call), but `top` and `sp` are only published here once the
+        // method calls out (`link`, `anchor`); see the module comment.
         a.store(true, h(header::METHOD), R::Rdx);
         a.store_imm(h(header::BCI), 0);
         a.load(true, R::Rcx, mem(R::R12, offsets::TOP));
         a.store(true, h(header::CALLER), R::Rcx);
-        a.load(true, R::Rcx, mem(R::R12, offsets::SP));
-        a.store(true, h(header::SAVED_SP), R::Rcx);
-        a.lea(R::Rcx, h(header::METHOD));
-        a.store(true, mem(R::R12, offsets::TOP), R::Rcx);
-        a.store(true, mem(R::R12, offsets::SP), R::Rax);
         self.poll();
         if let Some((mon, at)) = self.lock {
             match mon {
@@ -213,6 +214,7 @@ impl Gen<'_> {
         }
         self.a.jmp(done);
         self.a.bind(slow);
+        self.anchor();
         let helper = if enter { runtime::monitor_enter as *const () as usize } else { runtime::monitor_exit as *const () as usize };
         self.call_preserving(helper, &[Arg::Thread, Arg::Reg(R::Rcx)]);
         self.a.bind(done);
@@ -232,10 +234,10 @@ impl Gen<'_> {
             self.a.pop(R::Rax);
         }
         if !self.frameless {
+            // The caller's frame is innermost again; `sp` is left as published (callers do
+            // not rely on it, see the module comment).
             self.a.load(true, R::Rcx, self.hdr(header::CALLER));
             self.a.store(true, mem(R::R12, offsets::TOP), R::Rcx);
-            self.a.load(true, R::Rcx, self.hdr(header::SAVED_SP));
-            self.a.store(true, mem(R::R12, offsets::SP), R::Rcx);
         }
         self.a.bind(restore);
         if self.frame_bytes > 0 {
@@ -247,6 +249,9 @@ impl Gen<'_> {
         self.a.ret();
         // The frame was never linked: raise, then return without unlinking.
         self.a.bind(overflow);
+        // The caller's frame is innermost; its arguments end where this frame would start.
+        self.a.mov_rr(true, R::Rax, R::R13);
+        self.raise_sp();
         self.a.mov_rr(true, R::Rdi, R::R12);
         self.a.call_abs(runtime::stack_overflow as *const () as usize);
         self.a.alu_rr(false, Alu::Xor, R::Rax, R::Rax);
@@ -306,20 +311,18 @@ impl Gen<'_> {
         }
     }
 
-    /// Before a call that may walk the stack from state `s`: records the call site's bytecode
-    /// index in each frame header and links the visible inlined frames into `Thread::top`
-    /// (hidden ones, method-handle plumbing, are never walked). Returns whether any was linked.
-    pub fn link(&mut self, s: &State) -> bool {
+    /// Before a call out: stores the call's bytecode index in each frame header, links the
+    /// visible inlined frames (hidden ones, method-handle plumbing, are never walked) and
+    /// publishes the innermost header as `Thread::top`; with `sp`, also the frame's end as
+    /// `Thread::sp` (for runtime calls, which may collect or run Java code at `sp`). Clobbers
+    /// rax and rcx.
+    pub fn link(&mut self, s: &State, sp: bool) {
         let scopes = scopes(s);
         let (outer, inner) = scopes.split_last().expect("a state has a scope");
         let at = self.hdr(header::BCI);
         self.a.store_imm(at, (outer.bci as i32) << 1);
-        let visible: Vec<&&State> = inner.iter().rev().filter(|s| !s.method.is_hidden_frame()).collect();
-        if visible.is_empty() {
-            return false;
-        }
         self.a.lea(R::Rcx, self.hdr(header::METHOD));
-        for s in visible {
+        for s in inner.iter().rev().filter(|s| !s.method.is_hidden_frame()) {
             let hdr = s.frame + max_locals(s.method);
             self.a.mov_ri(R::Rax, s.method as *const Method as i64);
             self.a.store(true, self.slot(hdr + header::METHOD as i32), R::Rax);
@@ -328,15 +331,34 @@ impl Gen<'_> {
             self.a.lea(R::Rcx, self.slot(hdr + header::METHOD as i32));
         }
         self.a.store(true, mem(R::R12, offsets::TOP), R::Rcx);
-        true
+        if sp {
+            self.publish_sp();
+        }
     }
 
-    /// Undoes `link` (preserves rax).
-    pub fn unlink(&mut self, linked: bool) {
-        if linked {
-            self.a.lea(R::Rcx, self.hdr(header::METHOD));
-            self.a.store(true, mem(R::R12, offsets::TOP), R::Rcx);
-        }
+    /// Publishes this frame as the innermost one (`Thread::top` and `sp`) for a runtime call
+    /// without a state (polls, monitors, deoptimization). Clobbers rax.
+    pub fn anchor(&mut self) {
+        self.a.lea(R::Rax, self.hdr(header::METHOD));
+        self.a.store(true, mem(R::R12, offsets::TOP), R::Rax);
+        self.publish_sp();
+    }
+
+    /// Raises `Thread::sp` to the end of this frame. Clobbers rax and the flags.
+    pub fn publish_sp(&mut self) {
+        self.a.lea(R::Rax, self.slot(self.frame_slots));
+        self.raise_sp();
+    }
+
+    /// `Thread::sp := max(sp, rax)`: `sp` only ever rises while optimized code runs, as code
+    /// that called it (baseline code, the interpreter) needs it at or above its own frame's end
+    /// when the call returns (it runs Java code at `sp`).
+    fn raise_sp(&mut self) {
+        let keep = self.a.new_label();
+        self.a.alu_rm(true, Alu::Cmp, R::Rax, mem(R::R12, offsets::SP));
+        self.a.jcc(Cond::Be, keep);
+        self.a.store(true, mem(R::R12, offsets::SP), R::Rax);
+        self.a.bind(keep);
     }
 
     /// Frame slot of operand-stack slot 0 of the scope of `s`.

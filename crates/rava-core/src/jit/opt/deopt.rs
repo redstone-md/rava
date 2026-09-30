@@ -114,6 +114,11 @@ pub extern "sysv64" fn deopt(t: *mut Thread, base: *mut u64, desc: *const Desc, 
         // SAFETY: the header of this scope's frame, within the compiled frame.
         unsafe { base.add(f.frame as usize + code.max_locals as usize) }
     };
+    // Optimized code does not save `Thread::sp` in its header, but code that takes the frame
+    // over (baseline code entered on a loop) restores it on return: `sp` as the stub published
+    // it (at or above the caller's frame end, as callers need).
+    // SAFETY: the outermost scope's header, within the compiled frame.
+    unsafe { *hdr(&frames[n - 1]).add(header::SAVED_SP) = t.sp as u64 };
     for f in frames[..n - 1].iter().rev() {
         let code = f.method.code.expect("compiled scope has code");
         // SAFETY: header and operand stack of this scope's frame, within the compiled frame.
