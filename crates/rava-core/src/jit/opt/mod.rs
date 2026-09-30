@@ -103,7 +103,7 @@ fn compile_timed(m: &'static Method) -> Option<CompiledMethod> {
         eprintln!("[opt-ir] {m}\n{}", g.dump());
     }
     let al = regalloc::allocate(&g);
-    let code = codegen::generate(&g, &al, m, extent, monitor);
+    let (code, main) = codegen::generate(&g, &al, m, extent, monitor);
     let entry = code_cache::install(&code);
     code_cache::perf_map(entry, code.len(), &format!("{m} [opt]"));
     if log {
@@ -114,5 +114,5 @@ fn compile_timed(m: &'static Method) -> Option<CompiledMethod> {
         let _ = std::fs::write(&file, &code);
         eprintln!("[opt-dump] {m} -> {file}");
     }
-    Some(CompiledMethod { entry, unresolved_deferrals: Default::default(), size: code.len(), blocks: Vec::new(), frame_slots: extent as usize, tier: 2, deopts: Default::default() })
+    Some(CompiledMethod { entry, unresolved_deferrals: Default::default(), size: main, blocks: Vec::new(), frame_slots: extent as usize, tier: 2, deopts: Default::default() })
 }

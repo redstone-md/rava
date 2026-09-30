@@ -116,7 +116,19 @@ impl Asm {
         self.buf.extend_from_slice(&bits.to_le_bytes());
     }
 
+    /// `finish`, with the final position of label `l` (bound).
+    pub fn finish_at(mut self, l: Label) -> (Vec<u8>, u32) {
+        self.resolve();
+        let at = self.labels[l.0 as usize].expect("bound label");
+        (self.buf, at)
+    }
+
     pub fn finish(mut self) -> Vec<u8> {
+        self.resolve();
+        self.buf
+    }
+
+    fn resolve(&mut self) {
         if self.peephole {
             self.relax();
         }
@@ -125,7 +137,6 @@ impl Asm {
             let rel = (target - (at as i64 + 4)) as i32;
             self.buf[at as usize..at as usize + 4].copy_from_slice(&rel.to_le_bytes());
         }
-        self.buf
     }
 
     fn b(&mut self, x: u8) {

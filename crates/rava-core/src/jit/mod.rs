@@ -41,6 +41,7 @@ pub struct CompiledMethod {
     pub entry: usize,
     /// Executions of sites compiled before their constants were resolved.
     pub unresolved_deferrals: std::sync::atomic::AtomicU32,
+    /// Code size for inlining decisions (optimized code: without its out-of-line stubs).
     pub size: usize,
     /// (bytecode index, native address) of every block leader, sorted by bci.
     pub blocks: Vec<(u32, usize)>,
