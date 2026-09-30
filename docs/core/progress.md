@@ -298,10 +298,29 @@ the micro benchmarks show) is the largest part; GC marking is on par with G1's t
 
 Same host now: `java` ~31 s, `rava-core` ~46-47 s (noise on this host is +-1.5 s per run).
 
+Then the call protocol and code size (A/B of 3 runs each on the same host):
+
+- Lazy frame anchoring: optimized code publishes `Thread::top`/`sp` only when it calls out
+  (44.7 -> 43.8 s; fib -13 %).
+- One `InlinedSite` descriptor per call instead of writing every inlined frame's header: a
+  third of all optimized code was those stores (21.3 -> 14.3 MB; 44.2 -> 43.6 s).
+- Frequency-based inlining (`opt/freq.rs`): the tier inlined up to 325 bytes at every call site,
+  rare paths included (`Heightmap.update` compiled to 152 KB). As C2, only sites run at least
+  0.25 times per entry get hot limits (14.3 -> 9.9 MB; 43.0 -> 41.2 s); medium compiled callees
+  stay calls at other sites (-> 40.4 s).
+- Compile time: liveness from per-block use/def sets, cached state reads, environment flags
+  read once.
+
+`java` ~31.5 s, `rava-core` ~40.4 s. `java` uses more CPU (C2 threads, G1) but finishes
+sooner: world generation parallelizes better there (chunk workers 13 s CPU in `java`, 24 s here
+before these changes).
+
 ### Next
 
-1. Cheaper compiled calls: the call sequence is ~50 instructions (argument stores, frame header
-   and thread links, indirect call, pending-exception check, prologue/epilogue) against ~8 in C2.
+1. Code density: ~15 bytes of optimized code per IR value (64-bit constants as `movabs`,
+   inline-cache probes), the remaining call overhead (CALLER link, pending-exception check).
 2. Home-slot stores in FP-heavy code (values deopt states read after their last real use).
-3. Compile time: `regalloc::intervals` and allocation churn remain the top compiler costs.
+3. Runtime type checks through `subtype_cached` (no primary-supers display yet).
+4. A few cold JDK methods fail to compile ("a single-predecessor block entered twice": an
+   edge the predecessor count misses on exception-heavy code).
 
