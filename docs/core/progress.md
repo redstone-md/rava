@@ -260,6 +260,9 @@ world (villages near spawn or not) and runs differed by up to 30 %. Benchmarks n
 - Register allocation: values only deoptimization states read stay out of registers (a home
   slot written at the definition); ints stay 32-bit without `movsxd` after every operation.
 - Code: branch peepholes and short branches (4 % smaller).
+- GC: a young collection no longer rescans every class's mirror, loader and resolved constants
+  or the whole intern table (write-once roots, old after one collection); it scans statics,
+  the classes defined since the last collection, and the roots noted since then (`gc/recent.rs`).
 
 Where the world-generation thread's time goes now (`java` 12 s CPU, `rava-core` 30 s): compiled
 code is ~2x C2 (spills, call overhead: prologue pushes and frame linking, larger code), GC

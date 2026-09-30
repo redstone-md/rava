@@ -13,6 +13,7 @@
 pub mod cards;
 mod large;
 mod mark;
+pub(crate) mod recent;
 pub mod safepoint;
 mod space;
 

@@ -116,14 +116,21 @@ impl Vm {
         self.all_classes.lock().unwrap().clone()
     }
 
-    /// The roots held by `classes`: mirrors, loaders, statics and resolved constants.
-    pub(crate) fn class_roots(&self, classes: &[&'static Klass], precise: &mut dyn FnMut(Oop), conservative: &mut dyn FnMut(usize)) {
+    /// The statics of `classes` (the only class roots that change after being set).
+    pub(crate) fn class_statics(&self, classes: &[&'static Klass], conservative: &mut dyn FnMut(usize)) {
         for &k in classes {
-            precise(k.mirror());
-            precise(k.loader());
             for slot in k.statics.iter() {
                 conservative(slot.load(std::sync::atomic::Ordering::Relaxed) as usize);
             }
+        }
+    }
+
+    /// The roots held by `classes`: mirrors, loaders, statics and resolved constants.
+    pub(crate) fn class_roots(&self, classes: &[&'static Klass], precise: &mut dyn FnMut(Oop), conservative: &mut dyn FnMut(usize)) {
+        self.class_statics(classes, conservative);
+        for &k in classes {
+            precise(k.mirror());
+            precise(k.loader());
             for r in k.resolved.iter() {
                 match r.get() {
                     Some(crate::link::Resolved::String(o)) | Some(crate::link::Resolved::Constant(o)) => precise(*o as Oop),
@@ -133,11 +140,14 @@ impl Vm {
         }
     }
 
-    /// The roots held outside classes: interned strings, primitive mirrors, call sites,
-    /// starting threads, modules and Flight Recorder configurations.
-    pub(crate) fn other_roots(&self, precise: &mut dyn FnMut(Oop)) {
-        for &s in self.strings.lock().unwrap().values() {
-            precise(s as Oop);
+    /// The roots held outside classes: interned strings (unless `young`: new ones are noted in
+    /// `gc::recent`), primitive mirrors, call sites, starting threads, modules and Flight
+    /// Recorder configurations.
+    pub(crate) fn other_roots(&self, young: bool, precise: &mut dyn FnMut(Oop)) {
+        if !young {
+            for &s in self.strings.lock().unwrap().values() {
+                precise(s as Oop);
+            }
         }
         for m in crate::runtime::primitive_mirrors() {
             precise(m);

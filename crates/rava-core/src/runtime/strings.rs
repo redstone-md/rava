@@ -97,5 +97,9 @@ pub fn intern_modified_utf8(t: &mut Thread, bytes: &[u8]) -> JResult<Oop> {
 }
 
 fn insert(units: Box<[u16]>, s: Oop) -> Oop {
-    *vm().strings.lock().unwrap().entry(units).or_insert(s as usize) as Oop
+    let winner = *vm().strings.lock().unwrap().entry(units).or_insert(s as usize) as Oop;
+    if winner == s {
+        crate::gc::recent::note(s);
+    }
+    winner
 }

@@ -75,6 +75,9 @@ pub fn resolve_constant(t: &mut Thread, k: &'static Klass, index: u16) -> JResul
     // Every thread resolving the same entry must see the same object (JVMS 5.4.3).
     let r = k.resolved[index as usize].get_or_init(|| Resolved::Constant(o as usize));
     let Resolved::Constant(winner) = r else { unreachable!() };
+    if *winner == o as usize {
+        crate::gc::recent::note(o);
+    }
     Ok(*winner as Oop)
 }
 
