@@ -34,6 +34,9 @@ pub struct ClassCache {
 
 pub struct AllocCache {
     classes: [ClassCache; CLASSES],
+    /// Bytes of retired runs not yet added to `Heap::small_allocated` (flushed per MiB and
+    /// when taking a page, so refills within a page touch no shared counter).
+    pending: usize,
 }
 
 /// For inline allocation in compiled code: the size of a cell for an object of `bytes` (at
@@ -50,7 +53,7 @@ pub(crate) fn bump_layout(bytes: usize) -> Option<(usize, usize, usize)> {
 
 impl Default for AllocCache {
     fn default() -> Self {
-        AllocCache { classes: [ClassCache::default(); CLASSES] }
+        AllocCache { classes: [ClassCache::default(); CLASSES], pending: 0 }
     }
 }
 
@@ -105,7 +108,10 @@ impl Heap {
     #[cold]
     fn refill(&self, t: &mut Thread, class: usize) -> Option<()> {
         let retired = t.alloc.classes[class];
-        self.small_allocated.fetch_add(retired.bump - retired.start, std::sync::atomic::Ordering::Relaxed);
+        t.alloc.pending += retired.bump - retired.start;
+        if t.alloc.pending >= 1 << 20 {
+            self.flush_pending(t);
+        }
         if retired.page != 0 {
             let index = retired.page - 1;
             // SAFETY: the page is owned by this thread's cache, so outside collections (which
@@ -117,6 +123,7 @@ impl Heap {
             }
         }
         t.alloc.classes[class] = ClassCache::default();
+        self.flush_pending(t);
         self.maybe_collect(t);
         let mut space = self.space.lock().unwrap();
         let page = match space.take_page(class) {
@@ -131,6 +138,10 @@ impl Heap {
         let (bump, end) = space.next_run(page).expect("a taken page has free cells");
         t.alloc.classes[class] = ClassCache { bump, end, page: page + 1, start: bump };
         Some(())
+    }
+
+    fn flush_pending(&self, t: &mut Thread) {
+        self.small_allocated.fetch_add(std::mem::take(&mut t.alloc.pending), std::sync::atomic::Ordering::Relaxed);
     }
 
     #[cold]
