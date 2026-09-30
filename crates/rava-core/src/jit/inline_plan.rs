@@ -87,11 +87,12 @@ pub(super) fn bound_target(caller: &'static Method, code: &[u8], pc: usize) -> O
     }
 }
 
-/// Recursion is refused, except for a lambda-form body applied to a different constant method
-/// handle (HotSpot bounds lambda-form recursion by receiver identity the same way).
-fn recursive(t: &'static Method, first: Option<i64>, chain: &Chain) -> bool {
+/// Recursion is refused beyond `allowed` levels (C2's `MaxRecursiveInlineLevel` for the
+/// optimizing tier, none otherwise), except for a lambda-form body applied to a different
+/// constant method handle (HotSpot bounds lambda-form recursion by receiver identity the same way).
+fn recursive(t: &'static Method, first: Option<i64>, chain: &Chain, allowed: usize) -> bool {
     let lambda_form = t.holder.is_hidden() && t.holder.name.as_str().starts_with("java/lang/invoke/LambdaForm$");
-    chain.iter().any(|(c, f)| std::ptr::eq(*c, t) && !(lambda_form && first.is_some() && *f != first))
+    chain.iter().filter(|(c, f)| std::ptr::eq(*c, t) && !(lambda_form && first.is_some() && *f != first)).count() > allowed
 }
 
 /// `opt`: for the optimizing tier, whose exceptions leave compiled code by deoptimizing into
@@ -99,7 +100,7 @@ fn recursive(t: &'static Method, first: Option<i64>, chain: &Chain) -> bool {
 fn framed_ok(t: &'static Method, first: Option<i64>, chain: &Chain, hot: bool, opt: bool) -> bool {
     let Some(info) = t.code else { return false };
     let depth = if opt { MAX_DEPTH_OPT } else { MAX_DEPTH };
-    if chain.len() > depth || recursive(t, first, chain) || t.is_synchronized() || (!opt && !info.handlers.is_empty()) {
+    if chain.len() > depth || recursive(t, first, chain, opt as usize) || t.is_synchronized() || (!opt && !info.handlers.is_empty()) {
         return false;
     }
     if t.has_annotation("Ljdk/internal/vm/annotation/DontInline;") {
