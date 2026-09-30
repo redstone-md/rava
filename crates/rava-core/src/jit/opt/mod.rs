@@ -12,6 +12,7 @@ mod codegen_intr;
 mod codegen_obj;
 mod codegen_ops;
 mod deopt;
+mod dom;
 mod inline;
 mod ir;
 mod moves;
