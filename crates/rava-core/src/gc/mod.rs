@@ -250,6 +250,11 @@ impl Heap {
     pub fn contains(&self, addr: usize) -> bool {
         self.space.lock().unwrap().find_object(addr).is_some()
     }
+
+    /// Whether `addr` is the start of an object (not a pointer into one).
+    pub fn is_object(&self, addr: usize) -> bool {
+        self.space.lock().unwrap().find_object(addr) == Some(addr)
+    }
 }
 
 fn clear_marks(space: &mut Space) {

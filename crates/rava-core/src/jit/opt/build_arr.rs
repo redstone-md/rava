@@ -81,8 +81,15 @@ impl Builder {
     fn known_length(&self, arr: V) -> Option<i64> {
         let arr = self.g.resolve(arr);
         match self.g.inst(arr) {
-            // SAFETY: a constant reference is a live array (the bytecode indexes it).
-            Inst::Const(a) if *a != 0 => Some(unsafe { crate::heap::obj::array_length(*a as crate::heap::Oop) } as i64),
+            // A constant array (a folded static final): only an actual array object counts, as
+            // code the verifier would reject (or a dead path) may index anything.
+            Inst::Const(a) if *a != 0 && self.g.ty(arr) == Ty::A && crate::vm::vm().heap.is_object(*a as usize) => {
+                let o = *a as crate::heap::Oop;
+                // SAFETY: a live object (static finals and constants stay reachable).
+                let k = unsafe { crate::heap::obj::klass(o) };
+                // SAFETY: as above, an array.
+                (!matches!(k.kind, crate::klass::KlassKind::Instance)).then(|| unsafe { crate::heap::obj::array_length(o) } as i64)
+            }
             Inst::NewArray(_, len, _) => self.g.constant(*len).filter(|&n| n >= 0),
             _ => None,
         }
