@@ -109,6 +109,45 @@ impl Klass {
     }
 }
 
+impl Klass {
+    /// Constant `index` as resolution would find it, without loading a class or raising an
+    /// error: a class this class's loader already has, or a field or method of one. Compilers
+    /// resolve ahead of execution this way (as HotSpot's ciEnv does, and JVMS 5.4 allows); what
+    /// is found is cached as execution would have cached it.
+    pub fn peek_resolved(&'static self, index: u16) -> Option<Resolved> {
+        if let Some(r) = self.resolved[index as usize].get() {
+            return Some(*r);
+        }
+        let cf = self.cf.as_ref()?;
+        let r = match cf.pool.get(index as usize)? {
+            Cp::Class(_) => {
+                let name = cf.class_name(index)?;
+                if name.as_str().starts_with('[') {
+                    return None;
+                }
+                Resolved::Class(if name == cf.name { self } else { vm().find_loaded(self.loader(), name)? })
+            }
+            &Cp::Field { class, .. } => {
+                let Some(Resolved::Class(owner)) = self.peek_resolved(class) else { return None };
+                let (_, name, desc) = cf.member_ref(index)?;
+                let (holder, f) = find_field(owner, name, desc)?;
+                if f.access & ACC_STATIC != 0 {
+                    Resolved::StaticField { holder, slot: &holder.statics[f.offset as usize], ty: f.ty }
+                } else {
+                    Resolved::InstanceField { offset: f.offset, ty: f.ty, volatile: f.access & 0x0040 != 0 }
+                }
+            }
+            &Cp::Method { class, .. } | &Cp::IMethod { class, .. } => {
+                let Some(Resolved::Class(owner)) = self.peek_resolved(class) else { return None };
+                let (_, name, desc) = cf.member_ref(index)?;
+                Resolved::Method(lookup_method(owner, name, desc)?)
+            }
+            _ => return None,
+        };
+        Some(*self.resolved[index as usize].get_or_init(|| r))
+    }
+}
+
 fn bad_pool(k: &Klass, index: u16) -> LinkError {
     LinkError::Error("java/lang/IncompatibleClassChangeError", format!("{}: bad constant #{index}", k.name))
 }

@@ -42,6 +42,10 @@ fn note_receiver(f: &Frame, base: *mut u64) {
     let pc = f.bci as usize;
     let index = u16::from_be_bytes([code.code[pc + 1], code.code[pc + 2]]) as usize;
     let Some(crate::link::Resolved::Method(m)) = f.method.holder.resolved[index].get().copied() else { return };
+    // A signature-polymorphic call's arguments follow the site's descriptor, not `m`'s.
+    if m.is_signature_polymorphic() {
+        return;
+    }
     let Some(at) = (f.depth as usize).checked_sub(m.param_slots() as usize) else { return };
     // SAFETY: the receiver's operand slot of this scope, just written back.
     let receiver = unsafe { *base.add(f.frame as usize + code.max_locals as usize + header::SLOTS + at) } as crate::heap::Oop;

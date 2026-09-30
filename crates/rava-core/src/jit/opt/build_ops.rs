@@ -19,7 +19,7 @@ impl Builder {
     }
 
     pub(super) fn resolved(&self, index: u16) -> Option<Resolved> {
-        self.sc.m.holder.resolved[index as usize].get().copied()
+        self.sc.m.holder.peek_resolved(index)
     }
 
     /// Builds the instruction at `pc`: `Some(true)` to continue with the next one, `Some(false)`
