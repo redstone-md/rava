@@ -49,6 +49,7 @@ impl Default for AllocCache {
 pub struct Heap {
     space: Mutex<Space>,
     min_trigger: usize,
+    max_heap: usize,
 }
 
 // The space is only touched under its lock (or with the world stopped).
@@ -61,9 +62,9 @@ pub struct Stats {
 }
 
 impl Heap {
-    pub fn new(reserve: usize) -> Heap {
+    pub fn new(reserve: usize, max_heap: usize) -> Heap {
         let min_trigger = std::env::var("RAVA_CORE_GC_MB").ok().and_then(|v| v.parse::<usize>().ok()).map_or(128 << 20, |mb| mb << 20);
-        Heap { space: Mutex::new(Space::new(reserve)), min_trigger }
+        Heap { space: Mutex::new(Space::new(reserve)), min_trigger, max_heap }
     }
 
     /// `bytes` of zeroed, 8-aligned memory for `t`, collecting when the heap has grown enough.
@@ -126,11 +127,23 @@ impl Heap {
     fn maybe_collect(&self, t: &mut Thread) {
         let due = {
             let s = self.space.lock().unwrap();
-            s.allocated_since_gc > self.min_trigger.max(s.live_after_gc)
+            s.allocated_since_gc > self.budget(s.live_after_gc)
         };
         if due {
             self.collect(t);
         }
+    }
+
+    /// How much may be allocated between collections that leave `live` bytes: a multiple of
+    /// the live data, so collection work stays proportional to allocation, within the maximum
+    /// heap size.
+    fn budget(&self, live: usize) -> usize {
+        const GROWTH: usize = 3;
+        (live * GROWTH).min(self.max_heap.saturating_sub(live)).max(self.min_trigger)
+    }
+
+    pub fn max_bytes(&self) -> usize {
+        self.max_heap
     }
 
     /// A full stop-the-world collection.

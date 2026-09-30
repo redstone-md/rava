@@ -19,6 +19,9 @@ pub struct VmOptions {
     /// `-Dkey=value` properties.
     pub properties: Vec<(String, String)>,
     pub heap_reserve: usize,
+    /// The most the heap grows to (`-Xmx`); by default a quarter of physical memory, as
+    /// HotSpot's `MaxRAMPercentage`.
+    pub max_heap: usize,
 }
 
 impl Default for VmOptions {
@@ -29,8 +32,18 @@ impl Default for VmOptions {
             class_path: String::new(),
             properties: Vec::new(),
             heap_reserve: 64 << 30,
+            max_heap: default_max_heap(),
         }
     }
+}
+
+fn default_max_heap() -> usize {
+    // SAFETY: sysconf has no preconditions.
+    let (pages, size) = unsafe { (libc::sysconf(libc::_SC_PHYS_PAGES), libc::sysconf(libc::_SC_PAGESIZE)) };
+    if pages <= 0 || size <= 0 {
+        return 1 << 30;
+    }
+    (pages as usize * size as usize / 4).max(128 << 20)
 }
 
 /// Classes the VM itself needs by identity. Filled while bootstrapping.
@@ -75,7 +88,7 @@ impl Vm {
             return Ok(vm);
         }
         let image = JImage::open_java_home(&options.java_home)?;
-        let heap = Heap::new(options.heap_reserve);
+        let heap = Heap::new(options.heap_reserve, options.max_heap.min(options.heap_reserve));
         let _ = VM.set(Vm {
             image,
             options,

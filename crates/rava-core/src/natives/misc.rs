@@ -59,7 +59,7 @@ pub(super) fn register(r: &mut NativeRegistry) {
         ret_void()
     });
     r.add("java/lang/ref/Finalizer", "isFinalizationEnabled", "()Z", |_, _| ret_bool(false));
-    r.add("java/lang/Runtime", "maxMemory", "()J", |_, _| ret_long(vm().options.heap_reserve as i64));
+    r.add("java/lang/Runtime", "maxMemory", "()J", |_, _| ret_long(vm().heap.max_bytes() as i64));
     r.add("java/lang/Runtime", "totalMemory", "()J", |_, _| ret_long(vm().heap.used_bytes().max(64 << 20) as i64));
     r.add("java/lang/Runtime", "freeMemory", "()J", |_, _| ret_long(32 << 20));
     r.add("java/lang/Runtime", "gc", "()V", |_, _| ret_void());
