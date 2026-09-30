@@ -88,8 +88,12 @@ impl PageMeta {
             return None;
         };
         let end = self.find_bit(first, cells, true).unwrap_or(cells);
-        for i in first..end {
-            self.alloc[i / 64] |= 1 << (i % 64);
+        let mut i = first;
+        while i < end {
+            let (w, b) = (i / 64, i % 64);
+            let n = (end - i).min(64 - b);
+            self.alloc[w] |= (!0u64 >> (64 - n)) << b;
+            i += n;
         }
         self.cursor = end;
         Some((first, end))
@@ -104,7 +108,19 @@ pub fn next_run_in(meta: &mut PageMeta, page: usize) -> Option<(usize, usize)> {
     let (start, stop) = (page + first * cell, page + end * cell);
     if !meta.zeroed {
         // SAFETY: free cells of a page in use, handed to the caller only now.
-        unsafe { std::ptr::write_bytes(start as *mut u8, 0, stop - start) };
+        unsafe {
+            if stop - start <= 256 {
+                // Short runs are common in reused pages: clear them without a call (volatile, so
+                // the loop is not turned back into one).
+                let mut p = start;
+                while p < stop {
+                    (p as *mut u64).write_volatile(0);
+                    p += 8;
+                }
+            } else {
+                std::ptr::write_bytes(start as *mut u8, 0, stop - start);
+            }
+        }
     }
     Some((start, stop))
 }
