@@ -163,14 +163,23 @@ impl Builder {
         if let Some(t) = bound_target(self.sc.m, self.sc.code, pc) {
             return vec![(t, Guard::None)];
         }
-        if op == 0xb6 && m.vtable_index() >= 0 && !m.is_abstract() && !m.holder.is_interface() {
-            if !m.is_overridden() {
+        let profiled = || -> Vec<(&'static Method, Guard)> {
+            let receivers = crate::jit::profile::receivers(self.sc.m, pc).into_iter();
+            receivers.filter_map(|k| crate::link::select_method(k, m).filter(|t| !t.is_abstract()).map(|t| (t, Guard::Klass(k)))).collect()
+        };
+        if op == 0xb6 && m.vtable_index() >= 0 && !m.holder.is_interface() {
+            if !m.is_abstract() && !m.is_overridden() {
                 return vec![(m, Guard::Unique(pre))];
+            }
+            // The receiver classes first-tier code saw, else the declared method for receivers
+            // still dispatching to it.
+            let seen = profiled();
+            if !seen.is_empty() || m.is_abstract() {
+                return seen;
             }
             return vec![(m, Guard::Vtable(m.vtable_index()))];
         }
-        let profiled = crate::jit::profile::receivers(self.sc.m, pc).into_iter();
-        profiled.filter_map(|k| crate::link::select_method(k, m).filter(|t| !t.is_abstract()).map(|t| (t, Guard::Klass(k)))).collect()
+        profiled()
     }
 
     /// Ends the current block with the guard's test; returns the failure block, and continues in
