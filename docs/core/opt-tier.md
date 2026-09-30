@@ -60,6 +60,16 @@ Rules that keep it correct:
 - **Deoptimization** finishes the method in the interpreter (`interp::resume`); an exception in a
   callee deoptimizes with it pending, so no exception handler is ever compiled. Frequent deopts
   recompile the method (constants resolved since), then fall back to baseline tier-2 code.
+  At the threshold the code is retired to baseline at once (HotSpot's not-entrant), so calls stop
+  deoptimizing while the recompilation waits in the queue.
+- **Speculation and trap history** (`jit/profile.rs`): every deopt records its (method, bci);
+  recompilations do not speculate there again. Speculations: a complete receiver profile
+  deoptimizes on an unseen class; a branch direction first-tier code never took (64+ runs)
+  deoptimizes (first-tier `branch()` counts both directions); a block from which every path
+  throws deoptimizes on entry (`analysis::throw_paths`), so exception construction is not
+  compiled or inlined.
+- **Early resolution**: constant-pool entries of classes the loader already has (and their
+  fields and methods) are resolved at compile time (`Klass::peek_resolved`, as HotSpot's ciEnv).
 - **Baseline code stays** (`Method::baseline`): exception dispatch and loop entry (OSR) of frames
   still running baseline code, and interpreted loops after a deoptimization, use it.
 - **Class hierarchy analysis**: `Method::mark_overridden` runs while an overriding class is
