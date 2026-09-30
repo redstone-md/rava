@@ -107,7 +107,7 @@ fn compile_timed(m: &'static Method) -> Option<CompiledMethod> {
     let entry = code_cache::install(&code);
     code_cache::perf_map(entry, code.len(), &format!("{m} [opt]"));
     if log {
-        eprintln!("[opt] {m}: {} values, {} blocks, {} spill slots -> {} bytes", g.values.len(), al.order.len(), al.spill_slots, code.len());
+        eprintln!("[opt] {m}: {} values, {} blocks, {} spill slots -> {} bytes ({main} main)", g.values.len(), al.order.len(), al.spill_slots, code.len());
     }
     if std::env::var_os("RAVA_CORE_JIT_DUMP").is_some_and(|f| m.to_string().contains(f.to_str().unwrap_or(""))) {
         let file = format!("/tmp/rava-opt-{entry:x}.bin");
