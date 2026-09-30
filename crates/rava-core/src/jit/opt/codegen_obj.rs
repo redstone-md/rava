@@ -343,9 +343,21 @@ impl Gen<'_> {
             self.a.mov_ri(R::Rax, cell);
             self.a.alu_mi(false, Alu::Cmp, mem(R::Rax, IcCell::misses_offset()), runtime::IC_MAX_UPDATES as i32);
             self.a.jcc(Cond::B, learn);
+            // Megamorphic: scan the receiver class's itable in place (`stubs::itable_lookup`).
+            let scan = self.a.new_label();
+            self.a.load(true, R::Rax, mem(R::Rdi, offset_of!(Klass, itable_raw) as i32));
+            self.a.test_rr(true, R::Rax, R::Rax);
+            self.a.jcc(Cond::E, learn);
+            self.a.load(true, R::R11, mem(R::Rax, 0));
             self.a.mov_ri(R::Rsi, m.holder as *const Klass as i64);
-            self.a.mov_ri(R::Rdx, m.index() as i64);
-            self.a.call_abs(crate::jit::stubs::itable_lookup());
+            self.a.bind(scan);
+            self.a.alu_ri(true, Alu::Add, R::Rax, 16);
+            self.a.alu_ri(true, Alu::Sub, R::R11, 1);
+            self.a.jcc(Cond::L, learn);
+            self.a.alu_rm(true, Alu::Cmp, R::Rsi, mem(R::Rax, -8));
+            self.a.jcc(Cond::Ne, scan);
+            self.a.load(true, R::Rax, mem(R::Rax, 0));
+            self.a.load(true, R::Rax, mem(R::Rax, 8 * m.index() as i32));
             self.a.test_rr(true, R::Rax, R::Rax);
             self.a.jcc(Cond::Ne, found);
             self.a.bind(learn);
