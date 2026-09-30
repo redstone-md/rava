@@ -124,6 +124,14 @@ impl IcCell {
         self.more.store(true, Ordering::Relaxed);
     }
 
+    pub(super) fn seen_offset() -> i32 {
+        std::mem::offset_of!(IcCell, seen) as i32
+    }
+
+    pub(super) fn more_offset() -> i32 {
+        std::mem::offset_of!(IcCell, more) as i32
+    }
+
     pub(super) fn misses_offset() -> i32 {
         std::mem::offset_of!(IcCell, misses) as i32
     }
@@ -152,6 +160,12 @@ pub extern "sysv64" fn ic_miss(k: *const Klass, m: *const Method, cell: *const I
         cell.entry.store(e, Ordering::Release);
     }
     target
+}
+
+/// A receiver class new to a virtual call's profile (first-tier code checks the known ones).
+pub extern "sysv64" fn note_receiver(k: *const Klass, cell: *const IcCell) {
+    // SAFETY: a leaked profile cell.
+    unsafe { &*cell }.note(k as usize);
 }
 
 /// A one-entry type-check cache: the last class that passed `subtype` against `target`.

@@ -59,6 +59,9 @@ impl Emitter {
         if m.is_private() || m.access & ACC_FINAL != 0 {
             self.a.mov_ri(R::Rdx, m as *const Method as i64);
         } else if m.vtable_index() >= 0 && !m.holder.is_interface() {
+            if self.tier == 1 {
+                self.profile_receiver(pc);
+            }
             self.a.load(true, R::Rax, mem(R::Rcx, 0));
             self.a.load(true, R::Rax, mem(R::Rax, offset_of!(Klass, vtable_ptr) as i32));
             self.a.load(true, R::Rdx, mem(R::Rax, 8 * m.vtable_index()));
@@ -97,6 +100,29 @@ impl Emitter {
             self.a.load(true, R::Rdx, mem(R::Rax, 8));
             self.a.bind(done);
         }
+    }
+
+    /// Records the class of the receiver in rcx in the call's profile (HotSpot's
+    /// `VirtualCallData`), for the optimizing tier's guarded inlining: two classes are kept,
+    /// a third marks the site megamorphic. Only unseen classes leave the inline checks.
+    fn profile_receiver(&mut self, pc: usize) {
+        let cell = super::profile::cell(self.m, pc);
+        let done = self.a.new_label();
+        self.a.load(true, R::Rdi, mem(R::Rcx, 0));
+        self.a.mov_ri(R::Rax, cell as *const runtime::IcCell as i64);
+        self.a.alu_rm(true, super::asm::Alu::Cmp, R::Rdi, mem(R::Rax, runtime::IcCell::seen_offset()));
+        self.a.jcc(Cond::E, done);
+        self.a.alu_rm(true, super::asm::Alu::Cmp, R::Rdi, mem(R::Rax, runtime::IcCell::seen_offset() + 8));
+        self.a.jcc(Cond::E, done);
+        self.a.cmp8_mi(mem(R::Rax, runtime::IcCell::more_offset()), 0);
+        self.a.jcc(Cond::Ne, done);
+        self.a.push(R::Rcx);
+        self.a.push(R::Rcx);
+        self.a.mov_rr(true, R::Rsi, R::Rax);
+        self.a.call_abs(runtime::note_receiver as *const () as usize);
+        self.a.pop(R::Rcx);
+        self.a.pop(R::Rcx);
+        self.a.bind(done);
     }
 
     pub(super) fn invoke(&mut self, pc: usize, depth: u16, op: u8) {
