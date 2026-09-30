@@ -36,7 +36,10 @@ pub fn mirror_of(t: &mut Thread, k: &'static Klass) -> JResult<Oop> {
     }
     crate::natives::set_mirror_module(m, k);
     match k.mirror.compare_exchange(std::ptr::null_mut(), m, Ordering::AcqRel, Ordering::Acquire) {
-        Ok(_) => Ok(m),
+        Ok(_) => {
+            crate::gc::recent::note(m);
+            Ok(m)
+        }
         Err(winner) => Ok(winner),
     }
 }

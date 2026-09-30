@@ -129,8 +129,12 @@ enum Task {
     Thread(&'static safepoint::Record),
     /// The roots of a range of classes.
     Classes(usize, usize),
-    /// The VM's other roots.
-    Other,
+    /// The statics of a range of classes (a young collection: their other roots are old).
+    Statics(usize, usize),
+    /// Objects stored into write-once VM roots since the last collection (`recent.rs`).
+    Noted,
+    /// The VM's other roots (with `true`, those of a young collection).
+    Other(bool),
     /// Dirty cards of `[from, to)` in the page area (a young collection).
     Cards(usize, usize),
     /// Dirty cards of `[from, to)` in the large-object area.
@@ -154,7 +158,7 @@ impl Shared<'_> {
         }
     }
 
-    fn run(&self, task: &Task, classes: &[&'static Klass], out: &mut Vec<usize>) {
+    fn run(&self, task: &Task, classes: &[&'static Klass], noted: &[usize], out: &mut Vec<usize>) {
         match *task {
             Task::Thread(rec) => {
                 // SAFETY: the thread is stopped; its record and Thread outlive the collection.
@@ -186,9 +190,15 @@ impl Shared<'_> {
                 refs.into_iter().for_each(|r| self.precise(r, out));
                 words.into_iter().for_each(|w| self.maybe(w, out));
             }
-            Task::Other => {
+            Task::Statics(from, to) => {
+                let mut words = Vec::new();
+                crate::vm::vm().class_statics(&classes[from..to], &mut |w| words.push(w));
+                words.into_iter().for_each(|w| self.maybe(w, out));
+            }
+            Task::Noted => noted.iter().for_each(|&r| self.precise(r, out)),
+            Task::Other(young) => {
                 let mut refs = Vec::new();
-                crate::vm::vm().other_roots(&mut |o| refs.push(o as usize));
+                crate::vm::vm().other_roots(young, &mut |o| refs.push(o as usize));
                 refs.into_iter().for_each(|r| self.precise(r, out));
             }
             Task::Cards(from, to) => self.page_cards(from, to, out),
@@ -257,13 +267,18 @@ impl Shared<'_> {
 }
 
 /// The root tasks of a collection: threads, classes in chunks, other roots, and (young) the
-/// card table in chunks.
-fn tasks(space: &Space, classes: usize, young: bool) -> Vec<Task> {
+/// card table in chunks. A young collection scans only the statics of the first `old`
+/// classes, plus the noted roots.
+fn tasks(space: &Space, classes: usize, old: usize, young: bool) -> Vec<Task> {
     const CLASS_CHUNK: usize = 512;
+    let old = if young { old.min(classes) } else { 0 };
+    let chunks = |from: usize, to: usize| (from..to).step_by(CLASS_CHUNK).map(move |c| (c, (c + CLASS_CHUNK).min(to)));
     let mut tasks: Vec<Task> = safepoint::all_threads().into_iter().map(Task::Thread).collect();
-    tasks.extend((0..classes).step_by(CLASS_CHUNK).map(|c| Task::Classes(c, (c + CLASS_CHUNK).min(classes))));
-    tasks.push(Task::Other);
+    tasks.extend(chunks(0, old).map(|(a, b)| Task::Statics(a, b)));
+    tasks.extend(chunks(old, classes).map(|(a, b)| Task::Classes(a, b)));
+    tasks.push(Task::Other(young));
     if young {
+        tasks.push(Task::Noted);
         // Chunks of whole pages, so no object spans two tasks.
         let chunk = 64 * super::space::PAGE_SIZE;
         tasks.extend((space.base..space.fresh).step_by(chunk).map(|c| Task::Cards(c, (c + chunk).min(space.fresh))));
@@ -298,7 +313,8 @@ pub(super) fn mark(space: &mut Space, young: bool) -> usize {
         marked: AtomicUsize::new(0),
     };
     let classes = crate::vm::vm().all_classes();
-    let tasks = tasks(shared.space, classes.len(), young);
+    let (noted, old) = super::recent::take(classes.len());
+    let tasks = tasks(shared.space, classes.len(), old, young);
     let next = AtomicUsize::new(0);
     // Each worker takes root tasks until none is left, then traces from what it found.
     let worker = || {
@@ -306,7 +322,7 @@ pub(super) fn mark(space: &mut Space, young: bool) -> usize {
         loop {
             let i = next.fetch_add(1, Ordering::Relaxed);
             let Some(task) = tasks.get(i) else { break };
-            shared.run(task, &classes, &mut found);
+            shared.run(task, &classes, &noted, &mut found);
         }
         shared.work(found);
     };
