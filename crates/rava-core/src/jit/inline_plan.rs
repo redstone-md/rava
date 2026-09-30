@@ -44,7 +44,10 @@ pub(super) type Chain = [(&'static Method, Option<i64>)];
 /// budget of inlined bytecode (C2's `DesiredMethodLimit`).
 const HOT_INLINE_SIZE: usize = 325;
 const HOT_INVOCATIONS: u32 = 2000;
-const TIER2_BUDGET: usize = 8000;
+/// Twice C2's `DesiredMethodLimit`: C2 counts only bytecode it actually inlines after pruning
+/// cold paths and dead code, while this budget counts every inlined body whole (measured on the
+/// server start: 8000 41.9 s, 16000 40.6 s; larger budgets gain nothing clear).
+const TIER2_BUDGET: usize = 16000;
 /// A callee whose optimized code is larger than this is called rather than inlined again
 /// (HotSpot's `InlineSmallCode`, 2500 bytes of C2 code): its own compilation already inlined
 /// what it calls. Optimized code here takes about three times C2's bytes per bytecode.
