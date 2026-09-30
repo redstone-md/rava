@@ -90,6 +90,14 @@ impl Gen<'_> {
             return self.shift(v, w, op, x, y);
         }
         let r = self.out(v);
+        if let (BinOp::Mul, Some(c)) = (op, self.g.constant(y).and_then(|c| i32::try_from(c).ok())) {
+            let x = self.reg(x, r);
+            self.a.imul_rri(w, r, x, c);
+            if !w {
+                self.a.movsxd(r, r);
+            }
+            return self.put(v, r);
+        }
         self.load(r, x);
         match op {
             BinOp::Mul => {
