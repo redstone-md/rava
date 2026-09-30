@@ -57,6 +57,11 @@ pub struct Heap {
     space: Mutex<Space>,
     min_trigger: usize,
     max_heap: usize,
+    /// Bytes bumped through retired small-object runs since the last collection.
+    small_allocated: std::sync::atomic::AtomicUsize,
+    /// The space's page metadata (a fixed-size table), for runs on pages a thread owns.
+    pages: *mut Option<space::PageMeta>,
+    base: usize,
 }
 
 // The space is only touched under its lock (or with the world stopped).
@@ -71,7 +76,9 @@ pub struct Stats {
 impl Heap {
     pub fn new(reserve: usize, max_heap: usize) -> Heap {
         let min_trigger = std::env::var("RAVA_CORE_GC_MB").ok().and_then(|v| v.parse::<usize>().ok()).map_or(128 << 20, |mb| mb << 20);
-        Heap { space: Mutex::new(Space::new(reserve)), min_trigger, max_heap }
+        let mut space = Space::new(reserve);
+        let (pages, base) = (space.pages.as_mut_ptr(), space.base);
+        Heap { space: Mutex::new(space), min_trigger, max_heap, small_allocated: Default::default(), pages, base }
     }
 
     /// `bytes` of zeroed, 8-aligned memory for `t`, collecting when the heap has grown enough.
@@ -97,14 +104,15 @@ impl Heap {
     #[cold]
     fn refill(&self, t: &mut Thread, class: usize) -> Option<()> {
         let retired = t.alloc.classes[class];
-        {
-            let mut space = self.space.lock().unwrap();
-            space.allocated_since_gc += retired.bump - retired.start;
-            if retired.page != 0 {
-                if let Some((bump, end)) = space.next_run(retired.page - 1) {
-                    t.alloc.classes[class] = ClassCache { bump, end, page: retired.page, start: bump };
-                    return Some(());
-                }
+        self.small_allocated.fetch_add(retired.bump - retired.start, std::sync::atomic::Ordering::Relaxed);
+        if retired.page != 0 {
+            let index = retired.page - 1;
+            // SAFETY: the page is owned by this thread's cache, so outside collections (which
+            // cannot run while this thread allocates) only this thread touches its metadata.
+            let meta = unsafe { (*self.pages.add(index)).as_mut().expect("owned page") };
+            if let Some((bump, end)) = space::next_run_in(meta, self.base + (index << space::PAGE_SHIFT)) {
+                t.alloc.classes[class] = ClassCache { bump, end, page: retired.page, start: bump };
+                return Some(());
             }
         }
         t.alloc.classes[class] = ClassCache::default();
@@ -134,7 +142,8 @@ impl Heap {
     fn maybe_collect(&self, t: &mut Thread) {
         let due = {
             let s = self.space.lock().unwrap();
-            (s.allocated_since_gc > self.young_budget(s.live_after_gc)).then(|| self.full_due(&s))
+            let allocated = s.allocated_since_gc + self.small_allocated.load(std::sync::atomic::Ordering::Relaxed);
+            (allocated > self.young_budget(s.live_after_gc)).then(|| self.full_due(&s))
         };
         if let Some(full) = due {
             self.collect_as(t, full);
@@ -205,6 +214,7 @@ impl Heap {
             phases[2] = before_sweep.elapsed().as_secs_f64() * 1e3;
             space.live_after_gc = live;
             space.allocated_since_gc = 0;
+            self.small_allocated.store(0, std::sync::atomic::Ordering::Relaxed);
             (marked, live)
         });
         if let (Some((marked, live)), true) = (done, std::env::var_os("RAVA_CORE_GC_LOG").is_some()) {
@@ -296,7 +306,9 @@ fn sweep(space: &mut Space) -> usize {
         meta.cursor = 0;
         meta.zeroed = false;
         live += live_cells * meta.cell_size as usize;
-        if live_cells < meta.cells() {
+        // Allocation reuses pages at most half full: sparser free cells would hand out runs
+        // too short to amortize a refill. Fuller pages wait until more of them dies.
+        if live_cells * 2 <= meta.cells() {
             let class = meta.class as usize;
             space.partial[class].push(index);
         }
