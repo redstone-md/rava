@@ -31,6 +31,12 @@ impl Gen<'_> {
             },
             Inst::Convert(op, x) => self.convert(v, op, x),
             Inst::Compare(op, x, y) => self.compare(v, op, x, y),
+            Inst::FlagCheck(addr, s) => {
+                let fail = self.deopt(&s);
+                self.a.mov_ri(R::Rax, addr as i64);
+                self.a.cmp8_mi(mem(R::Rax, 0), 0);
+                self.a.jcc(Cond::Ne, fail);
+            }
             Inst::NullCheck(x, s) | Inst::ZeroCheck(x, s) => {
                 let fail = self.deopt(&s);
                 match self.loc[x as usize] {
@@ -250,9 +256,11 @@ impl Gen<'_> {
         } else {
             self.a.alu_ri(false, Alu::Cmp, R::Rax, i32::MIN);
         }
-        self.a.jcc(Cond::Ne, done);
-        self.call_preserving(helper, &[Arg::Val(x)]);
+        // The saturating slow path is out of line (after the method's code).
+        let slow = self.a.new_label();
+        self.a.jcc(Cond::E, slow);
         self.a.bind(done);
+        self.slow_calls.push((slow, helper, x, done));
         if !to_long {
             self.a.movsxd(R::Rax, R::Rax);
         }

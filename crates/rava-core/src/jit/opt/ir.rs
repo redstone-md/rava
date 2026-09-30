@@ -113,6 +113,9 @@ pub enum Inst {
     /// lcmp / fcmpl / fcmpg / dcmpl / dcmpg.
     Compare(u8, V, V),
     NullCheck(V, Rc<State>),
+    /// Deoptimizes once the byte at this address is non-zero (a method a loaded class now
+    /// overrides, for code that inlined it unguarded).
+    FlagCheck(usize, Rc<State>),
     /// Integer division by zero check.
     ZeroCheck(V, Rc<State>),
     BoundsCheck(V, V, Rc<State>),
@@ -143,7 +146,7 @@ impl Inst {
     /// The state a failure of this instruction deoptimizes to.
     pub fn state(&self) -> Option<&Rc<State>> {
         match self {
-            Inst::NullCheck(_, s) | Inst::ZeroCheck(_, s) | Inst::BoundsCheck(_, _, s) | Inst::InitCheck(_, s) => Some(s),
+            Inst::NullCheck(_, s) | Inst::ZeroCheck(_, s) | Inst::BoundsCheck(_, _, s) | Inst::InitCheck(_, s) | Inst::FlagCheck(_, s) => Some(s),
             Inst::Call(_, _, s) | Inst::New(_, s) | Inst::NewArray(_, _, s) => Some(s),
             Inst::CheckCast(_, _, s) | Inst::StoreCheck(_, _, s) | Inst::Intrinsic(_, _, Some(s)) | Inst::Monitor(_, _, s) => Some(s),
             _ => None,
@@ -153,7 +156,7 @@ impl Inst {
     /// The values this instruction reads (not counting its state).
     pub fn inputs(&self) -> Vec<V> {
         match self {
-            Inst::Param(_) | Inst::Const(_) | Inst::LoadStatic(..) | Inst::InitCheck(..) | Inst::New(..) => vec![],
+            Inst::Param(_) | Inst::Const(_) | Inst::LoadStatic(..) | Inst::InitCheck(..) | Inst::FlagCheck(..) | Inst::New(..) => vec![],
             Inst::Call(c, v, _) => v.iter().copied().chain(c.input()).collect(),
             Inst::Phi(v) | Inst::Intrinsic(_, v, _) => v.clone(),
             Inst::Neg(a) | Inst::Convert(_, a) | Inst::NullCheck(a, _) | Inst::ZeroCheck(a, _) | Inst::ArrayLength(a) => vec![*a],
@@ -290,7 +293,7 @@ impl Graph {
             for &v in &blk.insts {
                 let inst = match &self.values[v as usize].inst {
                     Inst::Call(c, args, s) => format!("Call({c:?}, {args:?}) @{}", s.bci),
-                    i @ (Inst::NullCheck(..) | Inst::ZeroCheck(..) | Inst::BoundsCheck(..) | Inst::InitCheck(..) | Inst::CheckCast(..) | Inst::StoreCheck(..) | Inst::New(..) | Inst::NewArray(..) | Inst::Monitor(..)) => {
+                    i @ (Inst::NullCheck(..) | Inst::FlagCheck(..) | Inst::ZeroCheck(..) | Inst::BoundsCheck(..) | Inst::InitCheck(..) | Inst::CheckCast(..) | Inst::StoreCheck(..) | Inst::New(..) | Inst::NewArray(..) | Inst::Monitor(..)) => {
                         let s = i.state().unwrap();
                         format!("{} @{}:{}", format!("{i:?}").split(", State").next().unwrap_or(""), s.method.name, s.bci)
                     }
