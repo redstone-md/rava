@@ -4,6 +4,7 @@
 //! (`regalloc.rs`): every sequence reads the other operands before writing the result.
 
 use super::codegen::{Arg, Gen};
+use super::regalloc::Loc;
 use super::ir::*;
 use crate::jit::asm::{mem, Alu, Cond, Shift, R, X};
 use crate::jit::runtime;
@@ -182,6 +183,12 @@ impl Gen<'_> {
         };
         // The result register is x's own when x dies here, else not y's (x op x aside).
         let r = self.xout(v);
+        if let Loc::Const(c) = self.loc[y as usize] {
+            let m = self.const_mem(c);
+            self.xload(r, x);
+            self.a.farith_m(double, sse, r, m);
+            return self.xput(v, r);
+        }
         let b = self.xreg(y, X(1));
         self.xload(r, x);
         self.a.farith_rr(double, sse, r, b);

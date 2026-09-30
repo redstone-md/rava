@@ -2,7 +2,7 @@
 //! (register, SSE register, spill slot or constant) and writing a result back.
 
 use super::codegen::Gen;
-use super::ir::V;
+use super::ir::{Ty, V};
 use super::moves::{self, spill};
 use super::regalloc::Loc;
 use crate::jit::asm::{Alu, M, R, X};
@@ -55,8 +55,8 @@ impl Gen<'_> {
     pub fn xload(&mut self, dst: X, v: V) {
         match self.loc[v as usize] {
             Loc::Const(c) => {
-                self.a.mov_ri(R::R11, c);
-                self.a.mov_xr(true, dst, R::R11);
+                let m = self.const_mem(c);
+                self.a.fload(self.g.ty(v) == Ty::D, dst, m);
             }
             l => moves::mov(&mut self.a, Loc::Xmm(dst.0), l),
         }
