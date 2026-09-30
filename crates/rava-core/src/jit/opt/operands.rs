@@ -98,6 +98,16 @@ impl Gen<'_> {
         }
     }
 
+    /// Stores `v` into a frame slot in slot encoding (an int sign-extended).
+    pub fn store_frame(&mut self, m: M, v: V) {
+        if self.g.ty(v) != Ty::I || matches!(self.loc[v as usize], Loc::Const(_) | Loc::None) {
+            return self.store_val(m, v);
+        }
+        let r = self.reg(v, R::Rax);
+        self.a.movsxd(R::Rax, r);
+        self.a.store(true, m, R::Rax);
+    }
+
     /// `dst op= v`.
     pub fn alu_val(&mut self, w: bool, op: Alu, dst: R, v: V) {
         match self.loc[v as usize] {

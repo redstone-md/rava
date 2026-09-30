@@ -1,5 +1,8 @@
-//! Code generation of arithmetic, conversions, comparisons and guards. Int values stay
-//! sign-extended to 64 bits and float values keep their bits in the low half (slot encoding).
+//! Code generation of arithmetic, conversions, comparisons and guards. An int value's register
+//! holds it in the low half, the high half zero or its sign extension (x86 32-bit operations
+//! clear it): 32-bit operations read it as is, a non-negative index addresses memory as is, and
+//! `i2l` and the frame (call arguments, returns, deoptimization) sign-extend it. Float values
+//! keep their bits in the low half (slot encoding).
 //! A result shares a register only with its first operand, when that operand dies there
 //! (`regalloc.rs`): every sequence reads the other operands before writing the result.
 
@@ -75,10 +78,7 @@ impl Gen<'_> {
         let r = self.out(v);
         self.load(r, x);
         match ty {
-            Ty::I => {
-                self.a.neg(false, r);
-                self.a.movsxd(r, r);
-            }
+            Ty::I => self.a.neg(false, r),
             Ty::J => self.a.neg(true, r),
             Ty::F => self.a.alu_ri(false, Alu::Xor, r, i32::MIN),
             _ => {
@@ -100,9 +100,6 @@ impl Gen<'_> {
         if let (BinOp::Mul, Some(c)) = (op, self.g.constant(y).and_then(|c| i32::try_from(c).ok())) {
             let x = self.reg(x, r);
             self.a.imul_rri(w, r, x, c);
-            if !w {
-                self.a.movsxd(r, r);
-            }
             return self.put(v, r);
         }
         self.load(r, x);
@@ -122,9 +119,6 @@ impl Gen<'_> {
                 self.alu_val(w, alu, r, y);
             }
         }
-        if !w {
-            self.a.movsxd(r, r);
-        }
         self.put(v, r);
     }
 
@@ -143,9 +137,6 @@ impl Gen<'_> {
         match count {
             Some(c) => self.a.shift_ri(w, sh, r, (c & if w { 63 } else { 31 }) as u8),
             None => self.a.shift_cl(w, sh, r),
-        }
-        if !w {
-            self.a.movsxd(r, r);
         }
         self.put(v, r);
     }
@@ -169,9 +160,6 @@ impl Gen<'_> {
             self.a.neg(w, R::Rax);
         }
         self.a.bind(done);
-        if !w {
-            self.a.movsxd(R::Rax, R::Rax);
-        }
         self.put(v, R::Rax);
     }
 
@@ -204,7 +192,10 @@ impl Gen<'_> {
     fn convert(&mut self, v: V, op: u8, x: V) {
         let r = self.out(v);
         match op {
-            0x85 => self.load(r, x),
+            0x85 => {
+                self.load(r, x);
+                self.a.movsxd(r, r);
+            }
             0x88 => {
                 self.load(r, x);
                 self.a.movsxd(r, r);
@@ -289,11 +280,9 @@ impl Gen<'_> {
             self.a.setcc(Cond::B, R::Rdx);
             self.finish_compare();
             self.a.bind(done);
-            self.a.movsxd(R::Rax, R::Rax);
             return self.put(v, R::Rax);
         }
         self.finish_compare();
-        self.a.movsxd(R::Rax, R::Rax);
         self.put(v, R::Rax);
     }
 
