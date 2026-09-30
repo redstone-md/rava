@@ -18,8 +18,9 @@ pub(super) enum Intrinsic {
     /// `roundsd` with the given rounding mode (floor 1, ceil 2, rint 0).
     Round(u8),
     Sqrt,
-    /// `Unsafe.getX(Object, long)`; any memory order (x86 loads are acquire).
-    UnsafeGet(BasicType),
+    /// `Unsafe.getX(Object, long)`; any memory order (x86 loads are acquire), `true` for a
+    /// volatile or acquire read (later loads must not reuse values read before it).
+    UnsafeGet(BasicType, bool),
     /// `Unsafe.putX(Object, long, x)`; `true` for a volatile store (followed by a fence).
     UnsafePut(BasicType, bool),
     IsInstance,
@@ -48,7 +49,7 @@ impl Intrinsic {
 
     /// Without side effects (usable inside inlined leaf bodies).
     pub(super) fn is_pure(self) -> bool {
-        !matches!(self, Intrinsic::UnsafePut(..) | Intrinsic::CompareAndSet(_) | Intrinsic::IdentityHash)
+        !matches!(self, Intrinsic::UnsafePut(..) | Intrinsic::CompareAndSet(_) | Intrinsic::IdentityHash | Intrinsic::UnsafeGet(_, true))
     }
 }
 
@@ -108,8 +109,8 @@ pub(super) fn intrinsic(m: &Method) -> Option<Intrinsic> {
                 let ty = ["", "Plain", "Acquire", "Release"].iter().find_map(|o| rest.strip_suffix(o).and_then(unsafe_type))?;
                 return (matches!(ty, BasicType::Int | BasicType::Long | BasicType::Reference) && desc.ends_with(")Z")).then_some(Intrinsic::CompareAndSet(ty));
             }
-            if let Some((ty, _)) = name.strip_prefix("get").and_then(unsafe_access) {
-                return desc.starts_with("(Ljava/lang/Object;J)").then_some(Intrinsic::UnsafeGet(ty));
+            if let Some((ty, order)) = name.strip_prefix("get").and_then(unsafe_access) {
+                return desc.starts_with("(Ljava/lang/Object;J)").then_some(Intrinsic::UnsafeGet(ty, matches!(order, "Volatile" | "Acquire")));
             }
             let (ty, order) = name.strip_prefix("put").and_then(unsafe_access)?;
             (desc.starts_with("(Ljava/lang/Object;J") && desc.ends_with(")V") && m.sig.params.len() == 3).then_some(Intrinsic::UnsafePut(ty, order == "Volatile"))
@@ -166,7 +167,7 @@ impl Emitter {
                 self.a.fsqrt(X(0), X(0));
                 self.a.fstore(true, self.stk(args), X(0));
             }
-            Intrinsic::UnsafeGet(ty) => {
+            Intrinsic::UnsafeGet(ty, _) => {
                 // A null base makes the offset an absolute address.
                 self.a.load(true, R::Rax, self.stk(args + 1));
                 self.a.load(true, R::Rcx, self.stk(args + 2));
@@ -182,7 +183,7 @@ impl Emitter {
                     super::emit_obj::card_mark_checked(&mut self.a, mem_idx(R::Rax, R::Rcx, 1, 0));
                 }
                 if volatile {
-                    self.a.mfence();
+                    self.a.storeload();
                 }
             }
             Intrinsic::IsInstance => self.is_instance(pc, depth, args),

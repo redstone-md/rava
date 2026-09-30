@@ -29,6 +29,7 @@ impl Gen<'_> {
                 self.put(v, r);
             }
             Inst::Const(_) | Inst::Phi(_) => {}
+            Inst::Fence => self.a.storeload(),
             Inst::Copy(x) => {
                 let (dst, src) = (self.loc[v as usize], self.loc[x as usize]);
                 if dst != Loc::None && dst != src {

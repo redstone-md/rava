@@ -106,6 +106,9 @@ pub enum Inst {
     Const(i64),
     /// The same value under another name, so it can live elsewhere (`split.rs`).
     Copy(V),
+    /// The StoreLoad barrier after a volatile store (JLS 17.4); the builder also keeps no
+    /// memory value across it.
+    Fence,
     /// Block parameter: one input per predecessor, in `Block::preds` order.
     Phi(Vec<V>),
     Neg(V),
@@ -152,7 +155,7 @@ impl Inst {
     pub fn map_inputs(&mut self, mut f: impl FnMut(V) -> V) {
         let mut one = |v: &mut V| *v = f(*v);
         match self {
-            Inst::Param(_) | Inst::Const(_) | Inst::LoadStatic(..) | Inst::InitCheck(..) | Inst::FlagCheck(..) | Inst::New(..) => {}
+            Inst::Param(_) | Inst::Const(_) | Inst::Fence | Inst::LoadStatic(..) | Inst::InitCheck(..) | Inst::FlagCheck(..) | Inst::New(..) => {}
             Inst::Call(c, v, _) => {
                 v.iter_mut().for_each(&mut one);
                 if let Callee::Method(t) | Callee::Select(t) = c {
@@ -198,7 +201,7 @@ impl Inst {
     /// The values this instruction reads (not counting its state).
     pub fn inputs(&self) -> Vec<V> {
         match self {
-            Inst::Param(_) | Inst::Const(_) | Inst::LoadStatic(..) | Inst::InitCheck(..) | Inst::FlagCheck(..) | Inst::New(..) => vec![],
+            Inst::Param(_) | Inst::Const(_) | Inst::Fence | Inst::LoadStatic(..) | Inst::InitCheck(..) | Inst::FlagCheck(..) | Inst::New(..) => vec![],
             Inst::Call(c, v, _) => v.iter().copied().chain(c.input()).collect(),
             Inst::Phi(v) | Inst::Intrinsic(_, v, _) => v.clone(),
             Inst::Copy(a) | Inst::Neg(a) | Inst::Convert(_, a) | Inst::NullCheck(a, _) | Inst::ZeroCheck(a, _) | Inst::ArrayLength(a) => vec![*a],

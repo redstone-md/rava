@@ -10,11 +10,14 @@ use crate::types::BasicType;
 use crate::vm::vm;
 use std::sync::atomic::AtomicU64;
 
+/// `ACC_VOLATILE` of a field.
+const ACC_VOLATILE: u16 = 0x0040;
+
 #[derive(Clone, Copy, Debug)]
 pub enum Resolved {
     Class(&'static Klass),
     InstanceField { offset: u32, ty: BasicType, volatile: bool },
-    StaticField { holder: &'static Klass, slot: &'static AtomicU64, ty: BasicType },
+    StaticField { holder: &'static Klass, slot: &'static AtomicU64, ty: BasicType, volatile: bool },
     Method(&'static Method),
     /// An interned `java.lang.String` literal.
     String(usize),
@@ -81,9 +84,9 @@ impl Klass {
         let (holder, f) = find_field(owner, name, desc)
             .ok_or_else(|| LinkError::Error("java/lang/NoSuchFieldError", name.to_string()))?;
         let r = if f.access & ACC_STATIC != 0 {
-            Resolved::StaticField { holder, slot: &holder.statics[f.offset as usize], ty: f.ty }
+            Resolved::StaticField { holder, slot: &holder.statics[f.offset as usize], ty: f.ty, volatile: f.access & ACC_VOLATILE != 0 }
         } else {
-            Resolved::InstanceField { offset: f.offset, ty: f.ty, volatile: f.access & 0x0040 != 0 }
+            Resolved::InstanceField { offset: f.offset, ty: f.ty, volatile: f.access & ACC_VOLATILE != 0 }
         };
         Ok(*self.resolved[index as usize].get_or_init(|| r))
     }
@@ -132,9 +135,9 @@ impl Klass {
                 let (_, name, desc) = cf.member_ref(index)?;
                 let (holder, f) = find_field(owner, name, desc)?;
                 if f.access & ACC_STATIC != 0 {
-                    Resolved::StaticField { holder, slot: &holder.statics[f.offset as usize], ty: f.ty }
+                    Resolved::StaticField { holder, slot: &holder.statics[f.offset as usize], ty: f.ty, volatile: f.access & ACC_VOLATILE != 0 }
                 } else {
-                    Resolved::InstanceField { offset: f.offset, ty: f.ty, volatile: f.access & 0x0040 != 0 }
+                    Resolved::InstanceField { offset: f.offset, ty: f.ty, volatile: f.access & ACC_VOLATILE != 0 }
                 }
             }
             &Cp::Method { class, .. } | &Cp::IMethod { class, .. } => {

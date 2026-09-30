@@ -31,7 +31,7 @@ impl Emitter {
                 load_typed(&mut self.a, ty, mem(R::Rax, offset as i32));
                 self.a.store(true, self.stk(d - 1), R::Rax);
             }
-            (0xb5, Some(Resolved::InstanceField { offset, ty, .. })) => {
+            (0xb5, Some(Resolved::InstanceField { offset, ty, volatile })) => {
                 let slots = ty.slots() as i32;
                 let slow = self.slow_path(pc, depth);
                 self.a.load(true, R::Rax, self.stk(d - 1 - slots));
@@ -39,8 +39,11 @@ impl Emitter {
                 self.a.jcc(Cond::E, slow);
                 self.a.load(true, R::Rdx, self.stk(d - slots));
                 store_typed(&mut self.a, ty, mem(R::Rax, offset as i32));
+                if volatile {
+                    self.a.storeload();
+                }
             }
-            (0xb2 | 0xb3, Some(Resolved::StaticField { holder, slot, ty })) => {
+            (0xb2 | 0xb3, Some(Resolved::StaticField { holder, slot, ty, volatile })) => {
                 let slow = self.slow_path(pc, depth);
                 self.init_check(holder, slow);
                 self.a.mov_ri(R::Rcx, slot as *const _ as i64);
@@ -51,6 +54,9 @@ impl Emitter {
                     self.a.load(true, R::Rdx, self.stk(d - ty.slots() as i32));
                     normalize_into(&mut self.a, ty);
                     self.a.store(true, mem(R::Rcx, 0), R::Rdx);
+                    if volatile {
+                        self.a.storeload();
+                    }
                 }
             }
             _ => self.defer_unresolved(pc, depth),
