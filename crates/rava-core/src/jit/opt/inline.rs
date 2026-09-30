@@ -45,7 +45,18 @@ impl Builder {
     /// current block continues (false when every path through the callee left compiled code).
     /// `pre` is the state before the invoke, for a guard that deoptimizes.
     pub(super) fn call_or_inline(&mut self, pc: usize, op: u8, m: &'static Method, callee: Callee, args: Vec<V>, s: Rc<State>, pre: Rc<State>) -> bool {
-        let plans = self.inline_targets(pc, op, m, pre.clone());
+        // A receiver whose class is known exactly dispatches statically (C2's type-based
+        // devirtualization): no profile or guard is needed.
+        let exact = (op != 0xb8).then(|| args.first().and_then(|&r| self.exact_class(r))).flatten();
+        let plans = match exact.and_then(|k| crate::link::select_method(k, m)).filter(|t| !t.is_abstract()) {
+            Some(t) if matches!(op, 0xb6 | 0xb9) => vec![(t, Guard::None)],
+            _ => self.inline_targets(pc, op, m, pre.clone()),
+        };
+        if plans.is_empty() && std::env::var_os("RAVA_CORE_INLINE_LOG").is_some() {
+            let cell = crate::jit::profile::describe(self.sc.m, pc);
+            let indent = "  ".repeat(self.chain.len());
+            eprintln!("[opt-inline] {indent}{} @{} -> {m} call (no target: {cell})", self.sc.m, pc);
+        }
         // A complete receiver profile (every class the site saw is guarded): a receiver of
         // another class deoptimizes (C2's uncommon trap), noting its class for recompilation.
         let profiled = !plans.is_empty() && plans.iter().all(|(_, g)| matches!(g, Guard::Klass(_)));
@@ -81,7 +92,14 @@ impl Builder {
             }
             let mark = self.mark();
             let slow = self.guard(guard.clone(), target, args.first().copied());
-            let Some(r) = self.inline_body(target, &args, s.clone(), k, first) else {
+            // Behind an exact class check the body's receiver is of that class.
+            let exact_mark = self.exact.len();
+            if let (Guard::Klass(c), Some(&r)) = (&guard, args.first()) {
+                self.exact.push((r, c));
+            }
+            let body = self.inline_body(target, &args, s.clone(), k, first);
+            self.exact.truncate(exact_mark);
+            let Some(r) = body else {
                 self.undo(mark);
                 continue;
             };
@@ -175,6 +193,11 @@ impl Builder {
         self.g.blocks[self.cur as usize].term = Term::If { cmp: Cmp::Eq, ty: Ty::J, a: entry, b: c, then, other, unordered: false };
         self.start_block(then);
         Some(other)
+    }
+
+    /// The class `v` is known to have exactly here, if any.
+    pub(super) fn exact_class(&self, v: V) -> Option<&'static Klass> {
+        self.exact.iter().rev().find(|&&(x, _)| x == v).map(|&(_, k)| k)
     }
 
     fn klass_of(&mut self, receiver: V) -> V {

@@ -136,6 +136,7 @@ impl Builder {
         }
         self.init_check(k, pre);
         let v = self.add(Inst::New(k, s.clone()), Ty::A);
+        self.exact.push((v, k));
         self.nonnull.push(v);
         self.push(v);
         true
