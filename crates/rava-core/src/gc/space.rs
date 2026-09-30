@@ -96,6 +96,19 @@ impl PageMeta {
     }
 }
 
+/// The next run of free cells of the page at `page` (metadata `meta`) as a zeroed bump range
+/// `(start, end)`.
+pub fn next_run_in(meta: &mut PageMeta, page: usize) -> Option<(usize, usize)> {
+    let (first, end) = meta.next_free_run()?;
+    let cell = meta.cell_size as usize;
+    let (start, stop) = (page + first * cell, page + end * cell);
+    if !meta.zeroed {
+        // SAFETY: free cells of a page in use, handed to the caller only now.
+        unsafe { std::ptr::write_bytes(start as *mut u8, 0, stop - start) };
+    }
+    Some((start, stop))
+}
+
 pub struct Large {
     pub size: usize,
     pub marked: bool,
@@ -204,16 +217,10 @@ impl Space {
     /// The next run of free cells of owned page `index` as a zeroed bump range `(start, end)`.
     pub fn next_run(&mut self, index: usize) -> Option<(usize, usize)> {
         let page = self.page_addr(index);
-        let meta = self.pages[index].as_mut().expect("owned page");
-        let (first, end) = meta.next_free_run()?;
-        let cell = meta.cell_size as usize;
-        let (start, stop) = (page + first * cell, page + end * cell);
-        if !meta.zeroed {
-            // SAFETY: free cells of a page in use, handed to the caller only now.
-            unsafe { std::ptr::write_bytes(start as *mut u8, 0, stop - start) };
-        }
-        Some((start, stop))
+        next_run_in(self.pages[index].as_mut().expect("owned page"), page)
     }
+
+
 
     pub fn alloc_large(&mut self, bytes: usize) -> Option<usize> {
         let (p, size) = self.large_area.alloc(bytes)?;
