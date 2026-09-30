@@ -21,6 +21,8 @@ pub(super) struct Scope {
     pub cf: &'static ClassFile,
     pub code: &'static [u8],
     an: Analysis,
+    /// Instructions from which every path throws (`analysis::throw_paths`).
+    throws: Vec<bool>,
     /// The block starting at each leader.
     blocks: HashMap<usize, B>,
     /// Predecessor edges each block will get (from the bytecode).
@@ -56,6 +58,7 @@ impl Scope {
             cf: m.holder.cf.as_ref()?,
             code: info.code,
             an: analyze(m)?,
+            throws: crate::jit::analysis::throw_paths(info.code),
             blocks: HashMap::new(),
             npreds: HashMap::new(),
             fwd: HashMap::new(),
@@ -209,6 +212,14 @@ impl Builder {
     /// handle (unresolved constants, rare bytecodes) ends the block with a deoptimization to it:
     /// the interpreter runs it, and deoptimizing often recompiles the method (`mod.rs`).
     fn build_block(&mut self, mut pc: usize) -> Option<()> {
+        // A block that can only throw is left to the interpreter (C2's uncommon trap for an
+        // untaken path) until it has trapped once: `athrow` deoptimizes anyway, and compiling
+        // the exception's construction (message concatenation and all) only bloats the code.
+        if self.sc.throws[pc] && !crate::jit::profile::trapped(self.sc.m, pc) {
+            self.sc.bci = pc;
+            self.deopt();
+            return Some(());
+        }
         loop {
             self.sc.bci = pc;
             let len = insn_len(self.sc.code, pc);

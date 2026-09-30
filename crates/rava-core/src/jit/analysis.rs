@@ -153,6 +153,35 @@ pub(super) fn successors(code: &[u8], pc: usize, len: usize) -> Vec<usize> {
     }
 }
 
+/// For each instruction, whether every path from it ends in `athrow` (none returns): such
+/// throwing paths are cold, and the optimizing tier leaves them to the interpreter.
+pub fn throw_paths(code: &[u8]) -> Vec<bool> {
+    let mut starts = Vec::new();
+    let mut pc = 0;
+    while pc < code.len() {
+        starts.push(pc);
+        pc += insn_len(code, pc);
+    }
+    let mut throws = vec![false; code.len()];
+    // The least fixed point: a loop that never provably reaches a throw stays warm.
+    let mut changed = true;
+    while changed {
+        changed = false;
+        for &pc in starts.iter().rev() {
+            if throws[pc] {
+                continue;
+            }
+            let succ = successors(code, pc, insn_len(code, pc));
+            let t = code[pc] == 0xbf || (!succ.is_empty() && succ.iter().all(|&s| s < code.len() && throws[s]));
+            if t {
+                throws[pc] = true;
+                changed = true;
+            }
+        }
+    }
+    throws
+}
+
 /// Whether any branch or exception handler leads to bci 0.
 pub fn targets_start(m: &Method) -> bool {
     let Some(info) = m.code else { return false };
