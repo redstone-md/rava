@@ -130,7 +130,7 @@ fn compile_timed(m: &'static Method, tier: u8) -> Option<CompiledMethod> {
     let code = e.a.finish();
     let entry = code_cache::install(&code);
     let blocks = leaders.into_iter().map(|(bci, off)| (bci, entry + off as usize)).collect();
-    super::code_cache::perf_map(entry, code.len(), &m.to_string());
+    super::code_cache::perf_map(entry, code.len(), &format!("{m} [b{tier}]"));
     if let Some(filter) = std::env::var_os("RAVA_CORE_JIT_DUMP") {
         // Raw code for `objdump -D -b binary -mi386:x86-64 --adjust-vma=<entry>`.
         let name = m.to_string();

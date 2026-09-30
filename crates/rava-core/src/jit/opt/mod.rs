@@ -103,7 +103,7 @@ fn compile_timed(m: &'static Method) -> Option<CompiledMethod> {
     let al = regalloc::allocate(&g);
     let code = codegen::generate(&g, &al, m, extent, monitor);
     let entry = code_cache::install(&code);
-    code_cache::perf_map(entry, code.len(), &m.to_string());
+    code_cache::perf_map(entry, code.len(), &format!("{m} [opt]"));
     if log {
         eprintln!("[opt] {m}: {} values, {} blocks, {} spill slots -> {} bytes", g.values.len(), al.order.len(), al.spill_slots, code.len());
     }
