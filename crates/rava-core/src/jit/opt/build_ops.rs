@@ -299,6 +299,13 @@ impl Builder {
             self.push_const(ty, c);
             return Some(());
         }
+        // Division by a power of two is multiplication by its (exact) reciprocal.
+        if let (BinOp::Div, Some(recip)) = (bin, self.g.constant(b).and_then(|c| exact_reciprocal(ty, c))) {
+            let c = self.konst(ty, recip);
+            let r = self.add(Inst::Bin(BinOp::Mul, a, c), ty);
+            self.push(r);
+            return Some(());
+        }
         let r = self.add(Inst::Bin(bin, a, b), ty);
         self.push(r);
         Some(())
@@ -380,6 +387,7 @@ impl Builder {
             return (ty, a, b, false);
         }
         self.g.blocks[self.cur as usize].insts.pop();
+        self.numbered.retain(|_, &mut v| v != a);
         let operand = match op {
             0x94 => Ty::J,
             0x95 | 0x96 => Ty::F,
@@ -403,6 +411,24 @@ impl Builder {
             _ => return None,
         };
         Some(null == (cmp == Cmp::Eq))
+    }
+}
+
+/// The reciprocal of a float or double constant (slot encoding) that is a power of two whose
+/// reciprocal is a normal number, so `x / c == x * (1 / c)` for every `x`.
+fn exact_reciprocal(ty: Ty, bits: i64) -> Option<i64> {
+    match ty {
+        Ty::D => {
+            let c = f64::from_bits(bits as u64);
+            let r = 1.0 / c;
+            (c.is_normal() && c.to_bits() & 0x000f_ffff_ffff_ffff == 0 && r.is_normal()).then(|| r.to_bits() as i64)
+        }
+        Ty::F => {
+            let c = f32::from_bits(bits as u32);
+            let r = 1.0 / c;
+            (c.is_normal() && c.to_bits() & 0x007f_ffff == 0 && r.is_normal()).then(|| r.to_bits() as i64)
+        }
+        _ => None,
     }
 }
 
