@@ -86,7 +86,7 @@ impl Builder {
             if is_static {
                 self.init_check(target.holder, &pre);
             }
-            let bound = is_static || kind == "linkToSpecial" || target.is_private() || target.access & ACC_FINAL != 0;
+            let bound = is_static || kind == "linkToSpecial" || target.is_private() || target.access & ACC_FINAL != 0 || target.holder.access & ACC_FINAL != 0;
             let callee = match () {
                 _ if bound => Callee::Direct(target),
                 _ if target.vtable_index() >= 0 && !target.holder.is_interface() => Callee::Virtual(target),
