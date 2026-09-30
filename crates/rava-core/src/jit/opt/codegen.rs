@@ -62,6 +62,8 @@ pub(super) struct Gen<'a> {
     save_base: i32,
     /// Stubs restoring a call's saved registers before a deoptimization: (entry, call, target).
     restore_stubs: Vec<(Label, V, Label)>,
+    /// Constants placed after the code for RIP-relative operands.
+    consts: HashMap<u64, Label>,
 }
 
 /// Whether `g` qualifies for a frameless body: straight-line or branching code (no loops,
@@ -107,6 +109,7 @@ pub(super) fn generate(g: &Graph, al: &Allocation, m: &'static Method, frame_slo
         saves: &al.saves,
         save_base: al.save_base,
         restore_stubs: Vec::new(),
+        consts: HashMap::new(),
     };
     // Entry rsp is 8 mod 16: an odd number of pushes realigns it, spill slots come in pairs.
     gen.saved = [R::R12, R::R13].into_iter().chain(CALLEE_SAVED.into_iter().filter(|r| al.loc.contains(&Loc::Reg(*r)))).collect();
@@ -124,6 +127,11 @@ pub(super) fn generate(g: &Graph, al: &Allocation, m: &'static Method, frame_slo
     }
     gen.emit_stubs();
     gen.emit_epilogue(overflow);
+    let mut pool: Vec<(u64, Label)> = gen.consts.drain().collect();
+    pool.sort_by_key(|&(bits, _)| bits);
+    for (bits, l) in pool {
+        gen.a.data8(l, bits);
+    }
     gen.a.finish()
 }
 
@@ -413,6 +421,13 @@ impl Gen<'_> {
         if !fallthrough {
             self.a.jmp(self.labels[to as usize]);
         }
+    }
+
+    /// A constant in the code's constant area, as a RIP-relative operand.
+    pub fn const_mem(&mut self, bits: i64) -> M {
+        let a = &mut self.a;
+        let l = *self.consts.entry(bits as u64).or_insert_with(|| a.new_label());
+        crate::jit::asm::rip(l)
     }
 
     /// Saves the registers call `v` clobbers that hold values live across it.

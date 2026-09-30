@@ -16,14 +16,21 @@ pub struct M {
     pub base: R,
     pub index: Option<(R, u8)>,
     pub disp: i32,
+    /// RIP-relative to this label instead (`base`, `index` and `disp` unused).
+    pub rip: Option<Label>,
+}
+
+/// `[rip + label]`: data placed in the code, such as a constant.
+pub fn rip(label: Label) -> M {
+    M { base: R::Rax, index: None, disp: 0, rip: Some(label) }
 }
 
 pub fn mem(base: R, disp: i32) -> M {
-    M { base, index: None, disp }
+    M { base, index: None, disp, rip: None }
 }
 
 pub fn mem_idx(base: R, index: R, scale: u8, disp: i32) -> M {
-    M { base, index: Some((index, scale)), disp }
+    M { base, index: Some((index, scale)), disp, rip: None }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -75,6 +82,15 @@ impl Asm {
     }
 
     /// Resolves every label reference; returns the finished code.
+    /// Emits 8 bytes of data at a bound label (a constant for `rip` operands).
+    pub fn data8(&mut self, l: Label, bits: u64) {
+        while self.buf.len() % 8 != 0 {
+            self.b(0xCC);
+        }
+        self.bind(l);
+        self.buf.extend_from_slice(&bits.to_le_bytes());
+    }
+
     pub fn finish(mut self) -> Vec<u8> {
         for (at, l) in std::mem::take(&mut self.fixups) {
             let target = self.labels[l.0 as usize].expect("unbound label") as i64;
@@ -106,6 +122,14 @@ impl Asm {
     }
 
     fn modrm_m(&mut self, reg: u8, m: M) {
+        if let Some(l) = m.rip {
+            // mod 00, r/m 101: disp32 from the end of the instruction (the displacement is last
+            // in every instruction using this form here).
+            self.b(lo(reg) << 3 | 5);
+            self.fixups.push((self.pos(), l));
+            self.d32(0);
+            return;
+        }
         let base = m.base as u8;
         let (md, disp8) = match m.disp {
             0 if lo(base) != 5 => (0u8, false),
