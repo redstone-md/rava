@@ -128,7 +128,7 @@ impl Emitter {
                 load_typed_to(&mut self.a, d, ty, mem(ro, offset as i32));
                 self.push_w(ty.slots() == 2, Loc::Reg(d));
             }
-            (0xb5, Some(Resolved::InstanceField { offset, ty, .. })) => {
+            (0xb5, Some(Resolved::InstanceField { offset, ty, volatile })) => {
                 self.flush();
                 let v = self.pop_w(ty.slots() == 2);
                 let o = self.pop();
@@ -142,14 +142,17 @@ impl Emitter {
                     rv = R::Rdx;
                 }
                 store_typed_from(&mut self.a, rv, ty, mem(ro, offset as i32));
+                if volatile {
+                    self.a.storeload();
+                }
             }
-            (0xb2, Some(Resolved::StaticField { holder, slot, ty })) if holder.init.state() == InitState::Initialized => {
+            (0xb2, Some(Resolved::StaticField { holder, slot, ty, .. })) if holder.init.state() == InitState::Initialized => {
                 let d = self.alloc(&[]);
                 self.a.mov_ri(R::R11, slot as *const _ as i64);
                 load_typed_to(&mut self.a, d, ty, mem(R::R11, 0));
                 self.push_w(ty.slots() == 2, Loc::Reg(d));
             }
-            (0xb3, Some(Resolved::StaticField { holder, slot, ty })) if holder.init.state() == InitState::Initialized => {
+            (0xb3, Some(Resolved::StaticField { holder, slot, ty, volatile })) if holder.init.state() == InitState::Initialized => {
                 let v = self.pop_w(ty.slots() == 2);
                 let rv = self.read(v, R::Rdx);
                 if rv != R::Rdx {
@@ -158,6 +161,9 @@ impl Emitter {
                 normalize_into(&mut self.a, ty);
                 self.a.mov_ri(R::R11, slot as *const _ as i64);
                 self.a.store(true, mem(R::R11, 0), R::Rdx);
+                if volatile {
+                    self.a.storeload();
+                }
             }
             _ => return false,
         }

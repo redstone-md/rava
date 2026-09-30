@@ -40,17 +40,24 @@ impl Builder {
             return Some(());
         }
         match (op, resolved) {
-            (0xb2, Resolved::StaticField { holder, slot, ty }) => {
+            (0xb2, Resolved::StaticField { holder, slot, ty, volatile }) => {
                 let s = self.state();
                 self.init_check(holder, &s);
                 let v = self.add(Inst::LoadStatic(slot as *const _ as usize, ty), Ty::of(ty));
+                if volatile {
+                    // Acquire: later loads read memory again.
+                    self.loads.clear();
+                }
                 self.push(v);
             }
-            (0xb3, Resolved::StaticField { holder, slot, ty }) => {
+            (0xb3, Resolved::StaticField { holder, slot, ty, volatile }) => {
                 let s = self.state();
                 let v = self.pop();
                 self.init_check(holder, &s);
                 self.add(Inst::StoreStatic(slot as *const _ as usize, ty, v), Ty::I);
+                if volatile {
+                    self.add(Inst::Fence, Ty::I);
+                }
             }
             (0xb4, Resolved::InstanceField { offset, ty, volatile }) => {
                 let s = self.state();
@@ -62,7 +69,10 @@ impl Builder {
                     Some(&v) if !volatile => v,
                     _ => {
                         let v = self.add(Inst::LoadField(o, offset, ty), Ty::of(ty));
-                        if !volatile {
+                        if volatile {
+                            // Acquire: later loads read memory again.
+                            self.loads.clear();
+                        } else {
                             self.loads.insert((o, offset), v);
                         }
                         v
@@ -70,12 +80,15 @@ impl Builder {
                 };
                 self.push(v);
             }
-            (0xb5, Resolved::InstanceField { offset, ty, .. }) => {
+            (0xb5, Resolved::InstanceField { offset, ty, volatile }) => {
                 let s = self.state();
                 let v = self.pop();
                 let o = self.pop();
                 self.null_check(o, s);
                 self.add(Inst::StoreField(o, offset, ty, v), Ty::I);
+                if volatile {
+                    self.add(Inst::Fence, Ty::I);
+                }
             }
             _ => return None,
         }

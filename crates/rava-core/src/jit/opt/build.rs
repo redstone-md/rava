@@ -384,7 +384,7 @@ impl Builder {
             return v;
         }
         match inst {
-            Inst::Call(..) | Inst::Monitor(..) => self.loads.clear(),
+            Inst::Call(..) | Inst::Monitor(..) | Inst::Fence => self.loads.clear(),
             Inst::Intrinsic(k, ..) if !k.is_pure() => self.loads.clear(),
             // Another object's field at this offset may be the same one.
             Inst::StoreField(o, off, bt, x) => {

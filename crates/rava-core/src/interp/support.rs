@@ -232,29 +232,30 @@ fn normalize(ty: BasicType, v: u64) -> u64 {
 
 pub(super) fn getstatic(t: &mut Thread, f: &mut Frame) -> JResult<()> {
     let r = f.holder().resolve_field(t, f.u2(f.pc + 1)).map_err(|e| link_error(t, e))?;
-    let Resolved::StaticField { holder, slot, ty } = r else {
+    let Resolved::StaticField { holder, slot, ty, volatile } = r else {
         return Err(throw_new(t, "java/lang/IncompatibleClassChangeError", "expected a static field"));
     };
     rt::initialize(t, holder)?;
     // Unsafe may have written a narrower value into the slot; re-normalize on read.
-    f.push_typed(ty, normalize(ty, slot.load(Ordering::Relaxed)));
+    f.push_typed(ty, normalize(ty, slot.load(if volatile { Ordering::SeqCst } else { Ordering::Relaxed })));
     Ok(())
 }
 
 pub(super) fn putstatic(t: &mut Thread, f: &mut Frame) -> JResult<()> {
     let r = f.holder().resolve_field(t, f.u2(f.pc + 1)).map_err(|e| link_error(t, e))?;
-    let Resolved::StaticField { holder, slot, ty } = r else {
+    let Resolved::StaticField { holder, slot, ty, volatile } = r else {
         return Err(throw_new(t, "java/lang/IncompatibleClassChangeError", "expected a static field"));
     };
     rt::initialize(t, holder)?;
     let v = f.pop_typed(ty);
-    slot.store(normalize(ty, v), Ordering::Relaxed);
+    // A volatile store is sequentially consistent (JLS 17.4): a StoreLoad barrier on x86.
+    slot.store(normalize(ty, v), if volatile { Ordering::SeqCst } else { Ordering::Relaxed });
     Ok(())
 }
 
 pub(super) fn getfield(t: &mut Thread, f: &mut Frame) -> JResult<()> {
     let r = f.holder().resolve_field(t, f.u2(f.pc + 1)).map_err(|e| link_error(t, e))?;
-    let Resolved::InstanceField { offset, ty, .. } = r else {
+    let Resolved::InstanceField { offset, ty, volatile } = r else {
         return Err(throw_new(t, "java/lang/IncompatibleClassChangeError", "expected an instance field"));
     };
     let o = f.pop_ref();
@@ -263,13 +264,17 @@ pub(super) fn getfield(t: &mut Thread, f: &mut Frame) -> JResult<()> {
     }
     // SAFETY: live object; offset from its class layout.
     let v = unsafe { read_field(o, offset, ty) };
+    if volatile {
+        // Later accesses stay after a volatile read (acquire; no instruction on x86).
+        std::sync::atomic::fence(Ordering::Acquire);
+    }
     f.push_typed(ty, v);
     Ok(())
 }
 
 pub(super) fn putfield(t: &mut Thread, f: &mut Frame) -> JResult<()> {
     let r = f.holder().resolve_field(t, f.u2(f.pc + 1)).map_err(|e| link_error(t, e))?;
-    let Resolved::InstanceField { offset, ty, .. } = r else {
+    let Resolved::InstanceField { offset, ty, volatile } = r else {
         return Err(throw_new(t, "java/lang/IncompatibleClassChangeError", "expected an instance field"));
     };
     let v = f.pop_typed(ty);
@@ -277,8 +282,15 @@ pub(super) fn putfield(t: &mut Thread, f: &mut Frame) -> JResult<()> {
     if o.is_null() {
         return Err(null_pointer(t));
     }
+    if volatile {
+        std::sync::atomic::fence(Ordering::Release);
+    }
     // SAFETY: live object; offset from its class layout.
     unsafe { write_field(o, offset, ty, v) };
+    if volatile {
+        // A volatile store is sequentially consistent (JLS 17.4): a StoreLoad barrier.
+        std::sync::atomic::fence(Ordering::SeqCst);
+    }
     Ok(())
 }
 

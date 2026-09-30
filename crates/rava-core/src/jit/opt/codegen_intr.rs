@@ -55,7 +55,7 @@ impl Gen<'_> {
                 self.xput(v, r);
             }
             // A null base makes the offset an absolute address.
-            Intrinsic::UnsafeGet(ty) => {
+            Intrinsic::UnsafeGet(ty, _) => {
                 let (b, o) = (self.reg(args[1], R::Rax), self.reg(args[2], R::Rcx));
                 let r = self.out(v);
                 load_typed_to(&mut self.a, r, ty, mem_idx(b, o, 1, 0));
@@ -69,7 +69,7 @@ impl Gen<'_> {
                     crate::jit::emit_obj::card_mark_checked(&mut self.a, mem_idx(b, o, 1, 0));
                 }
                 if volatile {
-                    self.a.mfence();
+                    self.a.storeload();
                 }
             }
             Intrinsic::IsInstance => self.is_instance(v, args[0], args[1]),
