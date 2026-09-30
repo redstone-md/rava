@@ -63,6 +63,9 @@ pub extern "sysv64" fn deopt(t: *mut Thread, base: *mut u64, desc: *const Desc, 
     // SAFETY: called by compiled code with its own thread, frame, descriptor and saved registers.
     let (t, desc) = unsafe { (&mut *t, &*desc) };
     let gprs = XMMS.len();
+    // Every value is read before any slot is written: a parameter is read from its own frame
+    // slot, which the state may give another value.
+    let mut values = Vec::with_capacity(desc.slots.len());
     for &(slot, loc, int) in &desc.slots {
         // SAFETY: the stub stored the SSE registers, and above them pushed `SAVED` last to first,
         // below the spill slots.
@@ -71,11 +74,14 @@ pub extern "sysv64" fn deopt(t: *mut Thread, base: *mut u64, desc: *const Desc, 
                 Loc::Xmm(x) => *saved.add(XMMS.iter().position(|&s| s == x).expect("an allocatable SSE register")),
                 Loc::Reg(r) => *saved.add(gprs + SAVED.len() - 1 - SAVED.iter().position(|&s| s == r).expect("an allocatable register")),
                 Loc::Stack(k) => *saved.add(gprs + SAVED.len() + k as usize),
+                Loc::Frame(k) => *base.add(k as usize),
                 Loc::Const(c) => c as u64,
                 Loc::None => continue,
             }
         };
-        let v = if int { v as i32 as i64 as u64 } else { v };
+        values.push((slot, if int { v as i32 as i64 as u64 } else { v }));
+    }
+    for (slot, v) in values {
         // SAFETY: a slot of the compiled frame.
         unsafe { *base.add(slot as usize) = v };
     }

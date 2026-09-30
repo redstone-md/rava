@@ -12,12 +12,22 @@ pub fn spill(slot: i32) -> M {
     mem(R::Rsp, 8 * slot)
 }
 
+fn frame(slot: i32) -> M {
+    mem(R::R13, 8 * slot)
+}
+
 /// `dst := src` for one location pair (`dst` is a register or a spill slot).
 pub fn mov(a: &mut Asm, dst: Loc, src: Loc) {
     match (dst, src) {
         (d, s) if d == s => {}
         (Loc::Reg(d), Loc::Reg(s)) => a.mov_rr(true, d, s),
         (Loc::Reg(d), Loc::Stack(s)) => a.load(true, d, spill(s)),
+        (Loc::Reg(d), Loc::Frame(s)) => a.load(true, d, frame(s)),
+        (Loc::Xmm(d), Loc::Frame(s)) => a.fload(true, X(d), frame(s)),
+        (Loc::Stack(d), Loc::Frame(s)) => {
+            a.load(true, TEMP, frame(s));
+            a.store(true, spill(d), TEMP);
+        }
         (Loc::Reg(d), Loc::Const(c)) => a.mov_ri(d, c),
         (Loc::Stack(d), Loc::Reg(s)) => a.store(true, spill(d), s),
         (Loc::Stack(d), Loc::Stack(s)) => {

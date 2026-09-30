@@ -19,8 +19,8 @@ impl Gen<'_> {
     /// Saves the registers call `v` clobbers that hold values live across it.
     pub fn save_around(&mut self, v: V) {
         for &(l, slot) in self.saves.get(&v).into_iter().flatten() {
-            if slot >= self.save_base {
-                moves::mov(&mut self.a, Loc::Stack(slot), l);
+            if matches!(slot, Loc::Stack(k) if k >= self.save_base) {
+                moves::mov(&mut self.a, slot, l);
             }
         }
     }
@@ -28,7 +28,7 @@ impl Gen<'_> {
     /// Restores what `save_around(v)` saved.
     pub fn restore_around(&mut self, v: V) {
         for &(l, slot) in self.saves.get(&v).into_iter().flatten() {
-            moves::mov(&mut self.a, l, Loc::Stack(slot));
+            moves::mov(&mut self.a, l, slot);
         }
     }
 
@@ -82,7 +82,7 @@ impl Gen<'_> {
             let base = Self::stack_base_of(sc);
             let locals = sc.locals.iter().enumerate().map(|(i, v)| (sc.frame + i as i32, v));
             let stack = sc.stack.iter().enumerate().map(|(i, v)| (base + i as i32, v));
-            slots.extend(locals.chain(stack).filter_map(|(slot, v)| v.map(|v| (slot, self.home[v as usize].map_or(self.loc[v as usize], Loc::Stack), self.g.ty(v) == Ty::I))));
+            slots.extend(locals.chain(stack).filter_map(|(slot, v)| v.map(|v| (slot, self.home[v as usize].unwrap_or(self.loc[v as usize]), self.g.ty(v) == Ty::I))));
         }
         let frames = scopes.iter().map(|sc| crate::jit::opt::deopt::Frame { method: sc.method, frame: sc.frame, bci: sc.bci, depth: sc.stack.len() as u32 }).collect();
         let desc: &'static crate::jit::opt::deopt::Desc = Box::leak(Box::new(crate::jit::opt::deopt::Desc { frames, slots }));

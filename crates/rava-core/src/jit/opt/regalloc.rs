@@ -29,6 +29,8 @@ pub enum Loc {
     Xmm(u8),
     /// Spill slot `n` at `[rsp + 8n]`.
     Stack(i32),
+    /// Frame slot `n` at `[r13 + 8n]`: where a parameter already is (read only).
+    Frame(i32),
     Const(i64),
 }
 
@@ -40,10 +42,11 @@ pub struct Allocation {
     pub spill_slots: i32,
     /// For each call, the caller-saved and SSE registers holding values live across it, with
     /// the slot each is kept in meanwhile: its home slot, else one of `save_base..`.
-    pub saves: std::collections::HashMap<V, Vec<(Loc, i32)>>,
+    pub saves: std::collections::HashMap<V, Vec<(Loc, Loc)>>,
     pub save_base: i32,
-    /// Spill slot a register-allocated value is also stored to at its definition, for states.
-    pub home: Vec<Option<i32>>,
+    /// Where a register-allocated value is also kept for states: a spill slot it is stored to
+    /// at its definition, or for a parameter the frame slot it arrived in.
+    pub home: Vec<Option<Loc>>,
 }
 
 /// A set of values as a bit vector.
@@ -147,13 +150,13 @@ pub fn allocate(g: &Graph) -> Allocation {
     for &(p, call) in &iv.call_values {
         // A value with a home slot is already there: it is only restored from it.
         let mut next = 0;
-        let live: Vec<(Loc, i32)> = (0..n)
+        let live: Vec<(Loc, Loc)> = (0..n)
             .filter(|&v| iv.used[v] && iv.start[v] < p && iv.end[v] > p)
             .filter(|&v| matches!(loc[v], Loc::Xmm(_)) || matches!(loc[v], Loc::Reg(r) if CALLER_SAVED.contains(&r)))
             .map(|v| {
                 let slot = home[v].unwrap_or_else(|| {
                     next += 1;
-                    spill_slots + next - 1
+                    Loc::Stack(spill_slots + next - 1)
                 });
                 (loc[v], slot)
             })
@@ -279,7 +282,7 @@ fn liveness(g: &Graph, order: &[B], states: bool) -> Vec<Set> {
 /// may share its first operand's register when that operand dies at its definition.
 /// `iv` has the intervals of real uses, `full` those including state uses: a value only states
 /// read lives in a spill slot, one read beyond its real uses gets a home slot as well.
-fn scan(g: &Graph, iv: &Intervals, full: &Intervals) -> (Vec<Loc>, i32, Vec<Option<i32>>) {
+fn scan(g: &Graph, iv: &Intervals, full: &Intervals) -> (Vec<Loc>, i32, Vec<Option<Loc>>) {
     let n = g.values.len();
     let mut loc = vec![Loc::None; n];
     let mut todo = Vec::new();
@@ -343,6 +346,25 @@ fn scan(g: &Graph, iv: &Intervals, full: &Intervals) -> (Vec<Loc>, i32, Vec<Opti
     // Home slots of values states read after their register is free.
     let homed: Vec<usize> = (0..n).filter(|&v| matches!(loc[v], Loc::Reg(_) | Loc::Xmm(_)) && full.end[v] > iv.end[v]).collect();
     let mut home = vec![None; n];
+    // Parameters stay in their frame slots, which optimized code never writes: those are their
+    // homes, and spilled parameters are read from there.
+    let param = |v: usize| match g.values[v].inst {
+        Inst::Param(slot) => Some(Loc::Frame(slot as i32)),
+        _ => None,
+    };
+    let (homed, spilled): (Vec<usize>, Vec<usize>) = {
+        let mut spilled = spilled;
+        for &v in &homed {
+            home[v] = param(v);
+        }
+        for &v in &spilled {
+            if let Some(f) = param(v) {
+                loc[v] = f;
+            }
+        }
+        spilled.retain(|&v| param(v).is_none());
+        (homed.into_iter().filter(|&v| home[v].is_none()).collect(), spilled)
+    };
     // Spill and home slots, reused once their (full) interval has ended.
     let mut slotted: Vec<(usize, bool)> = spilled.into_iter().map(|v| (v, false)).chain(homed.into_iter().map(|v| (v, true))).collect();
     slotted.sort_by_key(|&(v, _)| full.start[v]);
@@ -357,7 +379,7 @@ fn scan(g: &Graph, iv: &Intervals, full: &Intervals) -> (Vec<Loc>, i32, Vec<Opti
         };
         slot_end[slot] = full.end[v];
         if is_home {
-            home[v] = Some(slot as i32);
+            home[v] = Some(Loc::Stack(slot as i32));
         } else {
             loc[v] = Loc::Stack(slot as i32);
         }

@@ -113,6 +113,7 @@ impl Gen<'_> {
         match self.loc[v as usize] {
             Loc::Reg(r) => self.a.alu_rr(w, op, dst, r),
             Loc::Stack(s) => self.a.alu_rm(w, op, dst, spill(s)),
+            Loc::Frame(s) => self.a.alu_rm(w, op, dst, self.slot(s)),
             Loc::Const(c) if i32::try_from(c).is_ok() => self.a.alu_ri(w, op, dst, c as i32),
             _ => {
                 self.load(R::R11, v);

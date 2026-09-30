@@ -39,7 +39,7 @@ pub(super) struct Gen<'a> {
     pub g: &'a Graph,
     pub loc: &'a [Loc],
     /// Home slots (`Allocation::home`), written at each value's definition.
-    home: &'a [Option<i32>],
+    home: &'a [Option<Loc>],
     pub max_locals: i32,
     labels: Vec<Label>,
     pub epilogue: Label,
@@ -63,7 +63,7 @@ pub(super) struct Gen<'a> {
     frameless: bool,
     /// Registers kept around each call (`Allocation::saves`) and their slots; slots from
     /// `save_base` are written before the call, home slots already hold the value.
-    saves: &'a HashMap<V, Vec<(Loc, i32)>>,
+    saves: &'a HashMap<V, Vec<(Loc, Loc)>>,
     save_base: i32,
     /// Stubs restoring a call's saved registers before a deoptimization: (entry, call, target).
     restore_stubs: Vec<(Label, V, Label)>,
@@ -133,8 +133,8 @@ pub(super) fn generate(g: &Graph, al: &Allocation, m: &'static Method, frame_slo
         gen.a.bind(gen.labels[b as usize]);
         for &v in &g.blocks[b as usize].insts {
             gen.inst(v);
-            if let (Some(h), true) = (al.home[v as usize], g.resolve(v) == v && !matches!(g.inst(v), Inst::Phi(_))) {
-                moves::mov(&mut gen.a, Loc::Stack(h), al.loc[v as usize]);
+            if let (Some(h @ Loc::Stack(_)), true) = (al.home[v as usize], g.resolve(v) == v && !matches!(g.inst(v), Inst::Phi(_))) {
+                moves::mov(&mut gen.a, h, al.loc[v as usize]);
             }
         }
         gen.term(b, al.order.get(i + 1).copied());
