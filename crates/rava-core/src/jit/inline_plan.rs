@@ -46,8 +46,9 @@ const HOT_INLINE_SIZE: usize = 325;
 const HOT_INVOCATIONS: u32 = 2000;
 const TIER2_BUDGET: usize = 6000;
 /// A callee whose optimized code is larger than this is called rather than inlined again
-/// (HotSpot's `InlineSmallCode`): its own compilation already inlined what it calls.
-const INLINE_SMALL_CODE: usize = 3000;
+/// (HotSpot's `InlineSmallCode`, 2500 bytes of C2 code): its own compilation already inlined
+/// what it calls. Optimized code here takes about three times C2's bytes per bytecode.
+const INLINE_SMALL_CODE: usize = 7500;
 const TIER1_BUDGET: usize = 2000;
 
 /// How to inline `target` (first argument `first`) into `chain` at `tier` (1 and 2 baseline, 3
