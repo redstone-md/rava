@@ -29,6 +29,12 @@ impl Gen<'_> {
                 self.put(v, r);
             }
             Inst::Const(_) | Inst::Phi(_) => {}
+            Inst::Copy(x) => {
+                let (dst, src) = (self.loc[v as usize], self.loc[x as usize]);
+                if dst != Loc::None && dst != src {
+                    super::moves::mov(&mut self.a, dst, src);
+                }
+            }
             Inst::Neg(x) => self.neg(v, ty, x),
             Inst::Bin(op, x, y) => match ty {
                 Ty::F | Ty::D => self.float_bin(v, ty == Ty::D, op, x, y),
