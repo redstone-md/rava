@@ -102,6 +102,15 @@ impl Gen<'_> {
                 self.a.jcc(Cond::E, fail);
                 self.put(v, R::Rax);
             }
+            Inst::NewMulti(k, counts, s) => {
+                let fail = self.deopt(&s);
+                let linked = self.link(&s);
+                self.call_preserving(runtime::new_multi2 as *const () as usize, &[Arg::Thread, Arg::Imm(k as *const Klass as i64), Arg::Val(counts)]);
+                self.unlink(linked);
+                self.a.test_rr(true, R::Rax, R::Rax);
+                self.a.jcc(Cond::E, fail);
+                self.put(v, R::Rax);
+            }
             Inst::CheckCast(x, k, s) => {
                 let (fail, done) = (self.deopt(&s), self.a.new_label());
                 self.subtype_check(x, k, done);

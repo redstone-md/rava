@@ -443,7 +443,7 @@ pub(super) fn multianewarray(t: &mut Thread, f: &mut Frame) -> JResult<()> {
     Ok(())
 }
 
-fn build_multi(t: &mut Thread, k: &'static Klass, counts: &[i32]) -> JResult<Oop> {
+pub(crate) fn build_multi(t: &mut Thread, k: &'static Klass, counts: &[i32]) -> JResult<Oop> {
     let a = rt::alloc_array(t, k, counts[0])?;
     if counts.len() > 1 {
         let KlassKind::ObjArray { elem } = k.kind else { return Ok(a) };

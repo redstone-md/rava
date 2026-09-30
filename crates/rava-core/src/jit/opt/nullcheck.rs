@@ -84,7 +84,7 @@ pub fn eliminate(g: &mut Graph) {
                         known.push(x);
                     }
                 }
-                Inst::New(..) | Inst::NewArray(..) => known.push(v),
+                Inst::New(..) | Inst::NewArray(..) | Inst::NewMulti(..) => known.push(v),
                 _ => {}
             }
         }

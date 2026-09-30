@@ -147,6 +147,20 @@ impl Builder {
                 let v = self.add(Inst::NewArray(k, len, s), Ty::A);
                 self.push(v);
             }
+            0xc5 if self.sc.code[pc + 3] == 2 => {
+                let Some(Resolved::Class(k)) = self.resolved(self.u2(pc)) else { return None };
+                let s = self.state();
+                let (second, first) = (self.pop(), self.pop());
+                let first = self.add(Inst::Convert(0x85, first), Ty::J);
+                let mask = self.konst(Ty::J, 0xffff_ffff);
+                let low = self.add(Inst::Bin(BinOp::And, first, mask), Ty::J);
+                let second = self.add(Inst::Convert(0x85, second), Ty::J);
+                let by = self.konst(Ty::I, 32);
+                let high = self.add(Inst::Bin(BinOp::Shl, second, by), Ty::J);
+                let counts = self.add(Inst::Bin(BinOp::Or, low, high), Ty::J);
+                let v = self.add(Inst::NewMulti(k, counts, s), Ty::A);
+                self.push(v);
+            }
             0xbe => {
                 let s = self.state();
                 let arr = self.pop();
