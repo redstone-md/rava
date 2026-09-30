@@ -117,7 +117,7 @@ impl Emitter {
             _ => {}
         }
         match (op, resolved) {
-            (0xb4, Some(Resolved::InstanceField { offset, ty })) => {
+            (0xb4, Some(Resolved::InstanceField { offset, ty, .. })) => {
                 self.flush();
                 let o = self.pop();
                 let ro = self.read(o, R::Rax);
@@ -128,7 +128,7 @@ impl Emitter {
                 load_typed_to(&mut self.a, d, ty, mem(ro, offset as i32));
                 self.push_w(ty.slots() == 2, Loc::Reg(d));
             }
-            (0xb5, Some(Resolved::InstanceField { offset, ty })) => {
+            (0xb5, Some(Resolved::InstanceField { offset, ty, .. })) => {
                 self.flush();
                 let v = self.pop_w(ty.slots() == 2);
                 let o = self.pop();

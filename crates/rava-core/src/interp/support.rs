@@ -254,7 +254,7 @@ pub(super) fn putstatic(t: &mut Thread, f: &mut Frame) -> JResult<()> {
 
 pub(super) fn getfield(t: &mut Thread, f: &mut Frame) -> JResult<()> {
     let r = f.holder().resolve_field(t, f.u2(f.pc + 1)).map_err(|e| link_error(t, e))?;
-    let Resolved::InstanceField { offset, ty } = r else {
+    let Resolved::InstanceField { offset, ty, .. } = r else {
         return Err(throw_new(t, "java/lang/IncompatibleClassChangeError", "expected an instance field"));
     };
     let o = f.pop_ref();
@@ -269,7 +269,7 @@ pub(super) fn getfield(t: &mut Thread, f: &mut Frame) -> JResult<()> {
 
 pub(super) fn putfield(t: &mut Thread, f: &mut Frame) -> JResult<()> {
     let r = f.holder().resolve_field(t, f.u2(f.pc + 1)).map_err(|e| link_error(t, e))?;
-    let Resolved::InstanceField { offset, ty } = r else {
+    let Resolved::InstanceField { offset, ty, .. } = r else {
         return Err(throw_new(t, "java/lang/IncompatibleClassChangeError", "expected an instance field"));
     };
     let v = f.pop_typed(ty);

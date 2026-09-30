@@ -48,14 +48,25 @@ impl Builder {
                 self.init_check(holder, &s);
                 self.add(Inst::StoreStatic(slot as *const _ as usize, ty, v), Ty::I);
             }
-            (0xb4, Resolved::InstanceField { offset, ty }) => {
+            (0xb4, Resolved::InstanceField { offset, ty, volatile }) => {
                 let s = self.state();
                 let o = self.pop();
                 self.null_check(o, s);
-                let v = self.add(Inst::LoadField(o, offset, ty), Ty::of(ty));
+                // A load the block already did (or a store it made) since the last call, store
+                // to a field at this offset, or other memory effect, is reused.
+                let v = match self.loads.get(&(o, offset)) {
+                    Some(&v) if !volatile => v,
+                    _ => {
+                        let v = self.add(Inst::LoadField(o, offset, ty), Ty::of(ty));
+                        if !volatile {
+                            self.loads.insert((o, offset), v);
+                        }
+                        v
+                    }
+                };
                 self.push(v);
             }
-            (0xb5, Resolved::InstanceField { offset, ty }) => {
+            (0xb5, Resolved::InstanceField { offset, ty, .. }) => {
                 let s = self.state();
                 let v = self.pop();
                 let o = self.pop();
