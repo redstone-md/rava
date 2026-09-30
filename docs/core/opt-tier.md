@@ -47,7 +47,8 @@ A C1-class compiler is enough for parity. Every mechanism below is a generic JVM
 | `build.rs`, `build_ops.rs` | Abstract interpretation of bytecode per `Scope`; phis at merges; deopt at unsupported or unresolved instructions |
 | `build_arr.rs` | Array accesses; bounds checks dropped for known lengths and index ranges, merged per block for constant indices (range-check smearing) |
 | `build_mh.rs` | `invokedynamic`, `invokeBasic`, `linkTo*`, `MethodHandle.invoke*` (constant handles fold to direct calls) |
-| `inline.rs` | Inlining (baseline policy at tier 2): direct targets, methods no loaded class overrides (class hierarchy analysis: a flag test that deoptimizes), vtable-guarded and profile-guarded ones with a call on the guard's failure path |
+| `freq.rs` | Estimated executions per entry of each instruction from branch profiles (Wu-Larus propagation, loops capped at ~20 iterations), for C2-style frequency-based inlining |
+| `inline.rs` | Inlining (C2's size limits by call-site frequency: hot sites up to 325 bytes, others 35, cold ones only trivial methods): direct targets, methods no loaded class overrides (class hierarchy analysis: a flag test that deoptimizes), vtable-guarded and profile-guarded ones with a call on the guard's failure path |
 | `canon.rs`, `phis.rs` | Constant folding and known-branch removal; trivial phi aliases |
 | `split.rs` | Live-range splitting at innermost loops by SSA copies (entry copies of values used in the loop and live after it, exit copies of values defined in it) |
 | `regalloc.rs`, `moves.rs` | Liveness, linear scan over one interval per value (spill order: idle in the loop at hand, then loop-weighted use density), parallel moves on edges |
@@ -59,8 +60,9 @@ A C1-class compiler is enough for parity. Every mechanism below is a generic JVM
 Rules that keep it correct:
 
 - **Frames**: compiled code keeps the baseline layout; a call stores its arguments where the
-  interpreter would, and visible inlined frames are linked into `Thread::top` before calls, so
-  stack walks and exceptions see every Java frame.
+  interpreter would. Inlined bodies write no frame headers: before a call from one, the physical
+  header's bytecode-index slot gets a pointer to a static `InlinedSite` (the inlined frames and
+  their bytecode indexes, HotSpot's debug info at a return address), which stack walks expand.
 - **Lazy anchor** (HotSpot's last Java frame): optimized code publishes `Thread::top` (its
   innermost header) only before calls out, and `Thread::sp` only before runtime calls, polls and
   deoptimization; it restores `top` on return. `sp` only ever rises while it runs (baseline code
