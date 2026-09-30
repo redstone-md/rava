@@ -70,7 +70,7 @@ pub(super) fn decide(target: &'static Method, first: Option<i64>, chain: &Chain,
     if env_once!("RAVA_CORE_NO_INLINE").is_some() || target.is_abstract() || target.is_native() || intrinsic(target).is_some() {
         return None;
     }
-    if tier >= 3 && (compiled_too_large(target) || cold_site(target, freq)) {
+    if tier >= 3 && (compiled_too_large(target, freq) || cold_site(target, freq)) {
         return None;
     }
     if is_leaf(target) {
@@ -88,9 +88,11 @@ fn cold_site(target: &'static Method, freq: f32) -> bool {
 }
 
 /// Whether `target` already has optimized code too large to inline again (C2's InlineSmallCode:
-/// it probably inlined much itself). `@ForceInline` methods are exempt, as in C2.
-fn compiled_too_large(target: &'static Method) -> bool {
-    target.compiled().is_some_and(|c| c.tier >= 2 && c.size > INLINE_SMALL_CODE) && !target.has_annotation("Ljdk/internal/vm/annotation/ForceInline;")
+/// it probably inlined much itself), a quarter of that at a call site that is not hot (C2's
+/// "already compiled into a medium method"). `@ForceInline` methods are exempt, as in C2.
+fn compiled_too_large(target: &'static Method, freq: f32) -> bool {
+    let limit = if freq >= HOT_SITE { INLINE_SMALL_CODE } else { INLINE_SMALL_CODE / 4 };
+    target.compiled().is_some_and(|c| c.tier >= 2 && c.size > limit) && !target.has_annotation("Ljdk/internal/vm/annotation/ForceInline;")
 }
 
 /// Why `decide` refuses `target` (for `RAVA_CORE_INLINE_LOG`).
@@ -102,7 +104,7 @@ pub(super) fn refusal(target: &'static Method, chain: &Chain, tier: u8, spent: u
     if target.is_abstract() || target.is_native() {
         return "no bytecode";
     }
-    if tier >= 3 && compiled_too_large(target) {
+    if tier >= 3 && compiled_too_large(target, freq) {
         return "compiled code too large";
     }
     if tier >= 3 && cold_site(target, freq) {
