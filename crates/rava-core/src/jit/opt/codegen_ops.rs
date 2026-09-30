@@ -57,9 +57,15 @@ impl Gen<'_> {
             Inst::BoundsCheck(arr, idx, s) => {
                 let fail = self.deopt(&s);
                 let ra = self.reg(arr, R::Rax);
-                let ri = self.reg(idx, R::Rcx);
-                self.a.alu_rm(false, Alu::Cmp, ri, mem(ra, 16));
-                self.a.jcc(Cond::Ae, fail);
+                if let Loc::Const(c) = self.loc[idx as usize].clone() {
+                    // The index as an unsigned 32-bit immediate: length <= index fails.
+                    self.a.alu_mi(false, Alu::Cmp, mem(ra, 16), c as i32);
+                    self.a.jcc(Cond::Be, fail);
+                } else {
+                    let ri = self.reg(idx, R::Rcx);
+                    self.a.alu_rm(false, Alu::Cmp, ri, mem(ra, 16));
+                    self.a.jcc(Cond::Ae, fail);
+                }
             }
             Inst::InitCheck(k, s) => {
                 let fail = self.deopt(&s);
