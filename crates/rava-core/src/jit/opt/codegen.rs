@@ -311,25 +311,24 @@ impl Gen<'_> {
         }
     }
 
-    /// Before a call out: stores the call's bytecode index in each frame header, links the
-    /// visible inlined frames (hidden ones, method-handle plumbing, are never walked) and
-    /// publishes the innermost header as `Thread::top`; with `sp`, also the frame's end as
-    /// `Thread::sp` (for runtime calls, which may collect or run Java code at `sp`). Clobbers
-    /// rax and rcx.
+    /// Before a call out: stores in the frame header where the call is (its bytecode index, or
+    /// for a call from inlined bodies its `InlinedSite`, so stack walks see the inlined frames
+    /// hidden ones aside) and publishes the header as `Thread::top`; with `sp`, also the
+    /// frame's end as `Thread::sp` (for runtime calls, which may collect or run Java code at
+    /// `sp`). Clobbers rax and rcx.
     pub fn link(&mut self, s: &State, sp: bool) {
         let scopes = scopes(s);
         let (outer, inner) = scopes.split_last().expect("a state has a scope");
         let at = self.hdr(header::BCI);
-        self.a.store_imm(at, (outer.bci as i32) << 1);
-        self.a.lea(R::Rcx, self.hdr(header::METHOD));
-        for s in inner.iter().rev().filter(|s| !s.method.is_hidden_frame()) {
-            let hdr = s.frame + max_locals(s.method);
-            self.a.mov_ri(R::Rax, s.method as *const Method as i64);
-            self.a.store(true, self.slot(hdr + header::METHOD as i32), R::Rax);
-            self.a.store_imm(self.slot(hdr + header::BCI as i32), (s.bci as i32) << 1);
-            self.a.store(true, self.slot(hdr + header::CALLER as i32), R::Rcx);
-            self.a.lea(R::Rcx, self.slot(hdr + header::METHOD as i32));
+        let frames: Vec<(&'static Method, i32)> = inner.iter().filter(|s| !s.method.is_hidden_frame()).map(|s| (s.method, s.bci as i32)).chain(std::iter::once((outer.method, outer.bci as i32))).collect();
+        if frames.len() == 1 {
+            self.a.store_imm(at, (outer.bci as i32) << 1);
+        } else {
+            let site: &'static crate::thread::InlinedSite = Box::leak(Box::new(crate::thread::InlinedSite { frames: frames.into() }));
+            self.a.mov_ri(R::Rax, site as *const _ as i64);
+            self.a.store(true, at, R::Rax);
         }
+        self.a.lea(R::Rcx, self.hdr(header::METHOD));
         self.a.store(true, mem(R::R12, offsets::TOP), R::Rcx);
         if sp {
             self.publish_sp();

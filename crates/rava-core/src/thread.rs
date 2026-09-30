@@ -25,10 +25,22 @@ pub mod header {
     pub const SLOTS: usize = 4;
     pub const METHOD: usize = 0;
     /// Compiled and native frames store `bci << 1`; interpreted frames store a tagged pointer
-    /// (`ptr | 1`) to their live bytecode index.
+    /// (`ptr | 1`) to their live bytecode index; optimized code calling from inlined bodies
+    /// stores a pointer to the call site's `InlinedSite` (aligned, above `SITE_MIN`).
     pub const BCI: usize = 1;
+    /// Site pointers are user-space addresses in `SITE_MIN..SITE_END`; `bci << 1` of a
+    /// negative bci (natives) lies above.
+    pub const SITE_MIN: u64 = 1 << 20;
+    pub const SITE_END: u64 = 1 << 47;
     pub const CALLER: usize = 2;
     pub const SAVED_SP: usize = 3;
+}
+
+/// The Java frames a call from optimized code stands for, innermost first, the physical
+/// frame's method last (HotSpot's debug info at a call's return address): inlined bodies write
+/// no headers of their own.
+pub struct InlinedSite {
+    pub frames: Box<[(&'static Method, i32)]>,
 }
 
 /// Field offsets of `Thread` used by generated code.
@@ -162,7 +174,7 @@ impl Thread {
     /// Active frames, innermost first: the method and its current bytecode index (-1 for
     /// natives).
     pub fn frames(&self) -> FrameIter {
-        FrameIter { hdr: self.top }
+        FrameIter { hdr: self.top, inlined: &[] }
     }
 
     /// Takes the exception compiled code left pending.
@@ -174,19 +186,34 @@ impl Thread {
 
 pub struct FrameIter {
     hdr: *mut u64,
+    /// Frames of an `InlinedSite` still to yield before moving to the caller.
+    inlined: &'static [(&'static Method, i32)],
 }
 
 impl Iterator for FrameIter {
     type Item = (&'static Method, i32);
 
     fn next(&mut self) -> Option<Self::Item> {
+        if let Some((&first, rest)) = self.inlined.split_first() {
+            self.inlined = rest;
+            if rest.is_empty() {
+                // SAFETY: as below; the site's frames all belong to this header.
+                self.hdr = unsafe { *self.hdr.add(header::CALLER) as *mut u64 };
+            }
+            return Some(first);
+        }
         if self.hdr.is_null() {
             return None;
         }
-        // SAFETY: every linked header was written by `push_frame` and outlives its frame.
+        // SAFETY: every linked header was written by `push_frame` or compiled code and outlives
+        // its frame; site pointers point at leaked `InlinedSite`s.
         unsafe {
-            let m = &*(*self.hdr.add(header::METHOD) as *const Method);
             let raw = *self.hdr.add(header::BCI);
+            if raw & 1 == 0 && (header::SITE_MIN..header::SITE_END).contains(&raw) {
+                self.inlined = &(*(raw as *const InlinedSite)).frames;
+                return self.next();
+            }
+            let m = &*(*self.hdr.add(header::METHOD) as *const Method);
             let bci = if raw & 1 == 1 { *((raw & !1) as *const usize) as i32 } else { (raw as i64 >> 1) as i32 };
             self.hdr = *self.hdr.add(header::CALLER) as *mut u64;
             Some((m, bci))
