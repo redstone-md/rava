@@ -26,6 +26,9 @@ macro_rules! accessors {
             let v: $ty = $dec(a[4]);
             // SAFETY: as above.
             unsafe { std::ptr::write_volatile(addr(a[1], a[2]) as *mut $ty, v) };
+            if std::mem::size_of::<$ty>() == 8 {
+                crate::gc::cards::dirty(addr(a[1], a[2]) as usize);
+            }
             ret_void()
         });
     };
@@ -70,10 +73,12 @@ pub(super) fn register(r: &mut NativeRegistry) {
     });
     r.add(U, "compareAndSetReference", "(Ljava/lang/Object;JLjava/lang/Object;Ljava/lang/Object;)Z", |_, a| {
         let cell = unsafe { &*(addr(a[1], a[2]) as *const AtomicI64) };
+        crate::gc::cards::dirty(addr(a[1], a[2]) as usize);
         ret_bool(cell.compare_exchange(a[4] as i64, a[5] as i64, Ordering::SeqCst, Ordering::SeqCst).is_ok())
     });
     r.add(U, "compareAndExchangeReference", "(Ljava/lang/Object;JLjava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;", |_, a| {
         let cell = unsafe { &*(addr(a[1], a[2]) as *const AtomicI64) };
+        crate::gc::cards::dirty(addr(a[1], a[2]) as usize);
         Ok(cell.compare_exchange(a[4] as i64, a[5] as i64, Ordering::SeqCst, Ordering::SeqCst).unwrap_or_else(|v| v) as u64)
     });
     r.add(U, "arrayBaseOffset0", "(Ljava/lang/Class;)I", |_, _| ret_int(ARRAY_BASE_OFFSET as i32));
@@ -130,6 +135,7 @@ pub(super) fn register(r: &mut NativeRegistry) {
     });
     r.add(U, "copyMemory0", "(Ljava/lang/Object;JLjava/lang/Object;JJ)V", |_, a| {
         unsafe { std::ptr::copy(addr(a[1], a[2]), addr(a[4], a[5]), a[7] as usize) };
+        crate::gc::cards::dirty_range(addr(a[4], a[5]) as usize, a[7] as usize);
         ret_void()
     });
     r.add(U, "getLoadAverage0", "([DI)I", |_, _| ret_int(-1));

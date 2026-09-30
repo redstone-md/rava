@@ -4,7 +4,7 @@
 use super::codegen::{Arg, Gen};
 use super::ir::*;
 use crate::jit::asm::{mem, mem_idx, Alu, Cond, R, X};
-use crate::jit::emit_obj::{load_typed_to, store_typed_from};
+use crate::jit::emit_obj::load_typed_to;
 use crate::jit::intrinsics::Intrinsic;
 use crate::jit::runtime;
 use crate::klass::Klass;
@@ -37,7 +37,10 @@ impl Gen<'_> {
             Intrinsic::UnsafePut(ty, volatile) => {
                 let (b, o) = (self.reg(args[1], R::Rax), self.reg(args[2], R::Rcx));
                 self.load(R::Rdx, args[3]);
-                store_typed_from(&mut self.a, R::Rdx, ty, mem_idx(b, o, 1, 0));
+                crate::jit::emit_obj::store_raw(&mut self.a, R::Rdx, ty, mem_idx(b, o, 1, 0));
+                if ty == BasicType::Reference {
+                    crate::jit::emit_obj::card_mark_checked(&mut self.a, mem_idx(b, o, 1, 0));
+                }
                 if volatile {
                     self.a.mfence();
                 }
@@ -61,6 +64,9 @@ impl Gen<'_> {
                 self.a.lock_cmpxchg_w(ty != BasicType::Int, mem_idx(b, o, 1, 0), R::R11);
                 self.a.setcc(Cond::E, R::Rax);
                 self.a.movzx8(R::Rax, R::Rax);
+                if ty == BasicType::Reference {
+                    crate::jit::emit_obj::card_mark_checked(&mut self.a, mem_idx(b, o, 1, 0));
+                }
                 self.put(v, R::Rax);
             }
             Intrinsic::CurrentThread => {

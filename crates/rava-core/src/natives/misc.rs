@@ -153,7 +153,7 @@ fn environ(t: &mut Thread, _: &[u64]) -> JResult<u64> {
         // SAFETY: fresh arrays of matching lengths.
         unsafe {
             crate::heap::obj::array_slice::<u8>(b).copy_from_slice(part);
-            *crate::heap::obj::array_data::<Oop>(arr).add(i) = b;
+            crate::heap::obj::store_elem(arr, i, b);
         }
     }
     ret_ref(arr)

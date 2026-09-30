@@ -111,10 +111,14 @@ impl Vm {
         *self.classes.write().unwrap().entry((loader as usize, k.name)).or_insert(k)
     }
 
-    /// Enumerates the VM's roots: `precise` receives references, `conservative` words that may
-    /// or may not point into objects (untyped static slots).
-    pub(crate) fn for_each_root(&self, precise: &mut dyn FnMut(Oop), conservative: &mut dyn FnMut(usize)) {
-        for &k in self.all_classes.lock().unwrap().iter() {
+    /// Every class defined so far, in definition order.
+    pub(crate) fn all_classes(&self) -> Vec<&'static Klass> {
+        self.all_classes.lock().unwrap().clone()
+    }
+
+    /// The roots held by `classes`: mirrors, loaders, statics and resolved constants.
+    pub(crate) fn class_roots(&self, classes: &[&'static Klass], precise: &mut dyn FnMut(Oop), conservative: &mut dyn FnMut(usize)) {
+        for &k in classes {
             precise(k.mirror());
             precise(k.loader());
             for slot in k.statics.iter() {
@@ -127,6 +131,11 @@ impl Vm {
                 }
             }
         }
+    }
+
+    /// The roots held outside classes: interned strings, primitive mirrors, call sites,
+    /// starting threads, modules and Flight Recorder configurations.
+    pub(crate) fn other_roots(&self, precise: &mut dyn FnMut(Oop)) {
         for &s in self.strings.lock().unwrap().values() {
             precise(s as Oop);
         }

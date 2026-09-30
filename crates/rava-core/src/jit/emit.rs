@@ -223,6 +223,7 @@ impl Emitter {
                 self.aastore_check(array, index, value, slow);
                 self.a.bind(store);
                 self.a.store(true, mem_idx(R::Rax, R::Rcx, 8, base), R::Rdx);
+                super::emit_obj::card_mark(&mut self.a, mem_idx(R::Rax, R::Rcx, 8, base));
             }
             0x54 => {
                 // boolean[] stores value & 1; byte[] stores the low byte.

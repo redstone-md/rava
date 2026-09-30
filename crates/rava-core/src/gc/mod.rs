@@ -1,10 +1,17 @@
-//! Non-moving mark-sweep collector (design: `docs/core/README.md`).
+//! Non-moving, generational mark-sweep collector (design: `docs/core/README.md`).
 //!
 //! Allocation bumps through per-thread runs of free cells (one owned page per size class); a
 //! collection stops the world at safepoints, marks from conservative stack roots and precise VM
-//! roots, and sweeps by swapping page bitmaps (`space.rs`). Objects never move, so raw
-//! references held anywhere stay valid.
+//! roots, and sweeps by copying mark bitmaps into allocation bitmaps (`space.rs`). Objects never
+//! move, so raw references held anywhere stay valid.
+//!
+//! Generations use sticky mark bits: objects that survived a collection keep their mark and are
+//! old. A young collection traces only from roots and from old objects on cards the write
+//! barrier dirtied (`cards.rs`), frees the young objects nothing reached, and promotes the rest.
+//! A full collection clears every mark first; it runs once the old generation has doubled.
 
+pub mod cards;
+mod large;
 mod mark;
 pub mod safepoint;
 mod space;
@@ -127,19 +134,25 @@ impl Heap {
     fn maybe_collect(&self, t: &mut Thread) {
         let due = {
             let s = self.space.lock().unwrap();
-            s.allocated_since_gc > self.budget(s.live_after_gc)
+            (s.allocated_since_gc > self.young_budget(s.live_after_gc)).then(|| self.full_due(&s))
         };
-        if due {
-            self.collect(t);
+        if let Some(full) = due {
+            self.collect_as(t, full);
         }
     }
 
-    /// How much may be allocated between collections that leave `live` bytes: a multiple of
-    /// the live data, so collection work stays proportional to allocation, within the maximum
-    /// heap size.
-    fn budget(&self, live: usize) -> usize {
-        const GROWTH: usize = 1;
-        (live * GROWTH).min(self.max_heap.saturating_sub(live)).max(self.min_trigger)
+    /// How much may be allocated between collections that leave `live` bytes (the young
+    /// generation's size): half the live data, within the maximum heap size.
+    fn young_budget(&self, live: usize) -> usize {
+        (live / 2).min(self.max_heap.saturating_sub(live)).max(self.min_trigger)
+    }
+
+    /// A full collection is due once the old generation has doubled since the last one (or
+    /// fills the heap), or when generations are off (`RAVA_CORE_GC_GEN=0`).
+    fn full_due(&self, s: &Space) -> bool {
+        static GENERATIONAL: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        let generational = *GENERATIONAL.get_or_init(|| std::env::var("RAVA_CORE_GC_GEN").map_or(true, |v| v != "0"));
+        !generational || s.live_after_gc > (2 * s.live_after_full).max(self.min_trigger) || s.live_after_gc + self.min_trigger > self.max_heap
     }
 
     pub fn max_bytes(&self) -> usize {
@@ -148,6 +161,11 @@ impl Heap {
 
     /// A full stop-the-world collection.
     pub fn collect(&self, t: &mut Thread) {
+        self.collect_as(t, true)
+    }
+
+    /// A stop-the-world collection, `full` or young.
+    fn collect_as(&self, t: &mut Thread, full: bool) {
         if std::env::var_os("RAVA_CORE_NO_GC").is_some() {
             return;
         }
@@ -164,13 +182,25 @@ impl Heap {
             }
             for m in space.pages.iter_mut().flatten() {
                 m.owned = false;
-                m.marks.iter_mut().for_each(|w| *w = 0);
             }
-            space.large.values_mut().for_each(|l| l.marked = false);
+            if full {
+                clear_marks(&mut space);
+            }
             let before_mark = std::time::Instant::now();
-            let marked = mark::mark(&mut space);
+            let marked = mark::mark(&mut space, !full);
+            if !full && std::env::var_os("RAVA_CORE_GC_VERIFY").is_some() {
+                verify_young(&mut space);
+            }
+            if full {
+                let (b, f, lb, lf) = (space.base, space.fresh, space.large_area.base, space.large_area.fresh);
+                cards::clean(b, f);
+                cards::clean(lb, lf);
+            }
             let before_sweep = std::time::Instant::now();
             let live = sweep(&mut space);
+            if full {
+                space.live_after_full = live;
+            }
             phases[1] = (before_sweep - before_mark).as_secs_f64() * 1e3;
             phases[2] = before_sweep.elapsed().as_secs_f64() * 1e3;
             space.live_after_gc = live;
@@ -179,7 +209,8 @@ impl Heap {
         });
         if let (Some((marked, live)), true) = (done, std::env::var_os("RAVA_CORE_GC_LOG").is_some()) {
             eprintln!(
-                "[gc] marked {marked} objects, {} MiB live, {:.1} ms (stop {:.1}, mark {:.1}, sweep {:.1})",
+                "[gc] {} marked {marked} objects, {} MiB live, {:.1} ms (stop {:.1}, mark {:.1}, sweep {:.1})",
+                if full { "full" } else { "young" },
                 live >> 20,
                 started.elapsed().as_secs_f64() * 1e3,
                 phases[0],
@@ -196,6 +227,49 @@ impl Heap {
 
     pub fn contains(&self, addr: usize) -> bool {
         self.space.lock().unwrap().find_object(addr).is_some()
+    }
+}
+
+fn clear_marks(space: &mut Space) {
+    for m in space.pages.iter_mut().flatten() {
+        m.marks.iter_mut().for_each(|w| *w = 0);
+    }
+    space.large.values_mut().for_each(|l| l.marked = false);
+}
+
+/// `RAVA_CORE_GC_VERIFY`: after a young mark, marks again from scratch and reports every
+/// object the full trace reaches that the young one missed (a missing write barrier). Leaves
+/// the full marks in place.
+fn verify_young(space: &mut Space) {
+    let young: Vec<Option<Box<[u64]>>> = space.pages.iter().map(|m| m.as_ref().map(|m| m.marks.clone())).collect();
+    let young_large: Vec<(usize, bool)> = space.large.iter().map(|(&a, l)| (a, l.marked)).collect();
+    clear_marks(space);
+    mark::mark(space, false);
+    let mut missed = 0;
+    for (index, (meta, before)) in space.pages.iter().zip(young.iter()).enumerate() {
+        let (Some(meta), Some(before)) = (meta, before) else { continue };
+        for (w, (&now, &was)) in meta.marks.iter().zip(before.iter()).enumerate() {
+            let mut lost = now & !was;
+            while lost != 0 {
+                let cell = w * 64 + lost.trailing_zeros() as usize;
+                lost &= lost - 1;
+                let start = space.page_addr(index) + cell * meta.cell_size as usize;
+                if missed < 20 {
+                    // SAFETY: a live object's class.
+                    eprintln!("[gc-verify] young collection missed {:#x} ({})", start, unsafe { crate::heap::obj::klass(start as crate::heap::Oop) }.name);
+                }
+                missed += 1;
+            }
+        }
+    }
+    for (a, was) in young_large {
+        if space.large.get(&a).is_some_and(|l| l.marked && !was) {
+            eprintln!("[gc-verify] young collection missed large {a:#x}");
+            missed += 1;
+        }
+    }
+    if missed > 0 {
+        eprintln!("[gc-verify] {missed} reachable objects missed");
     }
 }
 
@@ -217,8 +291,8 @@ fn sweep(space: &mut Space) -> usize {
             space.empty.push(page);
             continue;
         }
-        std::mem::swap(&mut meta.alloc, &mut meta.marks);
-        meta.marks.iter_mut().for_each(|w| *w = 0);
+        // The marks stay: survivors are old from now on.
+        meta.alloc.copy_from_slice(&meta.marks);
         meta.cursor = 0;
         meta.zeroed = false;
         live += live_cells * meta.cell_size as usize;
@@ -230,8 +304,7 @@ fn sweep(space: &mut Space) -> usize {
     let dead: Vec<usize> = space.large.iter().filter(|(_, l)| !l.marked).map(|(&a, _)| a).collect();
     for a in dead {
         let l = space.large.remove(&a).unwrap();
-        // SAFETY: unmaps a dead large object.
-        unsafe { libc::munmap(a as *mut libc::c_void, l.size) };
+        space.large_area.free(a, l.size);
     }
     live + space.large.values().map(|l| l.size).sum::<usize>()
 }

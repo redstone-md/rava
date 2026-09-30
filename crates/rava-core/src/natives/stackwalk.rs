@@ -76,7 +76,7 @@ fn fill(t: &mut Thread, mode: u64, walk: &mut Walk, batch: i32, start: i32, buff
         if mode & FILL_CLASS_REFS_ONLY != 0 {
             let mirror = rt::mirror_of(t, m.holder)?;
             // SAFETY: index below the array length.
-            unsafe { *obj::array_data::<Oop>(buffer).add(i as usize) = mirror };
+            unsafe { obj::store_elem(buffer, i as usize, mirror) };
         } else {
             // SAFETY: the element is a StackFrameInfo pre-allocated by the walker.
             let info = unsafe { *obj::array_data::<Oop>(buffer).add(i as usize) };

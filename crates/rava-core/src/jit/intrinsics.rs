@@ -5,7 +5,7 @@
 
 use super::asm::{mem, mem_idx, Alu, Cond, Label, R, X};
 use super::compile::Emitter;
-use super::emit_obj::{load_typed, store_typed};
+use super::emit_obj::load_typed;
 use super::runtime;
 use crate::klass::{Klass, ACC_ABSTRACT, ACC_INTERFACE};
 use crate::method::Method;
@@ -149,7 +149,10 @@ impl Emitter {
                 self.a.load(true, R::Rax, self.stk(args + 1));
                 self.a.load(true, R::Rcx, self.stk(args + 2));
                 self.a.load(true, R::Rdx, self.stk(args + 4));
-                store_typed(&mut self.a, ty, mem_idx(R::Rax, R::Rcx, 1, 0));
+                super::emit_obj::store_raw(&mut self.a, R::Rdx, ty, mem_idx(R::Rax, R::Rcx, 1, 0));
+                if ty == BasicType::Reference {
+                    super::emit_obj::card_mark_checked(&mut self.a, mem_idx(R::Rax, R::Rcx, 1, 0));
+                }
                 if volatile {
                     self.a.mfence();
                 }
@@ -168,6 +171,9 @@ impl Emitter {
                 self.a.setcc(Cond::E, R::Rax);
                 self.a.movzx8(R::Rax, R::Rax);
                 self.a.store(true, self.stk(args), R::Rax);
+                if ty == BasicType::Reference {
+                    super::emit_obj::card_mark_checked(&mut self.a, mem_idx(R::Rcx, R::Rdx, 1, 0));
+                }
             }
             Intrinsic::CurrentThread => {
                 self.a.load(true, R::Rax, mem(R::R12, offset_of!(crate::thread::Thread, java_thread) as i32));

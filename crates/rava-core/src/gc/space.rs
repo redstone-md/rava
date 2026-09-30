@@ -1,5 +1,6 @@
-//! Heap memory: 256 KiB pages of equal-size cells (segregated size classes) for small objects,
-//! and individual mappings for large ones. Nothing moves.
+//! Heap memory: 256 KiB pages of equal-size cells (segregated size classes) for small objects
+//! in the lower three quarters of the reservation, and blocks of the large-object area
+//! (`large.rs`) above them. Nothing moves.
 //!
 //! Each page keeps two bitmaps: `alloc` (cells handed out since the page was last swept, or that
 //! survived it) and `marks` (reached by the current collection). A cell holds an object iff its
@@ -8,6 +9,7 @@
 //! run of free cells that is zeroed then and bump-allocated (so compiled code allocates from any
 //! run the same way). Fresh and recycled pages are handed out whole.
 
+use super::large::LargeArea;
 use std::collections::BTreeMap;
 
 pub const PAGE_SHIFT: usize = 18;
@@ -110,9 +112,12 @@ pub struct Space {
     /// Pages with free cells, per class.
     pub partial: [Vec<usize>; CLASSES],
     pub large: BTreeMap<usize, Large>,
+    pub large_area: LargeArea,
     /// Bytes handed to allocation caches or large objects since the last collection.
     pub allocated_since_gc: usize,
     pub live_after_gc: usize,
+    /// Live bytes after the last full collection.
+    pub live_after_full: usize,
 }
 
 impl Space {
@@ -131,16 +136,20 @@ impl Space {
         };
         assert!(raw != libc::MAP_FAILED, "cannot reserve {reserve} bytes of heap");
         let base = (raw as usize + PAGE_SIZE - 1) & !(PAGE_SIZE - 1);
+        let pages_end = base + (reserve / 4 * 3 & !(PAGE_SIZE - 1));
+        super::cards::init(base, reserve);
         Space {
             base,
-            end: base + reserve,
+            end: pages_end,
             fresh: base,
-            pages: (0..reserve / PAGE_SIZE).map(|_| None).collect(),
+            pages: (0..(pages_end - base) / PAGE_SIZE).map(|_| None).collect(),
             empty: Vec::new(),
             partial: std::array::from_fn(|_| Vec::new()),
             large: BTreeMap::new(),
+            large_area: LargeArea::new(pages_end, base + reserve),
             allocated_since_gc: 0,
             live_after_gc: 0,
+            live_after_full: 0,
         }
     }
 
@@ -207,17 +216,10 @@ impl Space {
     }
 
     pub fn alloc_large(&mut self, bytes: usize) -> Option<usize> {
-        let size = (bytes + 4095) & !4095;
-        // SAFETY: an anonymous private mapping, zero-filled.
-        let p = unsafe {
-            libc::mmap(std::ptr::null_mut(), size, libc::PROT_READ | libc::PROT_WRITE, libc::MAP_PRIVATE | libc::MAP_ANONYMOUS, -1, 0)
-        };
-        if p == libc::MAP_FAILED {
-            return None;
-        }
-        self.large.insert(p as usize, Large { size, marked: false });
+        let (p, size) = self.large_area.alloc(bytes)?;
+        self.large.insert(p, Large { size, marked: false });
         self.allocated_since_gc += size;
-        Some(p as usize)
+        Some(p)
     }
 
     /// The object (cell or large block) containing `addr`, if `addr` points into a live one.

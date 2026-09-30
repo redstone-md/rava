@@ -195,7 +195,7 @@ fn accept(t: &mut Thread, a: &[u64]) -> JResult<u64> {
     unsafe { obj::write::<i32>(newfd, fd_int(), s) };
     let ip = inet4(t, None, u32::from_be(sa.sin_addr.s_addr))?;
     let isa = crate::boot::construct(t, "java/net/InetSocketAddress", "(Ljava/net/InetAddress;I)V", &[ip as u64, u16::from_be(sa.sin_port) as u64])?;
-    unsafe { *obj::array_data::<Oop>(isaa) = isa };
+    unsafe { obj::store_elem(isaa, 0, isa) };
     ret_int(1)
 }
 
@@ -297,7 +297,7 @@ fn register_inet(r: &mut NativeRegistry) {
         for (i, ip) in ips.into_iter().enumerate() {
             let o = inet4(t, Some(&host), ip)?;
             // SAFETY: `arr` has one element per address.
-            unsafe { *obj::array_data::<Oop>(arr).add(i) = o };
+            unsafe { obj::store_elem(arr, i as usize, o) };
         }
         ret_ref(arr)
     });

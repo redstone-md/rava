@@ -43,9 +43,23 @@ pub mod obj {
         std::ptr::read((obj as *const u8).add(offset as usize) as *const T)
     }
 
+    /// Writes a field. A pointer-sized write may store a reference, so it marks the card
+    /// (the generational write barrier); smaller ones cannot.
     #[inline(always)]
     pub unsafe fn write<T: Copy>(obj: Oop, offset: u32, value: T) {
-        std::ptr::write((obj as *mut u8).add(offset as usize) as *mut T, value)
+        let at = (obj as *mut u8).add(offset as usize);
+        std::ptr::write(at as *mut T, value);
+        if std::mem::size_of::<T>() == 8 {
+            crate::gc::cards::dirty(at as usize);
+        }
+    }
+
+    /// Stores reference element `i` of an object array, with the write barrier.
+    #[inline(always)]
+    pub unsafe fn store_elem(array: Oop, i: usize, value: Oop) {
+        let at = array_data::<Oop>(array).add(i);
+        *at = value;
+        crate::gc::cards::dirty(at as usize);
     }
 
     #[inline(always)]
