@@ -24,11 +24,20 @@ impl Asm {
         let mut br: Vec<(u32, usize, bool)> = std::mem::take(&mut self.branches).into_iter().map(|(at, fx)| (at, fx, false)).collect();
         br.sort_by_key(|b| b.0);
         let saving = |buf: &[u8], at: u32| if buf[at as usize] == 0xE9 { 3 } else { 4 };
-        // New position of old position `p`: minus the savings of short branches before it.
-        let shift = |br: &[(u32, usize, bool)], buf: &[u8], p: u32| -> u32 {
-            p - br.iter().take_while(|b| b.0 < p).filter(|b| b.2).map(|b| saving(buf, b.0)).sum::<u32>()
+        let starts: Vec<u32> = br.iter().map(|b| b.0).collect();
+        // Savings of the short branches among the first k, for each k.
+        let prefix = |br: &[(u32, usize, bool)], buf: &[u8]| -> Vec<u32> {
+            let mut sums = Vec::with_capacity(br.len() + 1);
+            sums.push(0);
+            for b in br {
+                sums.push(sums.last().unwrap() + if b.2 { saving(buf, b.0) } else { 0 });
+            }
+            sums
         };
+        // New position of old position `p`: minus the savings of short branches before it.
+        let shift = |sums: &[u32], p: u32| -> u32 { p - sums[starts.partition_point(|&a| a < p)] };
         loop {
+            let sums = prefix(&br, &self.buf);
             let mut changed = false;
             for i in 0..br.len() {
                 if br[i].2 {
@@ -36,8 +45,8 @@ impl Asm {
                 }
                 let (at, fx, _) = br[i];
                 let Some(target) = self.labels[self.fixups[fx].1 .0 as usize] else { continue };
-                let from = shift(&br, &self.buf, at) as i64 + 2;
-                let to = shift(&br, &self.buf, target) as i64;
+                let from = shift(&sums, at) as i64 + 2;
+                let to = shift(&sums, target) as i64;
                 if (-128..128).contains(&(to - from)) {
                     br[i].2 = true;
                     changed = true;
@@ -52,7 +61,8 @@ impl Asm {
         }
         // Rebuild: short branches get their final displacement now, other references move.
         let old = std::mem::take(&mut self.buf);
-        let new_pos = |p: u32| shift(&br, &old, p);
+        let sums = prefix(&br, &old);
+        let new_pos = |p: u32| shift(&sums, p);
         let mut out = Vec::with_capacity(old.len());
         let mut short_fixups = vec![false; self.fixups.len()];
         let mut from = 0usize;

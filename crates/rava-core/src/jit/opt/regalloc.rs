@@ -67,7 +67,16 @@ impl Set {
         self.0.iter_mut().zip(&o.0).for_each(|(a, b)| *a |= b);
     }
     fn iter(&self) -> impl Iterator<Item = V> + '_ {
-        self.0.iter().enumerate().flat_map(|(i, w)| (0..64).filter(move |b| w >> b & 1 == 1).map(move |b| (i * 64 + b) as V))
+        self.0.iter().enumerate().filter(|(_, &w)| w != 0).flat_map(|(i, &w)| {
+            let mut w = w;
+            std::iter::from_fn(move || {
+                (w != 0).then(|| {
+                    let b = w.trailing_zeros();
+                    w &= w - 1;
+                    (i * 64) as V + b
+                })
+            })
+        })
     }
 }
 
