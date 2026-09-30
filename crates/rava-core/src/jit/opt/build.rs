@@ -83,6 +83,10 @@ impl Scope {
     }
 }
 
+/// Executions a branch needs in baseline code before a direction it never took is trusted
+/// to stay untaken.
+const MIN_BRANCH_PROFILE: u32 = 64;
+
 pub(super) struct Builder {
     pub g: Graph,
     pub sc: Scope,
@@ -411,6 +415,18 @@ impl Builder {
     /// kept deoptimizing (HotSpot's per-bytecode and per-method trap limits).
     pub fn speculates(&self, m: &'static Method, bci: usize) -> bool {
         self.speculate && !crate::jit::profile::trapped(m, bci)
+    }
+
+    /// Which direction of the branch at `pc` baseline code never took (true: the jump to
+    /// `target`, false: the fall-through to `next`), when it ran often enough to tell and the
+    /// untaken side has not trapped before.
+    pub(super) fn never_taken(&self, pc: usize, target: usize, next: usize) -> Option<bool> {
+        let (taken, not) = crate::jit::profile::branch_counts(self.sc.m, pc)?;
+        if taken + not < MIN_BRANCH_PROFILE || (taken != 0 && not != 0) {
+            return None;
+        }
+        let cold = if taken == 0 { target } else { next };
+        self.speculates(self.sc.m, cold).then_some(taken == 0)
     }
 
     /// Ends the block by leaving compiled code at the current instruction.
