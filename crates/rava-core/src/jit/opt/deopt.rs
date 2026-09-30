@@ -119,6 +119,10 @@ pub extern "sysv64" fn deopt(t: *mut Thread, base: *mut u64, desc: *const Desc, 
     // it (at or above the caller's frame end, as callers need).
     // SAFETY: the outermost scope's header, within the compiled frame.
     unsafe { *hdr(&frames[n - 1]).add(header::SAVED_SP) = t.sp as u64 };
+    // The inlined scopes become frames of their own: the physical header stops describing them
+    // (an `InlinedSite` of the last call).
+    // SAFETY: as above.
+    unsafe { *hdr(&frames[n - 1]).add(header::BCI) = (frames[n - 1].bci as u64) << 1 };
     for f in frames[..n - 1].iter().rev() {
         let code = f.method.code.expect("compiled scope has code");
         // SAFETY: header and operand stack of this scope's frame, within the compiled frame.
