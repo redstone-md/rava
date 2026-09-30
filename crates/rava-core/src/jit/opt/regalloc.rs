@@ -3,6 +3,11 @@
 //! prefer callee-saved registers; in a caller-saved or SSE register, code generation saves them
 //! around each such call (`Allocation::saves`). Constants are never allocated. Spilled values
 //! stay in their slot for the whole interval.
+//!
+//! Deoptimization states read values without needing them in registers (C2's debug-info uses):
+//! registers are allocated over each value's intervals of real uses only. A value a state reads
+//! beyond them gets a home slot, written once at its definition (SSA values never change), and
+//! deoptimization reads it from there.
 
 use super::ir::*;
 use crate::jit::asm::R;
@@ -37,6 +42,8 @@ pub struct Allocation {
     /// in spill slots `save_base..` around the call.
     pub saves: std::collections::HashMap<V, Vec<Loc>>,
     pub save_base: i32,
+    /// Spill slot a register-allocated value is also stored to at its definition, for states.
+    pub home: Vec<Option<i32>>,
 }
 
 /// A set of values as a bit vector.
@@ -131,9 +138,38 @@ pub fn allocate(g: &Graph) -> Allocation {
         range[b as usize] = (from, p + 1);
         p += 2;
     }
-    let live_in = liveness(g, &order);
+    let full = intervals(g, &order, &pos, &range, true);
+    let iv = intervals(g, &order, &pos, &range, false);
+    let (mut loc, spill_slots, home) = scan(g, &iv, &full);
+    // Registers a call clobbers that hold values live across it.
+    let mut saves = std::collections::HashMap::new();
+    let mut most = 0;
+    for &(p, call) in &iv.call_values {
+        let live: Vec<Loc> = (0..n)
+            .filter(|&v| iv.used[v] && iv.start[v] < p && iv.end[v] > p)
+            .map(|v| loc[v])
+            .filter(|l| matches!(l, Loc::Xmm(_)) || matches!(l, Loc::Reg(r) if CALLER_SAVED.contains(r)))
+            .collect();
+        most = most.max(live.len() as i32);
+        saves.insert(call, live);
+    }
+    for v in 0..g.values.len() as V {
+        loc[v as usize] = loc[g.resolve(v) as usize];
+    }
+    let mut home = home;
+    for v in 0..g.values.len() as V {
+        home[v as usize] = home[g.resolve(v) as usize];
+    }
+    Allocation { loc, order, spill_slots: spill_slots + most, saves, save_base: spill_slots, home }
+}
+
+/// Live intervals from block liveness; with `states`, uses by deoptimization states count
+/// (they always do for phis, which get no home slot).
+fn intervals(g: &Graph, order: &[B], pos: &[u32], range: &[(u32, u32)], states: bool) -> Intervals {
+    let n = g.values.len();
+    let live_in = liveness(g, order, states);
     let mut iv = Intervals { start: vec![u32::MAX; n], end: vec![0; n], used: vec![false; n], calls: Vec::new(), call_values: Vec::new() };
-    for &b in &order {
+    for &b in order {
         let (from, to) = range[b as usize];
         let blk = &g.blocks[b as usize];
         for v in live_in[b as usize].iter() {
@@ -162,7 +198,7 @@ pub fn allocate(g: &Graph) -> Allocation {
                 sv.clear();
                 state_values(g, s, &mut sv);
                 let at = if matches!(inst, Inst::Call(..)) { p + 1 } else { p };
-                sv.iter().for_each(|&u| iv.used_at(u, at));
+                sv.iter().filter(|&&u| states || is_phi(g, u)).for_each(|&u| iv.used_at(u, at));
             }
             if matches!(inst, Inst::Call(..)) {
                 iv.calls.push(p);
@@ -173,31 +209,20 @@ pub fn allocate(g: &Graph) -> Allocation {
         if let Term::Deopt(s) = &blk.term {
             sv.clear();
             state_values(g, s, &mut sv);
-            sv.iter().for_each(|&u| iv.used_at(u, to - 1));
+            sv.iter().filter(|&&u| states || is_phi(g, u)).for_each(|&u| iv.used_at(u, to - 1));
         }
     }
     iv.calls.sort_unstable();
-    let (mut loc, spill_slots) = scan(g, &iv);
-    // Registers a call clobbers that hold values live across it.
-    let mut saves = std::collections::HashMap::new();
-    let mut most = 0;
-    for &(p, call) in &iv.call_values {
-        let live: Vec<Loc> = (0..n)
-            .filter(|&v| iv.used[v] && iv.start[v] < p && iv.end[v] > p)
-            .map(|v| loc[v])
-            .filter(|l| matches!(l, Loc::Xmm(_)) || matches!(l, Loc::Reg(r) if CALLER_SAVED.contains(r)))
-            .collect();
-        most = most.max(live.len() as i32);
-        saves.insert(call, live);
-    }
-    for v in 0..g.values.len() as V {
-        loc[v as usize] = loc[g.resolve(v) as usize];
-    }
-    Allocation { loc, order, spill_slots: spill_slots + most, saves, save_base: spill_slots }
+    iv
 }
 
+fn is_phi(g: &Graph, v: V) -> bool {
+    matches!(g.inst(v), Inst::Phi(_))
+}
+
+
 /// Values live on entry to each block (backward dataflow to a fixpoint).
-fn liveness(g: &Graph, order: &[B]) -> Vec<Set> {
+fn liveness(g: &Graph, order: &[B], states: bool) -> Vec<Set> {
     let n = g.values.len();
     let mut live_in = vec![Set::new(n); g.blocks.len()];
     let mut sv = Vec::new();
@@ -216,7 +241,7 @@ fn liveness(g: &Graph, order: &[B]) -> Vec<Set> {
             if let Term::Deopt(s) = &blk.term {
                 sv.clear();
                 state_values(g, s, &mut sv);
-                sv.iter().for_each(|&u| live.insert(u));
+                sv.iter().filter(|&&u| states || is_phi(g, u)).for_each(|&u| live.insert(u));
             }
             for &v in blk.insts.iter().rev() {
                 live.remove(v);
@@ -228,7 +253,7 @@ fn liveness(g: &Graph, order: &[B]) -> Vec<Set> {
                 if let Some(s) = inst.state() {
                     sv.clear();
                     state_values(g, s, &mut sv);
-                    sv.iter().for_each(|&u| live.insert(u));
+                    sv.iter().filter(|&&u| states || is_phi(g, u)).for_each(|&u| live.insert(u));
                 }
             }
             if live != live_in[b as usize] {
@@ -244,20 +269,23 @@ fn liveness(g: &Graph, order: &[B]) -> Vec<Set> {
 
 /// Assigns registers in interval start order, spilling the interval that ends last. A value
 /// may share its first operand's register when that operand dies at its definition.
-fn scan(g: &Graph, iv: &Intervals) -> (Vec<Loc>, i32) {
+/// `iv` has the intervals of real uses, `full` those including state uses: a value only states
+/// read lives in a spill slot, one read beyond its real uses gets a home slot as well.
+fn scan(g: &Graph, iv: &Intervals, full: &Intervals) -> (Vec<Loc>, i32, Vec<Option<i32>>) {
     let n = g.values.len();
     let mut loc = vec![Loc::None; n];
     let mut todo = Vec::new();
+    let mut spilled = Vec::new();
     for v in 0..n {
         match g.values[v].inst {
             Inst::Const(c) => loc[v] = Loc::Const(c),
             _ if iv.used[v] => todo.push(v),
+            _ if full.used[v] => spilled.push(v),
             _ => {}
         }
     }
     todo.sort_by_key(|&v| (iv.start[v], v));
     let mut active: Vec<usize> = Vec::new();
-    let mut spilled = Vec::new();
     for &v in &todo {
         active.retain(|&a| iv.end[a] >= iv.start[v]);
         let crossing = iv.crosses_call(v);
@@ -304,19 +332,27 @@ fn scan(g: &Graph, iv: &Intervals) -> (Vec<Loc>, i32) {
             _ => spilled.push(v),
         }
     }
-    // Spill slots, reused once their interval has ended.
-    spilled.sort_by_key(|&v| iv.start[v]);
+    // Home slots of values states read after their register is free.
+    let homed: Vec<usize> = (0..n).filter(|&v| matches!(loc[v], Loc::Reg(_) | Loc::Xmm(_)) && full.end[v] > iv.end[v]).collect();
+    let mut home = vec![None; n];
+    // Spill and home slots, reused once their (full) interval has ended.
+    let mut slotted: Vec<(usize, bool)> = spilled.into_iter().map(|v| (v, false)).chain(homed.into_iter().map(|v| (v, true))).collect();
+    slotted.sort_by_key(|&(v, _)| full.start[v]);
     let mut slot_end: Vec<u32> = Vec::new();
-    for v in spilled {
-        let slot = match slot_end.iter().position(|&e| e < iv.start[v]) {
+    for (v, is_home) in slotted {
+        let slot = match slot_end.iter().position(|&e| e < full.start[v]) {
             Some(s) => s,
             None => {
                 slot_end.push(0);
                 slot_end.len() - 1
             }
         };
-        slot_end[slot] = iv.end[v];
-        loc[v] = Loc::Stack(slot as i32);
+        slot_end[slot] = full.end[v];
+        if is_home {
+            home[v] = Some(slot as i32);
+        } else {
+            loc[v] = Loc::Stack(slot as i32);
+        }
     }
-    (loc, slot_end.len() as i32)
+    (loc, slot_end.len() as i32, home)
 }

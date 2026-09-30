@@ -36,6 +36,8 @@ pub(super) struct Gen<'a> {
     pub a: Asm,
     pub g: &'a Graph,
     pub loc: &'a [Loc],
+    /// Home slots (`Allocation::home`), written at each value's definition.
+    home: &'a [Option<i32>],
     pub max_locals: i32,
     labels: Vec<Label>,
     pub epilogue: Label,
@@ -95,6 +97,7 @@ pub(super) fn generate(g: &Graph, al: &Allocation, m: &'static Method, frame_slo
         a,
         g,
         loc: &al.loc,
+        home: &al.home,
         max_locals,
         labels,
         epilogue,
@@ -125,6 +128,9 @@ pub(super) fn generate(g: &Graph, al: &Allocation, m: &'static Method, frame_slo
         gen.a.bind(gen.labels[b as usize]);
         for &v in &g.blocks[b as usize].insts {
             gen.inst(v);
+            if let (Some(h), true) = (al.home[v as usize], g.resolve(v) == v && !matches!(g.inst(v), Inst::Phi(_))) {
+                moves::mov(&mut gen.a, Loc::Stack(h), al.loc[v as usize]);
+            }
         }
         gen.term(b, al.order.get(i + 1).copied());
     }
@@ -499,7 +505,7 @@ impl Gen<'_> {
             let base = Self::stack_base_of(sc);
             let locals = sc.locals.iter().enumerate().map(|(i, v)| (sc.frame + i as i32, v));
             let stack = sc.stack.iter().enumerate().map(|(i, v)| (base + i as i32, v));
-            slots.extend(locals.chain(stack).filter_map(|(slot, v)| v.map(|v| (slot, self.loc[v as usize]))));
+            slots.extend(locals.chain(stack).filter_map(|(slot, v)| v.map(|v| (slot, self.home[v as usize].map_or(self.loc[v as usize], Loc::Stack)))));
         }
         let frames = scopes.iter().map(|sc| super::deopt::Frame { method: sc.method, frame: sc.frame, bci: sc.bci, depth: sc.stack.len() as u32 }).collect();
         let desc: &'static super::deopt::Desc = Box::leak(Box::new(super::deopt::Desc { frames, slots }));
