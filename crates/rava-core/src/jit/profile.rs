@@ -5,7 +5,7 @@
 use super::runtime::IcCell;
 use crate::klass::Klass;
 use crate::method::Method;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Mutex, OnceLock};
 
 fn sites() -> &'static Mutex<HashMap<(usize, u32), &'static IcCell>> {
@@ -47,4 +47,20 @@ pub(crate) fn describe(m: &'static Method, bci: usize) -> String {
         None => "megamorphic".into(),
         Some(v) => format!("{} receivers", v.len()),
     }
+}
+
+fn traps() -> &'static Mutex<HashSet<(usize, u32)>> {
+    static TRAPS: OnceLock<Mutex<HashSet<(usize, u32)>>> = OnceLock::new();
+    TRAPS.get_or_init(Default::default)
+}
+
+/// Records that optimized code left for the interpreter at `m`'s instruction `bci` (HotSpot's
+/// per-bytecode trap history): recompilations do not speculate there again.
+pub(crate) fn note_trap(m: &'static Method, bci: usize) {
+    traps().lock().unwrap().insert((m as *const Method as usize, bci as u32));
+}
+
+/// Whether optimized code ever deoptimized at `m`'s instruction `bci`.
+pub(crate) fn trapped(m: &'static Method, bci: usize) -> bool {
+    traps().lock().unwrap().contains(&(m as *const Method as usize, bci as u32))
 }

@@ -58,8 +58,11 @@ impl Builder {
             eprintln!("[opt-inline] {indent}{} @{} -> {m} call (no target: {cell})", self.sc.m, pc);
         }
         // A complete receiver profile (every class the site saw is guarded): a receiver of
-        // another class deoptimizes (C2's uncommon trap), noting its class for recompilation.
-        let profiled = !plans.is_empty() && plans.iter().all(|(_, g)| matches!(g, Guard::Klass(_)));
+        // another class deoptimizes (C2's uncommon trap), noting its class for recompilation;
+        // a site that trapped before calls instead.
+        let profiled = !plans.is_empty()
+            && plans.iter().all(|(_, g)| matches!(g, Guard::Klass(_)))
+            && !crate::jit::profile::trapped(self.sc.m, pc);
         self.emit_miss(plans, callee, args, s, m.sig.ret, profiled.then_some(pre))
     }
 
