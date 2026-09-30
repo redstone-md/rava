@@ -3,7 +3,7 @@
 use super::codegen::{Arg, Gen};
 use super::ir::*;
 use super::regalloc::Loc;
-use crate::jit::asm::{mem, mem_idx, Alu, Cond, R, X};
+use crate::jit::asm::{mem, mem_idx, Alu, Cond, M, R, X};
 use crate::jit::emit_obj::{load_typed_to, normalize_into, store_typed_from};
 use crate::jit::runtime::{self, IcCell};
 use crate::klass::Klass;
@@ -61,7 +61,7 @@ impl Gen<'_> {
             Inst::StoreField(o, off, bt, x) => {
                 let ro = self.reg(o, R::Rax);
                 let rx = self.value_reg(x, bt);
-                store_typed_from(&mut self.a, rx, bt, mem(ro, off as i32));
+                self.store_typed(v, rx, bt, mem(ro, off as i32));
             }
             Inst::LoadStatic(addr, bt) => {
                 self.a.mov_ri(R::Rcx, addr as i64);
@@ -88,7 +88,7 @@ impl Gen<'_> {
                 load_typed_to(&mut self.a, r, bt, mem_idx(ra, ri, scale(bt), BASE));
                 self.put(v, r);
             }
-            Inst::StoreIndexed(arr, idx, bt, x) => self.store_indexed(arr, idx, bt, x),
+            Inst::StoreIndexed(arr, idx, bt, x) => self.store_indexed(v, arr, idx, bt, x),
             Inst::New(k, s) => self.new_instance(v, k, &s),
             Inst::NewArray(k, len, s) => {
                 let fail = self.deopt(&s);
@@ -166,13 +166,22 @@ impl Gen<'_> {
         self.reg(x, R::Rdx)
     }
 
-    fn store_indexed(&mut self, arr: V, idx: V, bt: BasicType, x: V) {
+    /// The store `v` of `src` to `m`, with a card mark unless it initializes a young object.
+    fn store_typed(&mut self, v: V, src: R, bt: BasicType, m: M) {
+        if self.unbarriered[v as usize] {
+            crate::jit::emit_obj::store_raw(&mut self.a, src, bt, m);
+        } else {
+            store_typed_from(&mut self.a, src, bt, m);
+        }
+    }
+
+    fn store_indexed(&mut self, v: V, arr: V, idx: V, bt: BasicType, x: V) {
         let ra = self.reg(arr, R::Rax);
         let ri = self.reg(idx, R::Rcx);
         let at = mem_idx(ra, ri, scale(bt), BASE);
         if bt != BasicType::Byte {
             let rx = self.value_reg(x, bt);
-            return store_typed_from(&mut self.a, rx, bt, at);
+            return self.store_typed(v, rx, bt, at);
         }
         // bastore: boolean[] stores value & 1, byte[] the low byte.
         self.load(R::Rdx, x);
