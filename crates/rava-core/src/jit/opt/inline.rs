@@ -45,21 +45,31 @@ impl Builder {
     /// current block continues (false when every path through the callee left compiled code).
     /// `pre` is the state before the invoke, for a guard that deoptimizes.
     pub(super) fn call_or_inline(&mut self, pc: usize, op: u8, m: &'static Method, callee: Callee, args: Vec<V>, s: Rc<State>, pre: Rc<State>) -> bool {
-        let plans = self.inline_targets(pc, op, m, pre);
-        self.emit_call(plans, callee, args, s, m.sig.ret)
+        let plans = self.inline_targets(pc, op, m, pre.clone());
+        // A complete receiver profile (every class the site saw is guarded): a receiver of
+        // another class deoptimizes (C2's uncommon trap), noting its class for recompilation.
+        let profiled = !plans.is_empty() && plans.iter().all(|(_, g)| matches!(g, Guard::Klass(_)));
+        self.emit_miss(plans, callee, args, s, m.sig.ret, profiled.then_some(pre))
     }
 
     /// The call `callee(args)` returning `ret`, with each of `plans` (a target and what it
     /// needs checked) inlined when the policy agrees; guarded plans are tried in turn and the
     /// call is made when none applies. Returns whether the current block continues.
     pub(super) fn emit_call(&mut self, plans: Vec<(&'static Method, Guard)>, callee: Callee, args: Vec<V>, s: Rc<State>, ret: BasicType) -> bool {
+        self.emit_miss(plans, callee, args, s, ret, None)
+    }
+
+    /// `emit_call`, where with `miss` (the state before the call) a receiver no guard admits
+    /// deoptimizes instead of calling, provided every plan was inlined.
+    fn emit_miss(&mut self, plans: Vec<(&'static Method, Guard)>, callee: Callee, args: Vec<V>, s: Rc<State>, ret: BasicType, miss: Option<Rc<State>>) -> bool {
+        let all = plans.len();
         // What is known at the call holds after it, on every path through the callee.
         let known = self.nonnull.clone();
         let first = args.first().and_then(|&a| self.g.constant(a));
         let k = self.g.new_block(-1);
         let mut returns = Vec::new();
         // `open`: the current block (the last guard's failure path) still needs the call.
-        let (mut open, mut inlined) = (true, false);
+        let (mut open, mut inlined, mut done) = (true, false, 0);
         for (target, guard) in plans {
             let ok = decide(target, first, &self.chain, 3, self.spent).is_some();
             if std::env::var_os("RAVA_CORE_INLINE_LOG").is_some() {
@@ -77,6 +87,7 @@ impl Builder {
             };
             returns.extend(r);
             inlined = true;
+            done += 1;
             match slow {
                 Some(b) => {
                     self.start_block(b);
@@ -87,6 +98,10 @@ impl Builder {
                     break;
                 }
             }
+        }
+        if let (true, Some(pre), true) = (open, &miss, done == all) {
+            self.g.blocks[self.cur as usize].term = Term::Deopt(pre.clone());
+            open = false;
         }
         if open {
             let r = self.call(callee, args, s, ret);

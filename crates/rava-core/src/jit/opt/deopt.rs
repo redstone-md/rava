@@ -32,6 +32,25 @@ pub struct Frame {
     pub depth: u32,
 }
 
+/// A deoptimization before a virtual or interface call (a receiver-type guard that failed):
+/// records the receiver's class in the call site's profile, for the recompilation.
+fn note_receiver(f: &Frame, base: *mut u64) {
+    let code = f.method.code.expect("compiled scope has code");
+    if !matches!(code.code[f.bci as usize], 0xb6 | 0xb9) {
+        return;
+    }
+    let pc = f.bci as usize;
+    let index = u16::from_be_bytes([code.code[pc + 1], code.code[pc + 2]]) as usize;
+    let Some(crate::link::Resolved::Method(m)) = f.method.holder.resolved[index].get().copied() else { return };
+    let Some(at) = (f.depth as usize).checked_sub(m.param_slots() as usize) else { return };
+    // SAFETY: the receiver's operand slot of this scope, just written back.
+    let receiver = unsafe { *base.add(f.frame as usize + code.max_locals as usize + header::SLOTS + at) } as crate::heap::Oop;
+    if !receiver.is_null() {
+        // SAFETY: a live receiver.
+        crate::jit::profile::note_receiver(f.method, pc, unsafe { crate::heap::obj::klass(receiver) });
+    }
+}
+
 /// Writes the state of deoptimization point `desc` into the compiled frame at `base` (register
 /// values from `saved`, as the common stub pushed them), then resumes its scopes innermost
 /// first, with the exception a call left pending rethrown at the innermost one. Returns the
@@ -64,6 +83,9 @@ pub extern "sysv64" fn deopt(t: *mut Thread, base: *mut u64, desc: *const Desc, 
         Some(e) => Err(e),
         None => Ok(0),
     };
+    if outcome.is_ok() {
+        note_receiver(&frames[0], base);
+    }
     if std::env::var_os("RAVA_CORE_DEOPT_LOG").is_some() {
         let scopes: Vec<String> = frames.iter().map(|f| format!("{}@{} depth {} frame {}", f.method, f.bci, f.depth, f.frame)).collect();
         let pending = match &outcome {
