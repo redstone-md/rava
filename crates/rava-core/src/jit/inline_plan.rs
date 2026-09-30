@@ -58,7 +58,7 @@ pub(super) fn decide(target: &'static Method, first: Option<i64>, chain: &Chain,
     if spent + size > if tier >= 2 { TIER2_BUDGET } else { TIER1_BUDGET } {
         return None;
     }
-    if std::env::var_os("RAVA_CORE_NO_INLINE").is_some() || target.is_abstract() || target.is_native() || intrinsic(target).is_some() {
+    if env_once!("RAVA_CORE_NO_INLINE").is_some() || target.is_abstract() || target.is_native() || intrinsic(target).is_some() {
         return None;
     }
     if tier >= 3 && compiled_too_large(target) {

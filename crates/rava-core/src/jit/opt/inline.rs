@@ -52,7 +52,7 @@ impl Builder {
             Some(t) if matches!(op, 0xb6 | 0xb9) => vec![(t, Guard::None)],
             _ => self.inline_targets(pc, op, m, pre.clone()),
         };
-        if plans.is_empty() && std::env::var_os("RAVA_CORE_INLINE_LOG").is_some() {
+        if plans.is_empty() && env_once!("RAVA_CORE_INLINE_LOG").is_some() {
             let cell = crate::jit::profile::describe(self.sc.m, pc);
             let indent = "  ".repeat(self.chain.len());
             eprintln!("[opt-inline] {indent}{} @{} -> {m} call (no target: {cell})", self.sc.m, pc);
@@ -89,7 +89,7 @@ impl Builder {
             // does not override it).
             let intrinsic = crate::jit::intrinsics::intrinsic(target).filter(|k| k.is_stateless());
             let ok = intrinsic.is_some() || decide(target, first, &self.chain, 3, self.spent).is_some();
-            if std::env::var_os("RAVA_CORE_INLINE_LOG").is_some() {
+            if env_once!("RAVA_CORE_INLINE_LOG").is_some() {
                 let indent = "  ".repeat(self.chain.len());
                 let why = if ok { String::new() } else { format!(" ({})", crate::jit::inline_plan::refusal(target, &self.chain, 3, self.spent)) };
                 eprintln!("[opt-inline] {indent}{} @{} -> {target} {}{why}", self.sc.m, s.bci, if ok { "inlined" } else { "call" });

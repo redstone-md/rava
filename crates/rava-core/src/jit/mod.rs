@@ -8,6 +8,15 @@
 //! ABI (`EntryFn`): `rdi` = thread, `rsi` = locals, `rdx` = method; result in `rax`; an
 //! exception is signalled through `Thread::pending`.
 
+/// A debugging variable of the environment, read once (`getenv` takes the environment lock
+/// and scans it; compilation consults these per call site). `Option<&'static OsStr>`.
+macro_rules! env_once {
+    ($name:literal) => {{
+        static V: std::sync::OnceLock<Option<std::ffi::OsString>> = std::sync::OnceLock::new();
+        V.get_or_init(|| std::env::var_os($name)).as_deref()
+    }};
+}
+
 pub mod asm;
 mod analysis;
 mod code_cache;
