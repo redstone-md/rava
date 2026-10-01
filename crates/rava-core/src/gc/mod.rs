@@ -52,6 +52,19 @@ pub(crate) fn bump_layout(bytes: usize) -> Option<(usize, usize, usize)> {
     Some((CLASS_SIZES[class] as usize, base + std::mem::offset_of!(ClassCache, bump), base + std::mem::offset_of!(ClassCache, end)))
 }
 
+/// Sizes up to this have a class per 16 bytes (`class_of`): compiled code finds the class of a
+/// variable-length array from its rounded size.
+pub(crate) const SMALL_STEP_MAX: usize = 256;
+const _: () = assert!(std::mem::size_of::<ClassCache>() == 32 && CLASS_SIZES[SMALL_STEP_MAX / 16 - 1] as usize == SMALL_STEP_MAX);
+
+/// Offsets within `AllocCache` of the bump pointer and limit of the class of cell size `size`
+/// (a multiple of 16, at most `SMALL_STEP_MAX`), less `2 * size - 32`: the class's cache is at
+/// `classes + (size / 16 - 1) * 32`.
+pub(crate) fn step_cache_offsets() -> (usize, usize) {
+    let base = std::mem::offset_of!(AllocCache, classes);
+    (base + std::mem::offset_of!(ClassCache, bump), base + std::mem::offset_of!(ClassCache, end))
+}
+
 impl Default for AllocCache {
     fn default() -> Self {
         AllocCache { classes: [ClassCache::default(); CLASSES], pending: 0 }
