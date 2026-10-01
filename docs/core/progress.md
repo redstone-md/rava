@@ -520,6 +520,25 @@ Server start, `bench/results/20261001-153755-vm` (6 rounds, noisy host: sd 3-4 s
 60.17 s, 87ed062 57.43 s, `java` 45.10 s. Spawn-area generation (the dimensions' "Time elapsed"):
 22.0 -> 20.4 s against `java`'s 13.2 (1.54x).
 
+**Later host** (Xeon @ 2.1 GHz). Megamorphic calls: int-typed ones match `java` (2.4-2.7 ns,
+`bench/MegaCallBench`); double results cost 5.5-6.2 ns until they came back in xmm0 (08d6d6e,
+3.8-4.0 ns; `java` 3.0). Escape analysis is not a lever here: `java -XX:-DoEscapeAnalysis` runs
+WorldGenBench as fast. Register allocation neither: with 3 allocatable registers instead of 11
+the server start is only about 3% slower (`RAVA_CORE_OPT_FEW_REGS`, which also shook out the r11
+clobbers of e0fecec).
+
+- Major receiver at megamorphic sites (da6f3f8): WorldGenBench 49.9 -> 47.9 ms per chunk.
+- Conditional moves straight into the result (4d7f33b): RTreeBench 4200 -> 3830 ns.
+- Frameless leaves without r13 (a67efd7); tier-1 counters ask once every 1024 counts past the
+  threshold (6cdb618).
+
+Server start, `bench/results/20261001-184955-vm` (6 rounds): 87ed062 36.43 s, 4d7f33b 34.40 s,
+`java` 28.51 s (1.21x). Spawn-area generation 12.4 s against `java`'s 8.1 (within noise of
+87ed062's 12.1).
+
+Allocation slow path in steady-state generation: about 7k refills per chunk (runs average
+2.8 KiB in reused pages), about 0.3 ms per chunk above `java`'s TLAB refills.
+
 ### Next
 
 1. Mutator speed of the world-generation threads (Paper Common Worker 2x), and the remaining
