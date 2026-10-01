@@ -43,7 +43,33 @@ macro_rules! vm_field {
 }
 pub(crate) use vm_field;
 
+/// With `RAVA_CORE_ALLOC_PROF`: allocations that reach the runtime, by class (compiled code
+/// reaches it once per exhausted bump run, so counts weigh a class by its run turnover).
+fn alloc_profile(k: &'static Klass, bytes: usize) {
+    use std::sync::Mutex;
+    static PROF: Mutex<(u64, Option<std::collections::HashMap<usize, (u64, u64)>>)> = Mutex::new((0, None));
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    if !*ON.get_or_init(|| std::env::var_os("RAVA_CORE_ALLOC_PROF").is_some()) {
+        return;
+    }
+    let mut p = PROF.lock().unwrap();
+    p.0 += 1;
+    let total = p.0;
+    let m = p.1.get_or_insert_with(Default::default);
+    let e = m.entry(k as *const Klass as usize).or_default();
+    e.0 += 1;
+    e.1 += bytes as u64;
+    if total % 1_000_000 == 0 {
+        let mut v: Vec<_> = m.iter().map(|(&k, &c)| (c, k)).collect();
+        v.sort_by(|a, b| b.0.cmp(&a.0));
+        // SAFETY: the keys are immortal classes.
+        let lines: Vec<String> = v.iter().take(25).map(|((n, b), k)| format!("{n:8} {:8}K {}", b >> 10, unsafe { &*(*k as *const Klass) }.name)).collect();
+        eprintln!("[alloc-prof] {total} samples\n{}", lines.join("\n"));
+    }
+}
+
 pub fn alloc_instance(t: &mut Thread, k: &'static Klass) -> JResult<Oop> {
+    alloc_profile(k, k.instance_size() as usize);
     match vm().heap.allocate(t, k.instance_size() as usize) {
         // SAFETY: fresh zeroed memory of the instance size.
         Some(mem) => Ok(unsafe { crate::heap::init_instance(mem, k) }),
@@ -55,6 +81,7 @@ pub fn alloc_array(t: &mut Thread, k: &'static Klass, length: i32) -> JResult<Oo
     if length < 0 {
         return Err(throw_new(t, "java/lang/NegativeArraySizeException", &length.to_string()));
     }
+    alloc_profile(k, crate::heap::array_bytes(k.elem_size(), length));
     match vm().heap.allocate(t, crate::heap::array_bytes(k.elem_size(), length)) {
         // SAFETY: fresh zeroed memory sized for `length` elements.
         Some(mem) => Ok(unsafe { crate::heap::init_array(mem, k, length) }),
