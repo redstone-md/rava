@@ -358,7 +358,11 @@ impl Gen<'_> {
         self.restore_around(v);
         self.a.alu_mi(true, Alu::Cmp, mem(R::R12, offsets::PENDING), 0);
         self.a.jcc(Cond::Ne, deopt);
-        self.put(v, R::Rax);
+        if matches!(self.g.ty(v), Ty::F | Ty::D) {
+            self.xput(v, crate::jit::asm::X(0));
+        } else {
+            self.put(v, R::Rax);
+        }
     }
 
     /// rdx := the implementation of the `Method*` in `t` for the receiver at frame slot `base`.

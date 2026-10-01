@@ -82,12 +82,29 @@ pub fn enabled() -> bool {
 
 /// The initial `Method::entry`: run through the interpreter (which also dispatches natives).
 pub(crate) fn interpreter_entry() -> usize {
-    interpreter_adapter as *const () as usize
+    static E: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *E.get_or_init(|| float_result_stub(interpreter_adapter as *const () as usize))
 }
 
 /// The initial `Method::entry` of a native method: straight to its implementation.
 pub(crate) fn native_entry() -> usize {
-    native_adapter as *const () as usize
+    static E: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *E.get_or_init(|| float_result_stub(native_adapter as *const () as usize))
+}
+
+/// Calls the Rust entry `f` with the same arguments, then copies its result into xmm0 too:
+/// every `Method::entry` returns its value in rax, and a float or double one in xmm0 as well,
+/// where optimized callers take it (no move from a general register on their critical path).
+fn float_result_stub(f: usize) -> usize {
+    use asm::R;
+    let mut a = asm::Asm::default();
+    // Entered with rsp 8 mod 16: one more slot aligns the call.
+    a.alu_ri(true, asm::Alu::Sub, R::Rsp, 8);
+    a.call_abs(f);
+    a.alu_ri(true, asm::Alu::Add, R::Rsp, 8);
+    a.mov_xr(true, asm::X(0), R::Rax);
+    a.ret();
+    code_cache::install(&a.finish())
 }
 
 /// Compiled-code ABI entry of a native method (natives are never compiled).

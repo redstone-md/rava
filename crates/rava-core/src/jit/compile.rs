@@ -418,6 +418,10 @@ impl Emitter {
         self.a.store(true, mem(R::R12, offsets::SP), R::Rcx);
         self.a.bind(restore);
         restore_registers(&mut self.a);
+        if matches!(self.m.sig.ret, crate::types::BasicType::Float | crate::types::BasicType::Double) {
+            // Compiled callers take a float or double result from xmm0 (`jit::float_result_stub`).
+            self.a.mov_xr(true, super::asm::X(0), R::Rax);
+        }
         self.a.ret();
         // The frame was never linked: raise, then return without unlinking.
         self.a.bind(overflow);
