@@ -135,6 +135,23 @@ pub(super) fn member_target(mn: usize) -> Option<&'static Method> {
     }
 }
 
+crate::runtime::vm_field!(counting_target, "java/lang/invoke/MethodHandleImpl$CountingWrapper", "target", "Ljava/lang/invoke/MethodHandle;");
+
+/// The constant handle `h` as compiled code calls it: through `MethodHandleImpl.CountingWrapper`s
+/// to the handle they wrap. A wrapper (a `guardWithTest` branch) counts invocations through a
+/// `@DontInline` form until it switches to one that just delegates; the count is a profiling
+/// heuristic with no other effect, so code compiled while it still counts calls the target.
+pub(super) fn through_counting(mut h: usize) -> usize {
+    for _ in 0..8 {
+        if h == 0 || class_of(h).name.as_str() != "java/lang/invoke/MethodHandleImpl$CountingWrapper" {
+            break;
+        }
+        // SAFETY: a live CountingWrapper; `target` is a final field.
+        h = unsafe { obj::read::<crate::heap::Oop>(h as crate::heap::Oop, counting_target()) } as usize;
+    }
+    h
+}
+
 /// The method `invokeBasic` on the constant handle `h` enters: `h.form.vmentry`'s target.
 pub(super) fn handle_target(h: usize) -> Option<&'static Method> {
     if h == 0 {
