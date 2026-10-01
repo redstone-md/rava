@@ -1,0 +1,11 @@
+time_utc	round	label	commit	bin_sha256	wall_s	done_s	user_s	sys_s	milestones
+2026-10-01T03:43:25Z	1	3d136c2	3d136c2c38ddca0dba18f2a2d85a2d462637cc2f	3aeb6e0fbd331cd3	29.855010255	29.209	39.6	2.4	bootstrap@0,env@4,prep@6,spawn@17,nether@25,end@28,done@29
+2026-10-01T03:43:56Z	1	HEAD	91c3731ad91dcacde04fd734fdafced8e80b2ffe	680f18d57466b1fa	29.538450602	28.894	39.4	2.4	bootstrap@1,env@4,prep@7,spawn@18,nether@25,end@29,done@29
+2026-10-01T03:44:29Z	2	3d136c2	3d136c2c38ddca0dba18f2a2d85a2d462637cc2f	3aeb6e0fbd331cd3	30.937755530	30.253	41.6	2.4	bootstrap@1,env@4,prep@7,spawn@17,nether@26,end@29,done@30
+2026-10-01T03:45:04Z	2	HEAD	91c3731ad91dcacde04fd734fdafced8e80b2ffe	680f18d57466b1fa	31.931157331	31.247	41.9	2.4	bootstrap@1,env@4,prep@7,spawn@19,nether@27,end@31,done@32
+2026-10-01T03:45:37Z	3	3d136c2	3d136c2c38ddca0dba18f2a2d85a2d462637cc2f	3aeb6e0fbd331cd3	31.191395811	30.455	41.3	2.3	bootstrap@1,env@5,prep@8,spawn@18,nether@26,end@30,done@31
+2026-10-01T03:46:10Z	3	HEAD	91c3731ad91dcacde04fd734fdafced8e80b2ffe	680f18d57466b1fa	30.630112772	29.997	40.4	2.3	bootstrap@1,env@4,prep@7,spawn@17,nether@26,end@29,done@30
+2026-10-01T03:46:43Z	4	3d136c2	3d136c2c38ddca0dba18f2a2d85a2d462637cc2f	3aeb6e0fbd331cd3	31.113856646	30.480	41.7	2.4	bootstrap@1,env@4,prep@7,spawn@18,nether@26,end@30,done@30
+2026-10-01T03:47:16Z	4	HEAD	91c3731ad91dcacde04fd734fdafced8e80b2ffe	680f18d57466b1fa	30.290070654	29.584	39.9	2.3	bootstrap@1,env@4,prep@7,spawn@17,nether@26,end@29,done@30
+2026-10-01T03:47:48Z	5	3d136c2	3d136c2c38ddca0dba18f2a2d85a2d462637cc2f	3aeb6e0fbd331cd3	30.284570335	29.635	40.4	2.3	bootstrap@1,env@4,prep@7,spawn@17,nether@26,end@29,done@30
+2026-10-01T03:48:20Z	5	HEAD	91c3731ad91dcacde04fd734fdafced8e80b2ffe	680f18d57466b1fa	29.393386942	28.659	38.8	2.3	bootstrap@1,env@4,prep@7,spawn@17,nether@25,end@28,done@29
