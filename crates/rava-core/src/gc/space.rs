@@ -17,6 +17,9 @@ pub const PAGE_SIZE: usize = 1 << PAGE_SHIFT;
 /// Objects above this size get their own mapping.
 pub const LARGE_THRESHOLD: usize = 32 << 10;
 
+/// The shortest hole worth a bump run in a reused page (`PageMeta::next_free_run`).
+const MIN_RUN: usize = 256;
+
 pub const CLASS_SIZES: [u32; 44] = [
     16, 32, 48, 64, 80, 96, 112, 128, 144, 160, 176, 192, 208, 224, 240, 256, //
     320, 384, 448, 512, 640, 768, 896, 1024, 1280, 1536, 1792, 2048, //
@@ -81,13 +84,23 @@ impl PageMeta {
     }
 
     /// The next run of free cells at or after the cursor, marked allocated: `(first, end)`.
+    /// Holes under `MIN_RUN` bytes are passed over (as Immix skips partly used lines): each run
+    /// costs compiled code a trip through the runtime, and reused pages are full of one- and
+    /// two-cell holes. They stay free for a later pass, once their neighbours have died too.
     fn next_free_run(&mut self) -> Option<(usize, usize)> {
         let cells = self.cells();
-        let Some(first) = self.find_bit(self.cursor, cells, false) else {
-            self.cursor = cells;
-            return None;
+        let min = (MIN_RUN / self.cell_size as usize).max(1);
+        let (first, end) = loop {
+            let Some(first) = self.find_bit(self.cursor, cells, false) else {
+                self.cursor = cells;
+                return None;
+            };
+            let end = self.find_bit(first, cells, true).unwrap_or(cells);
+            if end - first >= min {
+                break (first, end);
+            }
+            self.cursor = end;
         };
-        let end = self.find_bit(first, cells, true).unwrap_or(cells);
         let mut i = first;
         while i < end {
             let (w, b) = (i / 64, i % 64);
@@ -191,17 +204,29 @@ impl Space {
         self.base + (index << PAGE_SHIFT)
     }
 
-    /// A page of size class `class` with free cells, owned by the caller from now on.
-    pub fn take_page(&mut self, class: usize) -> Option<usize> {
-        let cell = CLASS_SIZES[class] as usize;
+    /// A page of size class `class` with a free run, owned by the caller from now on, and that
+    /// run (`next_run`): `(page, start, end)`. A reused page with only short holes left goes back
+    /// unowned until the next collection sweeps it again.
+    pub fn take_run(&mut self, class: usize) -> Option<(usize, usize, usize)> {
         while let Some(p) = self.partial[class].pop() {
+            let addr = self.page_addr(p);
             let meta = self.pages[p].as_mut().expect("partial page");
             if meta.owned {
                 continue;
             }
-            meta.owned = true;
-            return Some(p);
+            if let Some((start, end)) = next_run_in(meta, addr) {
+                meta.owned = true;
+                return Some((p, start, end));
+            }
         }
+        let p = self.take_page(class)?;
+        let (start, end) = self.next_run(p).expect("a fresh or empty page has free cells");
+        Some((p, start, end))
+    }
+
+    /// An empty or fresh page of size class `class`, owned by the caller from now on.
+    fn take_page(&mut self, class: usize) -> Option<usize> {
+        let cell = CLASS_SIZES[class] as usize;
         let addr = match self.empty.pop() {
             Some(a) => {
                 // A recycled page keeps its memory committed (cheaper to clear than to fault in

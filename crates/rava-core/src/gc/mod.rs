@@ -140,16 +140,15 @@ impl Heap {
         self.flush_pending(t);
         self.maybe_collect(t);
         let mut space = self.space.lock().unwrap();
-        let page = match space.take_page(class) {
-            Some(p) => p,
+        let (page, bump, end) = match space.take_run(class) {
+            Some(r) => r,
             None => {
                 drop(space);
                 self.collect(t);
                 space = self.space.lock().unwrap();
-                space.take_page(class)?
+                space.take_run(class)?
             }
         };
-        let (bump, end) = space.next_run(page).expect("a taken page has free cells");
         t.alloc.classes[class] = ClassCache { bump, end, page: page + 1, start: bump };
         Some(())
     }
