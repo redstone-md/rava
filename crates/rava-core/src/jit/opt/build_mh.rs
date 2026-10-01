@@ -56,15 +56,88 @@ impl Builder {
     /// `MethodHandle.invokeBasic`: the receiver's `form.vmentry` target, with the handle as its
     /// first argument.
     fn invoke_basic(&mut self, sig: &'static MethodSig) -> bool {
-        let (args, pre, s) = self.pop_args(sig.params.len() + 1);
-        if let Some(target) = self.g.constant(args[0]).and_then(|h| fold::handle_target(h as usize)) {
-            return self.emit_call(vec![(target, Guard::None)], Callee::Direct(target), args, s, sig.ret);
+        let (mut args, pre, s) = self.pop_args(sig.params.len() + 1);
+        if let Some(h) = self.g.constant(args[0]).map(|h| fold::through_counting(h as usize)).filter(|&h| h != 0) {
+            if let Some(target) = fold::handle_target(h) {
+                args[0] = self.konst(Ty::A, h as i64);
+                return self.emit_call(vec![(target, Guard::None)], Callee::Direct(target), args, s, sig.ret);
+            }
         }
         self.null_check(args[0], pre);
+        let handles = self.constant_handles(args[0]);
+        if !handles.is_empty() {
+            return self.invoke_basic_split(handles, args, s, sig.ret);
+        }
         let form = self.add(Inst::LoadField(args[0], indy::mh_form(), BasicType::Reference), Ty::A);
         let entry = self.add(Inst::LoadField(form, indy::lf_vmentry(), BasicType::Reference), Ty::A);
         let target = self.member_method(entry);
         self.emit_call(Vec::new(), Callee::Method(target), args, s, sig.ret)
+    }
+
+    /// The constant handles (with their targets) a merge of a few of them can be: the handle
+    /// `MethodHandleImpl.selectAlternative` picks in a `guardWithTest` form, once inlined.
+    fn constant_handles(&self, v: V) -> Vec<(i64, &'static Method)> {
+        let Inst::Phi(inputs) = self.g.inst(self.g.resolve(v)) else { return Vec::new() };
+        let mut out: Vec<(i64, &'static Method)> = Vec::new();
+        for &x in inputs {
+            let Some(c) = self.g.constant(self.g.resolve(x)).filter(|&c| c != 0) else { return Vec::new() };
+            let Some(t) = fold::handle_target(fold::through_counting(c as usize)) else { return Vec::new() };
+            if !out.iter().any(|&(o, _)| o == c) {
+                out.push((c, t));
+            }
+        }
+        if out.len() > 4 {
+            return Vec::new();
+        }
+        out
+    }
+
+    /// `invokeBasic` on one of `handles`: a test for each, with the call inlined behind it on
+    /// that constant handle (so its form's reads of the handle fold too), then the generic call.
+    fn invoke_basic_split(&mut self, handles: Vec<(i64, &'static Method)>, args: Vec<V>, s: std::rc::Rc<State>, ret: BasicType) -> bool {
+        let k = self.g.new_block(-1);
+        let known = self.nonnull.clone();
+        let mut returns: Vec<(B, Option<V>)> = Vec::new();
+        for (c, target) in handles {
+            let cv = self.konst(Ty::A, c);
+            let (then, other) = (self.g.new_block(-1), self.g.new_block(-1));
+            self.g.blocks[then as usize].preds.push(self.cur);
+            self.g.blocks[other as usize].preds.push(self.cur);
+            self.g.blocks[self.cur as usize].term = Term::If { cmp: Cmp::Eq, ty: Ty::A, a: args[0], b: cv, then, other, unordered: false };
+            self.start_block(then);
+            let mut a = args.clone();
+            a[0] = self.konst(Ty::A, fold::through_counting(c as usize) as i64);
+            if self.emit_call(vec![(target, Guard::None)], Callee::Direct(target), a, s.clone(), ret) {
+                let v = (ret != BasicType::Void).then(|| self.pop());
+                self.g.blocks[self.cur as usize].term = Term::Goto(k);
+                self.g.blocks[k as usize].preds.push(self.cur);
+                returns.push((self.cur, v));
+            }
+            self.start_block(other);
+            self.nonnull.clone_from(&known);
+        }
+        let entry = self.add(Inst::LoadField(args[0], indy::mh_form(), BasicType::Reference), Ty::A);
+        let entry = self.add(Inst::LoadField(entry, indy::lf_vmentry(), BasicType::Reference), Ty::A);
+        let target = self.member_method(entry);
+        if self.emit_call(Vec::new(), Callee::Method(target), args, s, ret) {
+            let v = (ret != BasicType::Void).then(|| self.pop());
+            self.g.blocks[self.cur as usize].term = Term::Goto(k);
+            self.g.blocks[k as usize].preds.push(self.cur);
+            returns.push((self.cur, v));
+        }
+        if returns.is_empty() {
+            return false;
+        }
+        self.start_block(k);
+        self.nonnull = known;
+        if ret != BasicType::Void {
+            let v = match returns.as_slice() {
+                [(_, v)] => v.expect("a value return"),
+                _ => self.add(Inst::Phi(returns.iter().map(|r| r.1.expect("a value return")).collect()), Ty::of(ret)),
+            };
+            self.push(v);
+        }
+        true
     }
 
     /// The `Method*` of the `MemberName` value `mn`.
