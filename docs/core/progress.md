@@ -315,12 +315,54 @@ Then the call protocol and code size (A/B of 3 runs each on the same host):
 sooner: world generation parallelizes better there (chunk workers 13 s CPU in `java`, 24 s here
 before these changes).
 
+After that (A/B as above, 3 runs each, not recorded run by run): inlining budget 8000 ->
+16000 bytes (41.9 -> 40.6 s); deoptimization states keep only live locals (`opt/locals.rs`,
+39.4 -> 38.6 s); a primary supers display for class subtype checks (within noise).
+
+## 2026-10-01 — recorded A/B protocol, volatile fix, where the goal stands
+
+**Goal (unchanged): wall < 5 s from exec to "Done", no workload adaptation, no snapshot or
+cache.** Everything above measures progress against the previous build and against `java`;
+none of it is near the goal yet.
+
+From now on Paper numbers come from `bench/paper_ab.sh`: it builds each git revision in its own
+worktree, alternates the builds round by round on one host (fixed Paper 1.21.1-133 jar and
+`level-seed=20260930`, a fresh world every run) and keeps every run: `runs.tsv` (commit, binary
+sha256, wall to "Done", the server's own Done time, user/sys CPU, milestone offsets), `env.txt`
+(host, CPU, kernel, toolchains, jar and server.properties hashes) and every server log.
+`bench/paper_ab_summary.py` summarizes a results directory.
+
+First recorded session, `bench/results/20260930-235938-vm` (4 vCPU Xeon @ 2.10 GHz, 5 rounds):
+
+| build | wall mean (median, sd) | CPU user / sys |
+|---|---|---|
+| 98ab2a2 (before the volatile fix) | 36.50 s (36.77, 1.02) | 42.2 / 7.4 s |
+| fb1f31d (volatile fix) | 35.92 s (35.63, 0.86) | 42.5 / 6.3 s |
+| `java` 21.0.12 | 25.65 s (25.31, 0.95) | 56.8 / 3.1 s |
+
+So the gap is 1.40x, not the 1.26x quoted from unalternated runs (35.7 s against a `java` run of
+28.3 s). `rava-core` spends less CPU than `java` and still finishes 10 s later: about 1.4 cores
+busy on average against 2.3, so the serial path (server thread, spawn search, chunk tasks
+waiting on each other) is what to shorten, not only per-core speed.
+
+What the goal means on this host: `java` itself spends 57 s of CPU on this start; even spread
+perfectly over 4 cores that is 14 s. Under 5 s needs total work several times below HotSpot's
+for the same world, which per-core JIT and GC speed alone cannot give; it is the yardstick here,
+and every result is reported against it.
+
+**Volatile fields** (a reviewer's question): volatile semantics were missing in every tier. No
+volatile store was followed by a StoreLoad barrier, the optimizing tier reused loaded values
+across volatile and acquire reads (VarHandle `getVolatile`/`getAcquire` included), and static
+fields did not record `ACC_VOLATILE`. `bench/VolatileSem` (Dekker) found the forbidden outcome
+272-1739 times in 200000 rounds; it now finds none in every mode, at no measurable cost above.
+(The fix's commit message lost the word `volatile` in "Resolved::StaticField carries" to shell
+quoting.)
+
 ### Next
 
-1. Code density: ~15 bytes of optimized code per IR value (64-bit constants as `movabs`,
+1. The serial path: what the server thread and the spawn search wait on while cores idle.
+2. Code density: ~15 bytes of optimized code per IR value (64-bit constants as `movabs`,
    inline-cache probes), the remaining call overhead (CALLER link, pending-exception check).
-2. Home-slot stores in FP-heavy code (values deopt states read after their last real use).
-3. Runtime type checks through `subtype_cached` (no primary-supers display yet).
+3. Interface subtype checks still go through `subtype_cached`.
 4. A few cold JDK methods fail to compile ("a single-predecessor block entered twice": an
    edge the predecessor count misses on exception-heavy code).
-
