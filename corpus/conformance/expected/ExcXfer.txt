@@ -1,6 +1,0 @@
-i=0 java.lang.RuntimeException|MSG0
-i=1 java.lang.RuntimeException|MSG1
-i=2 java.lang.RuntimeException|MSG2
-i=2999 java.lang.RuntimeException|MSG2
-i=5999 java.lang.RuntimeException|MSG2
-DONE

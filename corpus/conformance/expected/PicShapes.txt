@@ -1,6 +1,0 @@
-mono=15000
-poly=24998
-mega=117461
-nullrecv=3024
-alt=20000
-DONE

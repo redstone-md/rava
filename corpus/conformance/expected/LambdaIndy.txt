@@ -1,3 +1,0 @@
-lam=777500
-lamthrow=7941522
-DONE

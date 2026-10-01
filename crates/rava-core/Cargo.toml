@@ -6,7 +6,6 @@ license.workspace = true
 description = "Next-generation rava execution core: direct object layout, real java.base bytecode, tiered compilation."
 
 [dependencies]
-rava-classfile = { path = "../rava-classfile" }
 libc = "0.2"
 miniz_oxide = "0.8"
 crc32fast = "1.4"
