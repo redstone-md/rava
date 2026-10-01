@@ -120,7 +120,7 @@ pub(super) fn refusal(target: &'static Method, chain: &Chain, tier: u8, spent: u
     if recursive(target, None, chain, (tier >= 3) as usize) {
         return "recursive";
     }
-    if target.is_synchronized() {
+    if target.is_synchronized() && (tier < 3 || target.is_static() && target.holder.mirror().is_null()) {
         return "synchronized";
     }
     if target.has_annotation("Ljdk/internal/vm/annotation/DontInline;") {
@@ -160,7 +160,9 @@ fn recursive(t: &'static Method, first: Option<i64>, chain: &Chain, allowed: usi
 fn framed_ok(t: &'static Method, first: Option<i64>, chain: &Chain, hot: bool, opt: bool) -> bool {
     let Some(info) = t.code else { return false };
     let depth = if opt { MAX_DEPTH_OPT } else { MAX_DEPTH };
-    if chain.len() > depth || recursive(t, first, chain, opt as usize) || t.is_synchronized() || (!opt && !info.handlers.is_empty()) {
+    // The optimizing tier inlines synchronized methods with their monitor (`opt::inline`).
+    let monitor_ok = !t.is_synchronized() || opt && !(t.is_static() && t.holder.mirror().is_null());
+    if chain.len() > depth || recursive(t, first, chain, opt as usize) || !monitor_ok || (!opt && !info.handlers.is_empty()) {
         return false;
     }
     if t.has_annotation("Ljdk/internal/vm/annotation/DontInline;") {

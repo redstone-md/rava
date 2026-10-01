@@ -120,7 +120,13 @@ impl Builder {
             0xac..=0xb1 => {
                 let v = (op != 0xb1).then(|| self.pop());
                 match self.sc.cont {
-                    Some(k) => self.inline_return(k, v),
+                    Some(k) => {
+                        if let Some(o) = self.sc.lock {
+                            let s = self.state();
+                            self.add(Inst::Monitor(false, o, s), Ty::I);
+                        }
+                        self.inline_return(k, v)
+                    }
                     None => self.g.blocks[self.cur as usize].term = Term::Return(v),
                 }
                 return Some(false);
