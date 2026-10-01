@@ -271,8 +271,13 @@ pub(crate) fn note_unresolved_deferral(m: &'static Method) {
         return;
     }
     if m.recompiles.fetch_add(1, Ordering::Relaxed) < MAX_RECOMPILES {
+        // Only over the code that asked: optimized code installed meanwhile (the recompilation
+        // of a method whose optimized code was retired) stays. Fresh baseline code tiers up
+        // again.
         if let Some(fresh) = compile::compile(m, cm.tier) {
-            m.install(fresh);
+            if m.replace(cm, fresh) {
+                m.tiered.store(false, Ordering::Release);
+            }
         }
     }
 }

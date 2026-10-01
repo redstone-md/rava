@@ -141,6 +141,20 @@ impl Method {
         cm
     }
 
+    /// Installs `cm` in place of `current`, unless other code replaced that meanwhile.
+    pub(crate) fn replace(&self, current: &'static crate::jit::CompiledMethod, cm: crate::jit::CompiledMethod) -> bool {
+        let cm: &'static crate::jit::CompiledMethod = Box::leak(Box::new(cm));
+        let old = current as *const _ as *mut _;
+        if self.compiled.compare_exchange(old, cm as *const _ as *mut _, Ordering::AcqRel, Ordering::Acquire).is_err() {
+            return false;
+        }
+        if !cm.blocks.is_empty() {
+            self.baseline.store(cm as *const _ as *mut _, Ordering::Release);
+        }
+        let _ = self.entry.compare_exchange(current.entry, cm.entry, Ordering::AcqRel, Ordering::Acquire);
+        true
+    }
+
     /// Replaces `current` (unless newer code replaced it already) by the latest baseline code,
     /// HotSpot's "not entrant": calls stop entering code that keeps deoptimizing while its
     /// recompilation waits. Frames running `current` finish in it.
