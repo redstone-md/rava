@@ -74,6 +74,8 @@ pub(super) struct Gen<'a> {
     /// A leaf that cannot stop, throw, deoptimize or call Java: no frame header is written or
     /// linked (nothing walks the stack while it runs), no poll or stack check is needed.
     frameless: bool,
+    /// The method's return type.
+    ret: crate::types::BasicType,
     /// The register holding the frame base: r13, or for a frameless body that reads its
     /// parameters once on entry, rsi as the caller passed it (r13 is then left alone, and
     /// neither saved nor restored).
@@ -125,6 +127,7 @@ pub(super) fn generate(g: &Graph, al: &Allocation, m: &'static Method, frame_slo
         lock: None,
         frameless: monitor.is_none() && super::polls::frameless(g),
         base: R::R13,
+        ret: m.sig.ret,
         saves: &al.saves,
         save_base: al.save_base,
         restore_stubs: Vec::new(),
@@ -240,6 +243,13 @@ impl Gen<'_> {
         self.a.bind(done);
     }
 
+    /// For a float or double method, xmm0 := the result in rax (paths that end with it there).
+    pub fn float_result_from_rax(&mut self) {
+        if matches!(self.ret, crate::types::BasicType::Float | crate::types::BasicType::Double) {
+            self.a.mov_xr(true, X(0), R::Rax);
+        }
+    }
+
     fn emit_epilogue(&mut self, overflow: Label) {
         let restore = self.a.new_label();
         self.a.bind(self.epilogue);
@@ -252,6 +262,8 @@ impl Gen<'_> {
             self.method_monitor(false);
             self.a.pop(R::Rax);
             self.a.pop(R::Rax);
+            // The runtime call may have clobbered xmm0.
+            self.float_result_from_rax();
         }
         if !self.frameless {
             // The caller's frame is innermost again; `sp` is left as published (callers do
@@ -446,6 +458,11 @@ impl Gen<'_> {
                     self.load(R::Rax, v);
                     if self.g.ty(v) == Ty::I {
                         self.a.movsxd(R::Rax, R::Rax);
+                    }
+                    // A float or double result is also in xmm0, where compiled callers take it
+                    // (`jit::float_result_stub`).
+                    if matches!(self.g.ty(v), Ty::F | Ty::D) {
+                        self.xload(X(0), v);
                     }
                 }
                 self.a.jmp(self.epilogue);

@@ -119,6 +119,7 @@ impl Gen<'_> {
         self.a.mov_rr(true, R::Rcx, R::Rsp);
         self.a.call_abs(crate::jit::opt::deopt::deopt as *const () as usize);
         self.a.alu_ri(true, Alu::Add, R::Rsp, xbytes + 8 * crate::jit::opt::deopt::SAVED.len() as i32);
+        self.float_result_from_rax();
         self.a.jmp(self.epilogue);
     }
 
