@@ -13,6 +13,7 @@ use crate::thread::{header, offsets};
 use std::collections::HashMap;
 use std::rc::Rc;
 
+mod divconst;
 mod stubs;
 
 /// The monitor a synchronized method holds while it runs.
