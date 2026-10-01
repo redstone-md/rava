@@ -216,8 +216,17 @@ impl Builder {
         Some(other)
     }
 
-    /// The class `v` is known to have exactly here, if any.
+    /// The class `v` is known to have exactly here, if any: an allocation's or a constant
+    /// object's anywhere (an inlined lambda factory's result outlives the inlined body), else
+    /// what a class guard established on this path.
     pub(super) fn exact_class(&self, v: V) -> Option<&'static Klass> {
+        let r = self.g.resolve(v);
+        if let Inst::New(k, _) = self.g.inst(r) {
+            return Some(k);
+        }
+        if let Some(o) = self.g.constant(r).filter(|&o| o != 0 && self.g.ty(r) == Ty::A) {
+            return Some(crate::jit::fold::class_of(o as usize));
+        }
         self.exact.iter().rev().find(|&&(x, _)| x == v).map(|&(_, k)| k)
     }
 
