@@ -393,6 +393,12 @@ with the inlined Perlin noise, `Climate$RTree$SubTree.search`) while the Common 
 part of the time; then 8 s (`java` 5) with the Common Worker busy throughout. Both are optimized
 code speed.
 
+**Caches across single-predecessor blocks** (c7c1214): value numbers, field values and bounds
+checks now carry into a block whose only predecessor is the one left (inlined bodies, their
+returns, guard paths); `ImprovedNoise.sampleAndLerp` loads and null-checks `this.p` once instead
+of eight times. `bench/results/20261001-015303-vm` (5 rounds): 7a0d38d 32.01 s mean (median
+31.45, sd 1.15), c7c1214 31.19 s (median 30.97, sd 0.82), faster in 4 of 5 rounds.
+
 ### Next
 
 1. Mutator speed of the world-generation threads (Paper Common Worker 2x), and the remaining
