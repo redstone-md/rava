@@ -152,6 +152,7 @@ pub(super) fn build(m: &'static Method) -> Option<(Graph, i32)> {
         let this = b.g.add(start, Inst::Param(0), Ty::A);
         b.sc.locals[0] = Some(this);
         b.nonnull.push(this);
+        b.g.receiver = Some(this);
         slot = 1;
     }
     for p in m.sig.params.iter() {

@@ -72,6 +72,7 @@ impl Builder {
                         if volatile {
                             // Acquire: later loads read memory again.
                             self.loads.clear();
+                            self.g.ordered.insert(v);
                         } else {
                             self.loads.insert((o, offset), v);
                         }
