@@ -76,22 +76,8 @@ pub(super) struct Gen<'a> {
     frame_slots: i32,
     /// Reference stores that need no card mark (`barrier.rs`).
     pub unbarriered: Vec<bool>,
-}
-
-/// Whether `g` qualifies for a frameless body: straight-line or branching code (no loops,
-/// hence no polls) without calls, allocation, checks that throw, monitors or deoptimization.
-fn frameless(g: &Graph) -> bool {
-    g.blocks.iter().filter(|b| !matches!(b.term, Term::None)).all(|b| {
-        !b.loop_header
-            && matches!(b.term, Term::Goto(_) | Term::If { .. } | Term::Switch { .. } | Term::Return(_))
-            && b.insts.iter().all(|&v| match &g.values[v as usize].inst {
-                Inst::Param(_) | Inst::Const(_) | Inst::Copy(_) | Inst::Phi(_) | Inst::Neg(_) | Inst::Bin(..) | Inst::Convert(..) | Inst::Compare(..) => true,
-                Inst::LoadField(..) | Inst::StoreField(..) | Inst::LoadStatic(..) | Inst::StoreStatic(..) | Inst::ArrayLength(_) => true,
-                Inst::LoadIndexed(..) | Inst::InstanceOf(..) => true,
-                Inst::Intrinsic(k, _, s) => s.is_none() && k.is_pure(),
-                _ => false,
-            })
-    })
+    /// Headers of short counted loops, whose back edges do not poll (`counted.rs`).
+    short_loops: Vec<bool>,
 }
 
 /// Emits `g` for `m`, whose frame (inlined frames included) takes `frame_slots` value-stack slots;
@@ -120,13 +106,14 @@ pub(super) fn generate(g: &Graph, al: &Allocation, m: &'static Method, frame_slo
         live_gprs: CALLER_SAVED.into_iter().filter(|r| al.loc.contains(&Loc::Reg(*r))).collect(),
         live_xmms: XMMS.into_iter().filter(|x| al.loc.contains(&Loc::Xmm(*x))).collect(),
         lock: None,
-        frameless: monitor.is_none() && frameless(g),
+        frameless: monitor.is_none() && super::polls::frameless(g),
         saves: &al.saves,
         save_base: al.save_base,
         restore_stubs: Vec::new(),
         consts: HashMap::new(),
         slow_calls: Vec::new(),
         unbarriered: super::barrier::unbarriered(g),
+        short_loops: super::polls::short_loops(g),
         frame_slots,
     };
     // Entry rsp is 8 mod 16: an odd number of pushes realigns it, spill slots come in pairs.
@@ -439,24 +426,9 @@ impl Gen<'_> {
         }
     }
 
-    fn back_edge(&self, from: B, to: B) -> bool {
-        self.g.blocks[to as usize].order <= self.g.blocks[from as usize].order
-    }
-
-    /// Where a conditional jump from `from` to `to` goes: the block itself, or a stub doing the
-    /// edge's phi moves and poll first.
-    fn edge_target(&mut self, from: B, to: B) -> Label {
-        if phis(self.g, to).next().is_none() && !self.back_edge(from, to) {
-            return self.labels[to as usize];
-        }
-        let l = self.a.new_label();
-        self.edge_stubs.push((l, from, to));
-        l
-    }
-
     /// Leaves `from` for `to`: phi moves, a poll on back-edges, then the jump.
     fn edge(&mut self, from: B, to: B, fallthrough: bool) {
-        if self.back_edge(from, to) {
+        if self.polls_on(from, to) {
             self.poll();
         }
         let moves: Vec<(Loc, Loc)> =
