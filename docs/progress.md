@@ -1,5 +1,8 @@
 # rava progress
 
+Server A/B runs cited as `bench/results/<run>` were written by `bench/paper_ab.sh` on the
+host of that session; they are not kept in git.
+
 ## 2026-09-29 — the real JDK boots
 
 `rava -cp DIR Hello` runs HotSpot's own startup sequence over the unmodified `java.base`
@@ -155,7 +158,7 @@ statically bound and vtable-guarded callees in real (or, for hidden plumbing, un
 without native calls, folds constants (static finals, trusted finals, `@Stable`, method-handle
 forms and member names) so `invokedynamic` chains collapse into direct calls, and intrinsifies
 `Math` rounding, `Unsafe` access, `Class.isInstance` and `Object.getClass`. Design and the C1
-comparison: `docs/core/opt-tier.md`.
+comparison: [opt-tier.md](opt-tier.md).
 
 | | `java` | `rava` |
 |---|---:|---:|
@@ -173,7 +176,7 @@ comparison: `docs/core/opt-tier.md`.
 
 ## 2026-09-29 — the optimizing tier, and a GC trigger fix
 
-Hot methods are now recompiled by an SSA optimizing tier (`docs/core/opt-tier.md`): graph
+Hot methods are now recompiled by an SSA optimizing tier ([opt-tier.md](opt-tier.md)): graph
 building with inlining (direct, vtable- and profile-guarded, method-handle chains), constant
 folding, null-check elimination, linear-scan register allocation, and deoptimization to the
 interpreter for guards, exceptions and unresolved constants. Two runtime fixes mattered as much:
@@ -458,7 +461,7 @@ Where the world-generation worker's time goes now (whole start, perf): 17.1 s of
 `java`'s 11.0 s. About 7% allocation slow paths (refill, clearing runs), 6% GC marking during
 pauses, 1% interface type checks through the runtime; in its optimized code about 13% is the
 call protocol (callee-saved pushes and pops, frame-slot traffic, thread-word updates). Megamorphic
-calls cost 4-6 ns against C2's 2.5-3 ns (`CallBench`): arguments go through frame slots, the
+calls cost 4-6 ns against C2's 2.5-3 ns on a megamorphic call microbenchmark: arguments go through frame slots, the
 caller publishes its frame (BCI, `Thread::top`) and checks for a pending exception after each
 call, the callee writes METHOD/BCI/CALLER and polls on entry. The rest is the computation
 itself, where per-kernel code quality is at or near C2's.
@@ -521,7 +524,7 @@ Server start, `bench/results/20261001-153755-vm` (6 rounds, noisy host: sd 3-4 s
 22.0 -> 20.4 s against `java`'s 13.2 (1.54x).
 
 **Later host** (Xeon @ 2.1 GHz). Megamorphic calls: int-typed ones match `java` (2.4-2.7 ns,
-`bench/MegaCallBench`); double results cost 5.5-6.2 ns until they came back in xmm0 (08d6d6e,
+`bench/java/MegaCallBench`); double results cost 5.5-6.2 ns until they came back in xmm0 (08d6d6e,
 3.8-4.0 ns; `java` 3.0). Escape analysis is not a lever here: `java -XX:-DoEscapeAnalysis` runs
 WorldGenBench as fast. Register allocation neither: with 3 allocatable registers instead of 11
 the server start is only about 3% slower (`RAVA_OPT_FEW_REGS`, which also shook out the r11
@@ -548,3 +551,13 @@ Allocation slow path in steady-state generation: about 7k refills per chunk (run
 3. Interface subtype checks still go through `subtype_cached`.
 4. A few cold JDK methods fail to compile ("a single-predecessor block entered twice": an
    edge the predecessor count misses on exception-heavy code).
+
+## 2026-10-01 — one engine, the java command line
+
+The old interpreter engine and its crates are gone; the core is the single `rava` crate and
+binary. The launcher takes `java`'s command line whole (class path rules and wildcards, `-jar`,
+`-m`, single source files, module options, `-ea`/`-da`, `-X`/`-XX`, `@argfiles`, the
+`JAVA_TOOL_OPTIONS` family) and delegates help, version, settings and main-class resolution to
+the JDK's `LauncherHelper`, so the server starts as `rava -jar paper.jar --nogui` and an
+uncaught exception prints exactly as java prints it. Running `javac` for single-file programs
+works unchanged.
