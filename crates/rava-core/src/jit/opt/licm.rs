@@ -22,14 +22,14 @@ pub fn hoist(g: &mut Graph) {
     let loops = dom.loops(g);
     // Values known non-null at the end of each block (by rpo position), through dominators.
     let nonnull = nonnull_by_block(g, &dom);
-    // The block of each instruction as built (moved ones are in `hoisted`).
+    // The block each instruction is in now: a value hoisted into an inner loop's preheader is
+    // still inside the enclosing loop, invariant there only if hoisted again.
     let mut block_of = vec![usize::MAX; g.values.len()];
     for (b, blk) in g.blocks.iter().enumerate() {
         for &v in &blk.insts {
             block_of[v as usize] = b;
         }
     }
-    let mut hoisted: HashSet<V> = HashSet::new();
     for l in loops.iter().rev() {
         let h = &g.blocks[l.header as usize];
         let outside: Vec<B> = h.preds.iter().copied().filter(|&p| !l.body[p as usize]).collect();
@@ -60,10 +60,7 @@ pub fn hoist(g: &mut Graph) {
             let insts = g.blocks[b as usize].insts.clone();
             let mut keep = Vec::with_capacity(insts.len());
             for v in insts {
-                let invariant = |x: V| {
-                    let x = g.resolve(x);
-                    hoisted.contains(&x) || block_of.get(x as usize).map_or(true, |&b| b == usize::MAX || !l.body[b])
-                };
+                let invariant = |x: V| block_of.get(g.resolve(x) as usize).map_or(true, |&b| b == usize::MAX || !l.body[b]);
                 let inst = g.inst(v);
                 let movable = g.resolve(v) == v
                     && inst.inputs().into_iter().all(invariant)
@@ -76,7 +73,7 @@ pub fn hoist(g: &mut Graph) {
                         _ => false,
                     };
                 if movable {
-                    hoisted.insert(v);
+                    block_of[v as usize] = pre as usize;
                     moved.push(v);
                 } else {
                     keep.push(v);
