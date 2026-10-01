@@ -9,26 +9,40 @@ use crate::heap::{obj, Oop};
 use crate::runtime::{throw_new, vm_field};
 use crate::thread::{JResult, Thread};
 
+mod sha_ni;
+
 vm_field!(sha1_state, "sun/security/provider/SHA", "state", "[I");
 vm_field!(sha2_state, "sun/security/provider/SHA2", "state", "[I");
 vm_field!(sha5_state, "sun/security/provider/SHA5", "state", "[J");
 vm_field!(block_size, "sun/security/provider/DigestBase", "blockSize", "I");
 
 type Stub = fn(&mut Thread, &[u64]) -> JResult<u64>;
+/// Folds `blocks` (a whole number of blocks) into the digest state, block by block.
+type Blocks<W, const S: usize> = fn(&mut [W; S], &[u8]);
 
-const SHA1: Stub = |t, a| compress::<u32, 5, 64>(t, a, sha1_state(), sha1);
-const SHA256: Stub = |t, a| compress::<u32, 8, 64>(t, a, sha2_state(), sha256);
-const SHA512: Stub = |t, a| compress::<u64, 8, 128>(t, a, sha5_state(), sha512);
+/// One of the SHA families: compresses `n` consecutive blocks of `buf` from `ofs` into the
+/// receiver's state.
+type Family = fn(&mut Thread, Oop, Oop, i32, usize) -> JResult<()>;
+
+const SHA1: Family = |t, this, buf, ofs, n| compress::<u32, 5, 64>(t, this, buf, ofs, n, sha1_state(), sha1);
+const SHA256: Family = |t, this, buf, ofs, n| compress::<u32, 8, 64>(t, this, buf, ofs, n, sha2_state(), sha256_blocks());
+const SHA512: Family = |t, this, buf, ofs, n| compress::<u64, 8, 128>(t, this, buf, ofs, n, sha5_state(), sha512);
+
+/// `implCompress0(b, ofs)` of a family: one block.
+fn one_block<const F: usize>(t: &mut Thread, a: &[u64]) -> JResult<u64> {
+    [SHA1, SHA256, SHA512][F](t, a[0] as Oop, a[1] as Oop, a[2] as i32, 1)?;
+    ret_void()
+}
 
 pub(super) fn register(r: &mut NativeRegistry) {
-    r.add_stub("sun/security/provider/SHA", "implCompress0", "([BI)V", SHA1);
-    r.add_stub("sun/security/provider/SHA2", "implCompress0", "([BI)V", SHA256);
-    r.add_stub("sun/security/provider/SHA5", "implCompress0", "([BI)V", SHA512);
+    r.add_stub("sun/security/provider/SHA", "implCompress0", "([BI)V", one_block::<0> as Stub);
+    r.add_stub("sun/security/provider/SHA2", "implCompress0", "([BI)V", one_block::<1> as Stub);
+    r.add_stub("sun/security/provider/SHA5", "implCompress0", "([BI)V", one_block::<2> as Stub);
     r.add_stub("sun/security/provider/DigestBase", "implCompressMultiBlock0", "([BII)I", multi_block);
 }
 
 /// The block function for the receiver's digest, if it is one of the SHA families.
-fn stub_for(k: &'static crate::klass::Klass) -> Option<Stub> {
+fn family_of(k: &'static crate::klass::Klass) -> Option<Family> {
     std::iter::successors(Some(k), |c| c.super_klass).find_map(|c| match c.name.as_str() {
         "sun/security/provider/SHA" => Some(SHA1),
         "sun/security/provider/SHA2" => Some(SHA256),
@@ -43,49 +57,64 @@ fn multi_block(t: &mut Thread, a: &[u64]) -> JResult<u64> {
     let (this, buf, mut ofs, limit) = (a[0] as Oop, a[1], a[2] as i32, a[3] as i32);
     // SAFETY: the live receiver.
     let (k, size) = unsafe { (obj::klass(this), obj::read::<i32>(this, block_size())) };
-    let step: Box<dyn Fn(&mut Thread, i32) -> JResult<u64>> = match stub_for(k) {
-        Some(f) => Box::new(move |t: &mut Thread, o: i32| f(t, &[this as u64, buf, o as u32 as u64])),
-        None => {
-            let base = crate::loader::load("sun/security/provider/DigestBase").expect("DigestBase");
-            let decl = base.declared_method(crate::symbol::Symbol::intern("implCompress"), crate::symbol::Symbol::intern("([BI)V")).expect("implCompress");
-            let m = crate::link::select_method(k, decl).unwrap_or(decl);
-            Box::new(move |t: &mut Thread, o: i32| t.call(m, &[this as u64, buf, o as u32 as u64]))
-        }
-    };
-    while ofs <= limit {
-        step(t, ofs)?;
+    if ofs > limit || size <= 0 {
+        return super::ret_int(ofs);
+    }
+    let n = ((limit - ofs) / size + 1) as usize;
+    if let Some(f) = family_of(k) {
+        f(t, this, buf as Oop, ofs, n)?;
+        return super::ret_int(ofs + n as i32 * size);
+    }
+    let base = crate::loader::load("sun/security/provider/DigestBase").expect("DigestBase");
+    let decl = base.declared_method(crate::symbol::Symbol::intern("implCompress"), crate::symbol::Symbol::intern("([BI)V")).expect("implCompress");
+    let m = crate::link::select_method(k, decl).unwrap_or(decl);
+    for _ in 0..n {
+        t.call(m, &[this as u64, buf, ofs as u32 as u64])?;
         ofs += size;
     }
     super::ret_int(ofs)
 }
 
-/// Reads the block, applies `f` to the receiver's `state` array (`S` words of type `W`).
+/// Reads `n` blocks of `B` bytes, applies `f` to the receiver's `state` array (`S` words of
+/// type `W`).
 fn compress<W: Copy, const S: usize, const B: usize>(
     t: &mut Thread,
-    a: &[u64],
+    this: Oop,
+    buf: Oop,
+    ofs: i32,
+    n: usize,
     state_offset: u32,
-    f: fn(&mut [W; S], &[u8; B]),
-) -> JResult<u64> {
-    let (this, buf, ofs) = (a[0] as Oop, a[1] as Oop, a[2] as i32);
+    f: Blocks<W, S>,
+) -> JResult<()> {
     if buf.is_null() {
         return Err(throw_new(t, "java/lang/NullPointerException", ""));
     }
     // SAFETY: the receiver's state array and the byte[] argument are live.
     let (state, bytes) = unsafe { (obj::read::<Oop>(this, state_offset), obj::array_slice::<u8>(buf)) };
-    let block = usize::try_from(ofs).ok().and_then(|o| bytes.get(o..o.checked_add(B)?));
-    let (Some(block), false) = (block, state.is_null()) else {
+    let blocks = usize::try_from(ofs).ok().and_then(|o| bytes.get(o..o.checked_add(B * n)?));
+    let (Some(blocks), false) = (blocks, state.is_null()) else {
         return Err(throw_new(t, "java/lang/ArrayIndexOutOfBoundsException", &format!("Index {ofs} out of bounds for length {}", bytes.len())));
     };
     // SAFETY: the state array holds S words of W (int[] or long[]).
     let words = unsafe { obj::array_slice::<W>(state) };
-    let (Ok(words), Ok(block)) = (<&mut [W; S]>::try_from(words), <&[u8; B]>::try_from(block)) else {
+    let Ok(words) = <&mut [W; S]>::try_from(words) else {
         return Err(throw_new(t, "java/lang/ArrayIndexOutOfBoundsException", "digest state"));
     };
-    f(words, block);
-    ret_void()
+    f(words, blocks);
+    Ok(())
 }
 
-fn sha1(h: &mut [u32; 5], block: &[u8; 64]) {
+/// SHA-256 with the CPU's SHA extensions when it has them (as HotSpot's stub), else portable.
+fn sha256_blocks() -> Blocks<u32, 8> {
+    static PICK: std::sync::OnceLock<Blocks<u32, 8>> = std::sync::OnceLock::new();
+    *PICK.get_or_init(|| sha_ni::available().then_some(sha_ni::sha256 as Blocks<u32, 8>).unwrap_or(sha256))
+}
+
+fn sha1(h: &mut [u32; 5], blocks: &[u8]) {
+    blocks.chunks_exact(64).for_each(|b| sha1_block(h, b));
+}
+
+fn sha1_block(h: &mut [u32; 5], block: &[u8]) {
     let mut w = [0u32; 80];
     for i in 0..16 {
         w[i] = u32::from_be_bytes(block[4 * i..4 * i + 4].try_into().unwrap());
@@ -119,7 +148,11 @@ const K256: [u32; 64] = [
     0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2,
 ];
 
-fn sha256(h: &mut [u32; 8], block: &[u8; 64]) {
+fn sha256(h: &mut [u32; 8], blocks: &[u8]) {
+    blocks.chunks_exact(64).for_each(|b| sha256_block(h, b));
+}
+
+fn sha256_block(h: &mut [u32; 8], block: &[u8]) {
     let mut w = [0u32; 64];
     for i in 0..16 {
         w[i] = u32::from_be_bytes(block[4 * i..4 * i + 4].try_into().unwrap());
@@ -161,7 +194,11 @@ const K512: [u64; 80] = [
     0x5fcb6fab3ad6faec, 0x6c44198c4a475817,
 ];
 
-fn sha512(h: &mut [u64; 8], block: &[u8; 128]) {
+fn sha512(h: &mut [u64; 8], blocks: &[u8]) {
+    blocks.chunks_exact(128).for_each(|b| sha512_block(h, b));
+}
+
+fn sha512_block(h: &mut [u64; 8], block: &[u8]) {
     let mut w = [0u64; 80];
     for i in 0..16 {
         w[i] = u64::from_be_bytes(block[8 * i..8 * i + 8].try_into().unwrap());
