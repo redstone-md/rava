@@ -472,6 +472,10 @@ hung on the failed server and was discarded (`paper_ab.sh` now gives up after `R
 seconds and records FAILED). After the fix, `bench/results/20261001-051339-vm`: 79cbd1a 30.40 s,
 c5641b9 30.66 s: within noise. The R-tree is not where the start waits.
 
+**Session checkpoint**, `bench/results/20261001-052020-vm` (4 alternated rounds, the host is
+faster now than in the morning): 544f332 (session start) 32.19 s, d4c5d1e 29.65 s (-7.9%),
+`java` 24.17 s; 1.23x `java` (1.33x at the session start on this run).
+
 ### Next
 
 1. Mutator speed of the world-generation threads (Paper Common Worker 2x), and the remaining
