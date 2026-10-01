@@ -17,8 +17,9 @@ pub const PAGE_SIZE: usize = 1 << PAGE_SHIFT;
 /// Objects above this size get their own mapping.
 pub const LARGE_THRESHOLD: usize = 32 << 10;
 
-/// The shortest hole worth a bump run in a reused page (`PageMeta::next_free_run`).
-const MIN_RUN: usize = 256;
+/// The shortest hole worth a bump run in a reused page (`PageMeta::next_free_run`). Measured on
+/// the server start: 256 bytes 30.4 s, 2 KiB 29.3 s (RSS 1.9 -> 2.5 GiB), 8 KiB no faster.
+const MIN_RUN: usize = 2048;
 
 pub const CLASS_SIZES: [u32; 44] = [
     16, 32, 48, 64, 80, 96, 112, 128, 144, 160, 176, 192, 208, 224, 240, 256, //
