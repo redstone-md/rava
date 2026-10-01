@@ -96,11 +96,6 @@ fn set_unsafe_constants(t: &mut Thread) -> JResult<()> {
     Ok(())
 }
 
-/// Resolves the application main class through the JDK launcher and runs `main(args)`.
-pub fn run_main(t: &mut Thread, main_class: &str, args: &[String]) -> JResult<()> {
-    run_launched(t, main_class, false, args)
-}
-
 /// Ends the VM as the launcher's `DestroyJavaVM` does: waits for the non-daemon threads, then
 /// runs the shutdown sequence (the shutdown hooks).
 pub fn destroy(t: &mut Thread) -> JResult<()> {
@@ -108,28 +103,3 @@ pub fn destroy(t: &mut Thread) -> JResult<()> {
     call_static(t, "java/lang/Shutdown", "shutdown", "()V", &[])?;
     Ok(())
 }
-
-/// Runs `main` of `target`: a class name, or with `jar` a jar file whose manifest names the
-/// main class (`java -jar`), as the JDK launcher does.
-pub fn run_launched(t: &mut Thread, target: &str, jar: bool, args: &[String]) -> JResult<()> {
-    let name = rt::new_string(t, target)?;
-    // LauncherHelper.checkAndLoadMain(printToStderr, mode = LM_CLASS (1) or LM_JAR (2), name)
-    let mirror = call_static(
-        t,
-        "sun/launcher/LauncherHelper",
-        "checkAndLoadMain",
-        "(ZILjava/lang/String;)Ljava/lang/Class;",
-        &[1, if jar { 2 } else { 1 }, name as u64],
-    )? as Oop;
-    let k = rt::klass_of_mirror(mirror).expect("main class mirror");
-    rt::initialize(t, k)?;
-    let main = k
-        .declared_method(Symbol::intern("main"), Symbol::intern("([Ljava/lang/String;)V"))
-        .filter(|m| m.is_static())
-        .unwrap_or_else(|| panic!("no static main(String[]) in {target}"));
-    let values: Vec<Option<String>> = args.iter().cloned().map(Some).collect();
-    let array = crate::natives::string_array(t, &values)?;
-    t.call(main, &[array as u64])?;
-    Ok(())
-}
-
