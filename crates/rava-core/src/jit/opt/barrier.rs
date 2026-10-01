@@ -1,6 +1,7 @@
 //! Write-barrier elision for initializing stores (HotSpot's ReduceInitialCardMarks): a
-//! reference store into an object allocated earlier in the same block, with nothing between
-//! that could reach a safepoint, stores into a young object. Such a store cannot create an
+//! reference store into an object allocated earlier in the same block or along its chain of
+//! single predecessors (inlined bodies and returns split blocks), with nothing between that
+//! could reach a safepoint, stores into a young object. Such a store cannot create an
 //! old-to-young reference, so it needs no card mark.
 //!
 //! This matters more here than in a copying collector: the heap does not move objects, so new
@@ -12,9 +13,14 @@ use super::ir::*;
 /// Per value: true for a reference store that needs no card mark.
 pub fn unbarriered(g: &Graph) -> Vec<bool> {
     let mut out = vec![false; g.values.len()];
-    let mut fresh: Vec<V> = Vec::new();
-    for b in &g.blocks {
-        fresh.clear();
+    // The fresh objects at the end of each block, for a successor it is the only way into.
+    let mut exits: Vec<Option<Vec<V>>> = vec![None; g.blocks.len()];
+    for &bi in &super::dom::Dom::new(g).rpo {
+        let b = &g.blocks[bi as usize];
+        let mut fresh = match b.preds[..] {
+            [p] if !b.loop_header => exits[p as usize].clone().unwrap_or_default(),
+            _ => Vec::new(),
+        };
         for &v in &b.insts {
             match &g.values[v as usize].inst {
                 Inst::StoreField(o, ..) | Inst::StoreIndexed(o, ..) => out[v as usize] = fresh.contains(&g.resolve(*o)),
@@ -27,6 +33,7 @@ pub fn unbarriered(g: &Graph) -> Vec<bool> {
                 _ => {}
             }
         }
+        exits[bi as usize] = Some(fresh);
     }
     out
 }
