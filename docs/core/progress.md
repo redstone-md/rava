@@ -493,6 +493,25 @@ against 18.9k; JIT code 24.4k vs 17.3k, runtime and libc 4.8k vs 1.1k.
 - Huge pages for the heap (`MADV_HUGEPAGE`) cut faults 4x but not system time, and were slower:
   not kept.
 
+**Steady-state world generation** (`bench/mc/WorldGenBench`: the real overworld generator, chunks
+through biomes, noise and surface; checksum of the generated blocks identical to `java`'s). It
+separates code quality from warm-up: at the start of the day 111.3 ms per chunk against `java`'s
+62.2 (1.79x), with 14% of the time in baseline code of methods that never tiered up.
+
+- Tier-up fixed (dc2c8ed): counters trigger from the threshold on (the interpreter counts past
+  it while a method waits for compilation), and baseline code recompiled after unresolved
+  deferrals no longer replaces newer optimized code. 111.3 -> 104.3 ms.
+- An allocation's exact class holds everywhere (075899a) and loops keep the entry value of
+  locals they never write instead of a phi (15974cb): inlined `forEach` lambdas devirtualize.
+  Noise 65.0 -> 60.7 ms; total 94.2 -> 90.0 (alternated, same host state).
+- Tried and dropped: clearing reused pages on a background thread. `memset` left the
+  generating thread (4% -> 0.1%) but the time per chunk did not move: clearing in place also
+  brought the lines into the allocating core's cache, and without it the first stores miss.
+- Allocation volume: about 22 MiB per chunk (`java`'s G1 log suggests about 16): escape analysis
+  with scalar replacement (C2's) would cut allocation, clearing and marking together; the
+  objects that do not escape (lambdas, iterators) appear in deoptimization states, so it needs
+  rematerialization on deoptimization.
+
 ### Next
 
 1. Mutator speed of the world-generation threads (Paper Common Worker 2x), and the remaining
