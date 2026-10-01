@@ -241,14 +241,17 @@ impl Heap {
             let allocated = space.allocated_since_gc + self.small_allocated.load(std::sync::atomic::Ordering::Relaxed);
             space.allocated_since_gc = 0;
             self.small_allocated.store(0, std::sync::atomic::Ordering::Relaxed);
-            (marked, live, allocated)
+            let touched = (space.fresh - space.base, space.large_area.fresh - space.large_area.base);
+            (marked, live, allocated, touched)
         });
-        if let (Some((marked, live, allocated)), true) = (done, std::env::var_os("RAVA_CORE_GC_LOG").is_some()) {
+        if let (Some((marked, live, allocated, touched)), true) = (done, std::env::var_os("RAVA_CORE_GC_LOG").is_some()) {
             eprintln!(
-                "[gc] {} after {} MiB allocated: marked {marked} objects, {} MiB live, {:.1} ms (stop {:.1}, mark {:.1}, sweep {:.1})",
+                "[gc] {} after {} MiB allocated: marked {marked} objects, {} MiB live of {}+{} MiB touched, {:.1} ms (stop {:.1}, mark {:.1}, sweep {:.1})",
                 if full { "full" } else { "young" },
                 allocated >> 20,
                 live >> 20,
+                touched.0 >> 20,
+                touched.1 >> 20,
                 started.elapsed().as_secs_f64() * 1e3,
                 phases[0],
                 phases[1],
