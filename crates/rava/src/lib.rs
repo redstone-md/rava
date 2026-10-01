@@ -9,6 +9,7 @@ pub mod interp;
 pub mod jit;
 pub mod jimage;
 pub mod klass;
+pub mod launcher;
 pub mod link;
 pub mod loader;
 pub mod method;

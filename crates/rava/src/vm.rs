@@ -19,20 +19,23 @@ pub struct VmOptions {
     /// `-Dkey=value` properties.
     pub properties: Vec<(String, String)>,
     pub assertions: crate::assertions::Assertions,
+    /// `--enable-preview`.
+    pub preview: bool,
     pub heap_reserve: usize,
     /// The most the heap grows to (`-Xmx`); by default a quarter of physical memory, as
     /// HotSpot's `MaxRAMPercentage`.
     pub max_heap: usize,
 }
 
-impl Default for VmOptions {
-    fn default() -> Self {
+impl VmOptions {
+    pub fn new(java_home: PathBuf) -> Self {
         VmOptions {
-            java_home: crate::java_home().expect("no JDK found: set JAVA_HOME"),
+            java_home,
             boot_append: Vec::new(),
             class_path: String::new(),
             properties: Vec::new(),
             assertions: Default::default(),
+            preview: false,
             heap_reserve: 64 << 30,
             max_heap: default_max_heap(),
         }

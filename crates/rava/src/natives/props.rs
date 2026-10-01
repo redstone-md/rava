@@ -113,7 +113,7 @@ fn vm_properties(t: &mut Thread, _: &[u64]) -> JResult<u64> {
         ("java.vm.name".into(), "rava".into()),
         ("java.vm.vendor".into(), "rava".into()),
         ("java.vm.version".into(), env!("CARGO_PKG_VERSION").into()),
-        ("java.vm.info".into(), "interpreted mode".into()),
+        ("java.vm.info".into(), "mixed mode".into()),
         ("jdk.debug".into(), "release".into()),
         ("sun.boot.library.path".into(), format!("{home}/lib")),
         ("java.library.path".into(), "/usr/java/packages/lib:/usr/lib64:/lib64:/lib:/usr/lib".into()),

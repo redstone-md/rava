@@ -25,7 +25,7 @@ pub(super) fn register(r: &mut NativeRegistry) {
     for c in ["jdk/internal/reflect/NativeConstructorAccessorImpl", "jdk/internal/reflect/DirectConstructorHandleAccessor$NativeAccessor"] {
         r.add(c, "newInstance0", "(Ljava/lang/reflect/Constructor;[Ljava/lang/Object;)Ljava/lang/Object;", new_instance0);
     }
-    r.add("jdk/internal/misc/PreviewFeatures", "isPreviewEnabled", "()Z", |_, _| Ok(0));
+    r.add("jdk/internal/misc/PreviewFeatures", "isPreviewEnabled", "()Z", |_, _| Ok(crate::vm::vm().options.preview as u64));
     r.add("java/lang/NullPointerException", "getExtendedNPEMessage", "()Ljava/lang/String;", |_, _| ret_ref(std::ptr::null_mut()));
     r.add("jdk/internal/reflect/Reflection", "areNestMates", "(Ljava/lang/Class;Ljava/lang/Class;)Z", |t, a| {
         let (x, y) = (rt::klass_of_mirror(a[0] as Oop), rt::klass_of_mirror(a[1] as Oop));
