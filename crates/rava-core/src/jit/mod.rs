@@ -250,6 +250,9 @@ fn osr_trampoline() -> usize {
         use asm::R;
         let mut a = asm::Asm::default();
         compile::save_registers(&mut a);
+        // No monitor for the epilogue to release: the interpreter holds a synchronized
+        // method's and releases it when the method returns.
+        a.store_imm(asm::mem(R::Rsp, 0), 0);
         a.mov_rr(true, R::R12, R::Rdi);
         a.mov_rr(true, R::R13, R::Rsi);
         a.jmp_r(R::Rdx);
@@ -276,8 +279,7 @@ pub(crate) fn note_unresolved_deferral(m: &'static Method) {
 
 pub(super) fn compile_now(m: &'static Method) -> Option<&'static CompiledMethod> {
     let optimized = opt::everywhere().then(|| opt::compile(m)).flatten();
-    // Synchronized methods only have optimized code.
-    match optimized.or_else(|| compile::compile(m, 1)).or_else(|| (m.is_synchronized() && opt::enabled()).then(|| opt::compile(m)).flatten()) {
+    match optimized.or_else(|| compile::compile(m, 1)) {
         Some(cm) => {
             if let Some(s) = stats::get() {
                 s.compiled_methods.fetch_add(1, Ordering::Relaxed);
