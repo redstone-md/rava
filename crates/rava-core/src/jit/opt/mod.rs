@@ -17,6 +17,7 @@ mod codegen_ops;
 mod polls;
 mod deopt;
 mod dom;
+mod fields;
 mod freq;
 mod inline;
 mod ir;
@@ -109,6 +110,7 @@ fn compile_timed(m: &'static Method) -> Option<CompiledMethod> {
     };
     phis::simplify(&mut g);
     nullcheck::eliminate(&mut g);
+    fields::forward(&mut g);
     if env_once!("RAVA_CORE_OPT_SPLIT").map_or(true, |v| v != "0") {
         split::split(&mut g);
     }
