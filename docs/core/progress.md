@@ -476,6 +476,23 @@ c5641b9 30.66 s: within noise. The R-tree is not where the start waits.
 faster now than in the morning): 544f332 (session start) 32.19 s, d4c5d1e 29.65 s (-7.9%),
 `java` 24.17 s; 1.23x `java` (1.33x at the session start on this run).
 
+**New host** (from 2026-10-01 12:00; 4 vCPU Xeon @ 2.8 GHz, about twice as slow, and a VM whose
+host backs guest memory lazily, so a first touch costs about 48 us per 4 KiB page; binaries
+rebuilt, `target-cpu=native`). Per-method perf comparison with `java` on the world-generation
+worker (`java -XX:+UnlockDiagnosticVMOptions -XX:+DumpPerfMapAtExit` under perf): 29.9k samples
+against 18.9k; JIT code 24.4k vs 17.3k, runtime and libc 4.8k vs 1.1k.
+
+- **Synchronized methods at the baseline tier** (b9d246f): they went from the interpreter
+  straight to the optimizing tier with no profile, so `PalettedContainer.getAndSet(int, T)`
+  (every block write) called `Palette.idFor`, `BitStorage.getAndSet` and `Palette.valueFor`
+  through the itable. `bench/results/20261001-123929-vm`: 66.73 -> 64.52 s (noisy, sd 3 s).
+- **Less fresh memory** (65a76f7, 392912c): freed large-object blocks are cleared on reuse
+  instead of `MADV_DONTNEED` (60k faults), and `MIN_RUN` is back to 256 bytes (110k faults,
+  peak RSS 2.5 -> 2.2 GiB). `bench/results/20261001-133222-vm`, 6 rounds: b9d246f 59.09 s
+  (sd 3.25), 746a81d 55.81 s (sd 0.91), sys 9.4 -> 4.5 s; `java` 46.24 s: 1.21x.
+- Huge pages for the heap (`MADV_HUGEPAGE`) cut faults 4x but not system time, and were slower:
+  not kept.
+
 ### Next
 
 1. Mutator speed of the world-generation threads (Paper Common Worker 2x), and the remaining
