@@ -382,6 +382,17 @@ pops and `movabs`: nine allocatable registers and one interval per value (no spl
 uses) keep loop values such as `this` on the stack (`Aquifer.computeSubstance` reloads it before
 each of seven field reads).
 
+**Heap prefaulting** (7a0d38d): a background thread keeps 64 MiB past each fresh frontier
+populated (`MADV_POPULATE_WRITE`); the world-generation worker's page clearing fell from 1179 to
+206 samples and the server thread's from 1108 to 219, moved to `rava-prefault`. Wall time did not
+follow: `bench/results/20261001-013641-vm` (5 rounds) 6953a9f 33.17 s mean (median 32.82, sd
+0.86), 7a0d38d 33.32 s (median 33.65, sd 0.91). By phase (perf with real-time stamps) the start
+is: before "Preparing level" about as fast as `java` (8-9 s); then 12 s (`java` 8) where
+Worker-Main-1 computes biome noise for structure placement (`DensityFunctions$ShiftedNoise.compute`
+with the inlined Perlin noise, `Climate$RTree$SubTree.search`) while the Common Worker waits on it
+part of the time; then 8 s (`java` 5) with the Common Worker busy throughout. Both are optimized
+code speed.
+
 ### Next
 
 1. Mutator speed of the world-generation threads (Paper Common Worker 2x), and the remaining
