@@ -341,9 +341,12 @@ First recorded session, `bench/results/20260930-235938-vm` (4 vCPU Xeon @ 2.10 G
 | `java` 21.0.12 | 25.65 s (25.31, 0.95) | 56.8 / 3.1 s |
 
 So the gap is 1.40x, not the 1.26x quoted from unalternated runs (35.7 s against a `java` run of
-28.3 s). `rava-core` spends less CPU than `java` and still finishes 10 s later: about 1.4 cores
-busy on average against 2.3, so the serial path (server thread, spawn search, chunk tasks
-waiting on each other) is what to shorten, not only per-core speed.
+28.3 s). `rava-core` spends less CPU than `java` and still finishes 10 s later. Per-thread CPU sampling
+(every 2 s, one run each) shows why the core counts differ: `java`'s extra cores are C2 compiler
+threads (17.6 s of CPU), while the server's own threads are slower under `rava-core` - Paper
+Common Worker (one thread in both) 16.6 s against 8.3 s, Worker-Main-1 8.0 / 5.1 s, ServerMain
+7.8 / 5.0 s, Server thread 6.8 / 4.8 s, and the serial `main` thread (Paperclip, before the
+server starts) 2.8 / 0.5 s. So the gap is mutator speed, not idle cores.
 
 What the goal means on this host: `java` itself spends 57 s of CPU on this start; even spread
 perfectly over 4 cores that is 14 s. Under 5 s needs total work several times below HotSpot's
@@ -358,9 +361,16 @@ fields did not record `ACC_VOLATILE`. `bench/VolatileSem` (Dekker) found the for
 (The fix's commit message lost the word `volatile` in "Resolved::StaticField carries" to shell
 quoting.)
 
+**SHA-256 on the SHA extensions** (8645118): Paperclip hashes every library jar on `main`; the
+portable compression was that thread's top native frame. `sha256rnds2`/`msg1`/`msg2` when the CPU
+has them (as HotSpot's stub), and `implCompressMultiBlock0` folds all blocks in one call.
+`bench/results/20261001-004141-vm` (4 rounds): 544f332 35.86 s mean (median 35.10, sd 1.87),
+8645118 33.41 s (median 33.68, sd 0.81); the "Environment" milestone comes 1-2 s earlier.
+
 ### Next
 
-1. The serial path: what the server thread and the spawn search wait on while cores idle.
+1. Mutator speed of the world-generation threads (Paper Common Worker 2x), and the remaining
+   `main` time (page faults on fresh memory); system time is 6 s against `java`'s 3 s.
 2. Code density: ~15 bytes of optimized code per IR value (64-bit constants as `movabs`,
    inline-cache probes), the remaining call overhead (CALLER link, pending-exception check).
 3. Interface subtype checks still go through `subtype_cached`.
