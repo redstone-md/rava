@@ -36,6 +36,7 @@ impl LargeArea {
             return None;
         }
         self.fresh += size;
+        super::prefault::advanced(super::prefault::Region::Large, self.fresh);
         Some((self.fresh - size, size))
     }
 
