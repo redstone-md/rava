@@ -27,11 +27,13 @@ fn enabled() -> bool {
     *ON.get_or_init(|| std::env::var_os("RAVA_CORE_NO_TIER2").is_none())
 }
 
-/// Requests the tier-2 compilation of `m` once.
+/// Requests the tier-2 compilation of `m` once. Tier-1 code calls this on every invocation
+/// from the threshold on (the interpreter may have counted past it while the method waited to
+/// be compiled), so a request already made costs a load.
 pub extern "sysv64" fn tier_up(m: *const Method) {
     // SAFETY: generated code passes a live method.
     let m: &'static Method = unsafe { &*m };
-    if m.compiled().is_some_and(|c| c.tier >= 2) || m.tiered.swap(true, Ordering::AcqRel) {
+    if m.tiered.load(Ordering::Acquire) || m.compiled().is_some_and(|c| c.tier >= 2) || m.tiered.swap(true, Ordering::AcqRel) {
         return;
     }
     super::queue::submit(super::queue::Job::TierUp(m));
@@ -57,7 +59,11 @@ pub extern "sysv64" fn tier_up_osr(t: *mut Thread, m: *const Method, bci: u64, l
     tier_up(m);
     // SAFETY: the current thread and a live method.
     let (t, m) = unsafe { (&*t, &*m) };
-    let Some(cm) = m.compiled().filter(|c| c.tier >= 2) else { return 0 };
+    let Some(cm) = m.compiled().filter(|c| c.tier >= 2) else {
+        // Ask again after another threshold's worth of back-edges.
+        m.backedges.store(0, Ordering::Relaxed);
+        return 0;
+    };
     let room = (t.stack_limit() as usize).saturating_sub(locals as usize) / 8;
     if cm.frame_slots > room {
         return 0;
@@ -75,7 +81,7 @@ impl Emitter {
         self.a.mov_ri(R::Rax, &self.m.invocations as *const _ as i64);
         self.a.alu_mi(false, Alu::Add, mem(R::Rax, 0), 1);
         self.a.alu_mi(false, Alu::Cmp, mem(R::Rax, 0), thresholds().0);
-        self.a.jcc(Cond::Ne, cont);
+        self.a.jcc(Cond::L, cont);
         self.a.mov_ri(R::Rdi, self.m as *const Method as i64);
         self.a.call_abs(tier_up as *const () as usize);
         self.a.bind(cont);
@@ -91,7 +97,7 @@ impl Emitter {
         self.a.mov_ri(R::Rax, &self.m.backedges as *const _ as i64);
         self.a.alu_mi(false, Alu::Add, mem(R::Rax, 0), 1);
         self.a.alu_mi(false, Alu::Cmp, mem(R::Rax, 0), thresholds().1);
-        self.a.jcc(Cond::Ne, cont);
+        self.a.jcc(Cond::L, cont);
         if self.inl.is_some() {
             // An inlined loop has no frame of its own to move: just recompile its method.
             self.a.mov_ri(R::Rdi, self.m as *const Method as i64);
