@@ -84,7 +84,13 @@ run_one() { # label round
   (cd "$d" && exec ${CMD[$label]} -jar "$JAR" --nogui < in.fifo > out.txt 2>&1) &
   pid=$!
   exec 3> "$d/in.fifo"
-  while ! grep -q 'Done (' "$d/out.txt"; do kill -0 $pid 2>/dev/null || break; sleep 0.1; done
+  # A server that fails (or hangs) before "Done" is recorded as FAILED after RUN_LIMIT seconds.
+  local limit=$(( $(date +%s) + ${RUN_LIMIT:-300} ))
+  while ! grep -q 'Done (' "$d/out.txt"; do
+    kill -0 $pid 2>/dev/null || break
+    [ "$(date +%s)" -lt $limit ] || break
+    sleep 0.1
+  done
   end=$(date +%s.%N)
   local ut=0 st=0 tck
   tck=$(getconf CLK_TCK)

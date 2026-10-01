@@ -463,6 +463,15 @@ caller publishes its frame (BCI, `Thread::top`) and checks for a pending excepti
 call, the callee writes METHOD/BCI/CALLER and polls on entry. The rest is the computation
 itself, where per-kernel code quality is at or near C2's.
 
+**If-conversion and loop-invariant motion** (40b4d8d, d418f07, fix c5641b9): small branches
+become `cmp`/`cmov` (`select.rs`) and loop invariants move to preheaders (`licm.rs`). On the
+climate R-tree kernel (`bench/mc/RTreeBench`) 6.2 -> 3.6 us per lookup (`java` 2.9 us). The
+first LICM commit hoisted values out of nested loops ahead of their inputs and crashed Paper's
+start (an `ArrayIndexOutOfBoundsException` in `Aquifer.computeSubstance`); the A/B that caught it
+hung on the failed server and was discarded (`paper_ab.sh` now gives up after `RUN_LIMIT`
+seconds and records FAILED). After the fix, `bench/results/20261001-051339-vm`: 79cbd1a 30.40 s,
+c5641b9 30.66 s: within noise. The R-tree is not where the start waits.
+
 ### Next
 
 1. Mutator speed of the world-generation threads (Paper Common Worker 2x), and the remaining
