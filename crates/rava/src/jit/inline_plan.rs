@@ -70,7 +70,7 @@ pub(super) fn decide(target: &'static Method, first: Option<i64>, chain: &Chain,
     if spent + size > if tier >= 2 { TIER2_BUDGET } else { TIER1_BUDGET } {
         return None;
     }
-    if env_once!("RAVA_CORE_NO_INLINE").is_some() || target.is_abstract() || target.is_native() || intrinsic(target).is_some() {
+    if env_once!("RAVA_NO_INLINE").is_some() || target.is_abstract() || target.is_native() || intrinsic(target).is_some() {
         return None;
     }
     if tier >= 3 && (compiled_too_large(target, freq) || cold_site(target, freq)) {
@@ -98,7 +98,7 @@ fn compiled_too_large(target: &'static Method, freq: f32) -> bool {
     target.compiled().is_some_and(|c| c.tier >= 2 && c.size > limit) && !target.has_annotation("Ljdk/internal/vm/annotation/ForceInline;")
 }
 
-/// Why `decide` refuses `target` (for `RAVA_CORE_INLINE_LOG`).
+/// Why `decide` refuses `target` (for `RAVA_INLINE_LOG`).
 pub(super) fn refusal(target: &'static Method, chain: &Chain, tier: u8, spent: usize, freq: f32) -> &'static str {
     let size = target.code.map_or(0, |c| c.code.len());
     if spent + size > if tier >= 2 { TIER2_BUDGET } else { TIER1_BUDGET } {

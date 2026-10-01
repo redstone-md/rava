@@ -1,14 +1,14 @@
 //! Launcher for the parity core.
 //!
-//! `rava-core [-cp PATH] [-Dk=v]... MAINCLASS [ARGS]...` boots the JDK and runs `main`;
-//! `rava-core [-Dk=v]... -jar FILE [ARGS]...` runs the main class the jar's manifest names.
-//! `rava-core -cp DIR --call CLASS METHOD` runs a static no-argument method on the bare VM
+//! `rava [-cp PATH] [-Dk=v]... MAINCLASS [ARGS]...` boots the JDK and runs `main`;
+//! `rava [-Dk=v]... -jar FILE [ARGS]...` runs the main class the jar's manifest names.
+//! `rava -cp DIR --call CLASS METHOD` runs a static no-argument method on the bare VM
 //! (no JDK initialization) and prints its result — a tracer for the execution core.
 
-use rava_core::natives::describe_throwable;
-use rava_core::symbol::Symbol;
-use rava_core::thread::Thread;
-use rava_core::vm::{Vm, VmOptions};
+use rava::natives::describe_throwable;
+use rava::symbol::Symbol;
+use rava::thread::Thread;
+use rava::vm::{Vm, VmOptions};
 use std::process::ExitCode;
 
 fn main() -> ExitCode {
@@ -54,7 +54,7 @@ fn main() -> ExitCode {
     }
     let rest: Vec<String> = args.collect();
     if rest.is_empty() {
-        eprintln!("usage: rava-core [-cp PATH] [-Dk=v] MAINCLASS [ARGS] | -cp DIR --call CLASS METHOD");
+        eprintln!("usage: rava [-cp PATH] [-Dk=v] MAINCLASS [ARGS] | -cp DIR --call CLASS METHOD");
         return ExitCode::from(2);
     }
     if !call {
@@ -91,16 +91,16 @@ fn run_main(options: VmOptions, jar: bool, rest: &[String]) -> ExitCode {
     let vm = Vm::create(options).expect("create VM");
     let mut t = Thread::new();
     t.attach();
-    let result = rava_core::boot::boot(&mut t).and_then(|_| {
-        if std::env::var_os("RAVA_CORE_TIMING").is_some() {
-            eprintln!("[rava-core] JDK booted in {:.1} ms, {} classes", started.elapsed().as_secs_f64() * 1e3, vm.loaded_class_count());
+    let result = rava::boot::boot(&mut t).and_then(|_| {
+        if std::env::var_os("RAVA_TIMING").is_some() {
+            eprintln!("[rava] JDK booted in {:.1} ms, {} classes", started.elapsed().as_secs_f64() * 1e3, vm.loaded_class_count());
         }
-        rava_core::boot::run_launched(&mut t, &rest[0], jar, &rest[1..])
+        rava::boot::run_launched(&mut t, &rest[0], jar, &rest[1..])
     });
     // An exception out of main is reported at once; the VM still waits for its other threads.
     let failed = result.is_err();
     let code = report(result.map(|_| 0), started, vm);
-    if let Err(ex) = rava_core::boot::destroy(&mut t) {
+    if let Err(ex) = rava::boot::destroy(&mut t) {
         eprint!("Exception in thread \"DestroyJavaVM\" {}", describe_throwable(ex.0));
     }
     if failed { ExitCode::from(1) } else { code }
@@ -126,24 +126,24 @@ fn run_call(options: VmOptions, rest: &[String]) -> ExitCode {
         eprintln!("no static no-arg method {method} in {class}");
         return ExitCode::from(1);
     };
-    let result = rava_core::runtime::initialize(&mut t, k).and_then(|_| t.call(m, &[]));
+    let result = rava::runtime::initialize(&mut t, k).and_then(|_| t.call(m, &[]));
     if let Ok(v) = result {
         match m.sig.ret {
-            rava_core::types::BasicType::Long => println!("{}", v as i64),
-            rava_core::types::BasicType::Void => {}
+            rava::types::BasicType::Long => println!("{}", v as i64),
+            rava::types::BasicType::Void => {}
             _ => println!("{}", v as i32),
         }
     }
     report(result, started, vm)
 }
 
-fn report(result: Result<u64, rava_core::thread::Throw>, started: std::time::Instant, vm: &Vm) -> ExitCode {
-    if let Some(s) = rava_core::jit::stats::get() {
+fn report(result: Result<u64, rava::thread::Throw>, started: std::time::Instant, vm: &Vm) -> ExitCode {
+    if let Some(s) = rava::jit::stats::get() {
         s.report();
     }
-    if std::env::var_os("RAVA_CORE_TIMING").is_some() {
+    if std::env::var_os("RAVA_TIMING").is_some() {
         eprintln!(
-            "[rava-core] {:.1} ms, {} classes, {} KiB heap",
+            "[rava] {:.1} ms, {} classes, {} KiB heap",
             started.elapsed().as_secs_f64() * 1e3,
             vm.loaded_class_count(),
             vm.heap.used_bytes() / 1024

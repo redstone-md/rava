@@ -48,11 +48,11 @@ for rev in "$@"; do
   fi
   c=$(git -C "$REPO" rev-parse --verify "$rev^{commit}")
   wt=$CACHE/$c
-  if [ ! -x "$wt/target/release/rava-core" ]; then
+  if [ ! -x "$wt/target/release/rava" ]; then
     [ -d "$wt" ] || git -C "$REPO" worktree add --detach -f "$wt" "$c" >/dev/null
-    (cd "$wt" && cargo build --release -p rava-core >/dev/null 2>&1)
+    (cd "$wt" && cargo build --release -p rava >/dev/null 2>&1)
   fi
-  CMD[$rev]=$wt/target/release/rava-core; COMMIT[$rev]=$c; SHA[$rev]=$(sha256sum "${CMD[$rev]}" | cut -c1-16)
+  CMD[$rev]=$wt/target/release/rava; COMMIT[$rev]=$c; SHA[$rev]=$(sha256sum "${CMD[$rev]}" | cut -c1-16)
 done
 
 {

@@ -12,12 +12,12 @@ use crate::thread::Thread;
 use std::sync::atomic::Ordering;
 
 /// Invocations and taken back-edges of tier-1 code before tier 2 (cf. HotSpot's
-/// `Tier4InvocationThreshold` / `Tier4BackEdgeThreshold`); `RAVA_CORE_TIER2_THRESHOLD` sets the
+/// `Tier4InvocationThreshold` / `Tier4BackEdgeThreshold`); `RAVA_TIER2_THRESHOLD` sets the
 /// invocation count (back-edges scale with it), for testing.
 fn thresholds() -> (i32, i32) {
     static T: std::sync::OnceLock<(i32, i32)> = std::sync::OnceLock::new();
     *T.get_or_init(|| {
-        let n = std::env::var("RAVA_CORE_TIER2_THRESHOLD").ok().and_then(|v| v.parse::<i32>().ok()).unwrap_or(5000).max(1);
+        let n = std::env::var("RAVA_TIER2_THRESHOLD").ok().and_then(|v| v.parse::<i32>().ok()).unwrap_or(5000).max(1);
         (n, n * 8)
     })
 }
@@ -27,7 +27,7 @@ const RETRY: i32 = 1024;
 
 fn enabled() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var_os("RAVA_CORE_NO_TIER2").is_none())
+    *ON.get_or_init(|| std::env::var_os("RAVA_NO_TIER2").is_none())
 }
 
 /// Requests the tier-2 compilation of `m` once. Tier-1 code calls this on every invocation

@@ -1,4 +1,4 @@
-//! rava-core: the parity execution core. Design: `docs/core/README.md`.
+//! rava: the parity execution core. Design: `docs/core/README.md`.
 
 pub mod boot;
 pub mod classfile;

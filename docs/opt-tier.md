@@ -5,7 +5,7 @@
 The baseline JIT (`jit/`) keeps the operand stack in memory and every call pays a full frame.
 Measured against HotSpot restricted to C1 (`-XX:TieredStopAtLevel=1`):
 
-| | HotSpot (C2) | HotSpot C1 only | rava-core baseline |
+| | HotSpot (C2) | HotSpot C1 only | rava baseline |
 |---|---:|---:|---:|
 | `DfTree` (megamorphic function trees over doubles) | 112 ms | 138 ms | 283 ms |
 | `BootLike` (records as map keys, method-handle chains) | 428 ms | 599 ms | ~3200 ms |
@@ -39,7 +39,7 @@ A C1-class compiler is enough for parity. Every mechanism below is a generic JVM
   callee-saved registers or spill slots on the native stack. Oops in native frames are found by
   the collector's conservative scan.
 
-## Implementation (`crates/rava-core/src/jit/opt/`)
+## Implementation (`crates/rava/src/jit/opt/`)
 
 | File | Role |
 |---|---|
@@ -94,9 +94,9 @@ Rules that keep it correct:
 - **GC**: values live in registers and native spill slots, which the conservative stack scan
   covers; the collector never moves objects.
 
-Debugging: `RAVA_CORE_OPT=0` (baseline tier 2 only), `RAVA_CORE_OPT=all` (compile everything
-with this tier), `RAVA_CORE_OPT_LOG`, `RAVA_CORE_OPT_IR=<method>` (IR and allocation), `RAVA_CORE_OPT_SPLIT=0`, `RAVA_CORE_INLINE_LOG`,
-`RAVA_CORE_DEOPT_LOG`, `RAVA_CORE_JIT_DUMP=<method>`, `RAVA_CORE_JIT_STATS`.
+Debugging: `RAVA_OPT=0` (baseline tier 2 only), `RAVA_OPT=all` (compile everything
+with this tier), `RAVA_OPT_LOG`, `RAVA_OPT_IR=<method>` (IR and allocation), `RAVA_OPT_SPLIT=0`, `RAVA_INLINE_LOG`,
+`RAVA_DEOPT_LOG`, `RAVA_JIT_DUMP=<method>`, `RAVA_JIT_STATS`.
 
 ## Next
 

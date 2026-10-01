@@ -40,13 +40,13 @@ pub fn install(code: &[u8]) -> usize {
     at
 }
 
-/// Appends `address size name` to `/tmp/perf-<pid>.map` when `RAVA_CORE_PERF_MAP` is set, so
+/// Appends `address size name` to `/tmp/perf-<pid>.map` when `RAVA_PERF_MAP` is set, so
 /// `perf` can name compiled methods.
 pub fn perf_map(address: usize, size: usize, name: &str) {
     use std::io::Write;
     static FILE: std::sync::OnceLock<Option<Mutex<std::fs::File>>> = std::sync::OnceLock::new();
     let file = FILE.get_or_init(|| {
-        std::env::var_os("RAVA_CORE_PERF_MAP")?;
+        std::env::var_os("RAVA_PERF_MAP")?;
         let path = format!("/tmp/perf-{}.map", std::process::id());
         std::fs::File::create(path).ok().map(Mutex::new)
     });

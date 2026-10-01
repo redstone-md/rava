@@ -72,12 +72,12 @@ impl CompiledMethod {
 /// Invocations before a method is compiled.
 fn threshold() -> u32 {
     static T: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
-    *T.get_or_init(|| std::env::var("RAVA_CORE_JIT_THRESHOLD").ok().and_then(|v| v.parse().ok()).unwrap_or(100))
+    *T.get_or_init(|| std::env::var("RAVA_JIT_THRESHOLD").ok().and_then(|v| v.parse().ok()).unwrap_or(100))
 }
 
 pub fn enabled() -> bool {
     static E: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *E.get_or_init(|| std::env::var_os("RAVA_CORE_NO_JIT").is_none())
+    *E.get_or_init(|| std::env::var_os("RAVA_NO_JIT").is_none())
 }
 
 /// The initial `Method::entry`: run through the interpreter (which also dispatches natives).

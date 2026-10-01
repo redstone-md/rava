@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/rava-core"]
+members = ["crates/rava"]
 
 [workspace.package]
 edition = "2021"

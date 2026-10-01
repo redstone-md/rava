@@ -1,8 +1,8 @@
-# rava-core — the parity execution core
+# rava — the parity execution core
 
 Authorised by the user on 2026-09-29 after `roadmap.md` established that the current engine's
 4x gap to HotSpot is architectural (JDK served as Rust natives behind a 40-800 ns seam, a handle
-heap, compiled code that leaves machine code on every call). `rava-core` is a new crate that grows
+heap, compiled code that leaves machine code on every call). `rava` is a new crate that grows
 next to `rava-interp`; the old engine stays the product until the new core boots the benchmark.
 
 ## Rules (unchanged)

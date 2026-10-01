@@ -43,13 +43,13 @@ macro_rules! vm_field {
 }
 pub(crate) use vm_field;
 
-/// With `RAVA_CORE_ALLOC_PROF`: allocations that reach the runtime, by class (compiled code
+/// With `RAVA_ALLOC_PROF`: allocations that reach the runtime, by class (compiled code
 /// reaches it once per exhausted bump run, so counts weigh a class by its run turnover).
 fn alloc_profile(k: &'static Klass, bytes: usize) {
     use std::sync::Mutex;
     static PROF: Mutex<(u64, Option<std::collections::HashMap<usize, (u64, u64)>>)> = Mutex::new((0, None));
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    if !*ON.get_or_init(|| std::env::var_os("RAVA_CORE_ALLOC_PROF").is_some()) {
+    if !*ON.get_or_init(|| std::env::var_os("RAVA_ALLOC_PROF").is_some()) {
         return;
     }
     let mut p = PROF.lock().unwrap();
@@ -103,7 +103,7 @@ pub fn throw_new(t: &mut Thread, class: &str, message: &str) -> Throw {
 }
 
 fn construct_throwable(t: &mut Thread, class: &str, message: &str) -> JResult<Oop> {
-    if let Ok(filter) = std::env::var("RAVA_CORE_TRACE_THROW") {
+    if let Ok(filter) = std::env::var("RAVA_TRACE_THROW") {
         if class.contains(filter.as_str()) {
             let frames: Vec<String> = t.frames().take(8).map(|(m, bci)| format!("{m}@{bci}")).collect();
             eprintln!("[throw] {class}: {message}\n  {}", frames.join("\n  "));
@@ -122,7 +122,7 @@ fn construct_throwable(t: &mut Thread, class: &str, message: &str) -> JResult<Oo
 
 /// A VM invariant broke while the Java world cannot report it; abort loudly.
 pub fn fatal(msg: &str) -> Throw {
-    panic!("rava-core fatal: {msg}")
+    panic!("rava fatal: {msg}")
 }
 
 pub fn link_error(t: &mut Thread, e: LinkError) -> Throw {
