@@ -512,6 +512,14 @@ separates code quality from warm-up: at the start of the day 111.3 ms per chunk 
   objects that do not escape (lambdas, iterators) appear in deoptimization states, so it needs
   rematerialization on deoptimization.
 
+- guardWithTest handles inline both branches (b4d1a4b, 0205060): records' equals/hashCode
+  compile to one body (`bench/RecordHashBench` 180 -> 80-95 ns, `java` 30-57); biomes 12.4 ->
+  10.5 ms per chunk.
+
+Server start, `bench/results/20261001-153755-vm` (6 rounds, noisy host: sd 3-4 s): 746a81d
+60.17 s, 87ed062 57.43 s, `java` 45.10 s. Spawn-area generation (the dimensions' "Time elapsed"):
+22.0 -> 20.4 s against `java`'s 13.2 (1.54x).
+
 ### Next
 
 1. Mutator speed of the world-generation threads (Paper Common Worker 2x), and the remaining
