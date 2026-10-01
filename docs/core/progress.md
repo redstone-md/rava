@@ -434,6 +434,21 @@ nether 3.0 vs 1.7 s. C2 code for the same methods (dumped from a live `java` wit
 Compiler.perfmap` and `/proc/<pid>/mem`) keeps loop-invariant loads and checks out of loops,
 has no polls in counted loops, unrolls, and uses compressed references.
 
+**Steady-state kernels** (`bench/mc`, the server jar's own classes): `ImprovedNoise.noise`,
+`NormalNoise.getValue` and `DensityFunctions.ShiftedNoise` over `ShiftA`/`ShiftB` run as fast
+as under C2; `CubicSpline$Multipoint.apply` (nested splines, a binary search through a capturing
+lambda) takes 44-48 ns against 22 ns. In the start itself, the structure-placement biome search
+on Worker-Main-1 takes 6.6 s against 4.1 s (perf map dumped from the live `java` mid-search): noise
+4.0 vs 3.1 s, `Climate$RTree$SubTree.search` 1.6 vs 0.75 s, splines 0.5 vs 0.07 s.
+
+Allocating rcx and rdx (3d136c2; eleven allocatable registers instead of nine) changed nothing
+measurable (`bench/results/20261001-031543-vm`: 30.61 vs 30.68 s); spills are L1 hits. Then
+(2071b61, 4bd7ec9, 91c3731): initializing card marks elided along single-predecessor chains,
+final fields of compiled allocations read back their stored value (lambdas keep captured values
+in registers), and allocation/monitor/subtype slow paths moved out of line (the spline's main
+code 9.7 -> 5.5 KB, inlinable again). `bench/results/20261001-034216-vm`: 3d136c2 30.68 s,
+91c3731 30.36 s: within noise.
+
 ### Next
 
 1. Mutator speed of the world-generation threads (Paper Common Worker 2x), and the remaining
