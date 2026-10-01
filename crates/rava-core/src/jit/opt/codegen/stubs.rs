@@ -5,7 +5,7 @@ use super::{scopes, Arg, Gen};
 use crate::jit::asm::{mem, Alu, Label, M, R, X};
 use crate::jit::opt::ir::*;
 use crate::jit::opt::moves;
-use crate::jit::opt::regalloc::{Loc, XMMS};
+use crate::jit::opt::regalloc::{phis, Loc, XMMS};
 use crate::jit::runtime;
 
 impl Gen<'_> {
@@ -111,5 +111,26 @@ impl Gen<'_> {
         self.a.call_abs(crate::jit::opt::deopt::deopt as *const () as usize);
         self.a.alu_ri(true, Alu::Add, R::Rsp, xbytes + 8 * crate::jit::opt::deopt::SAVED.len() as i32);
         self.a.jmp(self.epilogue);
+    }
+
+    /// Whether `from -> to` goes back in code order (a loop's back edge).
+    pub(super) fn back_edge(&self, from: B, to: B) -> bool {
+        self.g.blocks[to as usize].order <= self.g.blocks[from as usize].order
+    }
+
+    /// Where a conditional jump from `from` to `to` goes: the block itself, or a stub doing the
+    /// edge's phi moves and poll first.
+    pub(super) fn edge_target(&mut self, from: B, to: B) -> Label {
+        if phis(self.g, to).next().is_none() && !self.polls_on(from, to) {
+            return self.labels[to as usize];
+        }
+        let l = self.a.new_label();
+        self.edge_stubs.push((l, from, to));
+        l
+    }
+
+    /// Whether the edge polls: a back edge, unless of a short counted loop.
+    pub(super) fn polls_on(&self, from: B, to: B) -> bool {
+        self.back_edge(from, to) && !self.short_loops[to as usize]
     }
 }
