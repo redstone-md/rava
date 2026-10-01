@@ -327,6 +327,10 @@ impl Asm {
         self.op_rr(w, &[0x69], dst as u8, src as u8);
         self.d32(imm);
     }
+    /// One-operand `imul src`: the signed double-width product of rax and src in rdx:rax.
+    pub fn imul_wide(&mut self, w: bool, src: R) {
+        self.op_rr(w, &[0xF7], 5, src as u8);
+    }
     /// `cdq` / `cqo` then `idiv src` (quotient rax, remainder rdx).
     pub fn idiv(&mut self, w: bool, src: R) {
         if w {
@@ -450,6 +454,7 @@ mod tests {
         assert_eq!(hex(|a| a.call_m(mem(R::Rdx, 16))), "ff 52 10");
         assert_eq!(hex(|a| a.round_sd(X(0), X(1), 1)), "66 0f 3a 0b c1 01");
         assert_eq!(hex(|a| a.shift_ri(false, Shift::Shl, R::R9, 3)), "41 c1 e1 03");
+        assert_eq!(hex(|a| a.imul_wide(true, R::Rcx)), "48 f7 e9");
         assert_eq!(hex(|a| a.shift_ri(true, Shift::Shr, R::Rsi, 32)), "48 c1 ee 20");
         assert_eq!(hex(|a| a.farith_rr(true, 0x59, X(0), X(1))), "f2 0f 59 c1");
         assert_eq!(hex(|a| a.push(R::Rbx)), "53");

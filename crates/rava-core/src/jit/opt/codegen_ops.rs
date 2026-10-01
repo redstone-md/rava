@@ -158,6 +158,9 @@ impl Gen<'_> {
 
     /// Division by a non-zero divisor (checked before): `MIN / -1` would trap in `idiv`.
     fn div(&mut self, v: V, w: bool, rem: bool, x: V, y: V) {
+        if let Some(d) = self.g.constant(y).filter(|&d| if w { d != 0 } else { d as i32 != 0 }) {
+            return self.div_const(v, w, rem, x, d);
+        }
         let (special, done) = (self.a.new_label(), self.a.new_label());
         self.load(R::Rcx, y);
         self.load(R::Rax, x);
