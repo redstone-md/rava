@@ -27,6 +27,7 @@ mod nullcheck;
 mod operands;
 mod phis;
 mod regalloc;
+mod scratch;
 mod split;
 
 use super::{code_cache, CompiledMethod};

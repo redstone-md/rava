@@ -69,7 +69,7 @@ impl Gen<'_> {
                     self.a.alu_mi(false, Alu::Cmp, mem(ra, 16), c as i32);
                     self.a.jcc(Cond::Be, fail);
                 } else {
-                    let ri = self.reg(idx, R::Rcx);
+                    let ri = self.reg(idx, R::R11);
                     self.a.alu_rm(false, Alu::Cmp, ri, mem(ra, 16));
                     self.a.jcc(Cond::Ae, fail);
                 }
@@ -97,8 +97,8 @@ impl Gen<'_> {
             Ty::J => self.a.neg(true, r),
             Ty::F => self.a.alu_ri(false, Alu::Xor, r, i32::MIN),
             _ => {
-                self.a.mov_ri(R::Rcx, i64::MIN);
-                self.a.alu_rr(true, Alu::Xor, r, R::Rcx);
+                self.a.mov_ri(R::R11, i64::MIN);
+                self.a.alu_rr(true, Alu::Xor, r, R::R11);
             }
         }
         self.put(v, r);
@@ -120,7 +120,7 @@ impl Gen<'_> {
         self.load(r, x);
         match op {
             BinOp::Mul => {
-                let s = self.reg(y, R::Rcx);
+                let s = self.reg(y, R::R11);
                 self.a.imul_rr(w, r, s);
             }
             _ => {
@@ -260,8 +260,8 @@ impl Gen<'_> {
         self.a.cvtt_f2i(from_double, to_long, R::Rax, a);
         let done = self.a.new_label();
         if to_long {
-            self.a.mov_ri(R::Rcx, i64::MIN);
-            self.a.alu_rr(true, Alu::Cmp, R::Rax, R::Rcx);
+            self.a.mov_ri(R::R11, i64::MIN);
+            self.a.alu_rr(true, Alu::Cmp, R::Rax, R::R11);
         } else {
             self.a.alu_ri(false, Alu::Cmp, R::Rax, i32::MIN);
         }

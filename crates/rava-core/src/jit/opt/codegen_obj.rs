@@ -58,13 +58,13 @@ impl Gen<'_> {
             }
             Inst::StoreField(o, off, bt, x) => {
                 let ro = self.reg(o, R::Rax);
-                let rx = self.value_reg(x, bt);
+                let rx = self.value_reg(x, bt, R::R11);
                 self.store_typed(v, rx, bt, mem(ro, off as i32));
             }
             Inst::LoadStatic(addr, bt) => {
-                self.a.mov_ri(R::Rcx, addr as i64);
+                self.a.mov_ri(R::R11, addr as i64);
                 let r = self.out(v);
-                load_typed_to(&mut self.a, r, bt, mem(R::Rcx, 0));
+                load_typed_to(&mut self.a, r, bt, mem(R::R11, 0));
                 self.put(v, r);
             }
             Inst::StoreStatic(addr, bt, x) => {
@@ -142,13 +142,14 @@ impl Gen<'_> {
         }
     }
 
-    /// A register with `x` for a store of type `bt` (a copy when the store masks it).
-    fn value_reg(&mut self, x: V, bt: BasicType) -> R {
+    /// A register with `x` for a store of type `bt` (a copy in `scratch` when the store masks
+    /// it).
+    fn value_reg(&mut self, x: V, bt: BasicType, scratch: R) -> R {
         if bt == BasicType::Boolean {
-            self.load(R::Rdx, x);
-            return R::Rdx;
+            self.load(scratch, x);
+            return scratch;
         }
-        self.reg(x, R::Rdx)
+        self.reg(x, scratch)
     }
 
     /// The address of element `idx` of `arr` (a constant index folded into the displacement).
@@ -159,7 +160,7 @@ impl Gen<'_> {
                 return mem(ra, d);
             }
         }
-        let ri = self.reg(idx, R::Rcx);
+        let ri = self.reg(idx, R::R11);
         mem_idx(ra, ri, scale(bt), BASE)
     }
 
@@ -175,7 +176,7 @@ impl Gen<'_> {
     fn store_indexed(&mut self, v: V, arr: V, idx: V, bt: BasicType, x: V) {
         let at = self.element(arr, idx, bt);
         if bt != BasicType::Byte {
-            let rx = self.value_reg(x, bt);
+            let rx = self.value_reg(x, bt, R::Rdx);
             return self.store_typed(v, rx, bt, at);
         }
         // bastore: boolean[] stores value & 1, byte[] the low byte.

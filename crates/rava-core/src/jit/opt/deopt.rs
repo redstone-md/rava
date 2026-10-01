@@ -12,7 +12,7 @@ use crate::thread::{header, Thread, Throw};
 /// Registers the common deoptimization stub pushes, in push order (an even count keeps the
 /// stack aligned), above the SSE registers it stores (`XMMS` order, 8 bytes each); the runtime
 /// finds the spill slots right above them.
-pub const SAVED: [R; 10] = [R::Rbx, R::Rbp, R::R14, R::R15, R::Rsi, R::Rdi, R::R8, R::R9, R::R10, R::R11];
+pub const SAVED: [R; 12] = [R::Rbx, R::Rbp, R::R14, R::R15, R::Rsi, R::Rdi, R::R8, R::R9, R::R10, R::R11, R::Rcx, R::Rdx];
 
 /// A deoptimization point: its scopes and where each live frame slot's value is.
 pub struct Desc {

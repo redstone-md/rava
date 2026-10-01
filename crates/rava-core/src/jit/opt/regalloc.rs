@@ -1,7 +1,8 @@
 //! Linear-scan register allocation over SSA values (Poletto & Sarkar): one contiguous interval
 //! per value from block liveness, then a single pass in start order. Values live across a call
 //! prefer callee-saved registers; in a caller-saved or SSE register, code generation saves them
-//! around each such call (`Allocation::saves`). Constants are never allocated. Spilled values
+//! around each such call (`Allocation::saves`). rcx and rdx go to values no instruction writing
+//! them interrupts (`scratch.rs`). Constants are never allocated. Spilled values
 //! stay in their slot for the whole interval; `split.rs` cuts intervals at loop boundaries so
 //! that a hot loop's part of a value can stay in a register.
 //!
@@ -21,6 +22,9 @@ pub const XMMS: [u8; 14] = [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
 /// scratch for code generation; r12 and r13 hold the thread and the frame.
 pub const CALLEE_SAVED: [R; 4] = [R::Rbx, R::Rbp, R::R14, R::R15];
 pub const CALLER_SAVED: [R; 5] = [R::Rsi, R::Rdi, R::R8, R::R9, R::R10];
+/// Scratch registers of some instructions (`scratch.rs`), handed only to values whose interval
+/// avoids every instruction that may write them; tried last.
+pub const SCRATCH: [R; 2] = [R::Rcx, R::Rdx];
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Loc {
@@ -84,6 +88,8 @@ struct Intervals {
     /// Blocks with real uses of each value (for `LoopMap::idle`), and the block at hand.
     use_blocks: Vec<Vec<B>>,
     block: B,
+    /// Positions of instructions that may write rcx, and rdx (`scratch.rs`), ascending.
+    dirty: [Vec<u32>; 2],
 }
 
 impl Intervals {
@@ -104,6 +110,13 @@ impl Intervals {
     fn read_at(&mut self, v: V, p: u32) {
         self.used[v as usize] = true;
         self.touch(v, p);
+    }
+    /// Whether `v` may live in scratch register `r` (rcx or rdx): no instruction that may write
+    /// it lies within the interval, its ends included.
+    fn scratch_free(&self, v: usize, r: R) -> bool {
+        let d = &self.dirty[(r == R::Rdx) as usize];
+        let i = d.partition_point(|&p| p < self.start[v]);
+        d.get(i).map_or(true, |&p| p > self.end[v])
     }
     fn crosses_call(&self, v: usize) -> bool {
         let i = self.calls.partition_point(|&p| p <= self.start[v]);
@@ -212,7 +225,7 @@ pub fn allocate(g: &Graph) -> Allocation {
 fn intervals(g: &Graph, order: &[B], pos: &[u32], range: &[(u32, u32)], depth: &[u32], reads: &mut StateReads, states: bool) -> Intervals {
     let n = g.values.len();
     let live_in = liveness(g, order, reads, states);
-    let mut iv = Intervals { start: vec![u32::MAX; n], end: vec![0; n], used: vec![false; n], calls: Vec::new(), call_values: Vec::new(), weight: vec![0.0; n], block_weight: 1.0, use_blocks: vec![Vec::new(); n], block: 0 };
+    let mut iv = Intervals { start: vec![u32::MAX; n], end: vec![0; n], used: vec![false; n], calls: Vec::new(), call_values: Vec::new(), weight: vec![0.0; n], block_weight: 1.0, use_blocks: vec![Vec::new(); n], block: 0, dirty: [Vec::new(), Vec::new()] };
     for &b in order {
         let (from, to) = range[b as usize];
         iv.block_weight = 8f32.powi(depth[b as usize].min(5) as i32);
@@ -250,6 +263,12 @@ fn intervals(g: &Graph, order: &[B], pos: &[u32], range: &[(u32, u32)], depth: &
                 iv.calls.push(p);
                 iv.call_values.push((p, v));
             }
+            let (cx, dx) = super::scratch::clobbers(g, v);
+            for (d, on) in iv.dirty.iter_mut().zip([cx, dx]) {
+                if on {
+                    d.push(p);
+                }
+            }
         }
         blk.term.inputs().into_iter().for_each(|u| iv.used_at(g.resolve(u), to - 1));
         if let Term::Deopt(s) = &blk.term {
@@ -257,6 +276,7 @@ fn intervals(g: &Graph, order: &[B], pos: &[u32], range: &[(u32, u32)], depth: &
         }
     }
     iv.calls.sort_unstable();
+    iv.dirty.iter_mut().for_each(|d| d.sort_unstable());
     iv
 }
 
@@ -295,7 +315,7 @@ fn scan(g: &Graph, iv: &Intervals, full: &Intervals, loops: &LoopMap) -> (Vec<Lo
         let cands: Vec<Loc> = match (matches!(g.values[v].ty, Ty::F | Ty::D), crossing) {
             (true, _) => XMMS.iter().map(|&x| Loc::Xmm(x)).collect(),
             (false, true) => CALLEE_SAVED.iter().chain(CALLER_SAVED.iter()).map(|&r| Loc::Reg(r)).collect(),
-            (false, false) => CALLER_SAVED.iter().chain(CALLEE_SAVED.iter()).map(|&r| Loc::Reg(r)).collect(),
+            (false, false) => CALLER_SAVED.iter().chain(CALLEE_SAVED.iter()).chain(SCRATCH.iter()).filter(|&&r| !SCRATCH.contains(&r) || iv.scratch_free(v, r)).map(|&r| Loc::Reg(r)).collect(),
         };
         let allowed = |c: Loc| cands.contains(&c);
         // Coalescing: the result takes the register of its first operand when that dies here
