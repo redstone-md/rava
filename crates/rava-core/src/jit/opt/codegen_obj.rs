@@ -46,8 +46,10 @@ impl Gen<'_> {
                 self.xput(v, r);
             }
             Inst::StoreIndexed(arr, idx, bt @ (BasicType::Float | BasicType::Double), x) => {
-                let at = self.element(arr, idx, bt);
+                // A constant goes through r11, which the element's address may need for a
+                // spilled index: the value first.
                 let a = self.xreg(x, X(0));
+                let at = self.element(arr, idx, bt);
                 self.a.fstore(bt == BasicType::Double, at, a);
             }
             Inst::LoadField(o, off, bt) => {
@@ -174,14 +176,15 @@ impl Gen<'_> {
     }
 
     fn store_indexed(&mut self, v: V, arr: V, idx: V, bt: BasicType, x: V) {
-        let at = self.element(arr, idx, bt);
         if bt != BasicType::Byte {
+            let at = self.element(arr, idx, bt);
             let rx = self.value_reg(x, bt, R::Rdx);
             return self.store_typed(v, rx, bt, at);
         }
-        // bastore: boolean[] stores value & 1, byte[] the low byte.
-        let ra = self.reg(arr, R::Rax);
+        // bastore: boolean[] stores value & 1, byte[] the low byte. The class test uses r11
+        // before the element's address may need it for a spilled index.
         self.load(R::Rdx, x);
+        let ra = self.reg(arr, R::Rax);
         let bools = crate::vm::vm().primitive_array_class(BasicType::Boolean).ok().map_or(0, |k| k as *const Klass as i64);
         let plain = self.a.new_label();
         self.a.mov_ri(R::R11, bools);
@@ -189,6 +192,7 @@ impl Gen<'_> {
         self.a.jcc(Cond::Ne, plain);
         self.a.alu_ri(false, Alu::And, R::Rdx, 1);
         self.a.bind(plain);
+        let at = self.element(arr, idx, bt);
         self.a.store8(at, R::Rdx);
     }
 
