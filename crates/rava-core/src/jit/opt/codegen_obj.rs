@@ -3,7 +3,7 @@
 use super::codegen::{Arg, Gen};
 use super::ir::*;
 use super::regalloc::Loc;
-use crate::jit::asm::{mem, mem_idx, Alu, Cond, M, R, X};
+use crate::jit::asm::{mem, mem_idx, Alu, Cond, Shift, M, R, X};
 use crate::jit::emit_obj::{load_typed_to, normalize_into, store_typed_from};
 use crate::jit::runtime::{self, IcCell};
 use crate::klass::Klass;
@@ -87,17 +87,7 @@ impl Gen<'_> {
             }
             Inst::StoreIndexed(arr, idx, bt, x) => self.store_indexed(v, arr, idx, bt, x),
             Inst::New(k, s) => self.new_instance(v, k, &s),
-            Inst::NewArray(k, len, s) => {
-                let fail = self.deopt(&s);
-                let rl = self.reg(len, R::Rdx);
-                self.a.test_rr(false, rl, rl);
-                self.a.jcc(Cond::S, fail);
-                self.link(&s, true);
-                self.call_preserving(runtime::new_array as *const () as usize, &[Arg::Thread, Arg::Imm(k as *const Klass as i64), Arg::Val(len)]);
-                self.a.test_rr(true, R::Rax, R::Rax);
-                self.a.jcc(Cond::E, fail);
-                self.put(v, R::Rax);
-            }
+            Inst::NewArray(k, len, s) => self.new_array(v, k, len, &s),
             Inst::NewMulti(k, counts, s) => {
                 let fail = self.deopt(&s);
                 self.link(&s, true);
@@ -281,6 +271,67 @@ impl Gen<'_> {
         self.a.bind(slow);
         self.link(s, true);
         self.call_preserving(runtime::new_instance as *const () as usize, &[Arg::Thread, Arg::Imm(k as *const Klass as i64)]);
+        self.a.test_rr(true, R::Rax, R::Rax);
+        self.a.jcc(Cond::E, fail);
+        self.a.bind(done);
+        self.put(v, R::Rax);
+    }
+
+    /// An array of class `k` with `len` elements: bumped from the thread's cache of the size
+    /// class when the size is known (a constant length) or small enough for the 16-byte classes
+    /// (at most 256 bytes, whose class follows from the size), else allocated by the runtime.
+    fn new_array(&mut self, v: V, k: &'static Klass, len: V, s: &Rc<State>) {
+        let fail = self.deopt(s);
+        let (done, slow) = (self.a.new_label(), self.a.new_label());
+        let elem = k.elem_size() as usize;
+        let alloc = offset_of!(crate::thread::Thread, alloc);
+        match self.g.constant(len).map(|n| n as i32) {
+            Some(n) if n < 0 => self.a.jmp(fail),
+            Some(n) => match crate::gc::bump_layout(crate::heap::array_bytes(elem as u32, n)) {
+                Some((size, bump, end)) => {
+                    let at = |off: usize| mem(R::R12, (alloc + off) as i32);
+                    self.a.load(true, R::Rax, at(bump));
+                    self.a.lea(R::Rdx, mem(R::Rax, size as i32));
+                    self.a.alu_rm(true, Alu::Cmp, R::Rdx, at(end));
+                    self.a.jcc(Cond::A, slow);
+                    self.a.store(true, at(bump), R::Rdx);
+                    self.a.store_imm32(mem(R::Rax, crate::heap::ARRAY_LENGTH_OFFSET as i32), n);
+                    self.a.mov_ri(R::Rdx, k as *const Klass as i64);
+                    self.a.store(true, mem(R::Rax, 0), R::Rdx);
+                    self.a.jmp(done);
+                }
+                None => self.a.jmp(slow),
+            },
+            None => {
+                self.load(R::R11, len);
+                self.a.mov_rr(false, R::R11, R::R11);
+                self.a.test_rr(false, R::R11, R::R11);
+                self.a.jcc(Cond::S, fail);
+                // rcx := the cell size, a multiple of 16; its class's cache is at
+                // alloc + classes + (size / 16 - 1) * 32 within the thread.
+                let max = (crate::gc::SMALL_STEP_MAX - crate::heap::ARRAY_BASE_OFFSET as usize) / elem;
+                self.a.alu_ri(false, Alu::Cmp, R::R11, max as i32);
+                self.a.jcc(Cond::A, slow);
+                self.a.mov_rr(false, R::Rcx, R::R11);
+                self.a.shift_ri(false, Shift::Shl, R::Rcx, elem.trailing_zeros() as u8);
+                self.a.alu_ri(false, Alu::Add, R::Rcx, crate::heap::ARRAY_BASE_OFFSET as i32 + 15);
+                self.a.alu_ri(false, Alu::And, R::Rcx, -16);
+                let (bump, end) = crate::gc::step_cache_offsets();
+                let at = |off: usize| mem_idx(R::R12, R::Rcx, 2, (alloc + off) as i32 - 32);
+                self.a.load(true, R::Rax, at(bump));
+                self.a.lea(R::Rdx, mem_idx(R::Rax, R::Rcx, 1, 0));
+                self.a.alu_rm(true, Alu::Cmp, R::Rdx, at(end));
+                self.a.jcc(Cond::A, slow);
+                self.a.store(true, at(bump), R::Rdx);
+                self.a.store(false, mem(R::Rax, crate::heap::ARRAY_LENGTH_OFFSET as i32), R::R11);
+                self.a.mov_ri(R::Rdx, k as *const Klass as i64);
+                self.a.store(true, mem(R::Rax, 0), R::Rdx);
+                self.a.jmp(done);
+            }
+        }
+        self.a.bind(slow);
+        self.link(s, true);
+        self.call_preserving(runtime::new_array as *const () as usize, &[Arg::Thread, Arg::Imm(k as *const Klass as i64), Arg::Val(len)]);
         self.a.test_rr(true, R::Rax, R::Rax);
         self.a.jcc(Cond::E, fail);
         self.a.bind(done);
