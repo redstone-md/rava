@@ -24,7 +24,10 @@ pub(super) fn register(r: &mut NativeRegistry) {
     r.add("java/lang/System", "nanoTime", "()J", |_, _| ret_long(nanos_since_epoch() as i64));
     r.add("java/lang/System", "currentTimeMillis", "()J", |_, _| ret_long((nanos_since_epoch() / 1_000_000) as i64));
     r.add("java/lang/Class", "registerNatives", "()V", |_, _| ret_void());
-    r.add("java/lang/Class", "desiredAssertionStatus0", "(Ljava/lang/Class;)Z", |_, _| ret_bool(false));
+    r.add("java/lang/Class", "desiredAssertionStatus0", "(Ljava/lang/Class;)Z", |_, a| {
+        let k = rt::klass_of_mirror(a[0] as Oop).expect("class mirror");
+        ret_bool(crate::vm::vm().options.assertions.enabled(&k.java_name(), k.loader().is_null()))
+    });
     r.add("java/lang/Class", "getPrimitiveClass", "(Ljava/lang/String;)Ljava/lang/Class;", |t, a| {
         let name = rt::java_string_to_rust(a[0] as Oop);
         let ty = rt::primitive_by_name(&name).ok_or_else(|| throw_new(t, "java/lang/IllegalArgumentException", &name))?;

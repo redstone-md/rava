@@ -1,5 +1,6 @@
 //! rava: the parity execution core. Design: `docs/core/README.md`.
 
+pub mod assertions;
 pub mod boot;
 pub mod classfile;
 pub mod gc;

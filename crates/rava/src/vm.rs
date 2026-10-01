@@ -18,6 +18,7 @@ pub struct VmOptions {
     pub class_path: String,
     /// `-Dkey=value` properties.
     pub properties: Vec<(String, String)>,
+    pub assertions: crate::assertions::Assertions,
     pub heap_reserve: usize,
     /// The most the heap grows to (`-Xmx`); by default a quarter of physical memory, as
     /// HotSpot's `MaxRAMPercentage`.
@@ -31,6 +32,7 @@ impl Default for VmOptions {
             boot_append: Vec::new(),
             class_path: String::new(),
             properties: Vec::new(),
+            assertions: Default::default(),
             heap_reserve: 64 << 30,
             max_heap: default_max_heap(),
         }
