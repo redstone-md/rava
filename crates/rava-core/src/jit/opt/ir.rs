@@ -307,6 +307,10 @@ pub struct Graph {
     pub blocks: Vec<Block>,
     /// The value each value stands for (itself, or what a simplified phi equals; `phis.rs`).
     pub alias: Vec<V>,
+    /// Field loads with acquire semantics (volatile): they stay where they are (`licm.rs`).
+    pub ordered: std::collections::HashSet<V>,
+    /// The receiver of an instance method, never null.
+    pub receiver: Option<V>,
 }
 
 impl Graph {
