@@ -413,6 +413,27 @@ code calling the runtime for every array (millions of `byte[]`, `int[]`, `Object
 variable ones up to 256 bytes). `bench/results/20261001-022958-vm` (5 rounds): f323beb 33.51 s
 mean (median 33.22, sd 1.27), 720647b 32.62 s (median 32.21, sd 0.74), faster in 4 of 5.
 
+**Holes under 256 bytes skipped** when reusing pages (3827755): about 12 million bump runs per
+start had been one to fifteen cells. `bench/results/20261001-024352-vm`: within noise (720647b
+33.67 s, 3827755 33.80 s). A larger young generation (`RAVA_CORE_GC_MB=384`, 27 collections
+instead of 53) saves about 0.2 s of pauses and no measurable wall time.
+
+**Where the session stands**, `bench/results/20261001-025730-vm` (5 alternated rounds):
+
+| build | wall mean (median, sd) | CPU user / sys |
+|---|---|---|
+| 544f332 (start of this session) | 35.31 s (35.73, 1.07) | 42.8 / 5.4 s |
+| c9f9839 (HEAD) | 32.31 s (32.37, 0.77) | 41.5 / 4.9 s |
+| `java` 21.0.12 | 25.92 s (26.06, 0.61) | 57.9 / 2.9 s |
+
+8.5% faster, 1.25x `java` (was 1.36x on this run). Against `java` by phase (one profiled run
+each, CPU of the critical thread): structure-placement biome noise on Worker-Main-1 6.5 s vs
+5.1 s, then the overworld spawn area on the Common Worker 8.6 s vs 4.8 s (of which ~0.9 s is GC
+marking and ~0.5 s allocation slow paths; `java`'s collector runs on other cores), then the
+nether 3.0 vs 1.7 s. C2 code for the same methods (dumped from a live `java` with `jcmd
+Compiler.perfmap` and `/proc/<pid>/mem`) keeps loop-invariant loads and checks out of loops,
+has no polls in counted loops, unrolls, and uses compressed references.
+
 ### Next
 
 1. Mutator speed of the world-generation threads (Paper Common Worker 2x), and the remaining
