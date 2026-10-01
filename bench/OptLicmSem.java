@@ -52,11 +52,24 @@ public class OptLicmSem {
         return sum;
     }
 
+    /** Invariant in the inner loop only: computed from the outer loop's variable. */
+    static long outerDependent(int[] arr, int k) {
+        long sum = 0;
+        for (int y = 0; y < k; y++) {
+            for (int x = 0; x < 4; x++) {
+                int base = ((y * 3 + 1) * 2 + 5) & 7;
+                sum += arr[(base + x) & 7] * (long) (base + 1);
+            }
+        }
+        return sum;
+    }
+
     public static void main(String[] args) throws Exception {
         OptLicmSem a = new OptLicmSem(), b = new OptLicmSem();
         long s = 0;
         for (int r = 0; r < 20000; r++) {
             s += aliasStores(a, (r & 1) == 0 ? a : b, 50) + callStores(a, 20) + maybeNull(a, 100) + nested(a, 5);
+            s += outerDependent(a.data, 9);
         }
         System.out.println(s + " " + a.count + " " + b.count);
         OptLicmSem warm = new OptLicmSem();
