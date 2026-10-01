@@ -63,7 +63,7 @@ pub(super) struct Emitter {
 
 /// Compiles `m` at `tier` (1, or 2 for hot methods: larger inlining budget).
 pub fn compile(m: &'static Method, tier: u8) -> Option<CompiledMethod> {
-    if m.is_synchronized() || m.is_native() {
+    if m.is_native() || m.is_synchronized() && m.is_static() && m.holder.mirror().is_null() {
         return None;
     }
     let started = std::time::Instant::now();
@@ -302,8 +302,54 @@ impl Emitter {
         a.store(true, mem(R::R12, offsets::SP), R::Rax);
         self.poll();
         self.count_invocation();
+        if self.m.is_synchronized() {
+            self.enter_method_monitor();
+        }
         self.load_local_regs();
         frame_patch
+    }
+
+    /// A synchronized method's monitor (the receiver, or the class's mirror) is taken once the
+    /// frame is linked and kept in the 8 bytes `save_registers` leaves below the saved
+    /// registers, for the epilogue to release. An OSR entry finds 0 there: the interpreter took
+    /// the monitor and releases it itself (`osr_trampoline`).
+    fn enter_method_monitor(&mut self) {
+        let (slow, done) = (self.a.new_label(), self.a.new_label());
+        if self.m.is_static() {
+            self.a.mov_ri(R::Rcx, self.m.holder.mirror() as usize as i64);
+        } else {
+            self.a.load(true, R::Rcx, self.local(0));
+        }
+        self.a.store(true, mem(R::Rsp, 0), R::Rcx);
+        super::emit_obj::monitor_enter_fast(&mut self.a, R::Rcx, slow);
+        self.a.jmp(done);
+        self.a.bind(slow);
+        self.a.mov_rr(true, R::Rdi, R::R12);
+        self.a.mov_rr(true, R::Rsi, R::Rcx);
+        self.a.call_abs(runtime::monitor_enter as *const () as usize);
+        self.a.bind(done);
+    }
+
+    /// Releases the monitor `enter_method_monitor` took, if this frame took one; the result in
+    /// rax stays (an IllegalMonitorStateException is left pending instead).
+    fn exit_method_monitor(&mut self) {
+        let (slow, done) = (self.a.new_label(), self.a.new_label());
+        self.a.load(true, R::Rcx, mem(R::Rsp, 0));
+        self.a.test_rr(true, R::Rcx, R::Rcx);
+        self.a.jcc(Cond::E, done);
+        self.a.push(R::Rax);
+        self.a.push(R::Rax);
+        let release = self.a.new_label();
+        super::emit_obj::monitor_exit_fast(&mut self.a, R::Rcx, slow);
+        self.a.jmp(release);
+        self.a.bind(slow);
+        self.a.mov_rr(true, R::Rdi, R::R12);
+        self.a.mov_rr(true, R::Rsi, R::Rcx);
+        self.a.call_abs(runtime::monitor_exit as *const () as usize);
+        self.a.bind(release);
+        self.a.pop(R::Rax);
+        self.a.pop(R::Rax);
+        self.a.bind(done);
     }
 
     /// Loads the registers pinned to locals from their slots.
@@ -361,6 +407,10 @@ impl Emitter {
     fn emit_epilogue(&mut self, overflow: Label) {
         let restore = self.a.new_label();
         self.a.bind(self.epilogue);
+        if self.m.is_synchronized() {
+            // Every exit (return or exception) releases it.
+            self.exit_method_monitor();
+        }
         let h = |f: usize| mem(R::R13, 8 * (self.max_locals + f as i32));
         self.a.load(true, R::Rcx, h(header::CALLER));
         self.a.store(true, mem(R::R12, offsets::TOP), R::Rcx);
