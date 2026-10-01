@@ -172,18 +172,26 @@ fn for_name0(t: &mut Thread, a: &[u64]) -> JResult<u64> {
 fn retrieve_directives(t: &mut Thread, _: &[u64]) -> JResult<u64> {
     let k = crate::loader::load("java/lang/AssertionStatusDirectives").expect("AssertionStatusDirectives");
     rt::initialize(t, k)?;
+    let assertions = &vm().options.assertions;
     let d = rt::alloc_instance(t, k)?;
-    let strings = super::string_array(t, &[])?;
-    let bools = rt::alloc_array(t, vm().primitive_array_class(crate::types::BasicType::Boolean).expect("[Z"), 0)?;
-    for (name, desc, v) in [
-        ("classes", "[Ljava/lang/String;", strings),
-        ("packages", "[Ljava/lang/String;", strings),
-        ("classEnabled", "[Z", bools),
-        ("packageEnabled", "[Z", bools),
-    ] {
-        let f = k.declared_field(Symbol::intern(name), Symbol::intern(desc)).expect("directive field");
-        // SAFETY: fresh instance of the declaring class.
-        unsafe { obj::write::<Oop>(d, f.offset, v) };
+    let [(classes, class_enabled), (packages, package_enabled)] = assertions.directives();
+    let fields = [("classes", "classEnabled", classes, class_enabled), ("packages", "packageEnabled", packages, package_enabled)];
+    for (names_field, enabled_field, names, enabled) in fields {
+        let names = super::string_array(t, &names.into_iter().map(Some).collect::<Vec<_>>())?;
+        let bools = rt::alloc_array(t, vm().primitive_array_class(crate::types::BasicType::Boolean).expect("[Z"), enabled.len() as i32)?;
+        for (i, &e) in enabled.iter().enumerate() {
+            // SAFETY: element `i` of the fresh boolean array.
+            unsafe { *(bools as *mut u8).add(crate::heap::ARRAY_BASE_OFFSET as usize + i) = e as u8 };
+        }
+        let field = |name: &str, desc: &str| k.declared_field(Symbol::intern(name), Symbol::intern(desc)).expect("directive field").offset;
+        // SAFETY: fields of the fresh instance of the declaring class.
+        unsafe {
+            obj::write::<Oop>(d, field(names_field, "[Ljava/lang/String;"), names);
+            obj::write::<Oop>(d, field(enabled_field, "[Z"), bools);
+        }
     }
+    let deflt = k.declared_field(Symbol::intern("deflt"), Symbol::intern("Z")).expect("deflt").offset;
+    // SAFETY: as above.
+    unsafe { obj::write::<u8>(d, deflt, assertions.user_default() as u8) };
     ret_ref(d)
 }
