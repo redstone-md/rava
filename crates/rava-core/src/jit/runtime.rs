@@ -90,9 +90,15 @@ pub struct IcCell {
     /// The first two receiver classes the site saw, and whether it saw more (type profile).
     seen: [std::sync::atomic::AtomicUsize; 2],
     more: std::sync::atomic::AtomicBool,
+    /// Calls tier-1 code made with each of `seen` as the receiver's class, and with others
+    /// (HotSpot's receiver type counts, for its major-receiver inlining).
+    counts: [std::sync::atomic::AtomicU32; 2],
+    others: std::sync::atomic::AtomicU32,
 }
 
 pub(super) const IC_MAX_UPDATES: u32 = 4;
+/// Counted calls before a site's major receiver is trusted.
+const MAJOR_MIN_CALLS: u64 = 1000;
 
 impl IcCell {
     /// The cached receiver class while the site has seen no other.
@@ -124,6 +130,26 @@ impl IcCell {
         self.more.store(true, Ordering::Relaxed);
     }
 
+    /// The class of at least 90% of the receivers counted (C2's TypeProfileMajorReceiverPercent),
+    /// once enough calls were.
+    pub(super) fn major(&self) -> Option<usize> {
+        use std::sync::atomic::Ordering;
+        let c = [self.counts[0].load(Ordering::Relaxed) as u64, self.counts[1].load(Ordering::Relaxed) as u64];
+        let total = c[0] + c[1] + self.others.load(Ordering::Relaxed) as u64;
+        if total < MAJOR_MIN_CALLS {
+            return None;
+        }
+        (0..2).map(|i| (self.seen[i].load(Ordering::Relaxed), c[i])).find(|&(k, n)| k != 0 && n * 10 >= total * 9).map(|(k, _)| k)
+    }
+
+    pub(super) fn counts_offset() -> i32 {
+        std::mem::offset_of!(IcCell, counts) as i32
+    }
+
+    pub(super) fn others_offset() -> i32 {
+        std::mem::offset_of!(IcCell, others) as i32
+    }
+
     pub(super) fn seen_offset() -> i32 {
         std::mem::offset_of!(IcCell, seen) as i32
     }
@@ -143,6 +169,8 @@ impl IcCell {
             misses: std::sync::atomic::AtomicU32::new(0),
             seen: Default::default(),
             more: Default::default(),
+            counts: Default::default(),
+            others: Default::default(),
         }))
     }
 }

@@ -27,6 +27,13 @@ pub(super) fn receivers(m: &'static Method, bci: usize) -> Vec<&'static Klass> {
     cell.receivers().unwrap_or_default().into_iter().map(|k| unsafe { &*(k as *const Klass) }).collect()
 }
 
+/// The class at least 90% of the receivers counted at `m`'s call at `bci` had, if any.
+pub(super) fn major_receiver(m: &'static Method, bci: usize) -> Option<&'static Klass> {
+    let cell = *sites().lock().unwrap().get(&(m as *const Method as usize, bci as u32))?;
+    // SAFETY: cached classes are immortal.
+    cell.major().map(|k| unsafe { &*(k as *const Klass) })
+}
+
 /// Whether `m`'s call at `bci` has seen more receiver classes than its profile keeps.
 pub(crate) fn megamorphic(m: &'static Method, bci: usize) -> bool {
     sites().lock().unwrap().get(&(m as *const Method as usize, bci as u32)).is_some_and(|cell| cell.receivers().is_none())

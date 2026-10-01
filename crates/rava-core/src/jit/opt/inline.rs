@@ -63,6 +63,7 @@ impl Builder {
         // a site that trapped before calls instead.
         let profiled = !plans.is_empty()
             && plans.iter().all(|(_, g)| matches!(g, Guard::Klass(_)))
+            && !crate::jit::profile::megamorphic(self.sc.m, pc)
             && self.speculates(self.sc.m, pc);
         self.emit_miss(plans, callee, args, s, m.sig.ret, profiled.then_some(pre))
     }
@@ -173,8 +174,13 @@ impl Builder {
             return vec![(t, Guard::None)];
         }
         let profiled = || -> Vec<(&'static Method, Guard)> {
-            let receivers = crate::jit::profile::receivers(self.sc.m, pc).into_iter();
-            receivers.filter_map(|k| crate::link::select_method(k, m).filter(|t| !t.is_abstract()).map(|t| (t, Guard::Klass(k)))).collect()
+            let mut receivers = crate::jit::profile::receivers(self.sc.m, pc);
+            // A megamorphic site still inlines a receiver class it nearly always sees, with a
+            // call for the others (C2's major receiver).
+            if receivers.is_empty() {
+                receivers.extend(crate::jit::profile::major_receiver(self.sc.m, pc));
+            }
+            receivers.into_iter().filter_map(|k| crate::link::select_method(k, m).filter(|t| !t.is_abstract()).map(|t| (t, Guard::Klass(k)))).collect()
         };
         if op == 0xb6 && m.vtable_index() >= 0 && !m.holder.is_interface() {
             if !m.is_abstract() && !m.is_overridden() {
