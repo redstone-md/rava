@@ -10,7 +10,6 @@ use super::ir::*;
 use crate::classfile::ClassFile;
 use crate::jit::analysis::{analyze, insn_len, successors, Analysis};
 use crate::method::Method;
-use crate::types::BasicType;
 use crate::thread::header;
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -135,12 +134,16 @@ pub(super) struct Builder {
     pub exact: Vec<(V, &'static crate::klass::Klass)>,
     /// Bounds checks of the current block: (array, index, check).
     pub bounds: Vec<(V, V, V)>,
+    /// The three caches above as each finished block left them, for a block whose only
+    /// predecessor it is (an extended basic block: inlined bodies, their returns, guards).
+    pub(super) exits: HashMap<B, super::build_cache::Caches>,
 }
+
 
 /// Builds the graph of `m`; `None` if some instruction is not supported. Returns the frame size.
 pub(super) fn build(m: &'static Method) -> Option<(Graph, i32)> {
     let sc = Scope::new(m, None, 0)?;
-    let mut b = Builder { g: Graph::default(), extent: sc.frame_end(), sc, cur: 0, spent: 0, chain: vec![(m, None)], seq: 0, speculate: m.deopt_recompiles.load(std::sync::atomic::Ordering::Relaxed) < super::SPECULATIVE_RECOMPILES, nonnull: Vec::new(), stable: HashMap::new(), numbered: HashMap::new(), loads: HashMap::new(), exact: Vec::new(), bounds: Vec::new() };
+    let mut b = Builder { g: Graph::default(), extent: sc.frame_end(), sc, cur: 0, spent: 0, chain: vec![(m, None)], seq: 0, speculate: m.deopt_recompiles.load(std::sync::atomic::Ordering::Relaxed) < super::SPECULATIVE_RECOMPILES, nonnull: Vec::new(), stable: HashMap::new(), numbered: HashMap::new(), loads: HashMap::new(), exact: Vec::new(), bounds: Vec::new(), exits: HashMap::new() };
     // The entry block reads the parameters, then enters bci 0 like any other edge.
     let start = b.g.new_block(-1);
     b.start_block(start);
@@ -162,12 +165,16 @@ pub(super) fn build(m: &'static Method) -> Option<(Graph, i32)> {
 }
 
 impl Builder {
-    /// Makes `block` the current one, next in code order.
+    /// Makes `block` the current one, next in code order, with the caches of its single
+    /// predecessor (`build_cache.rs`).
     pub fn start_block(&mut self, block: B) {
+        let b = &self.g.blocks[block as usize];
+        let only = match b.preds[..] {
+            [p] if !b.loop_header && self.sc.npreds.get(&block).map_or(true, |&n| n <= 1) && !self.sc.phis.contains_key(&block) => Some(p),
+            _ => None,
+        };
+        self.carry_caches(only);
         self.cur = block;
-        self.numbered.clear();
-        self.loads.clear();
-        self.bounds.clear();
         self.g.blocks[block as usize].order = self.seq;
         self.seq += 1;
     }
@@ -367,40 +374,6 @@ impl Builder {
         // Locals the interpreter will not read again from here are dead in the state.
         let locals = sc.locals.iter().enumerate().map(|(i, &v)| v.filter(|_| sc.live.live(sc.bci, i))).collect();
         Rc::new(State { method: sc.m, bci: sc.bci as u32, locals, stack: sc.stack.clone(), caller: sc.caller.clone(), frame: sc.frame })
-    }
-
-    /// Adds `inst` to the current block, or reuses an identical pure instruction the block
-    /// already computes (local value numbering).
-    pub fn add(&mut self, inst: Inst, ty: Ty) -> V {
-        let t = ty as u8;
-        let key = match inst {
-            Inst::Bin(op, a, b) => Some((1, op as u8, a, b, t)),
-            Inst::Neg(a) => Some((2, 0, a, 0, t)),
-            Inst::Convert(op, a) => Some((3, op, a, 0, t)),
-            Inst::Compare(op, a, b) => Some((4, op, a, b, t)),
-            _ => None,
-        };
-        if let Some(&v) = key.and_then(|k| self.numbered.get(&k)) {
-            return v;
-        }
-        match inst {
-            Inst::Call(..) | Inst::Monitor(..) | Inst::Fence => self.loads.clear(),
-            Inst::Intrinsic(k, ..) if !k.is_pure() => self.loads.clear(),
-            // Another object's field at this offset may be the same one.
-            Inst::StoreField(o, off, bt, x) => {
-                self.loads.retain(|&(_, f), _| f != off);
-                // A stored value reads back unchanged unless the field narrows it.
-                if matches!(bt, BasicType::Int | BasicType::Long | BasicType::Float | BasicType::Double | BasicType::Reference) {
-                    self.loads.insert((o, off), x);
-                }
-            }
-            _ => {}
-        }
-        let v = self.g.add(self.cur, inst, ty);
-        if let Some(k) = key {
-            self.numbered.insert(k, v);
-        }
-        v
     }
 
     pub fn konst(&mut self, ty: Ty, bits: i64) -> V {

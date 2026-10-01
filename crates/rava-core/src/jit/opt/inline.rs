@@ -37,6 +37,7 @@ struct Mark {
     extent: i32,
     spent: usize,
     nonnull: Vec<V>,
+    caches: super::build_cache::Caches,
 }
 
 impl Builder {
@@ -275,6 +276,7 @@ impl Builder {
             extent: self.extent,
             spent: self.spent,
             nonnull: self.nonnull.clone(),
+            caches: (self.numbered.clone(), self.loads.clone(), self.bounds.clone()),
         }
     }
 
@@ -288,5 +290,8 @@ impl Builder {
         self.extent = m.extent;
         self.spent = m.spent;
         self.nonnull = m.nonnull;
+        // The abandoned body's values are gone: so are the facts about them.
+        self.set_caches(m.caches);
+        self.forget_blocks(m.blocks as B);
     }
 }
