@@ -30,7 +30,7 @@ import net.minecraft.world.level.levelgen.structure.StructureStart;
  *  VanillaRegistries.createLookup, the overworld noise settings and multi-noise preset), chunks
  *  taken through biomes, noise fill and surface, with no structures. Prints milliseconds per
  *  chunk for each step; each round generates chunks at new positions.
- *  Run with `-cp <classes>:<paper jar>:<libraries>` [rounds] [chunks per round] [b: biomes only]. */
+ *  Run with `-cp <classes>:<paper jar>:<libraries>` [rounds] [chunks per round] [steps: bns, bn, b]. */
 public class WorldGenBench {
     static final class NoStructures extends StructureManager {
         NoStructures() { super(null, null, null); }
@@ -42,8 +42,9 @@ public class WorldGenBench {
         net.minecraft.server.Bootstrap.bootStrap();
         int rounds = args.length > 0 ? Integer.parseInt(args[0]) : 12;
         int perRound = args.length > 1 ? Integer.parseInt(args[1]) : 64;
-        // Steps after biomes: "bns" (default) noise and surface too, "b" biomes only.
-        boolean all = args.length < 3 || !args[2].equals("b");
+        // Steps: "bns" (default) biomes, noise and surface; "bn" without surface; "b" biomes only.
+        String steps = args.length < 3 ? "bns" : args[2];
+        boolean all = steps.contains("n"), surface = steps.contains("s");
         HolderLookup.Provider lookup = VanillaRegistries.createLookup();
         Holder<NoiseGeneratorSettings> settings = lookup.lookupOrThrow(Registries.NOISE_SETTINGS).getOrThrow(NoiseGeneratorSettings.OVERWORLD);
         Holder<MultiNoiseBiomeSourceParameterList> preset = lookup.lookupOrThrow(Registries.MULTI_NOISE_BIOME_SOURCE_PARAMETER_LIST).getOrThrow(MultiNoiseBiomeSourceParameterLists.OVERWORLD);
@@ -71,7 +72,7 @@ public class WorldGenBench {
                     c.setPersistedStatus(ChunkStatus.NOISE);
                 }
                 long t2 = System.nanoTime();
-                if (all) {
+                if (surface) {
                     gen.buildSurface(c, context, random, structures, new BiomeManager(c, BiomeManager.obfuscateSeed(seed)), biomes, Blender.empty());
                 }
                 long t3 = System.nanoTime();
