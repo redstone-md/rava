@@ -285,6 +285,11 @@ fn is_phi(g: &Graph, v: V) -> bool {
 }
 
 
+fn few_regs() -> Option<usize> {
+    static N: std::sync::OnceLock<Option<usize>> = std::sync::OnceLock::new();
+    *N.get_or_init(|| std::env::var("RAVA_CORE_OPT_FEW_REGS").ok().and_then(|v| v.parse().ok()))
+}
+
 /// Assigns registers in interval start order; out of registers, it spills whichever of the new
 /// interval and the active ones has the fewest loop-weighted uses per position covered. A value
 /// may share its first operand's register when that operand dies at its definition.
@@ -312,11 +317,16 @@ fn scan(g: &Graph, iv: &Intervals, full: &Intervals, loops: &LoopMap) -> (Vec<Lo
         // Candidate registers in preference order: none survives a call but the callee-saved.
         // Across calls, callee-saved registers come first (caller-saved ones cost a save and a
         // restore at each call).
-        let cands: Vec<Loc> = match (matches!(g.values[v].ty, Ty::F | Ty::D), crossing) {
+        let mut cands: Vec<Loc> = match (matches!(g.values[v].ty, Ty::F | Ty::D), crossing) {
             (true, _) => XMMS.iter().map(|&x| Loc::Xmm(x)).collect(),
             (false, true) => CALLEE_SAVED.iter().chain(CALLER_SAVED.iter()).map(|&r| Loc::Reg(r)).collect(),
             (false, false) => CALLER_SAVED.iter().chain(CALLEE_SAVED.iter()).chain(SCRATCH.iter()).filter(|&&r| !SCRATCH.contains(&r) || iv.scratch_free(v, r)).map(|&r| Loc::Reg(r)).collect(),
         };
+        // `RAVA_CORE_OPT_FEW_REGS=n`: only the first n candidates, so that most values spill
+        // (a test mode for code generation's use of scratch registers around spilled operands).
+        if let Some(k) = few_regs() {
+            cands.truncate(k);
+        }
         let allowed = |c: Loc| cands.contains(&c);
         // Coalescing: the result takes the register of its first operand when that dies here
         // (code generation computes into the first operand's register).
