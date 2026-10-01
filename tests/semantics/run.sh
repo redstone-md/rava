@@ -1,6 +1,6 @@
 #!/bin/bash
-# Compiles every bench/*Sem.java and compares rava's output with HotSpot's (timing lines
-# are ignored). Usage: bench/sem_vs_java.sh [work-dir]; R overrides the rava binary,
+# Compiles every *Sem.java here and compares rava's output with HotSpot's (timing lines
+# are ignored). Usage: tests/semantics/run.sh [work-dir]; R overrides the rava binary,
 # SEM_CP adds library jars (guava, fastutil) to the classpath of the probes that import them.
 # HotSpot's output is the reference, computed once per compiled probe and kept in the work
 # dir (runs in other modes reuse it); fast-throw is off so its exception messages do not
