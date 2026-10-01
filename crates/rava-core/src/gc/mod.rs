@@ -226,14 +226,16 @@ impl Heap {
             phases[1] = (before_sweep - before_mark).as_secs_f64() * 1e3;
             phases[2] = before_sweep.elapsed().as_secs_f64() * 1e3;
             space.live_after_gc = live;
+            let allocated = space.allocated_since_gc + self.small_allocated.load(std::sync::atomic::Ordering::Relaxed);
             space.allocated_since_gc = 0;
             self.small_allocated.store(0, std::sync::atomic::Ordering::Relaxed);
-            (marked, live)
+            (marked, live, allocated)
         });
-        if let (Some((marked, live)), true) = (done, std::env::var_os("RAVA_CORE_GC_LOG").is_some()) {
+        if let (Some((marked, live, allocated)), true) = (done, std::env::var_os("RAVA_CORE_GC_LOG").is_some()) {
             eprintln!(
-                "[gc] {} marked {marked} objects, {} MiB live, {:.1} ms (stop {:.1}, mark {:.1}, sweep {:.1})",
+                "[gc] {} after {} MiB allocated: marked {marked} objects, {} MiB live, {:.1} ms (stop {:.1}, mark {:.1}, sweep {:.1})",
                 if full { "full" } else { "young" },
+                allocated >> 20,
                 live >> 20,
                 started.elapsed().as_secs_f64() * 1e3,
                 phases[0],
