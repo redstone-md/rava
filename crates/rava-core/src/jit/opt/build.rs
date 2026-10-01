@@ -33,6 +33,9 @@ pub(super) struct Scope {
     fwd: HashMap<B, (usize, usize)>,
     /// The edge into bci 0 has been made (later edges are the scope's own).
     entered: bool,
+    /// For each loop header: the locals no instruction of the loop writes (when the loop is
+    /// entered by one forward edge only), which keep their entry value instead of a phi.
+    invariant: HashMap<B, Vec<bool>>,
     /// Entry state of each block reached so far: locals, stack and the values known non-null.
     entry: HashMap<B, (Vec<Option<V>>, Vec<Option<V>>, Vec<V>)>,
     /// The phi of each slot (locals, then stack) of merge blocks.
@@ -76,6 +79,7 @@ impl Scope {
             npreds: HashMap::new(),
             fwd: HashMap::new(),
             entered: false,
+            invariant: HashMap::new(),
             entry: HashMap::new(),
             phis: HashMap::new(),
             ready: Vec::new(),
@@ -226,6 +230,8 @@ impl Builder {
         }
         let (pruned, live) = self.reachable();
         let sc = &mut self.sc;
+        // Every edge (source instruction start and end, target) for the loops' extents.
+        let mut edges: Vec<(usize, usize, usize)> = Vec::new();
         // Predecessors: the entry edge into bci 0, block ends, and fall-through into leaders.
         *sc.npreds.entry(sc.blocks[&0]).or_default() += 1;
         sc.fwd.entry(sc.blocks[&0]).or_default().0 += 1;
@@ -237,6 +243,7 @@ impl Builder {
                 let ends_block = succ.len() != 1 || succ[0] != pc + len || sc.blocks.contains_key(&(pc + len));
                 if ends_block {
                     for s in succ.into_iter().filter(|&s| !prunes(&pruned, sc.code, pc, s)) {
+                        edges.push((pc, pc + len, s));
                         if let Some(&t) = sc.blocks.get(&s) {
                             *sc.npreds.entry(t).or_default() += 1;
                             if s <= pc {
@@ -249,6 +256,30 @@ impl Builder {
                 }
             }
             pc += len;
+        }
+        // A loop's extent: from its header to the end of its last back edge, closed under back
+        // edges into it from further on. Locals nothing in it writes need no phi at the header,
+        // unless a forward edge enters the extent past the header (irreducible flow).
+        let max_locals = sc.m.code.unwrap().max_locals as usize;
+        let headers: Vec<usize> = edges.iter().filter(|&&(pc, _, t)| t <= pc).map(|&(_, _, t)| t).collect();
+        for h in headers {
+            let Some(&b) = sc.blocks.get(&h) else { continue };
+            if sc.invariant.contains_key(&b) || sc.fwd.get(&b).map_or(0, |f| f.0) != 1 {
+                continue;
+            }
+            let mut end = h;
+            loop {
+                let grown = edges.iter().filter(|&&(pc, _, t)| t <= pc && t >= h && t <= end.max(h)).map(|&(_, e, _)| e).max().unwrap_or(end).max(end);
+                if grown == end {
+                    break;
+                }
+                end = grown;
+            }
+            if edges.iter().any(|&(pc, _, t)| pc < h && t > h && t < end) {
+                continue;
+            }
+            let written = super::locals::written(sc.code, h, end, max_locals);
+            sc.invariant.insert(b, written.iter().map(|&w| !w).collect());
         }
     }
 
@@ -360,8 +391,11 @@ impl Builder {
             self.sc.entry.insert(to, (self.sc.locals.clone(), self.sc.stack.clone(), self.nonnull.clone()));
             return;
         }
-        let phis: Vec<Option<V>> = slots.iter().map(|s| s.map(|v| self.g.add(to, Inst::Phi(vec![v]), self.g.ty(v)))).collect();
-        let (l, s) = phis.split_at(self.sc.locals.len());
+        let invariant = self.sc.invariant.get(&to).cloned().unwrap_or_default();
+        let keep = |i: usize| invariant.get(i).copied().unwrap_or(false);
+        let phis: Vec<Option<V>> = slots.iter().enumerate().map(|(i, s)| s.filter(|_| !keep(i)).map(|v| self.g.add(to, Inst::Phi(vec![v]), self.g.ty(v)))).collect();
+        let entry: Vec<Option<V>> = slots.iter().enumerate().map(|(i, &s)| if keep(i) { s } else { phis[i] }).collect();
+        let (l, s) = entry.split_at(self.sc.locals.len());
         // The first edge's facts; later forward edges narrow them to what holds on every path.
         self.sc.entry.insert(to, (l.to_vec(), s.to_vec(), self.nonnull.clone()));
         self.sc.phis.insert(to, phis);
