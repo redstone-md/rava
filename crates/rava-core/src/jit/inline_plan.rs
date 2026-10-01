@@ -151,7 +151,10 @@ pub(super) fn bound_target(caller: &'static Method, code: &[u8], pc: usize) -> O
 /// optimizing tier, none otherwise), except for a lambda-form body applied to a different
 /// constant method handle (HotSpot bounds lambda-form recursion by receiver identity the same way).
 fn recursive(t: &'static Method, first: Option<i64>, chain: &Chain, allowed: usize) -> bool {
-    let lambda_form = t.holder.is_hidden() && t.holder.name.as_str().starts_with("java/lang/invoke/LambdaForm$");
+    // Spun forms, and the pregenerated ones of the `*$Holder` classes (`DelegatingMethodHandle`'s
+    // `delegate`, `DirectMethodHandle`'s `invokeStatic`...), all `@LambdaForm.Compiled`.
+    let lambda_form = t.holder.is_hidden() && t.holder.name.as_str().starts_with("java/lang/invoke/LambdaForm$")
+        || t.has_annotation("Ljava/lang/invoke/LambdaForm$Compiled;");
     chain.iter().filter(|(c, f)| std::ptr::eq(*c, t) && !(lambda_form && first.is_some() && *f != first)).count() > allowed
 }
 
