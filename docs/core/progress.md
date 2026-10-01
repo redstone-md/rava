@@ -449,6 +449,20 @@ in registers), and allocation/monitor/subtype slow paths moved out of line (the 
 code 9.7 -> 5.5 KB, inlinable again). `bench/results/20261001-034216-vm`: 3d136c2 30.68 s,
 91c3731 30.36 s: within noise.
 
+**Bump runs from 2 KiB holes** (79cbd1a): three alternated runs suggested 30.4 -> 29.3 s; the
+recorded A/B (`bench/results/20261001-040831-vm`, 5 rounds) gives 91c3731 29.29 s, 79cbd1a
+29.03 s, within noise, at +0.6 GiB peak RSS (1.9 -> 2.5 GiB). Kept for now; revisit with
+background clearing of reused pages.
+
+Where the world-generation worker's time goes now (whole start, perf): 17.1 s of CPU against
+`java`'s 11.0 s. About 7% allocation slow paths (refill, clearing runs), 6% GC marking during
+pauses, 1% interface type checks through the runtime; in its optimized code about 13% is the
+call protocol (callee-saved pushes and pops, frame-slot traffic, thread-word updates). Megamorphic
+calls cost 4-6 ns against C2's 2.5-3 ns (`CallBench`): arguments go through frame slots, the
+caller publishes its frame (BCI, `Thread::top`) and checks for a pending exception after each
+call, the callee writes METHOD/BCI/CALLER and polls on entry. The rest is the computation
+itself, where per-kernel code quality is at or near C2's.
+
 ### Next
 
 1. Mutator speed of the world-generation threads (Paper Common Worker 2x), and the remaining
