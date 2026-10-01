@@ -129,3 +129,6 @@ target-headref/
 
 # Stray PGO/product binary copies left by bench scripts (never in VCS)
 /product
+
+# Server-start A/B runs (bench/paper_ab.sh): local measurements, summarized in docs/core/progress.md
+bench/results/
