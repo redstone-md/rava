@@ -167,6 +167,7 @@ impl Space {
         let base = (raw as usize + PAGE_SIZE - 1) & !(PAGE_SIZE - 1);
         let pages_end = base + (reserve / 4 * 3 & !(PAGE_SIZE - 1));
         super::cards::init(base, reserve);
+        super::prefault::start((base, pages_end), (pages_end, base + reserve));
         Space {
             base,
             end: pages_end,
@@ -211,6 +212,7 @@ impl Space {
             }
             None if self.fresh + PAGE_SIZE <= self.end => {
                 self.fresh += PAGE_SIZE;
+                super::prefault::advanced(super::prefault::Region::Small, self.fresh);
                 self.fresh - PAGE_SIZE
             }
             None => return None,
