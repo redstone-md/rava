@@ -1,7 +1,9 @@
 //! The large-object area: the upper part of the heap reservation, handed out in 4 KiB-aligned
-//! blocks (first fit over a free list, else fresh memory). Freed blocks give their memory back
-//! to the kernel, which zeroes it for the next use. Keeping large objects inside the reservation
-//! lets the card table cover them.
+//! blocks (first fit over a free list, else fresh memory). Freed blocks keep their memory and
+//! are cleared when handed out again, as a JVM clears reused heap: giving it back to the kernel
+//! (`MADV_DONTNEED`) made every reuse fault it in and clear it there again, after a TLB
+//! shootdown across the process's threads. Keeping large objects inside the reservation lets
+//! the card table cover them.
 
 use std::collections::BTreeMap;
 
@@ -30,6 +32,8 @@ impl LargeArea {
             if s > size {
                 self.free.insert(a + size, s - size);
             }
+            // SAFETY: a free block of the area, no longer read by anything.
+            unsafe { std::ptr::write_bytes(a as *mut u8, 0, size) };
             return Some((a, size));
         }
         if self.fresh + size > self.end {
@@ -40,10 +44,8 @@ impl LargeArea {
         Some((self.fresh - size, size))
     }
 
-    /// Returns a block; its memory goes back to the kernel.
+    /// Returns a block (cleared when handed out again).
     pub fn free(&mut self, addr: usize, size: usize) {
-        // SAFETY: a block of the area no object occupies any more.
-        unsafe { libc::madvise(addr as *mut libc::c_void, size, libc::MADV_DONTNEED) };
         let (mut a, mut s) = (addr, size);
         if let Some((&next, &ns)) = self.free.range(a + s..).next() {
             if next == a + s {
