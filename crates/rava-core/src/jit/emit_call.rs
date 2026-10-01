@@ -66,6 +66,9 @@ impl Emitter {
             self.a.load(true, R::Rax, mem(R::Rax, offset_of!(Klass, vtable_ptr) as i32));
             self.a.load(true, R::Rdx, mem(R::Rax, 8 * m.vtable_index()));
         } else {
+            if self.tier == 1 && m.holder.is_interface() {
+                self.profile_receiver(pc);
+            }
             // Inline cache: compare the receiver class with the cached pair, else miss handler.
             let cell = super::profile::cell(self.m, pc);
             let (hit, done, found) = (self.a.new_label(), self.a.new_label(), self.a.new_label());
@@ -107,13 +110,19 @@ impl Emitter {
     /// a third marks the site megamorphic. Only unseen classes leave the inline checks.
     fn profile_receiver(&mut self, pc: usize) {
         let cell = super::profile::cell(self.m, pc);
-        let done = self.a.new_label();
+        let (other, done) = (self.a.new_label(), self.a.new_label());
         self.a.load(true, R::Rdi, mem(R::Rcx, 0));
         self.a.mov_ri(R::Rax, cell as *const runtime::IcCell as i64);
-        self.a.alu_rm(true, super::asm::Alu::Cmp, R::Rdi, mem(R::Rax, runtime::IcCell::seen_offset()));
-        self.a.jcc(Cond::E, done);
-        self.a.alu_rm(true, super::asm::Alu::Cmp, R::Rdi, mem(R::Rax, runtime::IcCell::seen_offset() + 8));
-        self.a.jcc(Cond::E, done);
+        for i in 0..2 {
+            let next = self.a.new_label();
+            self.a.alu_rm(true, super::asm::Alu::Cmp, R::Rdi, mem(R::Rax, runtime::IcCell::seen_offset() + 8 * i));
+            self.a.jcc(Cond::Ne, next);
+            self.a.alu_mi(false, super::asm::Alu::Add, mem(R::Rax, runtime::IcCell::counts_offset() + 4 * i), 1);
+            self.a.jmp(done);
+            self.a.bind(next);
+        }
+        self.a.bind(other);
+        self.a.alu_mi(false, super::asm::Alu::Add, mem(R::Rax, runtime::IcCell::others_offset()), 1);
         self.a.cmp8_mi(mem(R::Rax, runtime::IcCell::more_offset()), 0);
         self.a.jcc(Cond::Ne, done);
         self.a.push(R::Rcx);
