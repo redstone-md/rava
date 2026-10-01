@@ -305,5 +305,5 @@ pub extern "sysv64" fn new_multi2(t: *mut Thread, k: *const Klass, counts: u64) 
 /// Safepoint poll slow path: stops for a collection in progress.
 pub extern "sysv64" fn safepoint(t: *mut Thread) {
     // SAFETY: the current thread.
-    crate::gc::safepoint::poll(unsafe { &*t });
+    crate::gc::safepoint::poll_compiled(unsafe { &*t });
 }

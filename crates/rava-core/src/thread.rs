@@ -55,6 +55,9 @@ pub mod offsets {
     pub const HEAP_BASE: i32 = 40;
     pub const HEAP_SPAN: i32 = 48;
     pub const CARD_TABLE: i32 = 56;
+    /// Non-zero while a collection wants this thread to stop (`gc::safepoint::arm`): compiled
+    /// code polls it with one compare against the thread register.
+    pub const POLL: i32 = 64;
 }
 
 #[repr(C)]
@@ -69,6 +72,8 @@ pub struct Thread {
     pub(crate) pending: Oop,
     /// Write-barrier constants (see `offsets::CARDS`).
     cards: [usize; 4],
+    /// See `offsets::POLL`; written by the collecting thread.
+    pub(crate) poll: std::sync::atomic::AtomicU8,
     stack: Box<[u64]>,
     pub java_thread: Oop,
     /// `Thread.scopedValueCache` of the current thread.
@@ -85,6 +90,8 @@ pub struct Thread {
     pub(crate) lock_token: u64,
 }
 
+const _: () = assert!(std::mem::offset_of!(Thread, poll) == offsets::POLL as usize);
+
 impl Thread {
     pub fn new() -> Thread {
         let mut stack = vec![0u64; STACK_SLOTS].into_boxed_slice();
@@ -100,6 +107,7 @@ impl Thread {
                 let (biased, base, span, table) = crate::gc::cards::layout();
                 [biased, base, span, table]
             },
+            poll: std::sync::atomic::AtomicU8::new(0),
             stack,
             java_thread: std::ptr::null_mut(),
             scoped_value_cache: std::ptr::null_mut(),
