@@ -5,7 +5,7 @@
 
 use super::ir::*;
 use super::moves;
-use super::regalloc::{phi_input, phis, Allocation, Loc, CALLEE_SAVED, CALLER_SAVED, XMMS};
+use super::regalloc::{phi_input, phis, Allocation, Loc, CALLEE_SAVED, CALLER_SAVED, SCRATCH, XMMS};
 use crate::jit::asm::{mem, Alu, Asm, Cond, Label, M, R, X};
 use crate::jit::runtime;
 use crate::method::Method;
@@ -103,7 +103,7 @@ pub(super) fn generate(g: &Graph, al: &Allocation, m: &'static Method, frame_slo
         edge_stubs: Vec::new(),
         saved: Vec::new(),
         frame_bytes: 0,
-        live_gprs: CALLER_SAVED.into_iter().filter(|r| al.loc.contains(&Loc::Reg(*r))).collect(),
+        live_gprs: CALLER_SAVED.into_iter().chain(SCRATCH).filter(|r| al.loc.contains(&Loc::Reg(*r))).collect(),
         live_xmms: XMMS.into_iter().filter(|x| al.loc.contains(&Loc::Xmm(*x))).collect(),
         lock: None,
         frameless: monitor.is_none() && super::polls::frameless(g),

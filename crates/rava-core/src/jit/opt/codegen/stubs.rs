@@ -87,7 +87,8 @@ impl Gen<'_> {
         }
         let frames = scopes.iter().map(|sc| crate::jit::opt::deopt::Frame { method: sc.method, frame: sc.frame, bci: sc.bci, depth: sc.stack.len() as u32 }).collect();
         let desc: &'static crate::jit::opt::deopt::Desc = Box::leak(Box::new(crate::jit::opt::deopt::Desc { frames, slots }));
-        self.a.mov_ri(R::Rdx, desc as *const _ as i64);
+        // rax: no value lives there (rcx and rdx may hold some, saved by the common part).
+        self.a.mov_ri(R::Rax, desc as *const _ as i64);
         self.a.jmp(common);
     }
 
@@ -103,6 +104,7 @@ impl Gen<'_> {
         for (i, &x) in XMMS.iter().enumerate() {
             self.a.fstore(true, mem(R::Rsp, 8 * i as i32), X(x));
         }
+        self.a.mov_rr(true, R::Rdx, R::Rax);
         // The interpreter resumes the scopes on this frame, linked from its header.
         self.anchor();
         self.a.mov_rr(true, R::Rdi, R::R12);
