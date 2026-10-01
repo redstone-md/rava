@@ -399,6 +399,20 @@ returns, guard paths); `ImprovedNoise.sampleAndLerp` loads and null-checks `this
 of eight times. `bench/results/20261001-015303-vm` (5 rounds): 7a0d38d 32.01 s mean (median
 31.45, sd 1.15), c7c1214 31.19 s (median 30.97, sd 0.82), faster in 4 of 5 rounds.
 
+**Polls** (24857e1, f323beb): compiled code polls a per-thread word (`cmpb $0, 64(%r12)`)
+instead of loading the global flag's address, and short counted loops (constant start, step and
+bound, at most 4096 trips) poll no more on their back edges. `bench/results/20261001-021015-vm`:
+c7c1214 33.73 s, f323beb 33.48 s: within noise. (The host drifts: c7c1214 measured 31.19 s an
+hour earlier, which is why only alternated pairs are compared.)
+
+**Allocation**: the GC log now prints the bytes allocated before each collection; a Paper start
+allocates 10.3 GiB under `rava-core` against about 5.8 GiB of eden under `java` (55 G1 pauses,
+0.8 s in all, against 53 collections and 1.5 s here). `RAVA_CORE_ALLOC_PROF` showed optimized
+code calling the runtime for every array (millions of `byte[]`, `int[]`, `Object[]`,
+`double[]`, `long[]`): arrays are now bumped inline (720647b; constant lengths up to 32 KiB,
+variable ones up to 256 bytes). `bench/results/20261001-022958-vm` (5 rounds): f323beb 33.51 s
+mean (median 33.22, sd 1.27), 720647b 32.62 s (median 32.21, sd 0.74), faster in 4 of 5.
+
 ### Next
 
 1. Mutator speed of the world-generation threads (Paper Common Worker 2x), and the remaining
