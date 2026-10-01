@@ -1,6 +1,6 @@
 //! Code generation of field, array, allocation, type-check and call instructions.
 
-use super::codegen::{Arg, Gen};
+use super::codegen::{Arg, Gen, SlowCall};
 use super::ir::*;
 use super::regalloc::Loc;
 use crate::jit::asm::{mem, mem_idx, Alu, Cond, Shift, M, R, X};
@@ -217,9 +217,10 @@ impl Gen<'_> {
             self.a.mov_ri(R::Rdx, cell as *const _ as i64);
             self.a.alu_rm(true, Alu::Cmp, R::Rcx, mem(R::Rdx, 0));
             self.a.jcc(Cond::E, done);
-            let cell = cell as *const _ as i64;
-            self.call_preserving(runtime::subtype_cached as *const () as usize, &[Arg::Reg(R::Rcx), Arg::Imm(k as *const Klass as i64), Arg::Imm(cell)]);
-            self.a.jmp(after);
+            let (cell, slow) = (cell as *const _ as i64, self.a.new_label());
+            let args = vec![Arg::Reg(R::Rcx), Arg::Imm(k as *const Klass as i64), Arg::Imm(cell)];
+            self.slow_calls.push(SlowCall { entry: slow, back: after, addr: runtime::subtype_cached as *const () as usize, args, link: None, fail: None });
+            self.a.jmp(slow);
         }
         // null passes a cast (instanceof tests null before calling this).
         self.a.bind(null_ok);
@@ -239,16 +240,8 @@ impl Gen<'_> {
         } else {
             crate::jit::emit_obj::monitor_exit_fast(&mut self.a, ro, slow);
         }
-        self.a.jmp(done);
-        self.a.bind(slow);
-        self.link(s, true);
-        if enter {
-            self.call_preserving(runtime::monitor_enter as *const () as usize, &[Arg::Thread, Arg::Val(o)]);
-        } else {
-            self.call_preserving(runtime::monitor_exit as *const () as usize, &[Arg::Thread, Arg::Val(o)]);
-            self.a.test_rr(true, R::Rax, R::Rax);
-            self.a.jcc(Cond::E, fail);
-        }
+        let (addr, fail) = if enter { (runtime::monitor_enter as *const () as usize, None) } else { (runtime::monitor_exit as *const () as usize, Some(fail)) };
+        self.slow_calls.push(SlowCall { entry: slow, back: done, addr, args: vec![Arg::Thread, Arg::Val(o)], link: Some(s.clone()), fail });
         self.a.bind(done);
     }
 
@@ -265,15 +258,11 @@ impl Gen<'_> {
                 self.a.store(true, at(bump), R::Rdx);
                 self.a.mov_ri(R::Rdx, k as *const Klass as i64);
                 self.a.store(true, mem(R::Rax, 0), R::Rdx);
-                self.a.jmp(done);
             }
             None => self.a.jmp(slow),
         }
-        self.a.bind(slow);
-        self.link(s, true);
-        self.call_preserving(runtime::new_instance as *const () as usize, &[Arg::Thread, Arg::Imm(k as *const Klass as i64)]);
-        self.a.test_rr(true, R::Rax, R::Rax);
-        self.a.jcc(Cond::E, fail);
+        let args = vec![Arg::Thread, Arg::Imm(k as *const Klass as i64)];
+        self.slow_calls.push(SlowCall { entry: slow, back: done, addr: runtime::new_instance as *const () as usize, args, link: Some(s.clone()), fail: Some(fail) });
         self.a.bind(done);
         self.put(v, R::Rax);
     }
@@ -330,11 +319,8 @@ impl Gen<'_> {
                 self.a.jmp(done);
             }
         }
-        self.a.bind(slow);
-        self.link(s, true);
-        self.call_preserving(runtime::new_array as *const () as usize, &[Arg::Thread, Arg::Imm(k as *const Klass as i64), Arg::Val(len)]);
-        self.a.test_rr(true, R::Rax, R::Rax);
-        self.a.jcc(Cond::E, fail);
+        let args = vec![Arg::Thread, Arg::Imm(k as *const Klass as i64), Arg::Val(len)];
+        self.slow_calls.push(SlowCall { entry: slow, back: done, addr: runtime::new_array as *const () as usize, args, link: Some(s.clone()), fail: Some(fail) });
         self.a.bind(done);
         self.put(v, R::Rax);
     }

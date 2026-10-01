@@ -269,7 +269,7 @@ impl Gen<'_> {
         let slow = self.a.new_label();
         self.a.jcc(Cond::E, slow);
         self.a.bind(done);
-        self.slow_calls.push((slow, helper, x, done));
+        self.slow_calls.push(super::codegen::SlowCall { entry: slow, back: done, addr: helper, args: vec![Arg::Val(x)], link: None, fail: None });
         if !to_long {
             self.a.movsxd(R::Rax, R::Rax);
         }

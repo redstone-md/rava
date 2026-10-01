@@ -35,6 +35,18 @@ pub enum Arg {
     Reg(R),
 }
 
+/// A slow path out of line: from `entry`, (with the frame linked for `link`'s state) a runtime
+/// call of `addr` on `args`, a jump to `fail` if it returned null, then back to `back` with the
+/// result in rax.
+pub struct SlowCall {
+    pub entry: Label,
+    pub back: Label,
+    pub addr: usize,
+    pub args: Vec<Arg>,
+    pub link: Option<Rc<State>>,
+    pub fail: Option<Label>,
+}
+
 pub(super) struct Gen<'a> {
     pub a: Asm,
     pub g: &'a Graph,
@@ -71,7 +83,8 @@ pub(super) struct Gen<'a> {
     /// Constants placed after the code for RIP-relative operands.
     consts: HashMap<u64, Label>,
     /// Out-of-line runtime calls: (entry, helper, argument, where to continue with rax).
-    pub slow_calls: Vec<(Label, usize, V, Label)>,
+    /// Runtime calls of slow paths, emitted after the body (`codegen/stubs.rs`).
+    pub slow_calls: Vec<SlowCall>,
     /// Value-stack slots of the frame, inlined frames included (published as `Thread::sp`).
     frame_slots: i32,
     /// Reference stores that need no card mark (`barrier.rs`).

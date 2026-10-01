@@ -43,10 +43,17 @@ impl Gen<'_> {
     }
 
     pub(super) fn emit_stubs(&mut self) {
-        for (l, helper, x, back) in std::mem::take(&mut self.slow_calls) {
-            self.a.bind(l);
-            self.call_preserving(helper, &[Arg::Val(x)]);
-            self.a.jmp(back);
+        for c in std::mem::take(&mut self.slow_calls) {
+            self.a.bind(c.entry);
+            if let Some(s) = &c.link {
+                self.link(s, true);
+            }
+            self.call_preserving(c.addr, &c.args);
+            if let Some(f) = c.fail {
+                self.a.test_rr(true, R::Rax, R::Rax);
+                self.a.jcc(crate::jit::asm::Cond::E, f);
+            }
+            self.a.jmp(c.back);
         }
         for (l, v, target) in std::mem::take(&mut self.restore_stubs) {
             self.a.bind(l);
