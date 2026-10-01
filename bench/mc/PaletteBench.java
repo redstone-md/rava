@@ -27,7 +27,7 @@ public class PaletteBench {
             }
             if (round >= rounds - 6) System.out.printf("%.1f ns per write%n", (System.nanoTime() - t0) / (double) writes);
         }
-        System.out.println("check " + check);
+        System.out.printf("check %d%n", check);
     }
 
     static long fill(LevelChunkSection sec, BlockState[] states, BlockState air, int s) {
