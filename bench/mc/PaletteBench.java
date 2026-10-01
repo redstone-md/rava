@@ -8,7 +8,7 @@ import net.minecraft.world.level.chunk.PalettedContainer;
  *  ProtoChunk.setBlockState in world generation: LevelChunkSection.setBlockState ->
  *  PalettedContainer.getAndSet (acquire/release, the synchronized getAndSet(int, T), palette
  *  idFor, bit storage getAndSet). Fresh sections are filled with a few states, as terrain fill
- *  does. Run with `-cp <classes>:<paper jar>:<libraries>`. */
+ *  does. Run with `-cp <classes>:<paper jar>:<libraries>` [rounds]. */
 public class PaletteBench {
     public static void main(String[] args) {
         net.minecraft.SharedConstants.tryDetectVersion();
@@ -16,7 +16,8 @@ public class PaletteBench {
         BlockState air = Blocks.AIR.defaultBlockState();
         BlockState[] states = {Blocks.STONE.defaultBlockState(), Blocks.WATER.defaultBlockState(), Blocks.DIRT.defaultBlockState(), Blocks.DEEPSLATE.defaultBlockState(), air};
         long check = 0;
-        for (int round = 0; round < 10; round++) {
+        int rounds = args.length > 0 ? Integer.parseInt(args[0]) : 10;
+        for (int round = 0; round < rounds; round++) {
             long t0 = System.nanoTime();
             int writes = 0;
             for (int s = 0; s < 400; s++) {
@@ -24,7 +25,7 @@ public class PaletteBench {
                 check += fill(sec, states, air, s);
                 writes += 4096;
             }
-            if (round >= 4) System.out.printf("%.1f ns per write%n", (System.nanoTime() - t0) / (double) writes);
+            if (round >= rounds - 6) System.out.printf("%.1f ns per write%n", (System.nanoTime() - t0) / (double) writes);
         }
         System.out.println("check " + check);
     }

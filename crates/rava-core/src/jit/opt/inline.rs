@@ -239,7 +239,7 @@ impl Builder {
     fn inline_body(&mut self, target: &'static Method, args: &[V], s: Rc<State>, k: B, first: Option<i64>) -> Option<Vec<(B, Option<V>)>> {
         let frame = self.sc.frame + self.sc.m.code?.max_locals as i32 + crate::thread::header::SLOTS as i32 + s.stack.len() as i32;
         let weight = self.sc.frequency(s.bci as usize);
-        let mut sc = Scope::new(target, Some(s), frame)?;
+        let mut sc = Scope::new(target, Some(s.clone()), frame)?;
         sc.weight = weight;
         let mut slot = 0;
         for &a in args {
@@ -247,6 +247,14 @@ impl Builder {
             slot += if self.g.ty(a).wide() { 2 } else { 1 };
         }
         sc.cont = Some(k);
+        // A synchronized method takes its monitor (the receiver, already null-checked, or the
+        // class's mirror) before its body, at the call; each return releases it, and a
+        // deoptimization inside releases it once the interpreter finishes the method (`deopt.rs`).
+        if target.is_synchronized() {
+            let o = if target.is_static() { self.konst(Ty::A, target.holder.mirror() as usize as i64) } else { args[0] };
+            self.add(Inst::Monitor(true, o, s.clone()), Ty::I);
+            sc.lock = Some(o);
+        }
         self.extent = self.extent.max(sc.frame_end());
         self.spent += sc.code.len();
         self.chain.push((target, first));

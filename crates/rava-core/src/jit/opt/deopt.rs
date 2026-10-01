@@ -146,7 +146,17 @@ pub extern "sysv64" fn deopt(t: *mut Thread, base: *mut u64, desc: *const Desc, 
                 (f.bci as usize + insn_len(code.code, f.bci as usize), f.depth as usize + slots, None)
             }
         };
+        // An inlined synchronized method holds its monitor (the outermost scope's is released by
+        // the compiled code this returns to): the interpreter finishes the method, then it is
+        // released, as `interp::interpret` releases it on any exit.
+        let lock = (i + 1 < n && f.method.is_synchronized()).then(|| {
+            // SAFETY: local 0 of an inlined synchronized instance method is kept in every state.
+            if f.method.is_static() { f.method.holder.mirror() } else { unsafe { *locals as crate::heap::Oop } }
+        });
         outcome = crate::interp::resume(t, f.method, locals, bci, depth, pending);
+        if let Some(o) = lock {
+            crate::sync::exit(o);
+        }
         if i + 1 < n {
             // SAFETY: this scope's frame is the innermost linked one.
             unsafe { t.pop_frame(hdr(f)) };

@@ -49,6 +49,8 @@ pub(super) struct Scope {
     pub frame: i32,
     /// For an inlined scope: the continuation block and the (block, value) of each return.
     pub cont: Option<B>,
+    /// For an inlined synchronized method: the object whose monitor it holds.
+    pub lock: Option<V>,
     pub returns: Vec<(B, Option<V>)>,
     /// Estimated executions of each instruction per entry of this scope (`freq.rs`), and of
     /// this scope per entry of the compiled method.
@@ -83,6 +85,7 @@ impl Scope {
             caller,
             frame,
             cont: None,
+            lock: None,
             returns: Vec::new(),
             freq,
             weight: 1.0,
@@ -372,8 +375,10 @@ impl Builder {
     /// The interpreter state before the current instruction.
     pub fn state(&self) -> Rc<State> {
         let sc = &self.sc;
-        // Locals the interpreter will not read again from here are dead in the state.
-        let locals = sc.locals.iter().enumerate().map(|(i, &v)| v.filter(|_| sc.live.live(sc.bci, i))).collect();
+        // Locals the interpreter will not read again from here are dead in the state, except the
+        // receiver of an inlined synchronized method: deoptimization releases its monitor.
+        let held = sc.lock.is_some() && !sc.m.is_static();
+        let locals = sc.locals.iter().enumerate().map(|(i, &v)| v.filter(|_| sc.live.live(sc.bci, i) || held && i == 0)).collect();
         Rc::new(State { method: sc.m, bci: sc.bci as u32, locals, stack: sc.stack.clone(), caller: sc.caller.clone(), frame: sc.frame })
     }
 
