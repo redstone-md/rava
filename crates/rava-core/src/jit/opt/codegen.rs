@@ -74,6 +74,10 @@ pub(super) struct Gen<'a> {
     /// A leaf that cannot stop, throw, deoptimize or call Java: no frame header is written or
     /// linked (nothing walks the stack while it runs), no poll or stack check is needed.
     frameless: bool,
+    /// The register holding the frame base: r13, or for a frameless body that reads its
+    /// parameters once on entry, rsi as the caller passed it (r13 is then left alone, and
+    /// neither saved nor restored).
+    base: R,
     /// Registers kept around each call (`Allocation::saves`) and their slots; slots from
     /// `save_base` are written before the call, home slots already hold the value.
     saves: &'a HashMap<V, Vec<(Loc, Loc)>>,
@@ -120,6 +124,7 @@ pub(super) fn generate(g: &Graph, al: &Allocation, m: &'static Method, frame_slo
         live_xmms: XMMS.into_iter().filter(|x| al.loc.contains(&Loc::Xmm(*x))).collect(),
         lock: None,
         frameless: monitor.is_none() && super::polls::frameless(g),
+        base: R::R13,
         saves: &al.saves,
         save_base: al.save_base,
         restore_stubs: Vec::new(),
@@ -131,15 +136,27 @@ pub(super) fn generate(g: &Graph, al: &Allocation, m: &'static Method, frame_slo
     };
     // Entry rsp is 8 mod 16: an odd number of pushes realigns it, spill slots come in pairs.
     // r12 holds the thread in all compiled code (Rust enters through `jit::enter_trampoline`).
-    gen.saved = [R::R13].into_iter().chain(CALLEE_SAVED.into_iter().filter(|r| al.loc.contains(&Loc::Reg(*r)))).collect();
+    let leaf = gen.frameless && reads_params_on_entry(g, al);
+    if leaf {
+        gen.base = R::Rsi;
+    }
+    gen.saved = (!leaf).then_some(R::R13).into_iter().chain(CALLEE_SAVED.into_iter().filter(|r| al.loc.contains(&Loc::Reg(*r)))).collect();
     let spill_bytes = 8 * (al.spill_slots + (al.spill_slots & 1));
     gen.lock = monitor.map(|mon| (mon, spill_bytes));
-    gen.frame_bytes = spill_bytes + if monitor.is_some() { 16 } else { 0 } + if gen.saved.len() % 2 == 0 { 8 } else { 0 };
+    // A frameless body calls nothing, so needs no call alignment.
+    let align = if gen.frameless { 0 } else if gen.saved.len() % 2 == 0 { 8 } else { 0 };
+    gen.frame_bytes = spill_bytes + if monitor.is_some() { 16 } else { 0 } + align;
     let overflow = gen.a.new_label();
     gen.prologue(frame_slots, overflow);
     for (i, &b) in al.order.iter().enumerate() {
         gen.a.bind(gen.labels[b as usize]);
-        for &v in &g.blocks[b as usize].insts {
+        let mut insts = g.blocks[b as usize].insts.clone();
+        if leaf && b == 0 {
+            // The parameter that lands in rsi is read last: rsi is the frame base until then.
+            let n = insts.iter().take_while(|&&v| matches!(g.inst(v), Inst::Param(_))).count();
+            insts[..n].sort_by_key(|&v| al.loc[v as usize] == Loc::Reg(R::Rsi));
+        }
+        for &v in &insts {
             gen.inst(v);
             if let (Some(h @ Loc::Stack(_)), true) = (al.home[v as usize], g.resolve(v) == v && !matches!(g.inst(v), Inst::Phi(_))) {
                 moves::mov(&mut gen.a, h, al.loc[v as usize]);
@@ -162,12 +179,12 @@ pub(super) fn generate(g: &Graph, al: &Allocation, m: &'static Method, frame_slo
 
 impl Gen<'_> {
     pub fn hdr(&self, field: usize) -> M {
-        mem(R::R13, 8 * (self.max_locals + field as i32))
+        mem(self.base, 8 * (self.max_locals + field as i32))
     }
 
     /// Frame slot `n` (from the frame base).
     pub fn slot(&self, n: i32) -> M {
-        mem(R::R13, 8 * n)
+        mem(self.base, 8 * n)
     }
 
     fn prologue(&mut self, frame_slots: i32, overflow: Label) {
@@ -178,7 +195,9 @@ impl Gen<'_> {
         if self.frame_bytes > 0 {
             a.alu_ri(true, Alu::Sub, R::Rsp, self.frame_bytes);
         }
-        a.mov_rr(true, R::R13, R::Rsi);
+        if self.base == R::R13 {
+            a.mov_rr(true, R::R13, R::Rsi);
+        }
         if self.frameless {
             return;
         }
@@ -494,4 +513,16 @@ pub fn invert(c: Cond) -> Cond {
     // x86 condition codes come in complementary pairs differing in the low bit.
     // SAFETY: `Cond` is `repr(u8)` with all 16 codes.
     unsafe { std::mem::transmute::<u8, Cond>(c as u8 ^ 1) }
+}
+
+/// Whether every parameter is read into a register by the entry block's leading instructions
+/// (none is used from its frame slot later), so the frame base is needed only there.
+fn reads_params_on_entry(g: &Graph, al: &Allocation) -> bool {
+    if al.loc.iter().any(|l| matches!(l, Loc::Frame(_))) {
+        return false;
+    }
+    g.blocks.iter().enumerate().filter(|(_, b)| !matches!(b.term, Term::None)).all(|(i, b)| {
+        let lead = if i == 0 { b.insts.iter().take_while(|&&v| matches!(g.inst(v), Inst::Param(_))).count() } else { 0 };
+        b.insts[lead..].iter().all(|&v| !matches!(g.inst(v), Inst::Param(_)))
+    })
 }
