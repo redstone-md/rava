@@ -367,6 +367,21 @@ has them (as HotSpot's stub), and `implCompressMultiBlock0` folds all blocks in 
 `bench/results/20261001-004141-vm` (4 rounds): 544f332 35.86 s mean (median 35.10, sd 1.87),
 8645118 33.41 s (median 33.68, sd 0.81); the "Environment" milestone comes 1-2 s earlier.
 
+**Division by constants** (6953a9f): `idiv` for constant divisors is gone from optimized code
+(±1, biased shifts for powers of two, magic multiplication otherwise; `bench/OptDivSem`).
+`BiomeManager.getBiome` ran 24 64-bit `idiv`s per call (`Math.floorMod(seed >> 24, 1024)`).
+`bench/results/20261001-012511-vm` (4 rounds): 8645118 34.55 s mean (median 34.01, sd 1.58),
+6953a9f 34.17 s (median 34.13, sd 1.89): within this host's noise.
+
+Where the time goes now (perf, one run): the critical path is the one Paper Common Worker
+thread (world generation), 16.6 s of CPU against `java`'s 8.3 s - the same as the wall gap.
+Of its samples 74.5% are optimized code, 15% the runtime (GC marking 1.3 s, allocation refills
+and run clearing 1.1 s), 8% the kernel (first touch of heap pages). In its optimized code about
+a third of the samples sit on spill loads and stores, register moves, callee-saved pushes and
+pops and `movabs`: nine allocatable registers and one interval per value (no splitting at
+uses) keep loop values such as `this` on the stack (`Aquifer.computeSubstance` reloads it before
+each of seven field reads).
+
 ### Next
 
 1. Mutator speed of the world-generation threads (Paper Common Worker 2x), and the remaining
