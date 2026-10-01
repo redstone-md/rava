@@ -283,10 +283,21 @@ impl Gen<'_> {
     fn select(&mut self, v: V, cmp: Cmp, cty: Ty, a: V, b: V, t: V, f: V) {
         let ra = self.reg(a, R::Rax);
         self.alu_val(cty != Ty::I, Alu::Cmp, ra, b);
-        self.load(R::Rax, f);
-        let rt = self.reg(t, R::R11);
-        self.a.cmov(true, super::codegen::cond(cmp), R::Rax, rt);
-        self.put(v, R::Rax);
+        // Straight into the result's register (moves keep the flags): the false value, then the
+        // true one where the condition holds; when that register already holds the true value,
+        // the false one where it fails.
+        let (c, out) = (super::codegen::cond(cmp), self.out(v));
+        if self.loc[t as usize] == Loc::Reg(out) {
+            let rf = self.reg(f, R::R11);
+            if rf != out {
+                self.a.cmov(true, super::codegen::invert(c), out, rf);
+            }
+        } else {
+            self.load(out, f);
+            let rt = self.reg(t, R::R11);
+            self.a.cmov(true, c, out, rt);
+        }
+        self.put(v, out);
     }
 
     /// lcmp / fcmpl / fcmpg / dcmpl / dcmpg: -1, 0 or 1.
