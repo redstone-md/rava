@@ -11,7 +11,14 @@
 </core_principles>
 
 ## 2. Architectural Guardrails and File Constraints
-*(Add specific file size limits, line counts, or directory structures here if needed)*
+
+* **No workload-specific tuning (no-adapt).** No route, fast path, threshold or policy keyed to a particular application: no Minecraft/Paper class, method or package names, workload names, body hashes or expected outputs. Generic JVM adaptivity (counters, tiers, OSR, type profiles, inline caches, speculation with deoptimization, CHA) is allowed, as are intrinsics keyed to `java/*` names.
+* **No snapshots (no-snapshot).** Only a cold start of a new process counts: no CDS-like heap or class archive, no checkpoint/restore, no AOT cache carried between runs.
+* **Drop-in `java`.** `rava` accepts the `java` command line unchanged; never require extra flags such as a manual `-cp`.
+* **Layout.** One crate, `crates/rava` (the launcher is `src/launcher/`); semantic probes in `tests/semantics/`; benchmarks in `bench/`; docs in `docs/`. A/B output (`bench/results/`) stays out of git.
+* **Verification before a compiler commit.** A full Paper start (`bench/paper_ab.sh`) and `tests/semantics/run.sh`; four probes are red on purpose (helpful NPE messages).
+* **Shared host.** Never kill `java` processes broadly: port 25565 belongs to the user; benchmarks use 25599.
+* **Language.** Talk to the user in Russian; commit messages and code comments in English.
 
 ## 3. Frontend State Management Architecture
 
