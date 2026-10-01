@@ -43,6 +43,7 @@ impl Gen<'_> {
             },
             Inst::Convert(op, x) => self.convert(v, op, x),
             Inst::Compare(op, x, y) => self.compare(v, op, x, y),
+            Inst::Select(cmp, cty, a, b, t, f) => self.select(v, cmp, cty, a, b, t, f),
             Inst::FlagCheck(addr, s) => {
                 let fail = self.deopt(&s);
                 self.a.mov_ri(R::Rax, addr as i64);
@@ -273,6 +274,18 @@ impl Gen<'_> {
         if !to_long {
             self.a.movsxd(R::Rax, R::Rax);
         }
+        self.put(v, R::Rax);
+    }
+
+    /// `a cmp b ? t : f`: compare, then the false value into rax and a conditional move of the
+    /// true one (moves and loads leave the flags alone).
+    #[allow(clippy::too_many_arguments)]
+    fn select(&mut self, v: V, cmp: Cmp, cty: Ty, a: V, b: V, t: V, f: V) {
+        let ra = self.reg(a, R::Rax);
+        self.alu_val(cty != Ty::I, Alu::Cmp, ra, b);
+        self.load(R::Rax, f);
+        let rt = self.reg(t, R::R11);
+        self.a.cmov(true, super::codegen::cond(cmp), R::Rax, rt);
         self.put(v, R::Rax);
     }
 

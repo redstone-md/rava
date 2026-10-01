@@ -148,6 +148,9 @@ pub enum Inst {
     /// A JDK method compiled in place, with the state to deoptimize to (at the call) when it
     /// has cases it does not handle.
     Intrinsic(Intrinsic, Vec<V>, Option<Rc<State>>),
+    /// `a cmp b ? t : f` with `a` and `b` of type `ty` (I, J or A): a branch if-converted into a
+    /// conditional move (`select.rs`).
+    Select(Cmp, Ty, V, V, V, V),
 }
 
 impl Inst {
@@ -174,6 +177,12 @@ impl Inst {
                 one(a);
                 one(b);
                 one(c);
+            }
+            Inst::Select(_, _, a, b, t, f) => {
+                one(a);
+                one(b);
+                one(t);
+                one(f);
             }
         }
     }
@@ -211,6 +220,7 @@ impl Inst {
             Inst::StoreCheck(a, b, _) => vec![*a, *b],
             Inst::StoreField(a, _, _, b) => vec![*a, *b],
             Inst::StoreIndexed(a, b, _, c) => vec![*a, *b, *c],
+            Inst::Select(_, _, a, b, t, f) => vec![*a, *b, *t, *f],
         }
     }
 }
