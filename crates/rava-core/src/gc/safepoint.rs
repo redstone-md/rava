@@ -68,6 +68,8 @@ pub fn attach(t: &mut Thread) {
     }));
     t.gc_record = Some(rec);
     registry().threads.lock().unwrap().push(rec);
+    // Armed if a collection started before `arm` could see this thread.
+    t.poll.store(REQUESTED.load(SeqCst) as u8, SeqCst);
     // A collection may be in progress: do not start running Java code under it.
     poll(t);
 }
@@ -99,6 +101,23 @@ pub fn with_spilled_registers<R>(f: impl FnOnce(usize) -> R) -> R {
     let r = f(regs.as_ptr() as usize);
     std::hint::black_box(&regs);
     r
+}
+
+/// Sets (or clears) the poll word of every registered thread, which compiled code reads. Under
+/// the registry lock, so no thread detaches (and frees its `Thread`) meanwhile.
+fn arm(on: bool) {
+    for r in registry().threads.lock().unwrap().iter() {
+        let t = r.thread.load(SeqCst);
+        // SAFETY: a registered thread's `Thread` lives until it detaches, under this lock.
+        unsafe { (*t).poll.store(on as u8, SeqCst) };
+    }
+}
+
+/// Compiled code's poll slow path: stops for a collection in progress, then resynchronizes the
+/// thread's poll word with the request (it may have been armed after the collection ended).
+pub fn poll_compiled(t: &Thread) {
+    poll(t);
+    t.poll.store(REQUESTED.load(SeqCst) as u8, SeqCst);
 }
 
 #[inline(always)]
@@ -179,6 +198,7 @@ pub fn stop_the_world<R>(t: &Thread, f: impl FnOnce(usize) -> R) -> Option<R> {
         std::thread::yield_now();
     };
     REQUESTED.store(true, SeqCst);
+    arm(true);
     let me = t.gc_record.map(|r| r as *const Record);
     while all_threads().into_iter().any(|r| Some(r as *const Record) != me && r.state.load(SeqCst) == RUNNING) {
         std::thread::yield_now();
@@ -191,6 +211,7 @@ pub fn stop_the_world<R>(t: &Thread, f: impl FnOnce(usize) -> R) -> Option<R> {
     });
     let mut epoch = reg.epoch.lock().unwrap();
     *epoch += 1;
+    arm(false);
     REQUESTED.store(false, SeqCst);
     reg.resumed.notify_all();
     drop(epoch);

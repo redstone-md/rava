@@ -369,8 +369,7 @@ impl Gen<'_> {
     /// Polls for a stop-the-world request.
     fn poll(&mut self) {
         let (stub, back) = (self.a.new_label(), self.a.new_label());
-        self.a.mov_ri(R::Rax, &crate::gc::safepoint::REQUESTED as *const _ as i64);
-        self.a.cmp8_mi(mem(R::Rax, 0), 0);
+        self.a.cmp8_mi(mem(R::R12, offsets::POLL), 0);
         self.a.jcc(Cond::Ne, stub);
         self.a.bind(back);
         self.polls.push((stub, back));
