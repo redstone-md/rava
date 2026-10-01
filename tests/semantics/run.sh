@@ -7,7 +7,7 @@
 # depend on when C2 compiled the throwing site.
 # Four probes stay red on purpose: HotSpot's helpful NullPointerException texts (ExcSem,
 # JitNpeSiteSem, JitThrowNullSem, NpeSem) are guest-visible output rava does not produce yet.
-R=${R:-$(dirname "$0")/../target/release/rava}
+R=${R:-$(dirname "$0")/../../target/release/rava}
 W=${1:-$(mktemp -d)}
 filter() { grep -v "Picked up" | grep -viE "ms|time|elapsed|ns/"; }
 pass=0; fail=0
