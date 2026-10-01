@@ -93,3 +93,35 @@ fn uses_defs(code: &[u8], pc: usize) -> (Vec<usize>, Vec<usize>) {
         _ => (vec![], vec![]),
     }
 }
+
+/// The locals (of `max_locals`) some instruction in `[from, to)` writes: stores and `iinc`.
+pub fn written(code: &[u8], from: usize, to: usize, max_locals: usize) -> Vec<bool> {
+    let mut out = vec![false; max_locals];
+    let mut pc = from;
+    while pc < to.min(code.len()) {
+        let op = code[pc];
+        let (op, index) = if op == 0xc4 {
+            (code[pc + 1], u16::from_be_bytes([code[pc + 2], code[pc + 3]]) as usize)
+        } else {
+            (op, code.get(pc + 1).copied().unwrap_or(0) as usize)
+        };
+        let (n, wide) = match op {
+            0x36 | 0x38 | 0x3a | 0x84 => (Some(index), false),
+            0x37 | 0x39 => (Some(index), true),
+            0x3b..=0x4e => {
+                let kind = (op - 0x3b) / 4;
+                (Some(((op - 0x3b) % 4) as usize), kind == 1 || kind == 3)
+            }
+            _ => (None, false),
+        };
+        if let Some(n) = n {
+            for i in [Some(n), wide.then_some(n + 1)].into_iter().flatten() {
+                if i < max_locals {
+                    out[i] = true;
+                }
+            }
+        }
+        pc += insn_len(code, pc);
+    }
+    out
+}
