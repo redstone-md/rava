@@ -93,7 +93,7 @@ pub struct Stats {
 
 impl Heap {
     pub fn new(reserve: usize, max_heap: usize) -> Heap {
-        let min_trigger = std::env::var("RAVA_CORE_GC_MB").ok().and_then(|v| v.parse::<usize>().ok()).map_or(128 << 20, |mb| mb << 20);
+        let min_trigger = std::env::var("RAVA_GC_MB").ok().and_then(|v| v.parse::<usize>().ok()).map_or(128 << 20, |mb| mb << 20);
         let mut space = Space::new(reserve);
         let (pages, base) = (space.pages.as_mut_ptr(), space.base);
         Heap { space: Mutex::new(space), min_trigger, max_heap, small_allocated: Default::default(), pages, base }
@@ -182,10 +182,10 @@ impl Heap {
     }
 
     /// A full collection is due once the old generation has doubled since the last one (or
-    /// fills the heap), or when generations are off (`RAVA_CORE_GC_GEN=0`).
+    /// fills the heap), or when generations are off (`RAVA_GC_GEN=0`).
     fn full_due(&self, s: &Space) -> bool {
         static GENERATIONAL: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-        let generational = *GENERATIONAL.get_or_init(|| std::env::var("RAVA_CORE_GC_GEN").map_or(true, |v| v != "0"));
+        let generational = *GENERATIONAL.get_or_init(|| std::env::var("RAVA_GC_GEN").map_or(true, |v| v != "0"));
         !generational || s.live_after_gc > (2 * s.live_after_full).max(self.min_trigger) || s.live_after_gc + self.min_trigger > self.max_heap
     }
 
@@ -200,7 +200,7 @@ impl Heap {
 
     /// A stop-the-world collection, `full` or young.
     fn collect_as(&self, t: &mut Thread, full: bool) {
-        if std::env::var_os("RAVA_CORE_NO_GC").is_some() {
+        if std::env::var_os("RAVA_NO_GC").is_some() {
             return;
         }
         let started = std::time::Instant::now();
@@ -222,7 +222,7 @@ impl Heap {
             }
             let before_mark = std::time::Instant::now();
             let marked = mark::mark(&mut space, !full);
-            if !full && std::env::var_os("RAVA_CORE_GC_VERIFY").is_some() {
+            if !full && std::env::var_os("RAVA_GC_VERIFY").is_some() {
                 verify_young(&mut space);
             }
             if full {
@@ -244,7 +244,7 @@ impl Heap {
             let touched = (space.fresh - space.base, space.large_area.fresh - space.large_area.base);
             (marked, live, allocated, touched)
         });
-        if let (Some((marked, live, allocated, touched)), true) = (done, std::env::var_os("RAVA_CORE_GC_LOG").is_some()) {
+        if let (Some((marked, live, allocated, touched)), true) = (done, std::env::var_os("RAVA_GC_LOG").is_some()) {
             eprintln!(
                 "[gc] {} after {} MiB allocated: marked {marked} objects, {} MiB live of {}+{} MiB touched, {:.1} ms (stop {:.1}, mark {:.1}, sweep {:.1})",
                 if full { "full" } else { "young" },
@@ -282,7 +282,7 @@ fn clear_marks(space: &mut Space) {
     space.large.values_mut().for_each(|l| l.marked = false);
 }
 
-/// `RAVA_CORE_GC_VERIFY`: after a young mark, marks again from scratch and reports every
+/// `RAVA_GC_VERIFY`: after a young mark, marks again from scratch and reports every
 /// object the full trace reaches that the young one missed (a missing write barrier). Leaves
 /// the full marks in place.
 fn verify_young(space: &mut Space) {

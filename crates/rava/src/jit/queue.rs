@@ -1,7 +1,7 @@
 //! Background compilation (HotSpot's compile broker): methods that got hot are queued and
 //! compiled by compiler threads while the thread that asked keeps running its current code
 //! (interpreted, baseline or optimized), which the new code then replaces for later calls.
-//! `RAVA_CORE_SYNC_COMPILE=1` compiles on the requesting thread instead.
+//! `RAVA_SYNC_COMPILE=1` compiles on the requesting thread instead.
 
 use crate::method::Method;
 use std::collections::VecDeque;
@@ -23,13 +23,13 @@ struct Queue {
 
 fn background() -> bool {
     static ON: OnceLock<bool> = OnceLock::new();
-    *ON.get_or_init(|| std::env::var_os("RAVA_CORE_SYNC_COMPILE").is_none())
+    *ON.get_or_init(|| std::env::var_os("RAVA_SYNC_COMPILE").is_none())
 }
 
 fn queue() -> &'static Queue {
     static Q: OnceLock<Queue> = OnceLock::new();
     Q.get_or_init(|| {
-        let workers = std::env::var("RAVA_CORE_COMPILER_THREADS").ok().and_then(|v| v.parse().ok()).unwrap_or_else(|| {
+        let workers = std::env::var("RAVA_COMPILER_THREADS").ok().and_then(|v| v.parse().ok()).unwrap_or_else(|| {
             let cores = std::thread::available_parallelism().map_or(1, |n| n.get());
             (cores / 2).clamp(1, 3)
         });

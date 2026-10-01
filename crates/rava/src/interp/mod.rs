@@ -81,7 +81,7 @@ pub(crate) fn call_native(t: &mut Thread, m: &'static Method, locals: *mut u64) 
         None => match vm().natives.lookup(m) {
             Some(f) => *m.native.get_or_init(|| f),
             None => {
-                if std::env::var_os("RAVA_CORE_TRACE_ULE").is_some() {
+                if std::env::var_os("RAVA_TRACE_ULE").is_some() {
                     eprintln!("[ULE] {m}");
                 }
                 return Err(throw_new(t, "java/lang/UnsatisfiedLinkError", &m.to_string()));

@@ -1,13 +1,13 @@
 #!/bin/bash
-# Compiles every bench/*Sem.java and compares rava-core's output with HotSpot's (timing lines
-# are ignored). Usage: bench/sem_vs_java.sh [work-dir]; R overrides the rava-core binary,
+# Compiles every bench/*Sem.java and compares rava's output with HotSpot's (timing lines
+# are ignored). Usage: bench/sem_vs_java.sh [work-dir]; R overrides the rava binary,
 # SEM_CP adds library jars (guava, fastutil) to the classpath of the probes that import them.
 # HotSpot's output is the reference, computed once per compiled probe and kept in the work
 # dir (runs in other modes reuse it); fast-throw is off so its exception messages do not
 # depend on when C2 compiled the throwing site.
 # Four probes stay red on purpose: HotSpot's helpful NullPointerException texts (ExcSem,
-# JitNpeSiteSem, JitThrowNullSem, NpeSem) are guest-visible output rava-core does not produce yet.
-R=${R:-$(dirname "$0")/../target/release/rava-core}
+# JitNpeSiteSem, JitThrowNullSem, NpeSem) are guest-visible output rava does not produce yet.
+R=${R:-$(dirname "$0")/../target/release/rava}
 W=${1:-$(mktemp -d)}
 filter() { grep -v "Picked up" | grep -viE "ms|time|elapsed|ns/"; }
 pass=0; fail=0

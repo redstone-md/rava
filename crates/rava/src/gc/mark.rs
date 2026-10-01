@@ -295,7 +295,7 @@ fn workers() -> usize {
     static N: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
     *N.get_or_init(|| {
         let cores = std::thread::available_parallelism().map_or(1, |n| n.get());
-        std::env::var("RAVA_CORE_GC_THREADS").ok().and_then(|v| v.parse().ok()).unwrap_or(cores).clamp(1, 16)
+        std::env::var("RAVA_GC_THREADS").ok().and_then(|v| v.parse().ok()).unwrap_or(cores).clamp(1, 16)
     })
 }
 

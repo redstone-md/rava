@@ -38,15 +38,15 @@ use crate::method::Method;
 
 fn mode() -> &'static str {
     static MODE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-    MODE.get_or_init(|| std::env::var("RAVA_CORE_OPT").unwrap_or_default())
+    MODE.get_or_init(|| std::env::var("RAVA_OPT").unwrap_or_default())
 }
 
-/// Whether hot methods go to this tier (`RAVA_CORE_OPT=0` keeps baseline tier-2 code).
+/// Whether hot methods go to this tier (`RAVA_OPT=0` keeps baseline tier-2 code).
 pub fn enabled() -> bool {
     mode() != "0"
 }
 
-/// `RAVA_CORE_OPT=all`: every compilation tries this tier first (testing).
+/// `RAVA_OPT=all`: every compilation tries this tier first (testing).
 pub fn everywhere() -> bool {
     mode() == "all"
 }
@@ -98,7 +98,7 @@ pub fn compile(m: &'static Method) -> Option<CompiledMethod> {
 }
 
 fn compile_timed(m: &'static Method) -> Option<CompiledMethod> {
-    let log = env_once!("RAVA_CORE_OPT_LOG").is_some();
+    let log = env_once!("RAVA_OPT_LOG").is_some();
     let monitor = match (m.is_synchronized(), m.is_static()) {
         (false, _) => None,
         (true, false) => Some(codegen::Monitor::Receiver),
@@ -115,10 +115,10 @@ fn compile_timed(m: &'static Method) -> Option<CompiledMethod> {
     fields::forward(&mut g);
     select::convert(&mut g);
     licm::hoist(&mut g);
-    if env_once!("RAVA_CORE_OPT_SPLIT").map_or(true, |v| v != "0") {
+    if env_once!("RAVA_OPT_SPLIT").map_or(true, |v| v != "0") {
         split::split(&mut g);
     }
-    let dump = env_once!("RAVA_CORE_OPT_IR").is_some_and(|f| m.to_string().contains(f.to_str().unwrap_or("")));
+    let dump = env_once!("RAVA_OPT_IR").is_some_and(|f| m.to_string().contains(f.to_str().unwrap_or("")));
     if dump {
         eprintln!("[opt-ir] {m}\n{}", g.dump());
     }
@@ -133,7 +133,7 @@ fn compile_timed(m: &'static Method) -> Option<CompiledMethod> {
     if log {
         eprintln!("[opt] {m}: {} values, {} blocks, {} spill slots -> {} bytes ({main} main)", g.values.len(), al.order.len(), al.spill_slots, code.len());
     }
-    if env_once!("RAVA_CORE_JIT_DUMP").is_some_and(|f| m.to_string().contains(f.to_str().unwrap_or(""))) {
+    if env_once!("RAVA_JIT_DUMP").is_some_and(|f| m.to_string().contains(f.to_str().unwrap_or(""))) {
         let file = format!("/tmp/rava-opt-{entry:x}.bin");
         let _ = std::fs::write(&file, &code);
         eprintln!("[opt-dump] {m} -> {file}");

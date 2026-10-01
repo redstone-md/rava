@@ -1,8 +1,8 @@
-# rava-core progress
+# rava progress
 
 ## 2026-09-29 — the real JDK boots
 
-`rava-core -cp DIR Hello` runs HotSpot's own startup sequence over the unmodified `java.base`
+`rava -cp DIR Hello` runs HotSpot's own startup sequence over the unmodified `java.base`
 from the JDK image: initial thread group and thread, `System.initPhase1` (system properties,
 `System.out`/`err` on `FileOutputStream`), `initPhase2` (the module system, `ModuleBootstrap`),
 `initPhase3` (system class loader), then `LauncherHelper.checkAndLoadMain` loads the main class
@@ -15,7 +15,7 @@ Hello World, wall clock, same container, three runs each:
 | `java` (CDS on) | 44-49 |
 | `java -Xshare:off` | 70-86 |
 | `java -Xshare:off -Xint` | 60-74 |
-| `rava-core` (interpreter only, no snapshot) | **38-59** |
+| `rava` (interpreter only, no snapshot) | **38-59** |
 
 The core loads 458 classes and allocates 632 KiB to reach `main`.
 
@@ -75,12 +75,12 @@ Policy: compile after 100 invocations or 2000 loop back-edges (generic counters)
 | array loop (OSR) | 7.8 s | 0.56 s | 2.2 s | — |
 | `BootLike` | 35.4 s | 4.2 s | 14.2 s | 0.5 s |
 
-Every test also passes with `RAVA_CORE_JIT_THRESHOLD=1` (the whole JDK boot compiled).
+Every test also passes with `RAVA_JIT_THRESHOLD=1` (the whole JDK boot compiled).
 
 ## 2026-09-29 — a real application: Maven
 
 `mvn --version` (Apache Maven 3.9.11 launched through plexus-classworlds: 50+ jars on custom
-class loaders, Guice/Sisu, SLF4J, jansi, reflection through method handles) runs on rava-core
+class loaders, Guice/Sisu, SLF4J, jansi, reflection through method handles) runs on rava
 with output identical to HotSpot's. New natives: `sun.nio.fs.UnixNativeDispatcher`,
 `sun.nio.ch` file channels, `RandomAccessFile`, `java.util.zip` (inflate/deflate, CRC-32,
 Adler-32), module resources through the mapped image (`NativeImageBuffer`), `Perf` counters,
@@ -92,7 +92,7 @@ Wall clock, three alternating runs, same container:
 | | run 1 | run 2 | run 3 |
 |---|---:|---:|---:|
 | `java` (adaptive + CDS) | 214 ms | 188 ms | 186 ms |
-| `rava-core` (no snapshot) | 204 ms | 152 ms | 191 ms |
+| `rava` (no snapshot) | 204 ms | 152 ms | 191 ms |
 
 ## 2026-09-29 — garbage collector
 
@@ -124,9 +124,9 @@ Same hash as HotSpot (`aff5afe088deab33`). Three alternating runs:
 | | wall | inside `main` |
 |---|---:|---:|
 | `java` (adaptive + CDS) | 1.73-1.80 s | 463-529 ms |
-| `rava-core` | **1.35-1.41 s** | 894-1034 ms |
+| `rava` | **1.35-1.41 s** | 894-1034 ms |
 
-Startup, class loading and logging initialization are cheaper on rava-core; the steady-state
+Startup, class loading and logging initialization are cheaper on rava; the steady-state
 work inside `main` is ~2x slower than HotSpot's optimizing tiers.
 
 ### Next
@@ -141,7 +141,7 @@ Thin locks (CAS on the mark word; inflation only under contention or `wait`), a 
 FxHash symbol table with an ASCII fast path, swept pages recycled with `memset` instead of
 `MADV_DONTNEED` (page faults had dominated the profile), and a 64 MiB default GC trigger.
 
-| | `java` | `rava-core` |
+| | `java` | `rava` |
 |---|---:|---:|
 | LoadAll (15,978 classes from the McLike class path) | 2.64-2.82 s | **2.36-2.53 s** |
 | McLike wall | 1.73-1.80 s | **~1.0 s** |
@@ -157,7 +157,7 @@ forms and member names) so `invokedynamic` chains collapse into direct calls, an
 `Math` rounding, `Unsafe` access, `Class.isInstance` and `Object.getClass`. Design and the C1
 comparison: `docs/core/opt-tier.md`.
 
-| | `java` | `rava-core` |
+| | `java` | `rava` |
 |---|---:|---:|
 | McLike wall | 1.81-1.85 s | **0.78-0.93 s** |
 | McLike inside `main` | 469-535 ms | 478-540 ms |
@@ -180,7 +180,7 @@ interpreter for guards, exceptions and unresolved constants. Two runtime fixes m
 compiled class-init checks let the initializing thread through (JVMS 5.5), and the GC trigger
 counts bumped bytes instead of whole handed-out runs (Minestom went from 13 collections to 1).
 
-| | `java` | `rava-core` |
+| | `java` | `rava` |
 |---|---:|---:|
 | Minestom total (init + 256 chunks + start) | 1.79-1.98 s | **1.98-2.38 s** |
 | Minestom chunk generation | 0.69-0.79 s | 1.11-1.31 s |
@@ -198,7 +198,7 @@ monitors in optimized code, intrinsics for `compareAndSet*`, `currentThread` and
 frames after optimized code was installed, inlined frames missing from traces after a deopt,
 the initializing thread failing compiled class-init checks, and `wait`/`notify` losing wakeups.
 
-| | `java` | `rava-core` |
+| | `java` | `rava` |
 |---|---:|---:|
 | Minestom total (init + 256 chunks + start) | 1.79-1.98 s | **1.46-1.80 s** |
 | Minestom chunk generation | 0.69-0.79 s | 0.83-1.13 s |
@@ -209,7 +209,7 @@ the initializing thread failing compiled class-init checks, and `wait`/`notify` 
 
 ## 2026-09-30 — the Paper server boots to "Done"
 
-Paper 1.21.1 (Minecraft server, fresh world) now starts on `rava-core -jar paper.jar --nogui`.
+Paper 1.21.1 (Minecraft server, fresh world) now starts on `rava -jar paper.jar --nogui`.
 What it took, all general VM behavior: waiting for non-daemon threads and running shutdown
 hooks after `main` (DestroyJavaVM); child processes (`forkAndExec`), file keys, mount entries,
 xattrs and buffered copies; management beans; `UnixSystem`; headless AWT `initIDs`;
@@ -229,7 +229,7 @@ Performance work driven by profiling the server:
 
 Start-up to "Done" on a 4-core cloud VM (timings vary by 30 % between runs of either VM):
 
-| | `java` (JDK 21) | `rava-core` |
+| | `java` (JDK 21) | `rava` |
 |---|---:|---:|
 | Paper 1.21.1, fresh world, to "Done" | 24-44 s | 46-57 s (was 95 s at first boot) |
 | Perlin noise micro (double math) | ~700 ms | ~850 ms |
@@ -247,7 +247,7 @@ Start-up to "Done" on a 4-core cloud VM (timings vary by 30 % between runs of ei
 
 Measurement first: the server's `level-seed` was empty, so every run generated a different
 world (villages near spawn or not) and runs differed by up to 30 %. Benchmarks now fix the seed
-(`level-seed=20260930`); with it, same host: `java` 30.9 s, `rava-core` 55 s -> 51 s.
+(`level-seed=20260930`); with it, same host: `java` 30.9 s, `rava` 55 s -> 51 s.
 
 - Deoptimization: per-bytecode trap history, compile-time resolution of loaded classes' constants,
   retiring code at the deopt threshold, `multianewarray`; throw-only paths and never-taken
@@ -264,7 +264,7 @@ world (villages near spawn or not) and runs differed by up to 30 %. Benchmarks n
   or the whole intern table (write-once roots, old after one collection); it scans statics,
   the classes defined since the last collection, and the roots noted since then (`gc/recent.rs`).
 
-Where the world-generation thread's time goes now (`java` 12 s CPU, `rava-core` 30 s): compiled
+Where the world-generation thread's time goes now (`java` 12 s CPU, `rava` 30 s): compiled
 code is ~2x C2 (spills, call overhead: prologue pushes and frame linking, larger code), GC
 marking and allocation ~12 %, first touches of heap pages ~5 %.
 
@@ -278,9 +278,9 @@ marking and allocation ~12 %, first touches of heap pages ~5 %.
 
 Whole-process profiles (all threads, `perf` with perf maps on both sides) replaced per-thread
 comparisons, which were misleading: Paper hands world-generation tasks to whichever worker is
-free, so `java`'s and `rava-core`'s `Worker-Main-1` did different work. Samples over all
-non-compiler threads, same run: Java methods `java` 24.8k / `rava-core` 41.8k, runtime (libjvm /
-rava-core) 12.4k / 16.7k, kernel 4.1k / 11.7k, libc 0.8k / 4.0k. Compiled code (~1.5x C2, as
+free, so `java`'s and `rava`'s `Worker-Main-1` did different work. Samples over all
+non-compiler threads, same run: Java methods `java` 24.8k / `rava` 41.8k, runtime (libjvm /
+rava) 12.4k / 16.7k, kernel 4.1k / 11.7k, libc 0.8k / 4.0k. Compiled code (~1.5x C2, as
 the micro benchmarks show) is the largest part; GC marking is on par with G1's threads.
 
 - Compiler threads: branch relaxation shifted positions by summing over all earlier branches,
@@ -296,7 +296,7 @@ the micro benchmarks show) is the largest part; GC marking is on par with G1's t
   clearing is 2.5k samples, but neither change moved system time); a fixed 128 MiB young
   generation (fewer page faults, more GC time, same wall time).
 
-Same host now: `java` ~31 s, `rava-core` ~46-47 s (noise on this host is +-1.5 s per run).
+Same host now: `java` ~31 s, `rava` ~46-47 s (noise on this host is +-1.5 s per run).
 
 Then the call protocol and code size (A/B of 3 runs each on the same host):
 
@@ -311,7 +311,7 @@ Then the call protocol and code size (A/B of 3 runs each on the same host):
 - Compile time: liveness from per-block use/def sets, cached state reads, environment flags
   read once.
 
-`java` ~31.5 s, `rava-core` ~40.4 s. `java` uses more CPU (C2 threads, G1) but finishes
+`java` ~31.5 s, `rava` ~40.4 s. `java` uses more CPU (C2 threads, G1) but finishes
 sooner: world generation parallelizes better there (chunk workers 13 s CPU in `java`, 24 s here
 before these changes).
 
@@ -341,9 +341,9 @@ First recorded session, `bench/results/20260930-235938-vm` (4 vCPU Xeon @ 2.10 G
 | `java` 21.0.12 | 25.65 s (25.31, 0.95) | 56.8 / 3.1 s |
 
 So the gap is 1.40x, not the 1.26x quoted from unalternated runs (35.7 s against a `java` run of
-28.3 s). `rava-core` spends less CPU than `java` and still finishes 10 s later. Per-thread CPU sampling
+28.3 s). `rava` spends less CPU than `java` and still finishes 10 s later. Per-thread CPU sampling
 (every 2 s, one run each) shows why the core counts differ: `java`'s extra cores are C2 compiler
-threads (17.6 s of CPU), while the server's own threads are slower under `rava-core` - Paper
+threads (17.6 s of CPU), while the server's own threads are slower under `rava` - Paper
 Common Worker (one thread in both) 16.6 s against 8.3 s, Worker-Main-1 8.0 / 5.1 s, ServerMain
 7.8 / 5.0 s, Server thread 6.8 / 4.8 s, and the serial `main` thread (Paperclip, before the
 server starts) 2.8 / 0.5 s. So the gap is mutator speed, not idle cores.
@@ -406,8 +406,8 @@ c7c1214 33.73 s, f323beb 33.48 s: within noise. (The host drifts: c7c1214 measur
 hour earlier, which is why only alternated pairs are compared.)
 
 **Allocation**: the GC log now prints the bytes allocated before each collection; a Paper start
-allocates 10.3 GiB under `rava-core` against about 5.8 GiB of eden under `java` (55 G1 pauses,
-0.8 s in all, against 53 collections and 1.5 s here). `RAVA_CORE_ALLOC_PROF` showed optimized
+allocates 10.3 GiB under `rava` against about 5.8 GiB of eden under `java` (55 G1 pauses,
+0.8 s in all, against 53 collections and 1.5 s here). `RAVA_ALLOC_PROF` showed optimized
 code calling the runtime for every array (millions of `byte[]`, `int[]`, `Object[]`,
 `double[]`, `long[]`): arrays are now bumped inline (720647b; constant lengths up to 32 KiB,
 variable ones up to 256 bytes). `bench/results/20261001-022958-vm` (5 rounds): f323beb 33.51 s
@@ -415,7 +415,7 @@ mean (median 33.22, sd 1.27), 720647b 32.62 s (median 32.21, sd 0.74), faster in
 
 **Holes under 256 bytes skipped** when reusing pages (3827755): about 12 million bump runs per
 start had been one to fifteen cells. `bench/results/20261001-024352-vm`: within noise (720647b
-33.67 s, 3827755 33.80 s). A larger young generation (`RAVA_CORE_GC_MB=384`, 27 collections
+33.67 s, 3827755 33.80 s). A larger young generation (`RAVA_GC_MB=384`, 27 collections
 instead of 53) saves about 0.2 s of pauses and no measurable wall time.
 
 **Where the session stands**, `bench/results/20261001-025730-vm` (5 alternated rounds):
@@ -524,7 +524,7 @@ Server start, `bench/results/20261001-153755-vm` (6 rounds, noisy host: sd 3-4 s
 `bench/MegaCallBench`); double results cost 5.5-6.2 ns until they came back in xmm0 (08d6d6e,
 3.8-4.0 ns; `java` 3.0). Escape analysis is not a lever here: `java -XX:-DoEscapeAnalysis` runs
 WorldGenBench as fast. Register allocation neither: with 3 allocatable registers instead of 11
-the server start is only about 3% slower (`RAVA_CORE_OPT_FEW_REGS`, which also shook out the r11
+the server start is only about 3% slower (`RAVA_OPT_FEW_REGS`, which also shook out the r11
 clobbers of e0fecec).
 
 - Major receiver at megamorphic sites (da6f3f8): WorldGenBench 49.9 -> 47.9 ms per chunk.

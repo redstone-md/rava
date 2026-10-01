@@ -1,4 +1,4 @@
-//! Opt-in counters (`RAVA_CORE_JIT_STATS=1`): which opcodes compiled code defers to the
+//! Opt-in counters (`RAVA_JIT_STATS=1`): which opcodes compiled code defers to the
 //! interpreter, and how many invocations still run interpreted. Printed at exit.
 
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -22,7 +22,7 @@ pub struct Stats {
 pub fn get() -> Option<&'static Stats> {
     static S: OnceLock<Option<&'static Stats>> = OnceLock::new();
     *S.get_or_init(|| {
-        std::env::var_os("RAVA_CORE_JIT_STATS").map(|_| {
+        std::env::var_os("RAVA_JIT_STATS").map(|_| {
             &*Box::leak(Box::new(Stats {
                 deferred: std::array::from_fn(|_| AtomicU64::new(0)),
                 sites: Default::default(),

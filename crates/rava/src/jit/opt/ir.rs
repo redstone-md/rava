@@ -353,7 +353,7 @@ impl Graph {
 }
 
 impl Graph {
-    /// A readable listing (`RAVA_CORE_OPT_IR`).
+    /// A readable listing (`RAVA_OPT_IR`).
     pub fn dump(&self) -> String {
         let mut out = String::new();
         let mut order: Vec<usize> = (0..self.blocks.len()).filter(|&b| !matches!(self.blocks[b].term, Term::None)).collect();

@@ -45,7 +45,7 @@ pub(super) struct Emitter {
     pub inlined_bytes: usize,
     /// Header slots of the visible inlined frames around the current point, outermost first.
     pub vis_scopes: Vec<i32>,
-    /// With `RAVA_CORE_JIT_DUMP`: (code offset, method, bci) of each emitted instruction.
+    /// With `RAVA_JIT_DUMP`: (code offset, method, bci) of each emitted instruction.
     pub dump_map: Option<Vec<(u32, String, usize)>>,
     /// Constant operand-stack values at the current call site, captured before the stack is
     /// written back (they become constant locals of an inlined callee).
@@ -102,7 +102,7 @@ fn compile_timed(m: &'static Method, tier: u8) -> Option<CompiledMethod> {
         tier,
         inlined_bytes: 0,
         vis_scopes: Vec::new(),
-        dump_map: env_once!("RAVA_CORE_JIT_DUMP").filter(|f| m.to_string().contains(f.to_str().unwrap_or(""))).map(|_| Vec::new()),
+        dump_map: env_once!("RAVA_JIT_DUMP").filter(|f| m.to_string().contains(f.to_str().unwrap_or(""))).map(|_| Vec::new()),
         site_consts: Vec::new(),
         lconst_base: vec![None; info.max_locals as usize],
         lconst: vec![None; info.max_locals as usize],
@@ -110,7 +110,7 @@ fn compile_timed(m: &'static Method, tier: u8) -> Option<CompiledMethod> {
         vs: Vec::new(),
         lregs: Vec::new(),
     };
-    if env_once!("RAVA_CORE_NO_LOCAL_REGS").is_none() {
+    if env_once!("RAVA_NO_LOCAL_REGS").is_none() {
         e.lregs = plan_local_regs(e.code, info.max_locals as usize, &e.an);
     }
     let overflow = e.a.new_label();
@@ -131,7 +131,7 @@ fn compile_timed(m: &'static Method, tier: u8) -> Option<CompiledMethod> {
     let entry = code_cache::install(&code);
     let blocks = leaders.into_iter().map(|(bci, off)| (bci, entry + off as usize)).collect();
     super::code_cache::perf_map(entry, code.len(), &format!("{m} [b{tier}]"));
-    if let Some(filter) = env_once!("RAVA_CORE_JIT_DUMP") {
+    if let Some(filter) = env_once!("RAVA_JIT_DUMP") {
         // Raw code for `objdump -D -b binary -mi386:x86-64 --adjust-vma=<entry>`.
         let name = m.to_string();
         if name.contains(filter.to_str().unwrap_or("")) {
@@ -142,7 +142,7 @@ fn compile_timed(m: &'static Method, tier: u8) -> Option<CompiledMethod> {
             eprintln!("[jit-dump] {name} -> {file} (entry {entry:#x})");
         }
     }
-    if env_once!("RAVA_CORE_JIT_LOG").is_some() {
+    if env_once!("RAVA_JIT_LOG").is_some() {
         eprintln!("[jit] {m} {} bytes of bytecode -> {} bytes", info.code.len(), code.len());
     }
     Some(CompiledMethod { entry, unresolved_deferrals: Default::default(), size: code.len(), blocks, frame_slots: frame_slots as usize, tier, deopts: Default::default() })

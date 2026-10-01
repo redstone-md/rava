@@ -37,9 +37,9 @@ struct Prefaulter {
 
 static PREFAULTER: OnceLock<Prefaulter> = OnceLock::new();
 
-/// Starts the background thread for the two regions `[base, end)` (unless `RAVA_CORE_PREFAULT=0`).
+/// Starts the background thread for the two regions `[base, end)` (unless `RAVA_PREFAULT=0`).
 pub fn start(small: (usize, usize), large: (usize, usize)) {
-    if std::env::var("RAVA_CORE_PREFAULT").is_ok_and(|v| v == "0") {
+    if std::env::var("RAVA_PREFAULT").is_ok_and(|v| v == "0") {
         return;
     }
     let frontier = |(base, end): (usize, usize)| Frontier { fresh: AtomicUsize::new(base), ready: AtomicUsize::new(base), end };

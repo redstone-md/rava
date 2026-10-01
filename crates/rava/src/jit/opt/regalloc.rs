@@ -287,7 +287,7 @@ fn is_phi(g: &Graph, v: V) -> bool {
 
 fn few_regs() -> Option<usize> {
     static N: std::sync::OnceLock<Option<usize>> = std::sync::OnceLock::new();
-    *N.get_or_init(|| std::env::var("RAVA_CORE_OPT_FEW_REGS").ok().and_then(|v| v.parse().ok()))
+    *N.get_or_init(|| std::env::var("RAVA_OPT_FEW_REGS").ok().and_then(|v| v.parse().ok()))
 }
 
 /// Assigns registers in interval start order; out of registers, it spills whichever of the new
@@ -322,7 +322,7 @@ fn scan(g: &Graph, iv: &Intervals, full: &Intervals, loops: &LoopMap) -> (Vec<Lo
             (false, true) => CALLEE_SAVED.iter().chain(CALLER_SAVED.iter()).map(|&r| Loc::Reg(r)).collect(),
             (false, false) => CALLER_SAVED.iter().chain(CALLEE_SAVED.iter()).chain(SCRATCH.iter()).filter(|&&r| !SCRATCH.contains(&r) || iv.scratch_free(v, r)).map(|&r| Loc::Reg(r)).collect(),
         };
-        // `RAVA_CORE_OPT_FEW_REGS=n`: only the first n candidates, so that most values spill
+        // `RAVA_OPT_FEW_REGS=n`: only the first n candidates, so that most values spill
         // (a test mode for code generation's use of scratch registers around spilled operands).
         if let Some(k) = few_regs() {
             cands.truncate(k);
