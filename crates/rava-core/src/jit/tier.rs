@@ -22,6 +22,9 @@ fn thresholds() -> (i32, i32) {
     })
 }
 
+/// Counts between requests once a counter is past its threshold (a power of two).
+const RETRY: i32 = 1024;
+
 fn enabled() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ON.get_or_init(|| std::env::var_os("RAVA_CORE_NO_TIER2").is_none())
@@ -72,6 +75,16 @@ pub extern "sysv64" fn tier_up_osr(t: *mut Thread, m: *const Method, bci: u64, l
 }
 
 impl Emitter {
+    /// From the threshold on, the counter at rax asks only once every `RETRY` counts: tier-1
+    /// code that stays (its tier-2 compilation pending or failed, or an inlined loop's method)
+    /// would otherwise call the runtime on every invocation or back-edge.
+    fn past_threshold(&mut self, threshold: i32, cont: super::asm::Label) {
+        self.a.load(false, R::Rdx, mem(R::Rax, 0));
+        self.a.alu_ri(false, Alu::Sub, R::Rdx, threshold);
+        self.a.alu_ri(false, Alu::And, R::Rdx, RETRY - 1);
+        self.a.jcc(Cond::Ne, cont);
+    }
+
     /// Prologue counter of tier-1 code.
     pub(super) fn count_invocation(&mut self) {
         if self.tier >= 2 || !enabled() {
@@ -82,6 +95,7 @@ impl Emitter {
         self.a.alu_mi(false, Alu::Add, mem(R::Rax, 0), 1);
         self.a.alu_mi(false, Alu::Cmp, mem(R::Rax, 0), thresholds().0);
         self.a.jcc(Cond::L, cont);
+        self.past_threshold(thresholds().0, cont);
         self.a.mov_ri(R::Rdi, self.m as *const Method as i64);
         self.a.call_abs(tier_up as *const () as usize);
         self.a.bind(cont);
@@ -98,6 +112,7 @@ impl Emitter {
         self.a.alu_mi(false, Alu::Add, mem(R::Rax, 0), 1);
         self.a.alu_mi(false, Alu::Cmp, mem(R::Rax, 0), thresholds().1);
         self.a.jcc(Cond::L, cont);
+        self.past_threshold(thresholds().1, cont);
         if self.inl.is_some() {
             // An inlined loop has no frame of its own to move: just recompile its method.
             self.a.mov_ri(R::Rdi, self.m as *const Method as i64);
