@@ -125,7 +125,7 @@ pub fn frameless(g: &Graph) -> bool {
         !b.loop_header
             && matches!(b.term, Term::Goto(_) | Term::If { .. } | Term::Switch { .. } | Term::Return(_))
             && b.insts.iter().all(|&v| match &g.values[v as usize].inst {
-                Inst::Param(_) | Inst::Const(_) | Inst::Copy(_) | Inst::Phi(_) | Inst::Neg(_) | Inst::Bin(..) | Inst::Convert(..) | Inst::Compare(..) => true,
+                Inst::Param(_) | Inst::Const(_) | Inst::Copy(_) | Inst::Phi(_) | Inst::Neg(_) | Inst::Bin(..) | Inst::Convert(..) | Inst::Compare(..) | Inst::Select(..) => true,
                 Inst::LoadField(..) | Inst::StoreField(..) | Inst::LoadStatic(..) | Inst::StoreStatic(..) | Inst::ArrayLength(_) => true,
                 Inst::LoadIndexed(..) | Inst::InstanceOf(..) => true,
                 Inst::Intrinsic(k, _, s) => s.is_none() && k.is_pure(),

@@ -467,7 +467,7 @@ fn max_locals(m: &Method) -> i32 {
     m.code.map_or(0, |c| c.max_locals as i32)
 }
 
-fn cond(c: Cmp) -> Cond {
+pub(super) fn cond(c: Cmp) -> Cond {
     match c {
         Cmp::Eq => Cond::E,
         Cmp::Ne => Cond::Ne,

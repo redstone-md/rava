@@ -29,6 +29,7 @@ mod operands;
 mod phis;
 mod regalloc;
 mod scratch;
+mod select;
 mod split;
 
 use super::{code_cache, CompiledMethod};
@@ -111,6 +112,7 @@ fn compile_timed(m: &'static Method) -> Option<CompiledMethod> {
     phis::simplify(&mut g);
     nullcheck::eliminate(&mut g);
     fields::forward(&mut g);
+    select::convert(&mut g);
     if env_once!("RAVA_CORE_OPT_SPLIT").map_or(true, |v| v != "0") {
         split::split(&mut g);
     }

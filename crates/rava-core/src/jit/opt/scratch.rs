@@ -13,7 +13,7 @@ pub fn clobbers(g: &Graph, v: V) -> (bool, bool) {
     const BOTH: (bool, bool) = (true, true);
     match g.inst(v) {
         Inst::Param(_) | Inst::Const(_) | Inst::Copy(_) | Inst::Fence | Inst::Phi(_) => NONE,
-        Inst::Neg(_) | Inst::Convert(..) => NONE,
+        Inst::Neg(_) | Inst::Convert(..) | Inst::Select(..) => NONE,
         Inst::Bin(op, _, y) => match (g.ty(v), op) {
             (Ty::F | Ty::D, BinOp::Rem) => BOTH,
             (Ty::F | Ty::D, _) => NONE,
