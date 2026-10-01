@@ -60,14 +60,25 @@ fn run(mut line: CommandLine, java_home: PathBuf) -> ExitCode {
         execute(&mut t, &line)
     });
     let code = result.unwrap_or_else(|ex| {
-        eprint!("Exception in thread \"main\" {}", crate::natives::describe_throwable(ex.0));
+        describe_uncaught(&mut t, "main", ex.0);
         ExitCode::FAILURE
     });
     report(started, vm);
     if let Err(ex) = boot::destroy(&mut t) {
-        eprint!("Exception in thread \"DestroyJavaVM\" {}", crate::natives::describe_throwable(ex.0));
+        describe_uncaught(&mut t, "DestroyJavaVM", ex.0);
     }
     code
+}
+
+/// As JNI `ExceptionDescribe`: a header, then the exception's own `printStackTrace()`.
+fn describe_uncaught(t: &mut Thread, thread: &str, ex: Oop) {
+    eprint!("Exception in thread \"{thread}\" ");
+    // SAFETY: a live Throwable.
+    let k = unsafe { crate::heap::obj::klass(ex) };
+    let print = crate::link::lookup_method(k, Symbol::intern("printStackTrace"), Symbol::intern("()V")).expect("Throwable.printStackTrace");
+    if t.call(print, &[ex as u64]).is_err() {
+        eprint!("{}", crate::natives::describe_throwable(ex));
+    }
 }
 
 fn execute(t: &mut Thread, line: &CommandLine) -> JResult<ExitCode> {
