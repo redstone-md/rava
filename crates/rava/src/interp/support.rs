@@ -65,13 +65,20 @@ impl Frame {
     #[inline(always)] pub fn pop_d(&mut self) -> f64 { self.pop(); f64::from_bits(self.pop()) }
     #[inline(always)] pub fn push_ref(&mut self, v: Oop) { self.push(v as u64) }
     #[inline(always)] pub fn pop_ref(&mut self) -> Oop { self.pop() as Oop }
+    /// A code byte at `at`. The bytecode is well-formed (javac output the JDK already loaded), so
+    /// every index the dispatch forms is in range, as a template interpreter assumes.
+    #[inline(always)]
+    pub fn byte(&self, at: usize) -> u8 {
+        // SAFETY: `at` indexes within the method's code, which outlives the frame.
+        unsafe { *self.code.get_unchecked(at) }
+    }
     #[inline(always)]
     pub fn u2(&self, at: usize) -> u16 {
-        u16::from_be_bytes([self.code[at], self.code[at + 1]])
+        u16::from_be_bytes([self.byte(at), self.byte(at + 1)])
     }
     #[inline(always)]
     pub fn i4(&self, at: usize) -> i32 {
-        i32::from_be_bytes([self.code[at], self.code[at + 1], self.code[at + 2], self.code[at + 3]])
+        i32::from_be_bytes([self.byte(at), self.byte(at + 1), self.byte(at + 2), self.byte(at + 3)])
     }
     #[inline(always)]
     pub fn branch_if(&mut self, taken: bool) {
@@ -157,7 +164,7 @@ pub(super) fn lookupswitch(f: &mut Frame) {
 }
 
 pub(super) fn wide(f: &mut Frame) {
-    let op = f.code[f.pc + 1];
+    let op = f.byte(f.pc + 1);
     let i = f.u2(f.pc + 2) as usize;
     match op {
         0x15 | 0x17 | 0x19 => f.push(f.local(i)),
@@ -422,7 +429,7 @@ pub(super) fn new_object(t: &mut Thread, f: &mut Frame) -> JResult<()> {
 }
 
 pub(super) fn newarray(t: &mut Thread, f: &mut Frame) -> JResult<()> {
-    let ty = BasicType::from_newarray_code(f.code[f.pc + 1])
+    let ty = BasicType::from_newarray_code(f.byte(f.pc + 1))
         .ok_or_else(|| throw_new(t, "java/lang/VerifyError", "bad newarray type"))?;
     let k = vm().primitive_array_class(ty).map_err(|e| link_error(t, e.into()))?;
     let len = f.pop_i();
@@ -442,7 +449,7 @@ pub(super) fn anewarray(t: &mut Thread, f: &mut Frame) -> JResult<()> {
 
 pub(super) fn multianewarray(t: &mut Thread, f: &mut Frame) -> JResult<()> {
     let k = f.holder().resolve_class(t, f.u2(f.pc + 1)).map_err(|e| link_error(t, e))?;
-    let dims = f.code[f.pc + 3] as usize;
+    let dims = f.byte(f.pc + 3) as usize;
     let mut counts = vec![0i32; dims];
     for c in counts.iter_mut().rev() {
         *c = f.pop_i();
