@@ -32,7 +32,7 @@ mod inline_plan;
 mod intrinsics;
 mod opt;
 mod profile;
-mod queue;
+pub mod queue;
 mod stubs;
 mod tier;
 mod vstack;
