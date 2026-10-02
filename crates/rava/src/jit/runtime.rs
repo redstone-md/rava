@@ -16,7 +16,6 @@ pub extern "sysv64" fn interp_one(t: *mut Thread, m: *const Method, locals: *mut
     }
     let mut f = Frame::new(m, m.code.expect("compiled method has code"), locals);
     f.pc = bci;
-    f.op_pc = bci;
     // SAFETY: the operand stack of this frame holds `depth` slots.
     f.sp = unsafe { f.stack_base.add(depth) };
     unsafe { *f.hdr.add(header::BCI) = (bci as u64) << 1 };
@@ -46,7 +45,7 @@ pub extern "sysv64" fn handle_exception(t: *mut Thread, locals: *mut u64) -> usi
     let (m, bci) = t.frames().next().expect("compiled frame");
     let ex = t.pending;
     let mut f = Frame::new(m, m.code.expect("code"), locals);
-    f.op_pc = bci as usize;
+    f.pc = bci as usize;
     t.pending = std::ptr::null_mut();
     let handler = find_handler(t, &f, ex);
     let Some(handler) = handler else {

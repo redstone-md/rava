@@ -74,7 +74,7 @@ pub(super) fn invokedynamic(t: &mut Thread, f: &mut Frame) -> JResult<()> {
         return Err(throw_new(t, "java/lang/IncompatibleClassChangeError", "not an InvokeDynamic constant"));
     };
     let (name, desc) = cf.name_and_type(nat).unwrap();
-    let key = (f.method as *const Method as usize, f.op_pc);
+    let key = (f.method as *const Method as usize, f.pc);
     let cached = sites().lock().unwrap().get(&key).copied();
     let link = match cached {
         Some(l) => l,
@@ -110,7 +110,7 @@ pub(super) fn invoke_polymorphic(t: &mut Thread, f: &mut Frame, m: &'static Meth
         let ret = invoke_basic(t, args)?;
         return finish(f, args, sig, ret);
     }
-    let key = (f.method as *const Method as usize, f.op_pc);
+    let key = (f.method as *const Method as usize, f.pc);
     let cached = sites().lock().unwrap().get(&key).copied();
     let link = match cached {
         Some(l) => l,

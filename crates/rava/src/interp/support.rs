@@ -20,7 +20,6 @@ pub(crate) struct Frame {
     pub stack_base: *mut u64,
     pub sp: *mut u64,
     pub pc: usize,
-    pub op_pc: usize,
     /// Set when compiled code took over this frame (OSR): its exceptions were already
     /// dispatched there, so the interpreter must not search this frame's handlers again.
     pub replaced: bool,
@@ -33,7 +32,7 @@ impl Frame {
         // SAFETY: `invoke` reserved locals, header and operand stack from `locals`.
         let hdr = unsafe { locals.add(info.max_locals as usize) };
         let stack_base = unsafe { hdr.add(crate::thread::header::SLOTS) };
-        Frame { method, code: info.code, info, locals, hdr, stack_base, sp: stack_base, pc: 0, op_pc: 0, replaced: false }
+        Frame { method, code: info.code, info, locals, hdr, stack_base, sp: stack_base, pc: 0, replaced: false }
     }
     #[inline(always)]
     pub fn push(&mut self, v: u64) {
@@ -74,8 +73,14 @@ impl Frame {
         i32::from_be_bytes([self.code[at], self.code[at + 1], self.code[at + 2], self.code[at + 3]])
     }
     #[inline(always)]
-    pub fn branch_if(&mut self, taken: bool) {
-        self.pc = if taken { (self.op_pc as i64 + self.u2(self.op_pc + 1) as i16 as i64) as usize } else { self.op_pc + 3 };
+    pub fn branch_if(&mut self, taken: bool) -> bool {
+        if !taken {
+            self.pc += 3;
+            return false;
+        }
+        let off = self.u2(self.pc + 1) as i16 as i64;
+        self.pc = (self.pc as i64 + off) as usize;
+        off < 0
     }
     fn holder(&self) -> &'static Klass {
         self.method.holder
@@ -128,15 +133,15 @@ pub(super) fn int_cond(cond: u8, a: i32, b: i32) -> bool {
 }
 
 pub(super) fn tableswitch(f: &mut Frame) {
-    let p = (f.op_pc + 4) & !3;
+    let p = (f.pc + 4) & !3;
     let (default, low, high) = (f.i4(p), f.i4(p + 4), f.i4(p + 8));
     let idx = f.pop_i();
     let off = if idx < low || idx > high { default } else { f.i4(p + 12 + 4 * (idx - low) as usize) };
-    f.pc = (f.op_pc as i64 + off as i64) as usize;
+    f.pc = (f.pc as i64 + off as i64) as usize;
 }
 
 pub(super) fn lookupswitch(f: &mut Frame) {
-    let p = (f.op_pc + 4) & !3;
+    let p = (f.pc + 4) & !3;
     let (default, n) = (f.i4(p), f.i4(p + 4) as usize);
     let key = f.pop_i();
     let (mut lo, mut hi) = (0usize, n);
@@ -153,7 +158,7 @@ pub(super) fn lookupswitch(f: &mut Frame) {
             hi = mid;
         }
     }
-    f.pc = (f.op_pc as i64 + off as i64) as usize;
+    f.pc = (f.pc as i64 + off as i64) as usize;
 }
 
 pub(super) fn wide(f: &mut Frame) {
@@ -498,11 +503,11 @@ pub(super) fn instanceof(t: &mut Thread, f: &mut Frame) -> JResult<()> {
     Ok(())
 }
 
-/// The handler pc for an exception thrown at `f.op_pc`, if this method catches it.
+/// The handler pc for an exception thrown at `f.pc`, if this method catches it.
 pub(crate) fn find_handler(t: &mut Thread, f: &Frame, ex: Oop) -> Option<usize> {
     // SAFETY: live exception object.
     let ek = unsafe { obj::klass(ex) };
-    let pc = f.op_pc as u16;
+    let pc = f.pc as u16;
     for h in f.info.handlers.iter().filter(|h| h.start <= pc && pc < h.end) {
         if h.catch_type == 0 {
             return Some(h.handler as usize);

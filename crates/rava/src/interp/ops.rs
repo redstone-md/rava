@@ -9,8 +9,8 @@ use crate::thread::{JResult, Thread};
 
 /// After a branch: a backward jump may hand the frame to compiled code.
 macro_rules! backedge {
-    ($t:ident, $f:ident) => {
-        if $f.pc < $f.op_pc {
+    ($t:ident, $f:ident, $back:expr) => {
+        if $back {
             crate::gc::safepoint::poll($t);
             if let Some(ret) = s::on_backedge($t, $f)? {
                 return Ok(Some(ret));
@@ -34,7 +34,6 @@ pub(super) fn execute(t: &mut Thread, m: &'static Method, code: &'static CodeInf
 pub(crate) fn resume(t: &mut Thread, m: &'static Method, locals: *mut u64, pc: usize, depth: usize, pending: Option<crate::thread::Throw>) -> JResult<u64> {
     let mut f = Frame::new(m, m.code.expect("resumed method has code"), locals);
     f.pc = pc;
-    f.op_pc = pc;
     // SAFETY: the operand stack holds `depth` slots.
     f.sp = unsafe { f.stack_base.add(depth) };
     if let Some(ex) = pending {
@@ -49,7 +48,7 @@ pub(crate) fn resume(t: &mut Thread, m: &'static Method, locals: *mut u64, pc: u
 fn run(t: &mut Thread, f: &mut Frame) -> JResult<u64> {
     // The header's bci slot tracks this frame's live bytecode index.
     // SAFETY: `f.hdr` is this frame's header; `f` outlives the frame.
-    unsafe { *f.hdr.add(crate::thread::header::BCI) = (&f.op_pc as *const usize as u64) | 1 };
+    unsafe { *f.hdr.add(crate::thread::header::BCI) = (&f.pc as *const usize as u64) | 1 };
     loop {
         match step(t, f) {
             Ok(Some(ret)) => return Ok(ret),
@@ -90,7 +89,6 @@ pub(crate) fn exec_single(t: &mut Thread, f: &mut Frame) -> JResult<()> {
 fn exec_one(t: &mut Thread, f: &mut Frame) -> JResult<Option<u64>> {
     {
         let op = f.code[f.pc];
-        f.op_pc = f.pc;
         match op {
             0x00 => f.pc += 1,
             0x01 => { f.push_ref(std::ptr::null_mut()); f.pc += 1 }
@@ -213,10 +211,10 @@ fn exec_one(t: &mut Thread, f: &mut Frame) -> JResult<Option<u64>> {
             0x94 => { let b = f.pop_l(); let a = f.pop_l(); f.push_i(a.cmp(&b) as i32); f.pc += 1 }
             0x95 | 0x96 => { let b = f.pop_f(); let a = f.pop_f(); f.push_i(s::fcmp(a as f64, b as f64, op == 0x96)); f.pc += 1 }
             0x97 | 0x98 => { let b = f.pop_d(); let a = f.pop_d(); f.push_i(s::fcmp(a, b, op == 0x98)); f.pc += 1 }
-            0x99..=0x9e => { let a = f.pop_i(); f.branch_if(s::int_cond(op - 0x99, a, 0)); backedge!(t, f) }
-            0x9f..=0xa4 => { let b = f.pop_i(); let a = f.pop_i(); f.branch_if(s::int_cond(op - 0x9f, a, b)); backedge!(t, f) }
-            0xa5 | 0xa6 => { let b = f.pop(); let a = f.pop(); f.branch_if((a == b) == (op == 0xa5)); backedge!(t, f) }
-            0xa7 => { f.branch_if(true); backedge!(t, f) }
+            0x99..=0x9e => { let a = f.pop_i(); let back = f.branch_if(s::int_cond(op - 0x99, a, 0)); backedge!(t, f, back) }
+            0x9f..=0xa4 => { let b = f.pop_i(); let a = f.pop_i(); let back = f.branch_if(s::int_cond(op - 0x9f, a, b)); backedge!(t, f, back) }
+            0xa5 | 0xa6 => { let b = f.pop(); let a = f.pop(); let back = f.branch_if((a == b) == (op == 0xa5)); backedge!(t, f, back) }
+            0xa7 => { let back = f.branch_if(true); backedge!(t, f, back) }
             0xa8 | 0xa9 => return Err(throw_new(t, "java/lang/VerifyError", "jsr/ret are not supported")),
             0xaa => s::tableswitch(f),
             0xab => s::lookupswitch(f),
@@ -253,7 +251,7 @@ fn exec_one(t: &mut Thread, f: &mut Frame) -> JResult<Option<u64>> {
             }
             0xc4 => s::wide(f),
             0xc5 => { s::multianewarray(t, f)?; f.pc += 4 }
-            0xc6 | 0xc7 => { let a = f.pop(); f.branch_if((a == 0) == (op == 0xc6)); backedge!(t, f) }
+            0xc6 | 0xc7 => { let a = f.pop(); let back = f.branch_if((a == 0) == (op == 0xc6)); backedge!(t, f, back) }
             0xc8 => { let off = f.i4(f.pc + 1); f.pc = (f.pc as i64 + off as i64) as usize }
             _ => return Err(throw_new(t, "java/lang/VerifyError", &format!("bad opcode {op:#x}"))),
         }
