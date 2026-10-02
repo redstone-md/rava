@@ -73,14 +73,13 @@ impl Emitter {
             let cell = super::profile::cell(self.m, pc);
             let (hit, done, found) = (self.a.new_label(), self.a.new_label(), self.a.new_label());
             self.a.load(true, R::Rdi, mem(R::Rcx, 0));
+            // rax holds the cell throughout: the cached pair is inline, so a hit is one compare.
             self.a.mov_ri(R::Rax, cell as *const runtime::IcCell as i64);
-            self.a.load(true, R::Rax, mem(R::Rax, 0));
-            self.a.alu_rm(true, super::asm::Alu::Cmp, R::Rdi, mem(R::Rax, 0));
+            self.a.alu_rm(true, super::asm::Alu::Cmp, R::Rdi, mem(R::Rax, runtime::IcCell::klass_offset()));
             self.a.jcc(Cond::E, hit);
             if m.holder.is_interface() {
                 // Megamorphic interface sites scan the itable in generated code.
                 let learn = self.a.new_label();
-                self.a.mov_ri(R::Rax, cell as *const runtime::IcCell as i64);
                 self.a.alu_mi(false, super::asm::Alu::Cmp, mem(R::Rax, runtime::IcCell::misses_offset()), runtime::IC_MAX_UPDATES as i32);
                 self.a.jcc(Cond::B, learn);
                 self.a.mov_ri(R::Rsi, m.holder as *const Klass as i64);
@@ -100,7 +99,7 @@ impl Emitter {
             self.a.mov_rr(true, R::Rdx, R::Rax);
             self.a.jmp(done);
             self.a.bind(hit);
-            self.a.load(true, R::Rdx, mem(R::Rax, 8));
+            self.a.load(true, R::Rdx, mem(R::Rax, runtime::IcCell::target_offset()));
             self.a.bind(done);
         }
     }

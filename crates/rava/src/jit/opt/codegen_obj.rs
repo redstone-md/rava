@@ -404,15 +404,14 @@ impl Gen<'_> {
         // A site known megamorphic goes straight to the itable scan.
         let megamorphic = m.holder.is_interface() && crate::jit::profile::megamorphic(s.method, s.bci as usize);
         if !megamorphic {
+            // rax holds the cell: the cached pair is inline, so a hit is one compare and a load.
             self.a.mov_ri(R::Rax, cell);
-            self.a.load(true, R::Rax, mem(R::Rax, 0));
-            self.a.alu_rm(true, Alu::Cmp, R::Rdi, mem(R::Rax, 0));
+            self.a.alu_rm(true, Alu::Cmp, R::Rdi, mem(R::Rax, IcCell::klass_offset()));
             self.a.jcc(Cond::E, hit);
         }
         if m.holder.is_interface() {
             let learn = self.a.new_label();
             if !megamorphic {
-                self.a.mov_ri(R::Rax, cell);
                 self.a.alu_mi(false, Alu::Cmp, mem(R::Rax, IcCell::misses_offset()), runtime::IC_MAX_UPDATES as i32);
                 self.a.jcc(Cond::B, learn);
             }
@@ -450,7 +449,7 @@ impl Gen<'_> {
         self.a.call_abs(runtime::no_target as *const () as usize);
         self.a.jmp(fail);
         self.a.bind(hit);
-        self.a.load(true, R::Rdx, mem(R::Rax, 8));
+        self.a.load(true, R::Rdx, mem(R::Rax, IcCell::target_offset()));
         self.a.bind(done);
     }
 }
