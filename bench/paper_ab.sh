@@ -131,7 +131,15 @@ PY
   echo "round $round $label wall $wall done ${done_s:--}"
 }
 
+# Alternate label order every round so no variant is systematically penalised
+# by first-position cold-cache bias (the first boot in a round is slower than
+# later ones). Even rounds run the labels reversed.
+labels=("$@")
 for round in $(seq 1 "$ROUNDS"); do
-  for label in "$@"; do run_one "$label" "$round"; done
+  if (( round % 2 == 0 )); then
+    for (( i = ${#labels[@]} - 1; i >= 0; i-- )); do run_one "${labels[$i]}" "$round"; done
+  else
+    for label in "${labels[@]}"; do run_one "$label" "$round"; done
+  fi
 done
 echo "results: $OUT"
