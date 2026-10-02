@@ -74,18 +74,15 @@ pub extern "sysv64" fn select(k: *const Klass, m: *const Method) -> *const Metho
     crate::link::select_method(k, m).map_or(std::ptr::null(), |x| x as *const Method)
 }
 
-/// A monomorphic inline cache: an immutable (receiver class, target) pair published through one
-/// pointer, so readers never see a torn pair. After `IC_MAX_UPDATES` misses the site stops
-/// re-caching (megamorphic) and every miss dispatches through `select`.
-#[repr(C)]
-pub struct IcEntry {
-    pub klass: usize,
-    pub target: usize,
-}
-
+/// A monomorphic inline cache: the last receiver class a site saw (`klass`, 0 when empty) and
+/// the target for it, stored inline so a hit is one compare against the cell and one load, with
+/// no pointer to chase. The writer stores `target` before `klass` (x86 keeps store order), so a
+/// reader that sees a class also sees its matching target. After `IC_MAX_UPDATES` misses the
+/// site stops re-caching (megamorphic) and every miss dispatches through `select`.
 #[repr(C)]
 pub struct IcCell {
-    pub entry: std::sync::atomic::AtomicPtr<IcEntry>,
+    klass: std::sync::atomic::AtomicUsize,
+    target: std::sync::atomic::AtomicUsize,
     misses: std::sync::atomic::AtomicU32,
     /// The first two receiver classes the site saw, and whether it saw more (type profile).
     seen: [std::sync::atomic::AtomicUsize; 2],
@@ -104,8 +101,7 @@ impl IcCell {
     /// The cached receiver class while the site has seen no other.
     pub(super) fn observed(&self) -> Option<usize> {
         use std::sync::atomic::Ordering;
-        // SAFETY: entries are leaked and immutable once published.
-        let k = unsafe { (*self.entry.load(Ordering::Acquire)).klass };
+        let k = self.klass.load(Ordering::Acquire);
         (k != 0 && self.misses.load(Ordering::Relaxed) <= 1).then_some(k)
     }
 
@@ -162,10 +158,20 @@ impl IcCell {
         std::mem::offset_of!(IcCell, misses) as i32
     }
 
+    /// Offset of the cached receiver class (compared on the hit path).
+    pub(super) fn klass_offset() -> i32 {
+        std::mem::offset_of!(IcCell, klass) as i32
+    }
+
+    /// Offset of the cached target (loaded on the hit path).
+    pub(super) fn target_offset() -> i32 {
+        std::mem::offset_of!(IcCell, target) as i32
+    }
+
     pub fn new() -> &'static IcCell {
-        static EMPTY: IcEntry = IcEntry { klass: 0, target: 0 };
         Box::leak(Box::new(IcCell {
-            entry: std::sync::atomic::AtomicPtr::new(&EMPTY as *const IcEntry as *mut IcEntry),
+            klass: Default::default(),
+            target: Default::default(),
             misses: std::sync::atomic::AtomicU32::new(0),
             seen: Default::default(),
             more: Default::default(),
@@ -184,8 +190,10 @@ pub extern "sysv64" fn ic_miss(k: *const Klass, m: *const Method, cell: *const I
     use std::sync::atomic::Ordering;
     // Megamorphic sites stop counting, so they do not keep writing a shared line.
     if !target.is_null() && cell.misses.load(Ordering::Relaxed) < IC_MAX_UPDATES && cell.misses.fetch_add(1, Ordering::Relaxed) < IC_MAX_UPDATES {
-        let e = Box::leak(Box::new(IcEntry { klass: k as usize, target: target as usize }));
-        cell.entry.store(e, Ordering::Release);
+        // Publish the target before the class: a reader that sees this class (store order is
+        // kept on x86) therefore sees its matching target.
+        cell.target.store(target as usize, Ordering::Release);
+        cell.klass.store(k as usize, Ordering::Release);
     }
     target
 }
