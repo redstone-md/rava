@@ -30,6 +30,12 @@ fn mark(o: Oop) -> &'static AtomicU64 {
     unsafe { obj::mark(o) }
 }
 
+/// Contention counters (read under `RAVA_PROFILE`): monitors inflated, thin-lock back-off
+/// sleeps, and inflated enters that actually blocked on another owner.
+pub static INFLATIONS: AtomicU64 = AtomicU64::new(0);
+pub static THIN_SLEEPS: AtomicU64 = AtomicU64::new(0);
+pub static BLOCKED_ENTERS: AtomicU64 = AtomicU64::new(0);
+
 const SHARDS: usize = 64;
 
 /// A monitor's owner and wait set. Waiters take consecutive tickets; `notify` releases the
@@ -135,6 +141,7 @@ fn back_off(t: &Thread, spins: u32) {
     } else if spins < 256 {
         std::thread::yield_now();
     } else {
+        THIN_SLEEPS.fetch_add(1, Ordering::Relaxed);
         crate::gc::safepoint::blocking(t, || std::thread::sleep(Duration::from_micros(100)));
     }
 }
@@ -146,6 +153,7 @@ fn inflate_owned(o: Oop) {
     if m & STATE_MASK != THIN {
         return;
     }
+    INFLATIONS.fetch_add(1, Ordering::Relaxed);
     let mon = monitor_of(o);
     {
         let mut s = mon.state.lock().unwrap();
@@ -175,6 +183,7 @@ fn enter_inflated(t: &Thread, o: Oop, me: u64) {
     // Blocked on another owner: wait in the native state so a collection can proceed. The
     // monitor is claimed, and the Rust lock released, before leaving it: a thread stopped at a
     // safepoint must never hold a lock a running thread could be waiting for.
+    BLOCKED_ENTERS.fetch_add(1, Ordering::Relaxed);
     crate::gc::safepoint::blocking(t, || {
         let mut s = m.state.lock().unwrap();
         while s.owner != 0 && s.owner != me {
