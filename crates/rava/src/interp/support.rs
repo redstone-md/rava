@@ -64,13 +64,20 @@ impl Frame {
     #[inline(always)] pub fn pop_d(&mut self) -> f64 { self.pop(); f64::from_bits(self.pop()) }
     #[inline(always)] pub fn push_ref(&mut self, v: Oop) { self.push(v as u64) }
     #[inline(always)] pub fn pop_ref(&mut self) -> Oop { self.pop() as Oop }
+    /// A verified method's bytecode never runs past the end of `code`, and every instruction's
+    /// operand bytes lie within it, so the interpreter reads code bytes without a bounds check
+    /// (as a template interpreter does); `pc` only ever addresses bytes the verifier accepted.
+    #[inline(always)]
+    pub fn code_at(&self, at: usize) -> u8 {
+        unsafe { *self.code.get_unchecked(at) }
+    }
     #[inline(always)]
     pub fn u2(&self, at: usize) -> u16 {
-        u16::from_be_bytes([self.code[at], self.code[at + 1]])
+        u16::from_be_bytes([self.code_at(at), self.code_at(at + 1)])
     }
     #[inline(always)]
     pub fn i4(&self, at: usize) -> i32 {
-        i32::from_be_bytes([self.code[at], self.code[at + 1], self.code[at + 2], self.code[at + 3]])
+        i32::from_be_bytes([self.code_at(at), self.code_at(at + 1), self.code_at(at + 2), self.code_at(at + 3)])
     }
     #[inline(always)]
     pub fn branch_if(&mut self, taken: bool) -> bool {

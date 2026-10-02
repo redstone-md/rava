@@ -88,7 +88,7 @@ pub(crate) fn exec_single(t: &mut Thread, f: &mut Frame) -> JResult<()> {
 #[inline(always)]
 fn exec_one(t: &mut Thread, f: &mut Frame) -> JResult<Option<u64>> {
     {
-        let op = f.code[f.pc];
+        let op = f.code_at(f.pc);
         match op {
             0x00 => f.pc += 1,
             0x01 => { f.push_ref(std::ptr::null_mut()); f.pc += 1 }
@@ -96,13 +96,13 @@ fn exec_one(t: &mut Thread, f: &mut Frame) -> JResult<Option<u64>> {
             0x09 | 0x0a => { f.push_l((op - 0x09) as i64); f.pc += 1 }
             0x0b..=0x0d => { f.push_f((op - 0x0b) as f32); f.pc += 1 }
             0x0e | 0x0f => { f.push_d((op - 0x0e) as f64); f.pc += 1 }
-            0x10 => { f.push_i(f.code[f.pc + 1] as i8 as i32); f.pc += 2 }
+            0x10 => { f.push_i(f.code_at(f.pc + 1) as i8 as i32); f.pc += 2 }
             0x11 => { f.push_i(f.u2(f.pc + 1) as i16 as i32); f.pc += 3 }
-            0x12 => { let i = f.code[f.pc + 1] as u16; s::ldc(t, f, i)?; f.pc += 2 }
+            0x12 => { let i = f.code_at(f.pc + 1) as u16; s::ldc(t, f, i)?; f.pc += 2 }
             0x13 | 0x14 => { let i = f.u2(f.pc + 1); s::ldc(t, f, i)?; f.pc += 3 }
             // loads
-            0x15 | 0x17 | 0x19 => { let i = f.code[f.pc + 1] as usize; f.push(f.local(i)); f.pc += 2 }
-            0x16 | 0x18 => { let i = f.code[f.pc + 1] as usize; f.push(f.local(i)); f.push(0); f.pc += 2 }
+            0x15 | 0x17 | 0x19 => { let i = f.code_at(f.pc + 1) as usize; f.push(f.local(i)); f.pc += 2 }
+            0x16 | 0x18 => { let i = f.code_at(f.pc + 1) as usize; f.push(f.local(i)); f.push(0); f.pc += 2 }
             0x1a..=0x1d => { f.push(f.local((op - 0x1a) as usize)); f.pc += 1 }
             0x1e..=0x21 => { f.push(f.local((op - 0x1e) as usize)); f.push(0); f.pc += 1 }
             0x22..=0x25 => { f.push(f.local((op - 0x22) as usize)); f.pc += 1 }
@@ -118,8 +118,8 @@ fn exec_one(t: &mut Thread, f: &mut Frame) -> JResult<Option<u64>> {
             0x34 => { let (a, i) = s::array_index(t, f)?; f.push_i(unsafe { *obj::array_data::<u16>(a).add(i) } as i32); f.pc += 1 }
             0x35 => { let (a, i) = s::array_index(t, f)?; f.push_i(unsafe { *obj::array_data::<i16>(a).add(i) } as i32); f.pc += 1 }
             // stores
-            0x36 | 0x38 | 0x3a => { let i = f.code[f.pc + 1] as usize; let v = f.pop(); f.set_local(i, v); f.pc += 2 }
-            0x37 | 0x39 => { let i = f.code[f.pc + 1] as usize; f.pop(); let v = f.pop(); f.set_local(i, v); f.pc += 2 }
+            0x36 | 0x38 | 0x3a => { let i = f.code_at(f.pc + 1) as usize; let v = f.pop(); f.set_local(i, v); f.pc += 2 }
+            0x37 | 0x39 => { let i = f.code_at(f.pc + 1) as usize; f.pop(); let v = f.pop(); f.set_local(i, v); f.pc += 2 }
             0x3b..=0x3e => { let v = f.pop(); f.set_local((op - 0x3b) as usize, v); f.pc += 1 }
             0x3f..=0x42 => { f.pop(); let v = f.pop(); f.set_local((op - 0x3f) as usize, v); f.pc += 1 }
             0x43..=0x46 => { let v = f.pop(); f.set_local((op - 0x43) as usize, v); f.pc += 1 }
@@ -187,8 +187,8 @@ fn exec_one(t: &mut Thread, f: &mut Frame) -> JResult<Option<u64>> {
             0x82 => { i32_op!(f, |a: i32, b: i32| a ^ b); f.pc += 1 }
             0x83 => { i64_op!(f, |a: i64, b: i64| a ^ b); f.pc += 1 }
             0x84 => {
-                let i = f.code[f.pc + 1] as usize;
-                let v = (f.local(i) as i32).wrapping_add(f.code[f.pc + 2] as i8 as i32);
+                let i = f.code_at(f.pc + 1) as usize;
+                let v = (f.local(i) as i32).wrapping_add(f.code_at(f.pc + 2) as i8 as i32);
                 f.set_local(i, v as i64 as u64); f.pc += 3
             }
             // conversions
