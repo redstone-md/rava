@@ -12,13 +12,15 @@
 //! compiled code (a slow path, a call, a generic template), so the interpreter always finds a
 //! consistent frame. At block boundaries the stack is entirely `Mem`.
 
-use super::asm::{Alu, M, R};
+use super::asm::{Alu, M, R, X};
 use super::compile::Emitter;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(super) enum Loc {
     Mem,
     Reg(R),
+    /// A double value cached in an SSE register (baseline floating-point stack caching).
+    Xmm(X),
     Imm(i64),
     /// The value of cached local `n` (read-only alias of its register).
     Local(u16),
@@ -51,6 +53,10 @@ pub(super) enum Src {
 const POOL: [R; 5] = [R::Rsi, R::Rdi, R::R8, R::R9, R::R10];
 /// Callee-saved registers pinned to hot locals.
 pub(super) const LOCAL_REGS: [R; 4] = [R::Rbx, R::Rbp, R::R14, R::R15];
+/// SSE registers caching double operand-stack values (xmm0/xmm1 stay free as template temporaries,
+/// mirroring the GPR temporaries). All are caller-saved, so values in them are written back and
+/// reloaded around calls and slow paths exactly as the GPR scratch values are.
+const XPOOL: [X; 6] = [X(2), X(3), X(4), X(5), X(6), X(7)];
 
 impl Emitter {
     pub(super) fn vs_reset(&mut self, depth: u16) {
@@ -90,6 +96,10 @@ impl Emitter {
         self.vs.iter().any(|s| s.loc == Loc::Reg(r))
     }
 
+    fn in_use_xmm(&self, x: X) -> bool {
+        self.vs.iter().any(|s| s.loc == Loc::Xmm(x))
+    }
+
     /// A free scratch register not in `excl`, spilling the deepest register slot if needed.
     pub(super) fn alloc(&mut self, excl: &[R]) -> R {
         if let Some(r) = POOL.iter().copied().find(|r| !excl.contains(r) && !self.in_use(*r)) {
@@ -100,6 +110,50 @@ impl Emitter {
         self.write_back(i);
         self.vs[i].loc = Loc::Mem;
         r
+    }
+
+    /// A free SSE scratch register not in `excl`, spilling the deepest cached double if needed.
+    pub(super) fn alloc_xmm(&mut self, excl: &[X]) -> X {
+        if let Some(x) = XPOOL.iter().copied().find(|x| !excl.contains(x) && !self.in_use_xmm(*x)) {
+            return x;
+        }
+        let i = self.vs.iter().position(|s| matches!(s.loc, Loc::Xmm(x) if !excl.contains(&x))).expect("a spillable xmm");
+        let Loc::Xmm(x) = self.vs[i].loc else { unreachable!() };
+        self.write_back(i);
+        self.vs[i].loc = Loc::Mem;
+        x
+    }
+
+    /// An SSE register holding double operand `o`, free for the caller to clobber. A value already
+    /// in an SSE register is returned as-is (it was just popped, so nothing else aliases it).
+    pub(super) fn xmm_owned(&mut self, o: Opnd, excl: &[X]) -> X {
+        if let Loc::Xmm(x) = o.loc {
+            return x;
+        }
+        let x = self.alloc_xmm(excl);
+        match o.loc {
+            Loc::Mem => self.a.fload(true, x, self.stk(o.idx)),
+            Loc::Reg(r) => self.a.mov_xr(true, x, r),
+            Loc::Local(n) => self.a.mov_xr(true, x, self.lreg(n as usize).expect("cached local")),
+            Loc::Imm(v) => {
+                self.a.mov_ri(R::Rax, v);
+                self.a.mov_xr(true, x, R::Rax);
+            }
+            Loc::Xmm(_) => unreachable!(),
+        }
+        x
+    }
+
+    /// Reloads register-cached stack values from their frame slots (after a call or slow path
+    /// clobbered the caller-saved registers).
+    pub(super) fn reload_live(&mut self, live: &[(Loc, i32)]) {
+        for &(loc, slot) in live {
+            match loc {
+                Loc::Reg(r) => self.a.load(true, r, self.stk(slot)),
+                Loc::Xmm(x) => self.a.fload(true, x, self.stk(slot)),
+                _ => {}
+            }
+        }
     }
 
     /// Stores a 64-bit immediate without a scratch register.
@@ -120,6 +174,7 @@ impl Emitter {
         let at = self.stk(i as i32);
         match s.loc {
             Loc::Reg(r) => self.a.store(true, at, r),
+            Loc::Xmm(x) => self.a.fstore(true, at, x),
             Loc::Local(n) => self.a.store(true, at, self.lreg(n as usize).expect("cached local")),
             Loc::Imm(v) => self.store_imm64(at, v),
             Loc::Mem => {}
@@ -140,9 +195,14 @@ impl Emitter {
         self.vs.iter_mut().for_each(|s| s.loc = Loc::Mem);
     }
 
-    /// Scratch registers holding stack values: what a slow path must reload after its helper.
-    pub(super) fn live_regs(&self) -> Vec<(R, i32)> {
-        self.vs.iter().enumerate().filter_map(|(i, s)| if let Loc::Reg(r) = s.loc { Some((r, i as i32)) } else { None }).collect()
+    /// Scratch registers (GPR or SSE) holding stack values: what a slow path must reload after
+    /// its helper clobbers the caller-saved registers.
+    pub(super) fn live_regs(&self) -> Vec<(Loc, i32)> {
+        self.vs
+            .iter()
+            .enumerate()
+            .filter_map(|(i, s)| matches!(s.loc, Loc::Reg(_) | Loc::Xmm(_)).then_some((s.loc, i as i32)))
+            .collect()
     }
 
     /// Before local `n` changes: slots aliasing it get their own copy.
@@ -165,6 +225,10 @@ impl Emitter {
     pub(super) fn read(&mut self, o: Opnd, temp: R) -> R {
         match o.loc {
             Loc::Reg(r) => r,
+            Loc::Xmm(x) => {
+                self.a.mov_rx(true, temp, x);
+                temp
+            }
             Loc::Local(n) => self.lreg(n as usize).expect("cached local"),
             Loc::Imm(v) => {
                 self.a.mov_ri(temp, v);
@@ -184,6 +248,7 @@ impl Emitter {
         }
         let d = self.alloc(excl);
         match o.loc {
+            Loc::Xmm(x) => self.a.mov_rx(true, d, x),
             Loc::Local(n) => self.a.mov_rr(true, d, self.lreg(n as usize).expect("cached local")),
             Loc::Imm(v) => self.a.mov_ri(d, v),
             _ => self.a.load(true, d, self.stk(o.idx)),

@@ -26,7 +26,7 @@ pub(super) struct Emitter {
     pub exc: Label,
     pub epilogue: Label,
     /// Deferred slow paths: (entry label, bci, depth, registers to reload from their slots).
-    pub slow: Vec<(Label, usize, u16, Vec<(R, i32)>)>,
+    pub slow: Vec<(Label, usize, u16, Vec<(super::vstack::Loc, i32)>)>,
     /// Safepoint-poll stubs: (entry label, label to resume at).
     pub polls: Vec<(Label, Label)>,
     /// Slots (from the frame base) of local 0 and operand-stack slot 0 of the code being emitted.
@@ -382,9 +382,7 @@ impl Emitter {
         for (l, bci, depth, reload) in std::mem::take(&mut self.slow) {
             self.a.bind(l);
             self.defer(bci, depth);
-            for (r, slot) in reload {
-                self.a.load(true, r, self.stk(slot));
-            }
+            self.reload_live(&reload);
             let next = bci + insn_len(self.code, bci);
             self.a.jmp(self.labels[next]);
         }
