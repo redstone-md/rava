@@ -656,3 +656,20 @@ switch-vs-threaded-goto gap is small, and Rust has neither computed goto nor gua
 so a function-pointer/tail-threaded dispatch would trade real correctness risk for a few percent.
 The higher-value interpreter work is a streamlined interpreted call path (frame setup, argument
 marshalling) and getting lukewarm methods compiled, not re-threading the dispatch loop.
+
+## 2026-10-02 (cont.) — the baseline tier was 3.6x slower than C1 on doubles; SSE stack caching
+
+Compared the tiers directly on the array-noise microbenchmark: rava's optimizing tier matches
+`java` (26 vs 27 ms) but its **baseline tier was 3.6x slower than HotSpot's C1** (131 vs 36 ms) —
+and worldgen's many lukewarm methods (100..5000 calls) run at the baseline tier, which starves the
+mostly-serial chunk pipeline. Root cause in `fp_arith`: the baseline register cache (`vstack.rs`)
+held every operand-stack value in a GPR, so each double op did `movq`→xmm, op, `movq`→gpr. Added an
+`Xmm` location to the cache so double results stay in SSE registers and chain (NoiseBench baseline
+129 → 110 ms). A subtle aliasing bug caught by `OptLiveSem` on the way: the second operand is popped
+first, so allocating the first operand's register must exclude it or `a + b` compiles to `a + a`
+(the deepest kind of baseline bug — only shows once a value is register-cached). Semantics stay at
+76 pass / 4 intentional after the fix.
+
+Baseline float codegen is still ~3x C1 (operands still reload from the frame each op, no CSE, bounds
+checks on every array access) — SSE result-chaining is the first and safest of those, landed; the
+rest (keeping loaded locals/constants in xmm, array-bounds hoisting) are the follow-ups.
