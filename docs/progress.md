@@ -561,3 +561,30 @@ binary. The launcher takes `java`'s command line whole (class path rules and wil
 the JDK's `LauncherHelper`, so the server starts as `rava -jar paper.jar --nogui` and an
 uncaught exception prints exactly as java prints it. Running `javac` for single-file programs
 works unchanged.
+
+## 2026-10-02 — scalar replacement, and what a cold boot is bound by
+
+The optimizing tier now replaces non-escaping allocations: an object whose identity is never
+observed and whose fields, after load forwarding, are read nowhere is removed from the hot path
+and recorded as a virtual (`escape.rs`); on the rare deoptimization the interpreter rebuilds it
+from its field values, which stay live wherever the object appears in a state (`deopt.rs`
+rematerialization). A plain `New` qualifies when its construction is provably safe to defer (all
+stores in one block dominating every state that mentions it, no array — those can throw, no
+nested virtual). Allocation during deopt is safe because the collector does not move and the
+stack is scanned conservatively: every field value is read into a root before allocating.
+`OptScalarSem` exercises the deopt path (verified under GC stress and against `java`); all
+world-gen checksums still match bit for bit. The captured lambda in `CubicSpline`'s binary
+search is the motivating case: SplineBench 2.0x -> 1.5x of `java` (min-of-5, pinned).
+
+It costs compile time, though, and an A/B put the cold Paper boot about a second slower with it
+on (five rounds, the milestone gap growing smoothly from `env` onward — the mark of per-compile
+overhead, not worse world-gen code). That is the lesson of the session: **a cold boot is not
+codegen-bound.** Lowering or raising the tier-2 threshold (1000..15000) and the compiler-thread
+count (1..4) moved the boot by less than the host's own ±3-5 s run-to-run noise; scalar
+replacement, a genuine steady-state win, is a boot loss. The boot is bound by interpreting
+not-yet-compiled code and runtime per-call bookkeeping, so the levers for it are a cheaper
+interpreter or less runtime overhead, not tighter compiled code. Scalar replacement is kept on
+by default (a server runs for hours; `RAVA_SCALAR_REPLACE=0` turns it off for a boot A/B).
+
+Also: the inline cache now stores its (class, target) pair inline instead of behind a leaked
+pointer, so a monomorphic hit is one compare and one load and a cache update allocates nothing.
