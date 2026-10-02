@@ -283,6 +283,32 @@ impl Emitter {
         };
         let b = self.pop_w(double);
         let a = self.pop_w(double);
+        if double {
+            // Keep the result in an SSE register so chained double arithmetic (the bulk of
+            // procedural-generation math) stays in xmm instead of round-tripping through GPRs.
+            // `b` is already popped, so when it is in an xmm, `a`'s register must exclude it or
+            // loading `a` would clobber `b` (turning `a OP b` into `a OP a`).
+            let xa = match b.loc {
+                Loc::Xmm(xb) => {
+                    let xa = self.xmm_owned(a, &[xb]);
+                    self.a.farith_rr(true, sse, xa, xb);
+                    xa
+                }
+                Loc::Mem => {
+                    let xa = self.xmm_owned(a, &[]);
+                    self.a.farith_m(true, sse, xa, self.stk(b.idx));
+                    xa
+                }
+                _ => {
+                    let xa = self.xmm_owned(a, &[]);
+                    let xb = self.xmm_owned(b, &[xa]);
+                    self.a.farith_rr(true, sse, xa, xb);
+                    xa
+                }
+            };
+            self.push_w(true, Loc::Xmm(xa));
+            return;
+        }
         let ra = self.read(a, R::Rax);
         self.a.mov_xr(double, X(0), ra);
         let rb = self.read(b, R::Rcx);
@@ -382,9 +408,8 @@ impl Emitter {
         self.a.mov_rx(from_double, R::Rdi, X(0));
         self.a.call_abs(helper);
         self.a.mov_rr(true, d, R::Rax);
-        for (reg, slot) in self.live_regs() {
-            self.a.load(true, reg, self.stk(slot));
-        }
+        let live = self.live_regs();
+        self.reload_live(&live);
         self.a.bind(done);
         self.finish_int(to_long, d);
     }
