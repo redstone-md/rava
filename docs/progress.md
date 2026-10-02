@@ -637,3 +637,22 @@ One concrete, generic win landed from this: a `RAVA_PROFILE` monitor-contention 
 adaptively before parking; rava did not. Added a bounded `try_lock` spin before the wait in
 `sync::enter_inflated` (a spinner never blocks the owner from releasing). Blocked enters fell
 ~900 -> ~250 and the world-gen window dropped about a second, order-balanced. Kept on by default.
+
+## 2026-10-02 (cont.) — interpreter dispatch: unchecked bytecode, and the ceiling of dispatch tricks
+
+Toward a faster interpreter (the standing lever for the boot), landed the first, safe step of a
+"threaded dispatch" rewrite: read verified bytecode without bounds checks. The dispatch fetch and
+every operand read indexed a `&[u8]`, bounds-checking each; a verified method's pc and operand
+bytes always lie within `code` (the assumption a template interpreter is built on), so they now go
+through an unchecked accessor. Measured interpreter-only (`RAVA_NO_JIT=1`, back-to-back):
+dispatch-heavy `NoiseBench` 3134 -> 3019 ms (~3.7 %, consistent); call-heavy `MegaCallBench` within
+noise (it is dominated by the call machinery, not the fetch). Kept.
+
+The tracer-bullet lesson for the larger rewrite: **dispatch-mechanism changes are a single-digit
+lever here.** `NoiseBench` interpreted is ~3100 ms against ~24 ms compiled — the interpreter is
+~130x slower than the optimizing tier, and that ratio is set by the per-opcode work and the call
+machinery, not by how the dispatch branch is threaded. On modern branch predictors the classic
+switch-vs-threaded-goto gap is small, and Rust has neither computed goto nor guaranteed tail calls,
+so a function-pointer/tail-threaded dispatch would trade real correctness risk for a few percent.
+The higher-value interpreter work is a streamlined interpreted call path (frame setup, argument
+marshalling) and getting lukewarm methods compiled, not re-threading the dispatch loop.
