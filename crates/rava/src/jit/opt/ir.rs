@@ -301,6 +301,15 @@ pub struct Value {
     pub ty: Ty,
 }
 
+/// An object whose allocation was removed because it never escapes the compiled code
+/// (`escape.rs`). It survives only in deoptimization states, where it is rebuilt from its
+/// field values (rematerialization). `fields` are `(offset, type, value)`, the values still
+/// live wherever the object appears in a state.
+pub struct Virtual {
+    pub klass: &'static Klass,
+    pub fields: Vec<(u32, BasicType, V)>,
+}
+
 #[derive(Default)]
 pub struct Graph {
     pub values: Vec<Value>,
@@ -311,6 +320,8 @@ pub struct Graph {
     pub ordered: std::collections::HashSet<V>,
     /// The receiver of an instance method, never null.
     pub receiver: Option<V>,
+    /// Allocations removed as non-escaping, rebuilt on deoptimization (`escape.rs`).
+    pub virtuals: std::collections::HashMap<V, Virtual>,
 }
 
 impl Graph {

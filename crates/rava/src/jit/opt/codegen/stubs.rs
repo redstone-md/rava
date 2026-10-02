@@ -84,16 +84,37 @@ impl Gen<'_> {
     /// A deoptimization point: its descriptor (where each frame slot's value is) into rdx, then
     /// the method's common stub.
     fn deopt_stub(&mut self, s: &State, common: Label) {
+        use crate::jit::opt::deopt::Remat;
         let scopes = scopes(s);
+        let loc_of = |v: V| self.home[v as usize].unwrap_or(self.loc[v as usize]);
         let mut slots = Vec::new();
+        let mut remats: Vec<Remat> = Vec::new();
+        let mut remat_of: std::collections::HashMap<V, usize> = std::collections::HashMap::new();
         for sc in &scopes {
             let base = Self::stack_base_of(sc);
             let locals = sc.locals.iter().enumerate().map(|(i, v)| (sc.frame + i as i32, v));
             let stack = sc.stack.iter().enumerate().map(|(i, v)| (base + i as i32, v));
-            slots.extend(locals.chain(stack).filter_map(|(slot, v)| v.map(|v| (slot, self.home[v as usize].unwrap_or(self.loc[v as usize]), self.g.ty(v) == Ty::I))));
+            for (slot, &v) in locals.chain(stack).filter_map(|(slot, v)| v.as_ref().map(|v| (slot, v))) {
+                let v = self.g.resolve(v);
+                match self.g.virtuals.get(&v) {
+                    // A replaced object: rebuilt once, its pointer stored into every slot it fills.
+                    Some(virt) => match remat_of.get(&v) {
+                        Some(&i) => remats[i].slots.push(slot),
+                        None => {
+                            remat_of.insert(v, remats.len());
+                            remats.push(Remat {
+                                klass: virt.klass,
+                                fields: virt.fields.iter().map(|&(off, ty, fv)| (off, loc_of(self.g.resolve(fv)), ty)).collect(),
+                                slots: vec![slot],
+                            });
+                        }
+                    },
+                    None => slots.push((slot, loc_of(v), self.g.ty(v) == Ty::I)),
+                }
+            }
         }
         let frames = scopes.iter().map(|sc| crate::jit::opt::deopt::Frame { method: sc.method, frame: sc.frame, bci: sc.bci, depth: sc.stack.len() as u32 }).collect();
-        let desc: &'static crate::jit::opt::deopt::Desc = Box::leak(Box::new(crate::jit::opt::deopt::Desc { frames, slots }));
+        let desc: &'static crate::jit::opt::deopt::Desc = Box::leak(Box::new(crate::jit::opt::deopt::Desc { frames, slots, remats }));
         // rax: no value lives there (rcx and rdx may hold some, saved by the common part).
         self.a.mov_ri(R::Rax, desc as *const _ as i64);
         self.a.jmp(common);
