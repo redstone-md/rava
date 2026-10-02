@@ -605,3 +605,35 @@ interpreter (a template/threaded-dispatch rewrite, or a streamlined interpreted 
 tighter compiled code. It is a large, correctness-critical change and wants a quiet host: this
 one's run-to-run noise is ±10% even on a pinned microbenchmark, which already drowns any sub-15%
 win, so measuring incremental interpreter trims here is unreliable.
+
+## 2026-10-02 (cont.) — the cold-boot gap is world generation, and a monitor-contention trim
+
+Rebuilt the A/B harness honestly first: `paper_ab.sh` ran every round in a fixed label order, so
+whichever build was listed first paid the cold-host (page-cache, CPU-frequency) penalty every
+round. It now reverses the order on even rounds, averaging the first-position bias out. With that,
+an order-balanced boot A/B puts rava at ~37 s and `java` at ~31 s on this host.
+
+The milestones localise the whole gap: up to `spawn` the two are even (rava even reaches `prep`
+first — the interpreter work paid off), and every extra second is `spawn -> done`, i.e. nether and
+end world generation. CPU accounting over that window: rava ~1.55 cores, `java` ~2.49 — and rava
+burns *fewer* CPU-seconds there (≈22 vs ≈29), so its threads are idle, not running slower code.
+
+Ruled out, by measurement, as the world-gen lever:
+- **GC frequency.** `RAVA_GC_MB=512` cut young collections 52 -> 20 and stop-the-world 2.0 s -> 1.2 s,
+  yet world-gen cores and wall did not move. Not the bottleneck.
+- **Tiering thresholds.** Lowering tier-1/tier-2 (40/1500 vs 100/5000) left world-gen within noise
+  and made the whole boot slightly worse (more compile competing for cores).
+- **Steady-state codegen quality.** Two generic microbenchmarks representative of terrain math —
+  `DfTree` (megamorphic double tree) and the new `NoiseBench` (array-heavy gradient noise over a
+  permutation table) — have rava at parity-to-faster than `java` once warm (NoiseBench 24 ms vs
+  27 ms). The optimizing tier is not the problem.
+
+What is left is single-thread throughput of the mostly-serial world-gen pipeline plus the long tail
+of lukewarm methods that never reach the optimizing tier and run interpreted — consistent with the
+earlier "boot is interpreter-bound" finding.
+
+One concrete, generic win landed from this: a `RAVA_PROFILE` monitor-contention readout showed
+~900 inflated-monitor enters *blocking* straight onto a condition variable per boot. HotSpot spins
+adaptively before parking; rava did not. Added a bounded `try_lock` spin before the wait in
+`sync::enter_inflated` (a spinner never blocks the owner from releasing). Blocked enters fell
+~900 -> ~250 and the world-gen window dropped about a second, order-balanced. Kept on by default.
