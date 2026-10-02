@@ -588,3 +588,20 @@ by default (a server runs for hours; `RAVA_SCALAR_REPLACE=0` turns it off for a 
 
 Also: the inline cache now stores its (class, target) pair inline instead of behind a leaked
 pointer, so a monomorphic hit is one compare and one load and a cache update allocates nothing.
+
+## 2026-10-02 — where the cold-boot time actually is: the interpreter
+
+Following the finding that a cold boot is not codegen-bound, measured the interpreter directly
+(`RAVA_NO_JIT=1` vs `java -Xint`, MegaCallBench, pinned): rava's interpreter is about **2.8x
+slower per call** (≈77 ns vs ≈28 ns). Virtual and interface calls cost the same in it, so the
+gap is not method selection (the vtable index load and the itable scan would differ); method
+resolution is already cached, the safepoint poll is a relaxed load, and the frame push writes
+only its four header slots. The cost is the common call machinery and the switch-dispatch loop
+itself — the architectural gap between a Rust `match` interpreter and HotSpot's hand-written
+template interpreter, which threads dispatch per opcode and keeps the operand stack in registers.
+
+So the lever for the boot — which runs much un-compiled, short-lived init code — is a faster
+interpreter (a template/threaded-dispatch rewrite, or a streamlined interpreted call path), not
+tighter compiled code. It is a large, correctness-critical change and wants a quiet host: this
+one's run-to-run noise is ±10% even on a pinned microbenchmark, which already drowns any sub-15%
+win, so measuring incremental interpreter trims here is unreliable.
