@@ -11,16 +11,15 @@
 //! a replaced object (no nesting). Arrays are left alone — they can raise
 //! `NegativeArraySizeException`, a guest-visible effect.
 //!
-//! Off by default (`RAVA_SCALAR_REPLACE=1` enables it): it pays for a long-running process but
-//! costs compile time, and a cold boot — the engine's yardstick — is compile-latency bound, so
-//! removing an allocation the interpreter may rebuild is a net loss there.
+//! On by default (`RAVA_SCALAR_REPLACE=0` turns it off): it pays for a long-running process,
+//! which a server is, though it costs a compile-latency-bound cold boot about a second.
 
 use super::ir::*;
 use std::collections::HashMap;
 
 pub fn eliminate(g: &mut Graph) {
-    // Opt-in, and only for methods that allocate something replaceable.
-    if env_once!("RAVA_SCALAR_REPLACE").is_none() || !g.values.iter().any(|v| matches!(v.inst, Inst::New(..))) {
+    // Only for methods that allocate something replaceable.
+    if env_once!("RAVA_SCALAR_REPLACE").is_some_and(|v| v == "0") || !g.values.iter().any(|v| matches!(v.inst, Inst::New(..))) {
         return;
     }
     // A value escapes unless its every use is as the object a field store writes into.
