@@ -6,8 +6,11 @@
 use super::regalloc::{Loc, XMMS};
 use crate::jit::analysis::insn_len;
 use crate::jit::asm::R;
+use crate::klass::Klass;
 use crate::method::Method;
 use crate::thread::{header, Thread, Throw};
+use crate::types::BasicType;
+use crate::vm::vm;
 
 /// Registers the common deoptimization stub pushes, in push order (an even count keeps the
 /// stack aligned), above the SSE registers it stores (`XMMS` order, 8 bytes each); the runtime
@@ -20,6 +23,17 @@ pub struct Desc {
     pub frames: Vec<Frame>,
     /// (frame slot, location, whether an int to sign-extend) of every value to write back.
     pub slots: Vec<(i32, Loc, bool)>,
+    /// Objects whose allocation was removed (`escape.rs`), rebuilt here into their frame slots.
+    pub remats: Vec<Remat>,
+}
+
+/// A replaced allocation to rebuild on deoptimization: a fresh instance of `klass` with each
+/// field written from where its value lives, its pointer stored into every frame slot that held
+/// the object.
+pub struct Remat {
+    pub klass: &'static Klass,
+    pub fields: Vec<(u32, Loc, BasicType)>,
+    pub slots: Vec<i32>,
 }
 
 /// One scope of a deoptimization point.
@@ -63,27 +77,54 @@ pub extern "sysv64" fn deopt(t: *mut Thread, base: *mut u64, desc: *const Desc, 
     // SAFETY: called by compiled code with its own thread, frame, descriptor and saved registers.
     let (t, desc) = unsafe { (&mut *t, &*desc) };
     let gprs = XMMS.len();
+    // Where a value currently lives. SAFETY: the stub stored the SSE registers, and above them
+    // pushed `SAVED` last to first, below the spill slots.
+    let read = |loc: Loc| unsafe {
+        match loc {
+            Loc::Xmm(x) => *saved.add(XMMS.iter().position(|&s| s == x).expect("an allocatable SSE register")),
+            Loc::Reg(r) => *saved.add(gprs + SAVED.len() - 1 - SAVED.iter().position(|&s| s == r).expect("an allocatable register")),
+            Loc::Stack(k) => *saved.add(gprs + SAVED.len() + k as usize),
+            Loc::Frame(k) => *base.add(k as usize),
+            Loc::Const(c) => c as u64,
+            Loc::None => 0,
+        }
+    };
     // Every value is read before any slot is written: a parameter is read from its own frame
-    // slot, which the state may give another value.
+    // slot, which the state may give another value. Replaced objects' field values are read now
+    // too, so the write-back cannot clobber them; references among them stay rooted on this
+    // stack across the allocation below (the collector it may trigger does not move objects).
     let mut values = Vec::with_capacity(desc.slots.len());
     for &(slot, loc, int) in &desc.slots {
-        // SAFETY: the stub stored the SSE registers, and above them pushed `SAVED` last to first,
-        // below the spill slots.
-        let v = unsafe {
-            match loc {
-                Loc::Xmm(x) => *saved.add(XMMS.iter().position(|&s| s == x).expect("an allocatable SSE register")),
-                Loc::Reg(r) => *saved.add(gprs + SAVED.len() - 1 - SAVED.iter().position(|&s| s == r).expect("an allocatable register")),
-                Loc::Stack(k) => *saved.add(gprs + SAVED.len() + k as usize),
-                Loc::Frame(k) => *base.add(k as usize),
-                Loc::Const(c) => c as u64,
-                Loc::None => continue,
-            }
-        };
+        if loc == Loc::None {
+            continue;
+        }
+        let v = read(loc);
         values.push((slot, if int { v as i32 as i64 as u64 } else { v }));
     }
-    for (slot, v) in values {
+    let remat_fields: Vec<Vec<u64>> = desc.remats.iter().map(|r| r.fields.iter().map(|&(_, loc, _)| read(loc)).collect()).collect();
+    for &(slot, v) in &values {
         // SAFETY: a slot of the compiled frame.
         unsafe { *base.add(slot as usize) = v };
+    }
+    for (r, fields) in desc.remats.iter().zip(&remat_fields) {
+        let mem = vm().heap.allocate(t, r.klass.instance_size() as usize).expect("heap space to rebuild a scalar-replaced object on deopt");
+        // SAFETY: fresh zeroed memory of the instance size.
+        let obj = unsafe { crate::heap::init_instance(mem, r.klass) };
+        for (&(offset, _, ty), &raw) in r.fields.iter().zip(fields) {
+            // SAFETY: a field of the fresh instance, written at its declared width.
+            unsafe {
+                match ty {
+                    BasicType::Boolean | BasicType::Byte => crate::heap::obj::write::<u8>(obj, offset, raw as u8),
+                    BasicType::Char | BasicType::Short => crate::heap::obj::write::<u16>(obj, offset, raw as u16),
+                    BasicType::Int | BasicType::Float => crate::heap::obj::write::<u32>(obj, offset, raw as u32),
+                    _ => crate::heap::obj::write::<u64>(obj, offset, raw),
+                }
+            }
+        }
+        for &slot in &r.slots {
+            // SAFETY: a slot of the compiled frame.
+            unsafe { *base.add(slot as usize) = obj as u64 };
+        }
     }
     let (frames, n) = (&desc.frames[..], desc.frames.len());
     if let Some(s) = crate::jit::stats::get() {

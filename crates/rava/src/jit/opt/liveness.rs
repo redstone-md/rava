@@ -43,9 +43,17 @@ impl Set {
     }
 }
 
-/// Every value a state reads, callers included (aliases resolved).
+/// Every value a state reads, callers included (aliases resolved). A replaced allocation
+/// (`escape.rs`) reads the field values it is rebuilt from instead of itself, so those stay
+/// live wherever the object appears in a state.
 pub fn state_values(g: &Graph, s: &State, out: &mut Vec<V>) {
-    out.extend(s.locals.iter().chain(s.stack.iter()).flatten().map(|&v| g.resolve(v)));
+    for &v in s.locals.iter().chain(s.stack.iter()).flatten() {
+        let v = g.resolve(v);
+        match g.virtuals.get(&v) {
+            Some(virt) => out.extend(virt.fields.iter().map(|&(_, _, f)| g.resolve(f))),
+            None => out.push(v),
+        }
+    }
     if let Some(c) = &s.caller {
         state_values(g, c, out);
     }
