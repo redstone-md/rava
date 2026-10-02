@@ -170,6 +170,11 @@ fn inflate_owned(o: Oop) {
     }
 }
 
+/// Times an inflated enter spin-checks the owner before parking. A contended monitor is usually
+/// held only briefly, so a short spin often claims it without the cost of a park/unpark; past
+/// this the owner is holding the monitor long enough that blocking is cheaper than spinning.
+const ENTER_SPINS: u32 = 40;
+
 fn enter_inflated(t: &Thread, o: Oop, me: u64) {
     let m = monitor_of(o);
     {
@@ -178,6 +183,20 @@ fn enter_inflated(t: &Thread, o: Oop, me: u64) {
             s.owner = me;
             s.count += 1;
             return;
+        }
+    }
+    // Adaptive spin before parking: retry the claim a bounded number of times, pausing each
+    // round. This turns briefly held monitors into a spin rather than an expensive condition-
+    // variable wait, which matters when many threads share a few hot monitors. The claim uses
+    // `try_lock`, so a spinner never blocks the owner from taking the lock to release.
+    for _ in 0..ENTER_SPINS {
+        std::hint::spin_loop();
+        if let Ok(mut s) = m.state.try_lock() {
+            if s.owner == 0 || s.owner == me {
+                s.owner = me;
+                s.count += 1;
+                return;
+            }
         }
     }
     // Blocked on another owner: wait in the native state so a collection can proceed. The
