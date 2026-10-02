@@ -75,6 +75,12 @@ pub(super) fn register(r: &mut NativeRegistry) {
                 crate::classfile::PARSE_NS.load(Relaxed) as f64 / 1e6,
                 crate::jit::queue::COMPILE_NS.load(Relaxed) as f64 / 1e6
             );
+            eprintln!(
+                "[profile] monitors: {} inflated, {} thin-lock sleeps, {} blocked enters",
+                crate::sync::INFLATIONS.load(Relaxed),
+                crate::sync::THIN_SLEEPS.load(Relaxed),
+                crate::sync::BLOCKED_ENTERS.load(Relaxed),
+            );
         }
         std::process::exit(a[0] as i32)
     });
