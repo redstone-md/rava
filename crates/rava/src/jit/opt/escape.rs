@@ -15,6 +15,10 @@ use super::ir::*;
 use std::collections::HashMap;
 
 pub fn eliminate(g: &mut Graph) {
+    // Most methods allocate nothing replaceable; skip them before any work.
+    if !g.values.iter().any(|v| matches!(v.inst, Inst::New(..))) {
+        return;
+    }
     // A value escapes unless its every use is as the object a field store writes into.
     let mut escapes = vec![false; g.values.len()];
     // Field stores into each object, with the block they are in.
