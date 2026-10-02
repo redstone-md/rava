@@ -63,10 +63,10 @@ fn run(mut line: CommandLine, java_home: PathBuf) -> ExitCode {
         describe_uncaught(&mut t, "main", ex.0);
         ExitCode::FAILURE
     });
-    report(started, vm);
     if let Err(ex) = boot::destroy(&mut t) {
         describe_uncaught(&mut t, "DestroyJavaVM", ex.0);
     }
+    report(started, vm);
     code
 }
 
@@ -169,5 +169,15 @@ fn report(started: Instant, vm: &Vm) {
     if timing() {
         let millis = started.elapsed().as_secs_f64() * 1e3;
         eprintln!("[rava] {millis:.1} ms, {} classes, {} KiB heap", vm.loaded_class_count(), vm.heap.used_bytes() / 1024);
+    }
+    if std::env::var_os("RAVA_PROFILE").is_some() {
+        use std::sync::atomic::Ordering::Relaxed;
+        let ms = |ns: u64| ns as f64 / 1e6;
+        eprintln!(
+            "[profile] parse {:.0} ms, compile {:.0} ms (summed over threads), wall {:.0} ms",
+            ms(crate::classfile::PARSE_NS.load(Relaxed)),
+            ms(crate::jit::queue::COMPILE_NS.load(Relaxed)),
+            started.elapsed().as_secs_f64() * 1e3
+        );
     }
 }

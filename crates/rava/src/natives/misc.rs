@@ -68,6 +68,14 @@ pub(super) fn register(r: &mut NativeRegistry) {
         if let Some(s) = crate::jit::stats::get() {
             s.report();
         }
+        if std::env::var_os("RAVA_PROFILE").is_some() {
+            use std::sync::atomic::Ordering::Relaxed;
+            eprintln!(
+                "[profile] parse {:.0} ms, compile {:.0} ms (summed over compiler threads)",
+                crate::classfile::PARSE_NS.load(Relaxed) as f64 / 1e6,
+                crate::jit::queue::COMPILE_NS.load(Relaxed) as f64 / 1e6
+            );
+        }
         std::process::exit(a[0] as i32)
     });
     r.add("java/lang/System", "setIn0", "(Ljava/io/InputStream;)V", |_, a| set_system_stream("in", "Ljava/io/InputStream;", a[0]));

@@ -112,10 +112,22 @@ impl Reader {
     }
 }
 
+/// Nanoseconds spent parsing class files (`RAVA_PROFILE`).
+pub static PARSE_NS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 impl ClassFile {
     /// Parses `bytes`, which must outlive every class defined from them (they are leaked or
     /// memory-mapped by the caller).
     pub fn parse(bytes: &'static [u8]) -> Result<ClassFile> {
+        let start = std::env::var_os("RAVA_PROFILE").is_some().then(std::time::Instant::now);
+        let r = Self::parse_inner(bytes);
+        if let Some(start) = start {
+            PARSE_NS.fetch_add(start.elapsed().as_nanos() as u64, std::sync::atomic::Ordering::Relaxed);
+        }
+        r
+    }
+
+    fn parse_inner(bytes: &'static [u8]) -> Result<ClassFile> {
         let mut r = Reader { bytes, pos: 0 };
         if r.u4()? != 0xCAFE_BABE {
             return Err(ParseError("bad magic"));

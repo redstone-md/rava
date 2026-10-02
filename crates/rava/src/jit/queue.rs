@@ -66,7 +66,11 @@ fn work() {
     }
 }
 
+/// Nanoseconds spent compiling (`RAVA_PROFILE`).
+pub static COMPILE_NS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 fn run(job: Job) {
+    let start = std::env::var_os("RAVA_PROFILE").is_some().then(std::time::Instant::now);
     match job {
         Job::Baseline(m) => {
             if m.compiled().is_none() {
@@ -75,5 +79,8 @@ fn run(job: Job) {
         }
         Job::TierUp(m) => super::tier::compile_tier2(m),
         Job::Recompile(m) => super::opt::recompile(m),
+    }
+    if let Some(start) = start {
+        COMPILE_NS.fetch_add(start.elapsed().as_nanos() as u64, std::sync::atomic::Ordering::Relaxed);
     }
 }
