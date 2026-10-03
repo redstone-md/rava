@@ -85,6 +85,22 @@ impl PageMeta {
         }
     }
 
+    /// Sets (or clears) the allocation bits of cells `first..end`.
+    fn set_alloc(&mut self, first: usize, end: usize, set: bool) {
+        let mut i = first;
+        while i < end {
+            let (w, b) = (i / 64, i % 64);
+            let n = (end - i).min(64 - b);
+            let mask = (!0u64 >> (64 - n)) << b;
+            if set {
+                self.alloc[w] |= mask;
+            } else {
+                self.alloc[w] &= !mask;
+            }
+            i += n;
+        }
+    }
+
     /// The next run of free cells at or after the cursor, marked allocated: `(first, end)`.
     /// Holes under `MIN_RUN` bytes are passed over (as Immix skips partly used lines): each run
     /// costs compiled code a trip through the runtime, and reused pages are full of one- and
@@ -103,41 +119,67 @@ impl PageMeta {
             }
             self.cursor = end;
         };
-        let mut i = first;
-        while i < end {
-            let (w, b) = (i / 64, i % 64);
-            let n = (end - i).min(64 - b);
-            self.alloc[w] |= (!0u64 >> (64 - n)) << b;
-            i += n;
-        }
+        self.set_alloc(first, end, true);
         self.cursor = end;
         Some((first, end))
     }
 }
 
-/// The next run of free cells of the page at `page` (metadata `meta`) as a zeroed bump range
-/// `(start, end)`.
-pub fn next_run_in(meta: &mut PageMeta, page: usize) -> Option<(usize, usize)> {
-    let (first, end) = meta.next_free_run()?;
+/// How much of a run of reused cells is cleared at a time, just before it is bump-allocated:
+/// clearing a whole run (up to a page) at once streams it out of the cache, and allocation
+/// then misses on every line again.
+const ZERO_CHUNK: usize = 4096;
+
+/// The next run of free cells of the page at `page` (metadata `meta`): `(start, end, stop)`,
+/// the cells `start..stop` handed to the caller, of which `start..end` are zeroed and ready to
+/// bump-allocate. On a reused page only a first chunk is zeroed; the cells after it are left
+/// out of the allocation bitmap until `next_chunk` zeroes them (a cell marked allocated always
+/// holds an object or zeros, which the collector's conservative scan relies on).
+pub fn next_run_in(meta: &mut PageMeta, page: usize) -> Option<(usize, usize, usize)> {
+    let (first, last) = meta.next_free_run()?;
     let cell = meta.cell_size as usize;
-    let (start, stop) = (page + first * cell, page + end * cell);
-    if !meta.zeroed {
-        // SAFETY: free cells of a page in use, handed to the caller only now.
-        unsafe {
-            if stop - start <= 256 {
-                // Short runs are common in reused pages: clear them without a call (volatile, so
-                // the loop is not turned back into one).
-                let mut p = start;
-                while p < stop {
-                    (p as *mut u64).write_volatile(0);
-                    p += 8;
-                }
-            } else {
-                std::ptr::write_bytes(start as *mut u8, 0, stop - start);
-            }
-        }
+    let (start, stop) = (page + first * cell, page + last * cell);
+    if meta.zeroed {
+        return Some((start, stop, stop));
     }
-    Some((start, stop))
+    let end = chunk_end(start, stop, cell);
+    meta.set_alloc((end - page) / cell, last, false);
+    // SAFETY: free cells of a page in use, handed to the caller only now.
+    unsafe { zero(start, end) };
+    Some((start, end, stop))
+}
+
+/// Zeroes the next chunk of a run from `from` (a cell boundary below `stop`) and marks its
+/// cells allocated; returns the chunk's end.
+pub fn next_chunk(meta: &mut PageMeta, page: usize, from: usize, stop: usize) -> usize {
+    let cell = meta.cell_size as usize;
+    let end = chunk_end(from, stop, cell);
+    // SAFETY: cells of a run this thread owns, not yet handed to the allocator.
+    unsafe { zero(from, end) };
+    meta.set_alloc((from - page) / cell, (end - page) / cell, true);
+    end
+}
+
+/// The end of the chunk of a run of `cell`-sized cells from `start`: whole cells, `ZERO_CHUNK`
+/// bytes or at least one cell, within `stop`.
+fn chunk_end(start: usize, stop: usize, cell: usize) -> usize {
+    (start + (ZERO_CHUNK / cell).max(1) * cell).min(stop)
+}
+
+/// # Safety
+/// `start..stop` must be heap memory no object occupies.
+unsafe fn zero(start: usize, stop: usize) {
+    if stop - start <= 256 {
+        // Short runs are common in reused pages: clear them without a call (volatile, so the
+        // loop is not turned back into one).
+        let mut p = start;
+        while p < stop {
+            (p as *mut u64).write_volatile(0);
+            p += 8;
+        }
+    } else {
+        std::ptr::write_bytes(start as *mut u8, 0, stop - start);
+    }
 }
 
 pub struct Large {
@@ -207,40 +249,36 @@ impl Space {
     }
 
     /// A page of size class `class` with a free run, owned by the caller from now on, and that
-    /// run (`next_run`): `(page, start, end)`. A reused page with only short holes left goes back
+    /// run (`next_run_in`): `(page, start, end, stop)`. A reused page with only short holes left goes back
     /// unowned until the next collection sweeps it again.
-    pub fn take_run(&mut self, class: usize) -> Option<(usize, usize, usize)> {
+    pub fn take_run(&mut self, class: usize) -> Option<(usize, usize, usize, usize)> {
         while let Some(p) = self.partial[class].pop() {
             let addr = self.page_addr(p);
             let meta = self.pages[p].as_mut().expect("partial page");
             if meta.owned {
                 continue;
             }
-            if let Some((start, end)) = next_run_in(meta, addr) {
+            if let Some((start, end, stop)) = next_run_in(meta, addr) {
                 meta.owned = true;
-                return Some((p, start, end));
+                return Some((p, start, end, stop));
             }
         }
         let p = self.take_page(class)?;
-        let (start, end) = self.next_run(p).expect("a fresh or empty page has free cells");
-        Some((p, start, end))
+        let (start, end, stop) = self.next_run(p).expect("a fresh or empty page has free cells");
+        Some((p, start, end, stop))
     }
 
     /// An empty or fresh page of size class `class`, owned by the caller from now on.
     fn take_page(&mut self, class: usize) -> Option<usize> {
         let cell = CLASS_SIZES[class] as usize;
-        let addr = match self.empty.pop() {
-            Some(a) => {
-                // A recycled page keeps its memory committed (cheaper to clear than to fault in
-                // again); bump allocation relies on zeroed memory.
-                // SAFETY: an unused page of the heap.
-                unsafe { std::ptr::write_bytes(a as *mut u8, 0, PAGE_SIZE) };
-                a
-            }
+        // A recycled page keeps its memory committed (cheaper to clear than to fault in again)
+        // and is cleared chunk by chunk as it is allocated; a fresh one is zero already.
+        let (addr, zeroed) = match self.empty.pop() {
+            Some(a) => (a, false),
             None if self.fresh + PAGE_SIZE <= self.end => {
                 self.fresh += PAGE_SIZE;
                 super::prefault::advanced(super::prefault::Region::Small, self.fresh);
-                self.fresh - PAGE_SIZE
+                (self.fresh - PAGE_SIZE, true)
             }
             None => return None,
         };
@@ -253,14 +291,14 @@ impl Space {
             alloc: vec![0u64; cells.div_ceil(64)].into_boxed_slice(),
             marks: vec![0u64; cells.div_ceil(64)].into_boxed_slice(),
             cursor: 0,
-            zeroed: true,
+            zeroed,
             owned: true,
         });
         Some(index)
     }
 
-    /// The next run of free cells of owned page `index` as a zeroed bump range `(start, end)`.
-    pub fn next_run(&mut self, index: usize) -> Option<(usize, usize)> {
+    /// The next run of free cells of owned page `index` (`next_run_in`).
+    pub fn next_run(&mut self, index: usize) -> Option<(usize, usize, usize)> {
         let page = self.page_addr(index);
         next_run_in(self.pages[index].as_mut().expect("owned page"), page)
     }
