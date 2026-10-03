@@ -219,6 +219,23 @@ impl Gen<'_> {
         self.put(v, R::Rax);
     }
 
+    /// `ucomis a, y`, with `y` from memory when it is a constant, spilled or a parameter.
+    pub(super) fn fcmp_val(&mut self, double: bool, a: X, y: V) {
+        let m = match self.loc[y as usize] {
+            Loc::Const(c) => Some(self.const_mem(c)),
+            Loc::Stack(s) => Some(super::moves::spill(s)),
+            Loc::Frame(s) => Some(self.slot(s)),
+            _ => None,
+        };
+        match m {
+            Some(m) => self.a.fcmp_m(double, a, m),
+            None => {
+                let b = self.xreg(y, X(1));
+                self.a.fcmp(double, a, b);
+            }
+        }
+    }
+
     fn float_bin(&mut self, v: V, double: bool, op: BinOp, x: V, y: V) {
         if op == BinOp::Rem {
             let helper = if double { runtime::drem as *const () as usize } else { runtime::frem as *const () as usize };
@@ -273,9 +290,19 @@ impl Gen<'_> {
             0x86 | 0x87 | 0x89 | 0x8a => {
                 let from_long = op >= 0x89;
                 let to_double = op == 0x87 || op == 0x8a;
-                let s = self.reg(x, R::Rax);
                 let r = self.xout(v);
-                self.a.cvt_i2f(to_double, from_long, r, s);
+                // A spilled or parameter int converts straight from its slot.
+                match self.loc[x as usize] {
+                    Loc::Stack(s) => self.a.cvt_i2f_m(to_double, from_long, r, super::moves::spill(s)),
+                    Loc::Frame(s) => {
+                        let m = self.slot(s);
+                        self.a.cvt_i2f_m(to_double, from_long, r, m)
+                    }
+                    _ => {
+                        let s = self.reg(x, R::Rax);
+                        self.a.cvt_i2f(to_double, from_long, r, s);
+                    }
+                }
                 return self.xput(v, r);
             }
             0x8d | 0x90 => {
@@ -354,9 +381,8 @@ impl Gen<'_> {
             let double = op >= 0x97;
             let nan = if op == 0x95 || op == 0x97 { -1 } else { 1 };
             let a = self.xreg(x, X(0));
-            let b = self.xreg(y, X(1));
             let (ordered, done) = (self.a.new_label(), self.a.new_label());
-            self.a.fcmp(double, a, b);
+            self.fcmp_val(double, a, y);
             self.a.jcc(Cond::Np, ordered);
             self.a.mov_ri(R::Rax, nan);
             self.a.jmp(done);

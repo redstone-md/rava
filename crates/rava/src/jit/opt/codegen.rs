@@ -600,8 +600,8 @@ impl Gen<'_> {
                 }
                 let c = if matches!(ty, Ty::F | Ty::D) {
                     // ucomis: unordered sets PF (and ZF, CF), ordered results read as unsigned.
-                    let (xa, xb) = (self.xreg(a, X(0)), self.xreg(y, X(1)));
-                    self.a.fcmp(ty == Ty::D, xa, xb);
+                    let xa = self.xreg(a, X(0));
+                    self.fcmp_val(ty == Ty::D, xa, y);
                     let nan = self.edge_target(b, if unordered { then } else { other });
                     self.a.jcc(Cond::P, nan);
                     unsigned(cmp)

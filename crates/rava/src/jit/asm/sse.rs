@@ -4,7 +4,9 @@ use super::{lo, Asm, M, R, X};
 
 impl Asm {
     fn sse_rm(&mut self, prefix: u8, w: bool, op: u8, reg: u8, m: M) {
-        self.b(prefix);
+        if prefix != 0 {
+            self.b(prefix);
+        }
         self.rex_m(w, reg, m, false);
         self.b(0x0F);
         self.b(op);
@@ -88,6 +90,15 @@ impl Asm {
     /// `ucomisd/ucomiss a, b`.
     pub fn fcmp(&mut self, double: bool, a: X, b: X) {
         self.sse_rr(if double { 0x66 } else { 0 }, false, 0x2E, a.0, b.0);
+    }
+    /// `ucomisd/ucomiss a, [m]`.
+    pub fn fcmp_m(&mut self, double: bool, a: X, m: M) {
+        self.sse_rm(if double { 0x66 } else { 0 }, false, 0x2E, a.0, m);
+    }
+    /// Integer (`w`: 64-bit) at `m` to float/double.
+    pub fn cvt_i2f_m(&mut self, double: bool, w: bool, x: X, m: M) {
+        self.zero_x(x);
+        self.sse_rm(Self::fp(double), w, 0x2A, x.0, m);
     }
     /// Integer (`w`: 64-bit) to float/double.
     pub fn cvt_i2f(&mut self, double: bool, w: bool, x: X, r: R) {
