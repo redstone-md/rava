@@ -138,7 +138,7 @@ impl Vm {
             precise(k.loader());
             for r in k.resolved.iter() {
                 match r.get() {
-                    Some(crate::link::Resolved::String(o)) | Some(crate::link::Resolved::Constant(o)) => precise(*o as Oop),
+                    Some(crate::link::Resolved::String(o)) | Some(crate::link::Resolved::Constant(o)) => precise(o as Oop),
                     _ => {}
                 }
             }

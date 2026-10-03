@@ -22,7 +22,7 @@ impl Emitter {
 
     pub(super) fn field(&mut self, pc: usize, depth: u16, op: u8) {
         let d = depth as i32;
-        match (op, self.m.holder.resolved[self.cp_index(pc) as usize].get().copied()) {
+        match (op, self.m.holder.resolved[self.cp_index(pc) as usize].get()) {
             (0xb4, Some(Resolved::InstanceField { offset, ty, .. })) => {
                 let slow = self.slow_path(pc, depth);
                 self.a.load(true, R::Rax, self.stk(d - 1));

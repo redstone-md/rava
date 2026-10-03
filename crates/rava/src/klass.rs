@@ -3,7 +3,6 @@
 
 use crate::classfile::ClassFile;
 use crate::heap::Oop;
-use crate::link::Resolved;
 use crate::method::Method;
 use crate::symbol::Symbol;
 use crate::types::BasicType;
@@ -140,7 +139,7 @@ pub struct Klass {
     pub(crate) vtable: OnceLock<Box<[&'static Method]>>,
     pub init: InitLock,
     pub(crate) loader: AtomicPtr<crate::heap::ObjHeader>,
-    pub(crate) resolved: Box<[OnceLock<Resolved>]>,
+    pub(crate) resolved: Box<[crate::link::ResolvedSlot]>,
     pub(crate) array_klass: OnceLock<&'static Klass>,
     /// Interface method → implementation, sorted by method address (see `link::select_method`).
     /// Per implemented interface: its class and, by the interface method's index, the
@@ -218,7 +217,7 @@ impl Klass {
             init: InitLock::new(if p.initialized { InitState::Initialized } else { InitState::Linked }),
             mirror: AtomicPtr::new(std::ptr::null_mut()),
             loader: AtomicPtr::new(std::ptr::null_mut()),
-            resolved: (0..pool_len).map(|_| OnceLock::new()).collect(),
+            resolved: (0..pool_len).map(|_| Default::default()).collect(),
             array_klass: OnceLock::new(),
             itable: OnceLock::new(),
             itable_raw: AtomicPtr::new(std::ptr::null_mut()),

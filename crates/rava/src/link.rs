@@ -29,6 +29,88 @@ pub enum Resolved {
 unsafe impl Send for Resolved {}
 unsafe impl Sync for Resolved {}
 
+/// A pool entry's resolution cache, set once: one word, the variant in its low three bits
+/// (classes, methods, objects and the leaked static-field records are 8-aligned) and an instance
+/// field's offset and type above them. As a `OnceLock<Resolved>` it took 32 bytes for every entry
+/// of every pool, most never resolved, and the collector read them all for their roots.
+#[derive(Default)]
+pub struct ResolvedSlot(std::sync::atomic::AtomicU64);
+
+const TAG_CLASS: u64 = 1;
+const TAG_METHOD: u64 = 2;
+const TAG_STRING: u64 = 3;
+const TAG_CONSTANT: u64 = 4;
+const TAG_INSTANCE_FIELD: u64 = 5;
+const TAG_STATIC_FIELD: u64 = 6;
+
+/// A static field's resolution, kept apart from its slot word.
+struct StaticField {
+    holder: &'static Klass,
+    slot: &'static AtomicU64,
+    ty: BasicType,
+    volatile: bool,
+}
+
+impl ResolvedSlot {
+    fn encode(r: Resolved) -> u64 {
+        let ptr = |p: usize, tag: u64| {
+            debug_assert!(p & 7 == 0 && p != 0);
+            p as u64 | tag
+        };
+        match r {
+            Resolved::Class(k) => ptr(k as *const Klass as usize, TAG_CLASS),
+            Resolved::Method(m) => ptr(m as *const Method as usize, TAG_METHOD),
+            Resolved::String(o) => ptr(o, TAG_STRING),
+            Resolved::Constant(o) => ptr(o, TAG_CONSTANT),
+            Resolved::InstanceField { offset, ty, volatile } => (offset as u64) << 16 | (ty as u64) << 8 | (volatile as u64) << 3 | TAG_INSTANCE_FIELD,
+            Resolved::StaticField { holder, slot, ty, volatile } => {
+                ptr(crate::low::leak(StaticField { holder, slot, ty, volatile }) as *const StaticField as usize, TAG_STATIC_FIELD)
+            }
+        }
+    }
+
+    fn decode(w: u64) -> Option<Resolved> {
+        let p = (w & !7) as usize;
+        // SAFETY: words are only written by `encode`.
+        unsafe {
+            Some(match w & 7 {
+                0 => return None,
+                TAG_CLASS => Resolved::Class(&*(p as *const Klass)),
+                TAG_METHOD => Resolved::Method(&*(p as *const Method)),
+                TAG_STRING => Resolved::String(p),
+                TAG_CONSTANT => Resolved::Constant(p),
+                TAG_INSTANCE_FIELD => Resolved::InstanceField {
+                    offset: (w >> 16) as u32,
+                    ty: std::mem::transmute::<u8, BasicType>((w >> 8) as u8),
+                    volatile: w & 8 != 0,
+                },
+                _ => {
+                    let f = &*(p as *const StaticField);
+                    Resolved::StaticField { holder: f.holder, slot: f.slot, ty: f.ty, volatile: f.volatile }
+                }
+            })
+        }
+    }
+
+    pub fn get(&self) -> Option<Resolved> {
+        Self::decode(self.0.load(std::sync::atomic::Ordering::Acquire))
+    }
+
+    /// Sets the entry unless it is set already (racing resolutions agree).
+    pub fn set(&self, r: Resolved) {
+        let _ = self.0.compare_exchange(0, Self::encode(r), std::sync::atomic::Ordering::AcqRel, std::sync::atomic::Ordering::Acquire);
+    }
+
+    /// The entry, set from `f` first if empty.
+    pub fn get_or_init(&self, f: impl FnOnce() -> Resolved) -> Resolved {
+        if let Some(r) = self.get() {
+            return r;
+        }
+        self.set(f());
+        self.get().expect("just set")
+    }
+}
+
 #[derive(Debug)]
 pub enum LinkError {
     Load(LoadError),
@@ -72,7 +154,7 @@ impl Klass {
     /// Field reference `index`, resolved to its storage.
     pub fn resolve_field(&'static self, t: &mut Thread, index: u16) -> LinkResult<Resolved> {
         if let Some(r) = self.resolved[index as usize].get() {
-            return Ok(*r);
+            return Ok(r);
         }
         let cf = self.cf.as_ref().unwrap();
         let (_, name, desc) = cf.member_ref(index).ok_or_else(|| bad_pool(self, index))?;
@@ -88,7 +170,7 @@ impl Klass {
         } else {
             Resolved::InstanceField { offset: f.offset, ty: f.ty, volatile: f.access & ACC_VOLATILE != 0 }
         };
-        Ok(*self.resolved[index as usize].get_or_init(|| r))
+        Ok(self.resolved[index as usize].get_or_init(|| r))
     }
 
     /// Method or interface-method reference `index`, resolved to the declared target
@@ -119,7 +201,7 @@ impl Klass {
     /// is found is cached as execution would have cached it.
     pub fn peek_resolved(&'static self, index: u16) -> Option<Resolved> {
         if let Some(r) = self.resolved[index as usize].get() {
-            return Some(*r);
+            return Some(r);
         }
         let cf = self.cf.as_ref()?;
         let r = match cf.pool.get(index as usize)? {
@@ -147,7 +229,7 @@ impl Klass {
             }
             _ => return None,
         };
-        Some(*self.resolved[index as usize].get_or_init(|| r))
+        Some(self.resolved[index as usize].get_or_init(|| r))
     }
 }
 

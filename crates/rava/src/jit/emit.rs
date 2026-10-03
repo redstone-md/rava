@@ -126,7 +126,7 @@ impl Emitter {
                 Some(Resolved::String(o)) | Some(Resolved::Constant(o)) if matches!(
                     self.cf.pool[index as usize],
                     crate::classfile::Cp::String(_) | crate::classfile::Cp::MethodType(_) | crate::classfile::Cp::MethodHandle { .. }
-                ) => self.const64(d, *o as i64),
+                ) => self.const64(d, o as i64),
                 Some(Resolved::Class(k)) if matches!(self.cf.pool[index as usize], crate::classfile::Cp::Class(_)) && !k.mirror().is_null() => {
                     self.const64(d, k.mirror() as i64)
                 }
