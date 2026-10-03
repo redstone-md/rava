@@ -9,8 +9,9 @@
 use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
 use std::sync::OnceLock;
 
-/// How far past the frontier memory is kept populated, and the step of each `madvise`.
-const AHEAD: usize = 64 << 20;
+/// How far past the frontier memory is kept populated, and the step of each `madvise`. (64 MiB
+/// was no faster and kept up to 0.1 GiB of memory resident that nothing used.)
+const AHEAD: usize = 16 << 20;
 const STEP: usize = 2 << 20;
 /// Linux 5.14's `MADV_POPULATE_WRITE`.
 const MADV_POPULATE_WRITE: libc::c_int = 23;

@@ -339,6 +339,9 @@ fn verify_young(space: &mut Space) {
     }
 }
 
+/// Free large-object memory kept resident after a collection, for the next large arrays.
+const LARGE_FREE_KEEP: usize = 32 << 20;
+
 /// Frees unmarked objects by bitmap alone: the marks become the pages' allocation bitmaps (dead
 /// cells are left untouched until handed out again). Pages without survivors are released
 /// whole. Returns live bytes.
@@ -362,9 +365,10 @@ fn sweep(space: &mut Space) -> usize {
         meta.cursor = 0;
         meta.zeroed = false;
         live += live_cells * meta.cell_size as usize;
-        // Allocation reuses pages at most half full: sparser free cells would hand out runs
-        // too short to amortize a refill. Fuller pages wait until more of them dies.
-        if live_cells * 2 <= meta.cells() {
+        // Allocation reuses pages up to nine tenths full (holes too short for a run are passed
+        // over, `MIN_RUN`). Reusing only pages at most half full left the free cells of fuller
+        // ones idle while fresh pages were faulted in: 0.1 GiB more peak RSS at the same speed.
+        if live_cells * 10 <= meta.cells() * 9 {
             let class = meta.class as usize;
             space.partial[class].push(index);
         }
@@ -374,5 +378,7 @@ fn sweep(space: &mut Space) -> usize {
         let l = space.large.remove(&a).unwrap();
         space.large_area.free(a, l.size);
     }
+    space.large_area.trim(LARGE_FREE_KEEP);
     live + space.large.values().map(|l| l.size).sum::<usize>()
 }
+
