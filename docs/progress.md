@@ -874,3 +874,22 @@ up), INLINE_SMALL_CODE 4500 (same as 3500), young generation of 256 MB (same pau
 collection are ~9% of it (holes of ~300 bytes cost a refill each, mostly the cache misses of
 clearing them); the remaining escapes are allocations merged by phis (C2 in JDK 21 does not
 remove those either) and objects stored into others.
+
+## 2026-10-03 (cont.) — 4% ahead, every round
+
+A/B (`bench/paper_ab.sh -n 5`, means): `836c68b` reaches `Done` in 28.07 s against java's 29.31 s
+(-4.2%), 29.11 against 30.37 s from exec (-4.2%), ahead in all five rounds.
+
+**What moved it since 1bac97a:**
+
+- inline-cache cells, profiling countdowns, subtype caches and class statics in low memory,
+  addressed absolutely (no movabs of a cell's address on each virtual call or static access);
+  casts no longer compute the subtype answer on their inline hits;
+- wide constants (an object such as a lookup table, a 64-bit multiplier) used in an innermost
+  loop are copied once into its preheader (`opt/consts.rs`) instead of a `movabs` per use, and a
+  spilled operand of `imul` or of float arithmetic is read from memory directly;
+- `a[i] & 0xff` past its mask constant is a `movzx` load (the noise permutation tables).
+
+**Measured and dropped:** a third compiler thread (same), the first full collection at 400 MB of
+old objects instead of 128 (same pauses). Deoptimizations (5.6k per start) are spread over
+start-up code, at most 75 at one site; collections take ~290 ms of world generation's 21 s.
