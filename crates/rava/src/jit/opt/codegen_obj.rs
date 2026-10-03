@@ -100,9 +100,32 @@ impl Gen<'_> {
             }
             Inst::CheckCast(x, k, s) => {
                 let (fail, done) = (self.deopt(&s), self.a.new_label());
-                self.subtype_check(x, k, done);
-                self.a.test_rr(true, R::Rax, R::Rax);
-                self.a.jcc(Cond::E, fail);
+                let exact = matches!(k.kind, crate::klass::KlassKind::TypeArray { .. })
+                    || matches!(k.kind, crate::klass::KlassKind::Instance) && k.access & crate::klass::ACC_FINAL != 0;
+                let depth = crate::jit::emit_obj::primary_depth(k);
+                if exact || depth.is_some() {
+                    // A final class or primitive array is only itself; a class at a primary
+                    // depth is the object's class or its ancestor there. Null passes.
+                    let rx = self.reg(x, R::Rax);
+                    self.a.test_rr(true, rx, rx);
+                    self.a.jcc(Cond::E, done);
+                    self.a.load(true, R::Rcx, mem(rx, 0));
+                    self.a.mov_ri(R::Rdx, k as *const Klass as i64);
+                    self.a.alu_rr(true, Alu::Cmp, R::Rcx, R::Rdx);
+                    match depth.filter(|_| !exact) {
+                        None => self.a.jcc(Cond::Ne, fail),
+                        Some(d) => {
+                            self.a.jcc(Cond::E, done);
+                            let at = std::mem::offset_of!(Klass, primary) as i32 + 8 * d as i32;
+                            self.a.alu_rm(true, Alu::Cmp, R::Rdx, mem(R::Rcx, at));
+                            self.a.jcc(Cond::Ne, fail);
+                        }
+                    }
+                } else {
+                    self.subtype_check(x, k, done);
+                    self.a.test_rr(true, R::Rax, R::Rax);
+                    self.a.jcc(Cond::E, fail);
+                }
                 self.a.bind(done);
                 let (dst, src) = (self.loc[v as usize], self.loc[x as usize]);
                 if dst != Loc::None {
