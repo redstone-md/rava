@@ -18,7 +18,7 @@ pub type V = u32;
 pub type B = u32;
 
 /// Value kinds (int-like = `I`).
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum Ty {
     I,
     J,

@@ -6,6 +6,11 @@ use super::ir::*;
 
 pub fn simplify(g: &mut Graph) {
     g.alias = (0..g.values.len() as V).collect();
+    fold_trivial(g);
+}
+
+/// `simplify` keeping the aliases other passes already made.
+pub fn fold_trivial(g: &mut Graph) {
     loop {
         let mut changed = false;
         for v in 0..g.values.len() as V {
