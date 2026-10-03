@@ -23,7 +23,7 @@ pub fn clobbers(g: &Graph, v: V) -> (bool, bool) {
         },
         // lcmp and float compares set rdx; lcmp also reads its first operand through rcx.
         Inst::Compare(..) => BOTH,
-        Inst::NullCheck(..) | Inst::ZeroCheck(..) | Inst::FlagCheck(..) | Inst::BoundsCheck(..) | Inst::RangeGuard(..) => NONE,
+        Inst::NullCheck(..) | Inst::ZeroCheck(..) | Inst::FlagCheck(..) | Inst::BoundsCheck(..) | Inst::RangeGuard(..) | Inst::Guard(..) => NONE,
         Inst::LoadField(..) | Inst::StoreField(..) | Inst::LoadStatic(..) | Inst::ArrayLength(_) | Inst::LoadIndexed(..) => NONE,
         // A byte or non-float element store puts the value through rdx.
         Inst::StoreIndexed(_, _, BasicType::Float | BasicType::Double, _) => NONE,

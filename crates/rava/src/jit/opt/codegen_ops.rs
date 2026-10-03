@@ -84,6 +84,12 @@ impl Gen<'_> {
                     self.a.jcc(Cond::Ae, fail);
                 }
             }
+            Inst::Guard(cmp, ty, x, y, s) => {
+                let fail = self.deopt(&s);
+                let rx = self.reg(x, R::Rax);
+                self.alu_val(ty != Ty::I, Alu::Cmp, rx, y);
+                self.a.jcc(super::codegen::invert(super::codegen::cond(cmp)), fail);
+            }
             Inst::RangeGuard(arr, init, limit, s) => {
                 let (fail, ok) = (self.deopt(&s), self.a.new_label());
                 let ri = self.reg(init, R::Rax);

@@ -82,8 +82,7 @@ pub fn eliminate(g: &mut Graph) {
         let ps = if predicated.is_empty() { None } else { entry_state_at(g, &entry_state, h, entry) };
         let predicated = if ps.is_some() { predicated } else { Vec::new() };
         for &arr in &predicated {
-            let v = g.add(pre, Inst::RangeGuard(arr, init, limit, ps.clone().unwrap()), Ty::I);
-            g.alias.push(v);
+            g.add(pre, Inst::RangeGuard(arr, init, limit, ps.clone().unwrap()), Ty::I);
         }
         // The predicates cover every iteration: the body's null and bounds checks of these
         // arrays go (not the header's, which also runs when the loop does not).
@@ -114,23 +113,29 @@ pub fn eliminate(g: &mut Graph) {
 }
 
 /// The loop-entry state with the header's phis replaced by their values on entry: what the
-/// interpreter needs to run the loop from its header. None when it involves an allocation
-/// removed by escape analysis (whose fields could be the header's phis).
-fn entry_state_at(g: &Graph, s: &Rc<State>, h: usize, entry: usize) -> Option<Rc<State>> {
+/// interpreter needs to run the loop from its header. The state was taken while building; None
+/// when a value it names is no longer computed anywhere (an allocation escape analysis
+/// removed, whose other states it rewrote) or is such an allocation itself.
+pub(super) fn entry_state_at(g: &Graph, s: &Rc<State>, h: usize, entry: usize) -> Option<Rc<State>> {
+    let mut defined = vec![false; g.values.len()];
+    for blk in &g.blocks {
+        for &v in &blk.insts {
+            defined[v as usize] = true;
+        }
+    }
+    let live = |x: V| defined.get(x as usize).copied().unwrap_or(false) && !g.virtuals.contains_key(&x);
     let map = |x: &Option<V>| -> Option<Option<V>> {
         let Some(x) = *x else { return Some(None) };
         let x = g.resolve(x);
-        if g.virtuals.contains_key(&x) {
-            return None;
-        }
-        match g.inst(x) {
-            Inst::Phi(inputs) if g.blocks[h].insts.contains(&x) => Some(Some(g.resolve(inputs[entry]))),
-            _ => Some(Some(x)),
-        }
+        let x = match g.inst(x) {
+            Inst::Phi(inputs) if g.blocks[h].insts.contains(&x) => g.resolve(inputs[entry]),
+            _ => x,
+        };
+        live(x).then_some(Some(x))
     };
     let mut caller = s.caller.clone();
     while let Some(c) = caller {
-        if c.locals.iter().chain(c.stack.iter()).flatten().any(|&x| g.virtuals.contains_key(&g.resolve(x))) {
+        if !c.locals.iter().chain(c.stack.iter()).flatten().all(|&x| live(g.resolve(x))) {
             return None;
         }
         caller = c.caller.clone();
@@ -140,7 +145,7 @@ fn entry_state_at(g: &Graph, s: &Rc<State>, h: usize, entry: usize) -> Option<Rc
     Some(Rc::new(State { method: s.method, bci: s.bci, locals, stack, caller: s.caller.clone(), frame: s.frame }))
 }
 
-fn negate(c: Cmp) -> Cmp {
+pub(super) fn negate(c: Cmp) -> Cmp {
     match c {
         Cmp::Eq => Cmp::Ne,
         Cmp::Ne => Cmp::Eq,

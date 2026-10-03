@@ -82,7 +82,6 @@ pub fn forward(g: &mut Graph) {
     }
     for (v, k) in klass_loads {
         let c = g.add(0, Inst::Const(k as *const Klass as i64), Ty::J);
-        g.alias.push(c);
         g.alias[v as usize] = c;
         gone[v as usize] = true;
     }
