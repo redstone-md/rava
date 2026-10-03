@@ -6,7 +6,7 @@
 use super::ir::*;
 
 pub fn eliminate(g: &mut Graph) {
-    let super::dom::Dom { rpo, idom } = super::dom::Dom::new(g);
+    let super::dom::Dom { rpo, idom, .. } = super::dom::Dom::new(g);
     let mut children = vec![Vec::new(); rpo.len()];
     for i in 1..rpo.len() {
         if idom[i] != usize::MAX {

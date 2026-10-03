@@ -8,6 +8,9 @@ pub struct Dom {
     pub rpo: Vec<B>,
     /// Immediate dominator of each `rpo` position (the entry dominates itself).
     pub idom: Vec<usize>,
+    /// Entry and exit numbers of each `rpo` position in a walk of the dominator tree: `h`
+    /// dominates `i` exactly when `i`'s interval lies within `h`'s (`usize::MAX`: not in the tree).
+    span: Vec<(usize, usize)>,
 }
 
 impl Dom {
@@ -57,10 +60,42 @@ impl Dom {
                 }
             }
             if !changed {
-                return Dom { rpo, idom };
+                let span = tree_spans(&idom);
+                return Dom { rpo, idom, span };
             }
         }
     }
+}
+
+/// Entry and exit numbers of each node of the tree given by `idom` (rooted at 0), by an
+/// iterative depth-first walk.
+fn tree_spans(idom: &[usize]) -> Vec<(usize, usize)> {
+    let n = idom.len();
+    let mut children = vec![Vec::new(); n];
+    for (i, &d) in idom.iter().enumerate().skip(1) {
+        if d != usize::MAX {
+            children[d].push(i);
+        }
+    }
+    let mut span = vec![(usize::MAX, usize::MAX); n];
+    if n == 0 {
+        return span;
+    }
+    let (mut clock, mut stack) = (0, vec![(0usize, 0usize)]);
+    span[0].0 = 0;
+    while let Some(&mut (node, ref mut next)) = stack.last_mut() {
+        if let Some(&c) = children[node].get(*next) {
+            *next += 1;
+            clock += 1;
+            span[c].0 = clock;
+            stack.push((c, 0));
+        } else {
+            clock += 1;
+            span[node].1 = clock;
+            stack.pop();
+        }
+    }
+    span
 }
 
 /// A natural loop: its header and body (the header included), by block.
@@ -80,16 +115,9 @@ impl Dom {
     }
 
     /// Whether the block at rpo position `h` dominates the one at `i`.
-    pub fn dominates(&self, h: usize, mut i: usize) -> bool {
-        loop {
-            if i == h {
-                return true;
-            }
-            if i == 0 || self.idom[i] == usize::MAX {
-                return false;
-            }
-            i = self.idom[i];
-        }
+    pub fn dominates(&self, h: usize, i: usize) -> bool {
+        let ((hin, hout), (iin, iout)) = (self.span[h], self.span[i]);
+        i == h || (hin != usize::MAX && iin != usize::MAX && hin <= iin && iout <= hout)
     }
 
     /// The natural loops, one per header (back edges: edges to a block that dominates their
