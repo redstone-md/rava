@@ -839,3 +839,38 @@ on `Worker-Main`, then the spawn chunks on the one `Paper Common Worker`).
 **Dropped:** prefetching the next hole of a reused page at refill (no change), allocating from
 empty pages before holes (pauses 0.9 -> 1.5 s, 250 MB more touched), full collections at 3x
 instead of 2x the old generation (neutral), 128-byte cards (no faster to scan).
+
+## 2026-10-03 (cont.) — ahead of HotSpot on the server start
+
+A/B (`bench/paper_ab.sh -n 5`, means): `1bac97a` reaches `Done` in 28.32 s against java's 28.78 s
+(-1.6%), 29.38 against 29.83 s from exec (-1.5%), ahead in four rounds of five.
+
+**What moved it since parity:**
+
+- slow paths (allocation refills, polls, subtype and monitor calls) preserve only the registers
+  live at their instruction instead of every register the method allocates (the chunk
+  generator's fill loop: 1023 xmm saves and 609 pushes became 143 and 185, its code 45 -> 32
+  KB);
+- low memory (`crate::low`) for methods, their class-hierarchy flags and inlined-call records:
+  CHA guards are one `cmpb $0, [abs32]`, constants are stored as imm32, type checks compare
+  classes as immediates;
+- loop rotation (header test repeated at the back edge), and loop-invariant deoptimizing tests
+  (an iterator's modification count) hoisted to the preheader as guards
+  (`opt/guards.rs`);
+- InlineSmallCode 3500 bytes instead of C2's 2500: the same methods are larger here (every
+  round of an A/B, -1.7%);
+- escape analysis: an allocation's result is non-null wherever it flows, and casts and
+  instanceof of exactly known classes fold, so fewer fresh objects (lambdas built through
+  method handles) count as escaping.
+
+**Fixed on the way:** passes that add values after aliases exist shifted the alias table
+(`Graph::add` now keeps it whole), and predicates hoisted to a loop's entry could deoptimize to
+a state naming an allocation escape analysis had removed.
+
+**Measured and dropped:** MIN_RUN 512 (+0.4%), 32-byte stores for clearing holes (refill samples
+up), INLINE_SMALL_CODE 4500 (same as 3500), young generation of 256 MB (same pauses).
+
+**Where the rest is:** world generation's worker runs ~1.25x HotSpot's samples; allocation and
+collection are ~9% of it (holes of ~300 bytes cost a refill each, mostly the cache misses of
+clearing them); the remaining escapes are allocations merged by phis (C2 in JDK 21 does not
+remove those either) and objects stored into others.
