@@ -36,6 +36,146 @@ pub struct Remat {
     pub slots: Vec<i32>,
 }
 
+/// Descriptors are kept encoded (a few bytes per value, LEB128) and decoded only when a point
+/// deoptimizes, which is rare: as structs of vectors they were the largest metadata of
+/// optimized code.
+impl Desc {
+    pub fn encode(&self) -> Vec<u8> {
+        let mut w = Writer(Vec::with_capacity(16 + 3 * self.slots.len()));
+        w.u(self.frames.len() as u64);
+        for f in &self.frames {
+            w.u(f.method as *const Method as u64);
+            w.i(f.frame as i64);
+            w.u(f.bci as u64);
+            w.u(f.depth as u64);
+        }
+        w.u(self.slots.len() as u64);
+        for &(slot, loc, int) in &self.slots {
+            w.i(slot as i64);
+            w.loc(loc, int);
+        }
+        w.u(self.remats.len() as u64);
+        for r in &self.remats {
+            w.u(r.klass as *const Klass as u64);
+            w.u(r.fields.len() as u64);
+            for &(offset, loc, ty) in &r.fields {
+                w.u(offset as u64);
+                w.loc(loc, false);
+                w.u(ty as u64);
+            }
+            w.u(r.slots.len() as u64);
+            for &slot in &r.slots {
+                w.i(slot as i64);
+            }
+        }
+        w.0
+    }
+
+    /// # Safety
+    /// `at` must be an encoding made by `encode`.
+    pub unsafe fn decode(at: *const u8) -> Desc {
+        let mut r = Reader(at);
+        let frames = (0..r.u())
+            .map(|_| Frame { method: &*(r.u() as *const Method), frame: r.i() as i32, bci: r.u() as u32, depth: r.u() as u32 })
+            .collect();
+        let slots = (0..r.u())
+            .map(|_| {
+                let slot = r.i() as i32;
+                let (loc, int) = r.loc();
+                (slot, loc, int)
+            })
+            .collect();
+        let remats = (0..r.u())
+            .map(|_| {
+                let klass = &*(r.u() as *const Klass);
+                let fields = (0..r.u()).map(|_| (r.u() as u32, r.loc().0, std::mem::transmute::<u8, BasicType>(r.u() as u8))).collect();
+                let slots = (0..r.u()).map(|_| r.i() as i32).collect();
+                Remat { klass, fields, slots }
+            })
+            .collect();
+        Desc { frames, slots, remats }
+    }
+}
+
+struct Writer(Vec<u8>);
+
+impl Writer {
+    fn u(&mut self, mut v: u64) {
+        while v >= 0x80 {
+            self.0.push(v as u8 | 0x80);
+            v >>= 7;
+        }
+        self.0.push(v as u8);
+    }
+
+    fn i(&mut self, v: i64) {
+        self.u(((v << 1) ^ (v >> 63)) as u64);
+    }
+
+    /// A location, its kind in the low three bits of a tag that also carries `int`.
+    fn loc(&mut self, loc: Loc, int: bool) {
+        let int = (int as u8) << 3;
+        match loc {
+            Loc::None => self.0.push(int),
+            Loc::Reg(r) => self.0.extend([1 | int, r as u8]),
+            Loc::Xmm(x) => self.0.extend([2 | int, x]),
+            Loc::Stack(k) => {
+                self.0.push(3 | int);
+                self.i(k as i64);
+            }
+            Loc::Frame(k) => {
+                self.0.push(4 | int);
+                self.i(k as i64);
+            }
+            Loc::Const(c) => {
+                self.0.push(5 | int);
+                self.i(c);
+            }
+        }
+    }
+}
+
+struct Reader(*const u8);
+
+impl Reader {
+    unsafe fn byte(&mut self) -> u8 {
+        let b = *self.0;
+        self.0 = self.0.add(1);
+        b
+    }
+
+    unsafe fn u(&mut self) -> u64 {
+        let (mut v, mut shift) = (0u64, 0);
+        loop {
+            let b = self.byte();
+            v |= ((b & 0x7f) as u64) << shift;
+            if b < 0x80 {
+                return v;
+            }
+            shift += 7;
+        }
+    }
+
+    unsafe fn i(&mut self) -> i64 {
+        let v = self.u();
+        (v >> 1) as i64 ^ -((v & 1) as i64)
+    }
+
+    unsafe fn loc(&mut self) -> (Loc, bool) {
+        let tag = self.byte();
+        let loc = match tag & 7 {
+            0 => Loc::None,
+            // SAFETY: written from an `R` by `Writer::loc`.
+            1 => Loc::Reg(std::mem::transmute::<u8, R>(self.byte())),
+            2 => Loc::Xmm(self.byte()),
+            3 => Loc::Stack(self.i() as i32),
+            4 => Loc::Frame(self.i() as i32),
+            _ => Loc::Const(self.i()),
+        };
+        (loc, tag & 8 != 0)
+    }
+}
+
 /// One scope of a deoptimization point.
 pub struct Frame {
     pub method: &'static Method,
@@ -73,9 +213,10 @@ fn note_receiver(f: &Frame, base: *mut u64) {
 /// values from `saved`, as the common stub pushed them), then resumes its scopes innermost
 /// first, with the exception a call left pending rethrown at the innermost one. Returns the
 /// method's result; an exception it throws is left pending.
-pub extern "sysv64" fn deopt(t: *mut Thread, base: *mut u64, desc: *const Desc, saved: *const u64) -> u64 {
-    // SAFETY: called by compiled code with its own thread, frame, descriptor and saved registers.
-    let (t, desc) = unsafe { (&mut *t, &*desc) };
+pub extern "sysv64" fn deopt(t: *mut Thread, base: *mut u64, desc: *const u8, saved: *const u64) -> u64 {
+    // SAFETY: called by compiled code with its own thread, frame, encoded descriptor and saved
+    // registers.
+    let (t, desc) = unsafe { (&mut *t, &Desc::decode(desc)) };
     let gprs = XMMS.len();
     // Where a value currently lives. SAFETY: the stub stored the SSE registers, and above them
     // pushed `SAVED` last to first, below the spill slots.
