@@ -233,8 +233,14 @@ impl Gen<'_> {
         };
         // The result register is x's own when x dies here, else not y's (x op x aside).
         let r = self.xout(v);
-        if let Loc::Const(c) = self.loc[y as usize] {
-            let m = self.const_mem(c);
+        // A constant, spilled or parameter operand is used from memory.
+        let m = match self.loc[y as usize] {
+            Loc::Const(c) => Some(self.const_mem(c)),
+            Loc::Stack(s) => Some(super::moves::spill(s)),
+            Loc::Frame(s) => Some(self.slot(s)),
+            _ => None,
+        };
+        if let Some(m) = m {
             self.xload(r, x);
             self.a.farith_m(double, sse, r, m);
             return self.xput(v, r);
