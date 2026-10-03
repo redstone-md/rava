@@ -711,3 +711,18 @@ What remains, consistent with the earlier breakdown: the **call protocol** (mega
 6.5 ns against C2's 3.5 ns; per call: arguments stored to frame slots and reloaded by the
 callee, BCI and frame anchor stores, four dependent loads to reach the entry, a pending-exception
 check after the call), the allocation slow path and stop-the-world marking.
+
+## 2026-10-03 (cont.) — false dependencies of scalar SSE conversions
+
+Instruction-level profiles of the same method in both VMs (rava: `RAVA_JIT_DUMP` and perf IPs;
+`java`: `jcmd Compiler.perfmap`, code read from `/proc/PID/mem`) showed `BiomeManager.getBiome`
+stalling right after `cvtsi2sd`. That instruction (like `cvtss2sd`/`cvtsd2ss`, `sqrtsd` and
+`roundsd`) writes only the low lane of its destination, so it waits for that register's previous
+writer, here the previous loop iteration's arithmetic chain. The assembler now clears the
+destination with `xorps` first (unless it is also the source), the idiom other compilers use.
+An int-to-double loop went from 6.3 to 1.8 ns per iteration (`java` 4.25). On the Paper start it
+is within noise (4 rounds: median 33.6 s against 33.7 s; `java` 29.2 s).
+
+Also seen: the optimizing tier's code for `ShiftedNoise.compute` is 30 KB because it inlines the
+whole noise chain, which then makes it too large to inline anywhere (C2 keeps it at 1 KB and calls
+`NormalNoise.getValue`); time there is noise sampling either way, so it is not a lever by itself.
