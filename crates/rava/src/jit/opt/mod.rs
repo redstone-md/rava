@@ -56,8 +56,11 @@ pub fn everywhere() -> bool {
 /// recompilations before it keeps the baseline compiler's tier-2 code instead.
 const DEOPTS_BEFORE_RECOMPILE: u32 = 8;
 const MAX_RECOMPILES: u32 = 8;
-/// Recompilations after which a method is compiled without speculating on its profile.
-pub(super) const SPECULATIVE_RECOMPILES: u32 = 2;
+/// Recompilations after which a method is compiled without speculating on its profile. Each
+/// bytecode that trapped already stops speculating by itself (`profile::trapped`), as C2's
+/// per-bytecode trap limits do; giving up on the whole method after two recompilations left
+/// paths that were cold at the first compilations with unguarded calls and no inlining.
+pub(super) const SPECULATIVE_RECOMPILES: u32 = MAX_RECOMPILES;
 
 /// Counts a deoptimization of `m`'s optimized code. Frequent ones recompile it: constants have
 /// been resolved and profiles updated since; a method that keeps deoptimizing gets baseline
