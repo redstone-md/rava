@@ -126,11 +126,20 @@ impl Builder {
         if op != 0xb8 {
             self.null_check(args[0], pre.clone());
         }
-        if self.allocate_instance(m, &args, &pre, &s) {
+        if self.allocate_instance(m, &args, &pre, &s) || self.fold_class_query(m, &args) {
             return Some(true);
         }
         if let (0xb6 | 0xb8, Some(k)) = (op, crate::jit::intrinsics::bound_intrinsic(m)) {
             let ret = m.sig.ret;
+            // The class of an object whose class is known exactly is a constant.
+            if matches!(k, crate::jit::intrinsics::Intrinsic::GetClass) {
+                let mirror = self.exact_class(args[0]).map(|c| c.mirror()).filter(|m| !m.is_null());
+                if let Some(mirror) = mirror {
+                    let c = self.konst(Ty::A, mirror as usize as i64);
+                    self.push(c);
+                    return Some(true);
+                }
+            }
             let s = matches!(k, crate::jit::intrinsics::Intrinsic::GetClass).then_some(pre);
             let v = self.add(Inst::Intrinsic(k, args, s), if ret == BasicType::Void { Ty::I } else { Ty::of(ret) });
             if ret != BasicType::Void {
@@ -139,6 +148,38 @@ impl Builder {
             return Some(true);
         }
         Some(self.call_or_inline(pc, op, m, callee, args, s, pre))
+    }
+
+    /// `Class` queries on a constant class (as `Enum.getDeclaringClass` asks of an enum
+    /// constant's class) are constants: `getSuperclass`, `isInterface`, `isArray`,
+    /// `isPrimitive`.
+    fn fold_class_query(&mut self, m: &'static Method, args: &[V]) -> bool {
+        if m.holder.name != "java/lang/Class" || args.len() != 1 {
+            return false;
+        }
+        let Some(mirror) = self.g.constant(args[0]).filter(|&c| c != 0) else { return false };
+        let k = crate::runtime::klass_of_mirror(mirror as crate::heap::Oop);
+        let (v, ty) = match (m.name.as_str(), m.desc.as_str()) {
+            ("getSuperclass", "()Ljava/lang/Class;") => {
+                let sup = match k {
+                    Some(k) if k.is_interface() => std::ptr::null_mut(),
+                    Some(k) => k.super_klass.map_or(std::ptr::null_mut(), |s| s.mirror()),
+                    None => std::ptr::null_mut(),
+                };
+                // A superclass whose mirror does not exist yet is left to the call.
+                if sup.is_null() && k.is_some_and(|k| !k.is_interface() && k.super_klass.is_some()) {
+                    return false;
+                }
+                (sup as usize as i64, Ty::A)
+            }
+            ("isInterface", "()Z") => (k.is_some_and(|k| k.is_interface()) as i64, Ty::I),
+            ("isArray", "()Z") => (k.is_some_and(|k| !matches!(k.kind, crate::klass::KlassKind::Instance)) as i64, Ty::I),
+            ("isPrimitive", "()Z") => (k.is_none() as i64, Ty::I),
+            _ => return false,
+        };
+        let c = self.konst(ty, v);
+        self.push(c);
+        true
     }
 
     /// `Unsafe.allocateInstance` of a constant, instantiable class (as method-handle plumbing

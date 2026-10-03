@@ -133,7 +133,11 @@ impl Builder {
         if ret != BasicType::Void {
             let v = match returns.as_slice() {
                 [(_, v)] => v.expect("a value return"),
-                _ => self.add(Inst::Phi(returns.iter().map(|r| r.1.expect("a value return")).collect()), Ty::of(ret)),
+                _ => {
+                    let p = self.add(Inst::Phi(returns.iter().map(|r| r.1.expect("a value return")).collect()), Ty::of(ret));
+                    self.complete_phis.insert(p);
+                    p
+                }
             };
             self.push(v);
         }

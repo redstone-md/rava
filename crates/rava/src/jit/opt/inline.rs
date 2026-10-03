@@ -154,7 +154,11 @@ impl Builder {
         if ret != BasicType::Void {
             let v = match returns.as_slice() {
                 [(_, v)] => v.expect("a value return"),
-                _ => self.add(Inst::Phi(returns.iter().map(|r| r.1.expect("a value return")).collect()), Ty::of(ret)),
+                _ => {
+                    let p = self.add(Inst::Phi(returns.iter().map(|r| r.1.expect("a value return")).collect()), Ty::of(ret));
+                    self.complete_phis.insert(p);
+                    p
+                }
             };
             self.push(v);
         }
@@ -226,13 +230,49 @@ impl Builder {
         Some(other)
     }
 
-    /// The class `v` is known to have exactly here, if any: an allocation's or a constant
-    /// object's anywhere (an inlined lambda factory's result outlives the inlined body), else
-    /// what a class guard established on this path.
+    /// The class `v` is known to have exactly here, if any (when it is not null): an
+    /// allocation's or a constant object's anywhere (an inlined lambda factory's result
+    /// outlives the inlined body), a cast to or an element of a final class, a complete phi
+    /// whose inputs agree (a boxing method's cached or fresh box), else what a class guard
+    /// established on this path.
     pub(super) fn exact_class(&self, v: V) -> Option<&'static Klass> {
+        self.exact_class_within(v, 4)
+    }
+
+    fn exact_class_within(&self, v: V, depth: u32) -> Option<&'static Klass> {
         let r = self.g.resolve(v);
-        if let Inst::New(k, _) = self.g.inst(r) {
-            return Some(k);
+        let leaf = |k: &'static Klass| matches!(k.kind, crate::klass::KlassKind::Instance) && k.access & crate::klass::ACC_FINAL != 0;
+        match self.g.inst(r) {
+            Inst::New(k, _) => return Some(k),
+            Inst::CheckCast(x, k, _) => {
+                if leaf(k) {
+                    return Some(k);
+                }
+                if depth > 0 {
+                    if let Some(k) = self.exact_class_within(*x, depth - 1) {
+                        return Some(k);
+                    }
+                }
+            }
+            Inst::LoadIndexed(a, _, BasicType::Reference) if depth > 0 => {
+                if let Some(crate::klass::KlassKind::ObjArray { elem }) = self.exact_class_within(*a, depth - 1).map(|k| &k.kind) {
+                    if leaf(elem) {
+                        return Some(elem);
+                    }
+                }
+            }
+            Inst::Phi(inputs) if depth > 0 && self.complete_phis.contains(&r) => {
+                let mut k: Option<&'static Klass> = None;
+                for &x in inputs {
+                    let c = self.exact_class_within(x, depth - 1)?;
+                    if k.is_some_and(|k| !std::ptr::eq(k, c)) {
+                        return None;
+                    }
+                    k = Some(c);
+                }
+                return k;
+            }
+            _ => {}
         }
         if let Some(o) = self.g.constant(r).filter(|&o| o != 0 && self.g.ty(r) == Ty::A) {
             return Some(crate::jit::fold::class_of(o as usize));
@@ -317,6 +357,7 @@ impl Builder {
         self.extent = m.extent;
         self.spent = m.spent;
         self.nonnull = m.nonnull;
+        self.complete_phis.retain(|&v| (v as usize) < m.values);
         // The abandoned body's values are gone: so are the facts about them.
         self.set_caches(m.caches);
         self.forget_blocks(m.blocks as B);
