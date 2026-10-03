@@ -152,7 +152,7 @@ impl Vm {
         }
         let interfaces = cf.interfaces.iter().map(|&i| resolve(i)).collect::<Result<Vec<_>, _>>()?;
         let layout = FieldLayout::compute(&cf, super_klass);
-        let klass: &'static Klass = Box::leak(Box::new(Klass::new(KlassParts {
+        let klass: &'static Klass = crate::klass::leak(Klass::new(KlassParts {
             name: hidden_name.unwrap_or(cf.name),
             kind: KlassKind::Instance,
             access: cf.access,
@@ -165,7 +165,7 @@ impl Vm {
             initialized: false,
             hidden: hidden_name.is_some(),
             cf: Some(cf),
-        })));
+        }));
         klass.loader.store(loader, std::sync::atomic::Ordering::Release);
         self.record_class(klass);
         let cf = klass.cf.as_ref().unwrap();
@@ -216,7 +216,7 @@ impl Vm {
             self.load_boot_class(Symbol::intern("java/lang/Cloneable"))?,
             self.load_boot_class(Symbol::intern("java/io/Serializable"))?,
         ];
-        let klass: &'static Klass = Box::leak(Box::new(Klass::new(KlassParts {
+        let klass: &'static Klass = crate::klass::leak(Klass::new(KlassParts {
             name,
             kind,
             access: ACC_PUBLIC | ACC_FINAL | ACC_ABSTRACT,
@@ -229,7 +229,7 @@ impl Vm {
             static_slots: 0,
             initialized: true,
             hidden: false,
-        })));
+        }));
         klass.loader.store(loader, std::sync::atomic::Ordering::Release);
         self.record_class(klass);
         let _ = klass.methods.set(Box::new([]));
