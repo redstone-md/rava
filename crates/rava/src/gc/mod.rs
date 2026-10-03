@@ -56,14 +56,15 @@ pub(crate) fn bump_layout(bytes: usize) -> Option<(usize, usize, usize)> {
     Some((CLASS_SIZES[class] as usize, base + std::mem::offset_of!(ClassCache, bump), base + std::mem::offset_of!(ClassCache, end)))
 }
 
-/// Sizes up to this have a class per 16 bytes (`class_of`): compiled code finds the class of a
-/// variable-length array from its rounded size.
+/// Sizes up to this have a class per 8 bytes from 16 (`class_of`): compiled code finds the class
+/// of a variable-length array from its rounded size. (Classes per 16 bytes rounded 8% of the
+/// live heap away.)
 pub(crate) const SMALL_STEP_MAX: usize = 256;
-const _: () = assert!(std::mem::size_of::<ClassCache>() == 32 && CLASS_SIZES[SMALL_STEP_MAX / 16 - 1] as usize == SMALL_STEP_MAX);
+const _: () = assert!(std::mem::size_of::<ClassCache>() == 32 && CLASS_SIZES[SMALL_STEP_MAX / 8 - 2] as usize == SMALL_STEP_MAX);
 
 /// Offsets within `AllocCache` of the bump pointer and limit of the class of cell size `size`
-/// (a multiple of 16, at most `SMALL_STEP_MAX`), less `2 * size - 32`: the class's cache is at
-/// `classes + (size / 16 - 1) * 32`.
+/// (a multiple of 8 from 16, at most `SMALL_STEP_MAX`), less `4 * size - 64`: the class's cache
+/// is at `classes + (size / 8 - 2) * 32`.
 pub(crate) fn step_cache_offsets() -> (usize, usize) {
     let base = std::mem::offset_of!(AllocCache, classes);
     (base + std::mem::offset_of!(ClassCache, bump), base + std::mem::offset_of!(ClassCache, end))

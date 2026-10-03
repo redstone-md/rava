@@ -401,17 +401,17 @@ impl Gen<'_> {
                 self.a.mov_rr(false, R::R11, R::R11);
                 self.a.test_rr(false, R::R11, R::R11);
                 self.a.jcc(Cond::S, fail);
-                // rcx := the cell size, a multiple of 16; its class's cache is at
-                // alloc + classes + (size / 16 - 1) * 32 within the thread.
+                // rcx := the cell size, a multiple of 8; its class's cache is at
+                // alloc + classes + (size / 8 - 2) * 32 within the thread.
                 let max = (crate::gc::SMALL_STEP_MAX - crate::heap::ARRAY_BASE_OFFSET as usize) / elem;
                 self.a.alu_ri(false, Alu::Cmp, R::R11, max as i32);
                 self.a.jcc(Cond::A, slow);
                 self.a.mov_rr(false, R::Rcx, R::R11);
                 self.a.shift_ri(false, Shift::Shl, R::Rcx, elem.trailing_zeros() as u8);
-                self.a.alu_ri(false, Alu::Add, R::Rcx, crate::heap::ARRAY_BASE_OFFSET as i32 + 15);
-                self.a.alu_ri(false, Alu::And, R::Rcx, -16);
+                self.a.alu_ri(false, Alu::Add, R::Rcx, crate::heap::ARRAY_BASE_OFFSET as i32 + 7);
+                self.a.alu_ri(false, Alu::And, R::Rcx, -8);
                 let (bump, end) = crate::gc::step_cache_offsets();
-                let at = |off: usize| mem_idx(R::R12, R::Rcx, 2, (alloc + off) as i32 - 32);
+                let at = |off: usize| mem_idx(R::R12, R::Rcx, 4, (alloc + off) as i32 - 64);
                 self.a.load(true, R::Rax, at(bump));
                 self.a.lea(R::Rdx, mem_idx(R::Rax, R::Rcx, 1, 0));
                 self.a.alu_rm(true, Alu::Cmp, R::Rdx, at(end));
