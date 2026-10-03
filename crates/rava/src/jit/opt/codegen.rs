@@ -93,6 +93,8 @@ pub(super) struct Gen<'a> {
     pub slow_calls: Vec<SlowCall>,
     /// Value-stack slots of the frame, inlined frames included (published as `Thread::sp`).
     frame_slots: i32,
+    /// The method compiled.
+    pub root: &'static Method,
     /// Reference stores that need no card mark (`barrier.rs`).
     pub unbarriered: Vec<bool>,
     /// Headers of short counted loops, whose back edges do not poll (`counted.rs`).
@@ -136,6 +138,7 @@ pub(super) fn generate(g: &Graph, al: &Allocation, m: &'static Method, frame_slo
         unbarriered: super::barrier::unbarriered(g),
         short_loops: super::polls::short_loops(g),
         frame_slots,
+        root: m,
     };
     // Entry rsp is 8 mod 16: an odd number of pushes realigns it, spill slots come in pairs.
     // r12 holds the thread in all compiled code (Rust enters through `jit::enter_trampoline`).

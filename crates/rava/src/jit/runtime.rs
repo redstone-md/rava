@@ -403,3 +403,37 @@ pub extern "sysv64" fn arraycopy_fast(src: crate::heap::Oop, sp: u64, dst: crate
     }
     1
 }
+
+/// Calls a site compiled without a receiver profile records before its method is recompiled.
+pub(super) const REPROFILE_CALLS: u32 = 2000;
+
+/// Records a receiver class at a call compiled without a profile (`ic_cell` is the site's
+/// profile); returns 1 when `left` (the site's remaining count, already decremented) ran out.
+pub extern "sysv64" fn profile_call(k: *const Klass, cell: *const IcCell, left: *const std::sync::atomic::AtomicU32) -> u64 {
+    use std::sync::atomic::Ordering;
+    // SAFETY: a leaked profile cell and a leaked per-site counter.
+    let (cell, left) = unsafe { (&*cell, &*left) };
+    cell.note(k as usize);
+    for (i, s) in cell.seen.iter().enumerate() {
+        if s.load(Ordering::Relaxed) == k as usize {
+            cell.counts[i].fetch_add(1, Ordering::Relaxed);
+            return (left.load(Ordering::Relaxed) == 0) as u64;
+        }
+    }
+    cell.others.fetch_add(1, Ordering::Relaxed);
+    (left.load(Ordering::Relaxed) == 0) as u64
+}
+
+/// A site of `m`'s optimized code compiled without a profile turned hot: recompile `m` with
+/// what the site recorded (a few times at most per method).
+pub extern "sysv64" fn request_reprofile(m: *const Method) {
+    use std::sync::atomic::Ordering;
+    // SAFETY: a live method.
+    let m: &'static Method = unsafe { &*m };
+    if m.reprofiles.fetch_add(1, Ordering::Relaxed) < MAX_REPROFILES {
+        super::queue::submit(super::queue::Job::Reprofile(m));
+    }
+}
+
+/// Recompilations of one method for sites that turned hot after it was compiled.
+const MAX_REPROFILES: u32 = 4;

@@ -36,6 +36,8 @@ pub struct Method {
     pub(crate) recompiles: AtomicU32,
     /// Recompilations of optimized code after deoptimizations (`jit/opt`).
     pub(crate) deopt_recompiles: AtomicU32,
+    /// Recompilations for call sites that turned hot after compilation (`jit::runtime`).
+    pub(crate) reprofiles: AtomicU32,
     /// Set once compilation was attempted and refused, so it is not retried.
     pub(crate) not_compilable: std::sync::atomic::AtomicBool,
     hidden: OnceLock<bool>,
@@ -73,6 +75,7 @@ impl Method {
             baseline: std::sync::atomic::AtomicPtr::new(std::ptr::null_mut()),
             recompiles: AtomicU32::new(0),
             deopt_recompiles: AtomicU32::new(0),
+            reprofiles: AtomicU32::new(0),
             not_compilable: std::sync::atomic::AtomicBool::new(false),
             hidden: OnceLock::new(),
             tiered: std::sync::atomic::AtomicBool::new(false),

@@ -42,6 +42,12 @@ pub(super) fn frequent_receivers(m: &'static Method, bci: usize) -> Vec<&'static
     cell.frequent().into_iter().map(|k| unsafe { &*(k as *const Klass) }).collect()
 }
 
+/// Whether `m`'s call at `bci` has recorded no receiver class at all (never run by profiling
+/// code before this compilation).
+pub(crate) fn unprofiled(m: &'static Method, bci: usize) -> bool {
+    sites().lock().unwrap().get(&(m as *const Method as usize, bci as u32)).is_none_or(|cell| cell.receivers().is_some_and(|r| r.is_empty()))
+}
+
 /// Whether `m`'s call at `bci` has seen more receiver classes than its profile keeps.
 pub(crate) fn megamorphic(m: &'static Method, bci: usize) -> bool {
     sites().lock().unwrap().get(&(m as *const Method as usize, bci as u32)).is_some_and(|cell| cell.receivers().is_none())

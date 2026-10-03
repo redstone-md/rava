@@ -322,6 +322,9 @@ pub struct Graph {
     pub receiver: Option<V>,
     /// Allocations removed as non-escaping, rebuilt on deoptimization (`escape.rs`).
     pub virtuals: std::collections::HashMap<V, Virtual>,
+    /// Virtual and interface calls whose site had no receiver profile when compiled: the code
+    /// profiles them itself and asks for a recompilation once they turn hot (`codegen_obj.rs`).
+    pub unprofiled: std::collections::HashSet<V>,
 }
 
 impl Graph {
