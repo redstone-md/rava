@@ -127,7 +127,7 @@ impl Gen<'_> {
                         }
                     }
                 } else {
-                    self.subtype_check(x, k, done);
+                    self.subtype_check(x, k, done, false);
                     self.a.test_rr(true, R::Rax, R::Rax);
                     self.a.jcc(Cond::E, fail);
                 }
@@ -142,7 +142,7 @@ impl Gen<'_> {
                 let rx = self.reg(x, R::Rax);
                 self.a.test_rr(true, rx, rx);
                 self.a.jcc(Cond::E, null);
-                self.subtype_check(x, k, done);
+                self.subtype_check(x, k, done, true);
                 self.a.jmp(done);
                 self.a.bind(null);
                 self.a.alu_rr(false, Alu::Xor, R::Rax, R::Rax);
@@ -244,16 +244,20 @@ impl Gen<'_> {
         }
     }
 
-    /// With `x` non-null: rax := 1 if its class is a subtype of `k` (jumping to `done` on the
-    /// inline hits), else the runtime's answer.
-    fn subtype_check(&mut self, x: V, k: &'static Klass, done: crate::jit::asm::Label) {
-        let cell: &'static std::sync::atomic::AtomicUsize = Box::leak(Box::new(std::sync::atomic::AtomicUsize::new(0)));
+    /// rax := 1 if `x`'s class is a subtype of `k` (jumping to `done` on the inline hits, and
+    /// for null), else the runtime's answer. Without `answer`, the jumps to `done` leave rax
+    /// as it is (a cast only tests rax on the way that falls through).
+    fn subtype_check(&mut self, x: V, k: &'static Klass, done: crate::jit::asm::Label, answer: bool) {
+        // The class seen last (in low memory, compared as an absolute operand).
+        let cell: &'static std::sync::atomic::AtomicUsize = crate::low::leak(std::sync::atomic::AtomicUsize::new(0));
         let null_ok = self.a.new_label();
         let rx = self.reg(x, R::Rax);
         self.a.test_rr(true, rx, rx);
         self.a.jcc(Cond::E, null_ok);
         self.a.load(true, R::Rcx, mem(rx, 0));
-        self.a.mov_ri(R::Rax, 1);
+        if answer {
+            self.a.mov_ri(R::Rax, 1);
+        }
         let kk = self.class_operand(k);
         self.cmp_class(None, kk);
         self.a.jcc(Cond::E, done);
@@ -287,16 +291,25 @@ impl Gen<'_> {
                 self.a.jcc(Cond::Ne, scan);
                 self.a.lea(R::Rax, mem(R::R11, -8));
                 self.a.store(true, mem(R::Rcx, hit), R::Rax);
-                self.a.mov_ri(R::Rax, 1);
+                if answer {
+                    self.a.mov_ri(R::Rax, 1);
+                }
                 self.a.jmp(done);
                 self.a.bind(no);
                 self.a.alu_rr(false, Alu::Xor, R::Rax, R::Rax);
                 self.a.jmp(after);
                 self.a.bind(slow);
-                self.a.mov_ri(R::Rax, 1);
+                if answer {
+                    self.a.mov_ri(R::Rax, 1);
+                }
             }
-            self.a.mov_ri(R::Rdx, cell as *const _ as i64);
-            self.a.alu_rm(true, Alu::Cmp, R::Rcx, mem(R::Rdx, 0));
+            let at = cell as *const _ as usize;
+            if crate::low::is_low(at) {
+                self.a.alu_rm(true, Alu::Cmp, R::Rcx, crate::jit::asm::abs32(at));
+            } else {
+                self.a.mov_ri(R::Rdx, at as i64);
+                self.a.alu_rm(true, Alu::Cmp, R::Rcx, mem(R::Rdx, 0));
+            }
             self.a.jcc(Cond::E, done);
             let (cell, slow) = (cell as *const _ as i64, self.a.new_label());
             let args = vec![Arg::Reg(R::Rcx), Arg::Imm(k as *const Klass as i64), Arg::Imm(cell)];
@@ -305,7 +318,9 @@ impl Gen<'_> {
         }
         // null passes a cast (instanceof tests null before calling this).
         self.a.bind(null_ok);
-        self.a.mov_ri(R::Rax, 1);
+        if answer {
+            self.a.mov_ri(R::Rax, 1);
+        }
         self.a.jmp(done);
         self.a.bind(after);
     }
