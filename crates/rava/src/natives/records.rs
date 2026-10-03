@@ -85,13 +85,13 @@ fn record_components(t: &mut Thread, a: &[u64]) -> JResult<u64> {
         };
         // SAFETY: a RecordComponent instance and its declared reference fields.
         unsafe {
-            obj::write::<Oop>(rc, rc_clazz(), a[0] as Oop);
-            obj::write::<Oop>(rc, rc_name(), name);
-            obj::write::<Oop>(rc, rc_type(), ty);
-            obj::write::<Oop>(rc, rc_accessor(), accessor);
-            obj::write::<Oop>(rc, rc_signature(), sig);
-            obj::write::<Oop>(rc, rc_annotations(), ann);
-            obj::write::<Oop>(rc, rc_type_annotations(), type_ann);
+            obj::write_ref(rc, rc_clazz(), a[0] as Oop);
+            obj::write_ref(rc, rc_name(), name);
+            obj::write_ref(rc, rc_type(), ty);
+            obj::write_ref(rc, rc_accessor(), accessor);
+            obj::write_ref(rc, rc_signature(), sig);
+            obj::write_ref(rc, rc_annotations(), ann);
+            obj::write_ref(rc, rc_type_annotations(), type_ann);
         }
     }
     ret_ref(out)

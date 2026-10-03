@@ -5,6 +5,12 @@
 //! as an `i32` at offset 16 and elements from offset 24. A reference is a raw pointer to the
 //! header; null is 0.
 //!
+//! Inside the heap (reference fields, `Object[]` elements) a reference may be stored compressed
+//! (`COMPRESSED`): as a 32-bit value, the address shifted right by `NARROW_SHIFT`, as HotSpot's
+//! zero-based compressed oops (the heap lies below 32 GiB, `gc::space`). Registers, frames,
+//! statics and native code hold full pointers; `obj::read_ref`/`write_ref`/`load_elem`/
+//! `store_elem` convert.
+//!
 //! Memory comes from the collector (`gc`), which never moves objects.
 
 use crate::klass::Klass;
@@ -13,6 +19,33 @@ use std::sync::atomic::AtomicU64;
 pub const HEADER_SIZE: u32 = 16;
 pub const ARRAY_LENGTH_OFFSET: u32 = 16;
 pub const ARRAY_BASE_OFFSET: u32 = 24;
+
+/// Whether heap references are stored in 32 bits.
+pub const COMPRESSED: bool = false;
+/// A compressed reference is the address shifted right by this.
+pub const NARROW_SHIFT: u32 = 3;
+/// Bytes of a reference stored in the heap.
+pub const REF_SIZE: u32 = if COMPRESSED { 4 } else { 8 };
+
+/// The stored form of reference `o` (null stays 0).
+#[inline(always)]
+pub fn encode(o: Oop) -> u64 {
+    if COMPRESSED {
+        o as u64 >> NARROW_SHIFT
+    } else {
+        o as u64
+    }
+}
+
+/// The reference stored as `raw`.
+#[inline(always)]
+pub fn decode(raw: u64) -> Oop {
+    if COMPRESSED {
+        (raw << NARROW_SHIFT) as Oop
+    } else {
+        raw as Oop
+    }
+}
 
 #[repr(C)]
 pub struct ObjHeader {
@@ -54,12 +87,61 @@ pub mod obj {
         }
     }
 
+    /// The reference stored at `at` (a field or element of a heap object).
+    #[inline(always)]
+    pub unsafe fn load_ref_at(at: usize) -> Oop {
+        if COMPRESSED {
+            decode(std::ptr::read(at as *const u32) as u64)
+        } else {
+            std::ptr::read(at as *const Oop)
+        }
+    }
+
+    /// Stores reference `value` at `at` (a field or element of a heap object), with the write
+    /// barrier.
+    #[inline(always)]
+    pub unsafe fn store_ref_at(at: usize, value: Oop) {
+        if COMPRESSED {
+            std::ptr::write(at as *mut u32, encode(value) as u32);
+        } else {
+            std::ptr::write(at as *mut Oop, value);
+        }
+        crate::gc::cards::dirty(at);
+    }
+
+    /// Reference field at `offset`.
+    #[inline(always)]
+    pub unsafe fn read_ref(obj: Oop, offset: u32) -> Oop {
+        load_ref_at(obj as usize + offset as usize)
+    }
+
+    /// Writes reference field at `offset`, with the write barrier.
+    #[inline(always)]
+    pub unsafe fn write_ref(obj: Oop, offset: u32, value: Oop) {
+        store_ref_at(obj as usize + offset as usize, value)
+    }
+
+    /// Address of element `i` of an object array.
+    #[inline(always)]
+    pub fn elem_addr(array: Oop, i: usize) -> usize {
+        array as usize + ARRAY_BASE_OFFSET as usize + i * REF_SIZE as usize
+    }
+
+    /// Reference element `i` of an object array.
+    #[inline(always)]
+    pub unsafe fn load_elem(array: Oop, i: usize) -> Oop {
+        load_ref_at(elem_addr(array, i))
+    }
+
     /// Stores reference element `i` of an object array, with the write barrier.
     #[inline(always)]
     pub unsafe fn store_elem(array: Oop, i: usize, value: Oop) {
-        let at = array_data::<Oop>(array).add(i);
-        *at = value;
-        crate::gc::cards::dirty(at as usize);
+        store_ref_at(elem_addr(array, i), value)
+    }
+
+    /// The elements of an object array.
+    pub unsafe fn ref_elems(array: Oop) -> Vec<Oop> {
+        (0..array_length(array) as usize).map(|i| load_elem(array, i)).collect()
     }
 
     #[inline(always)]

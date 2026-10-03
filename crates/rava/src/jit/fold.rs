@@ -41,13 +41,15 @@ fn trusts_instance_finals(holder: &'static Klass) -> bool {
     n.starts_with("java/lang/invoke/") || n.starts_with("sun/invoke/") || holder.is_hidden() || holder.super_klass.is_some_and(|s| s.name == "java/lang/Record")
 }
 
-/// Reads a value of type `ty` at `addr` in operand-slot encoding.
+/// Reads a value of type `ty` at `addr` in operand-slot encoding: a heap object's field or
+/// element (`heap`, where references may be compressed) or a static slot.
 ///
 /// # Safety
-/// `addr` must point at a live field or static slot of type `ty`.
-unsafe fn read_slot(addr: usize, ty: BasicType) -> i64 {
+/// `addr` must point at a live field, element or static slot of type `ty`.
+unsafe fn read_slot(addr: usize, ty: BasicType, heap: bool) -> i64 {
     unsafe {
         match ty {
+            BasicType::Reference if heap => obj::load_ref_at(addr) as i64,
             BasicType::Boolean | BasicType::Byte => *(addr as *const i8) as i64,
             BasicType::Char => *(addr as *const u16) as i64,
             BasicType::Short => *(addr as *const i16) as i64,
@@ -66,7 +68,7 @@ pub(super) fn instance_field(m: &'static Method, index: u16, o: usize) -> Option
     }
     let final_trusted = f.access & ACC_FINAL != 0 && trusts_instance_finals(holder);
     // SAFETY: `o` is a live instance of (a subclass of) `holder` by verification.
-    let v = unsafe { read_slot(o + f.offset as usize, f.ty) };
+    let v = unsafe { read_slot(o + f.offset as usize, f.ty, true) };
     (final_trusted || (v != 0 && is_stable(holder, f))).then_some(v)
 }
 
@@ -78,7 +80,7 @@ pub(super) fn static_field(m: &'static Method, index: u16) -> Option<i64> {
     }
     let slot = &holder.statics[f.offset as usize] as *const _ as usize;
     // SAFETY: a static slot of an initialized class.
-    let v = unsafe { read_slot(slot, f.ty) };
+    let v = unsafe { read_slot(slot, f.ty, false) };
     (f.access & ACC_FINAL != 0 || (v != 0 && is_stable(holder, f))).then_some(v)
 }
 
@@ -102,14 +104,8 @@ pub(super) fn stable_element(a: usize, i: i64, ty: BasicType) -> Option<i64> {
     if !(0..len).contains(&i) {
         return None;
     }
-    let size = match ty {
-        BasicType::Boolean | BasicType::Byte => 1,
-        BasicType::Char | BasicType::Short => 2,
-        BasicType::Int | BasicType::Float => 4,
-        _ => 8,
-    };
     // SAFETY: an element within bounds.
-    let v = unsafe { read_slot(obj::array_data::<u8>(o) as usize + i as usize * size, ty) };
+    let v = unsafe { read_slot(obj::array_data::<u8>(o) as usize + i as usize * ty.size() as usize, ty, true) };
     (v != 0).then_some(v)
 }
 
@@ -126,7 +122,7 @@ pub(super) fn member_target(mn: usize) -> Option<&'static Method> {
     }
     // SAFETY: a live MemberName; its ResolvedMethodName holds a leaked Method pointer.
     unsafe {
-        let rmn = obj::read::<crate::heap::Oop>(mn as crate::heap::Oop, mh::mn_method());
+        let rmn = obj::read_ref(mn as crate::heap::Oop, mh::mn_method());
         if rmn.is_null() {
             return None;
         }
@@ -147,7 +143,7 @@ pub(super) fn through_counting(mut h: usize) -> usize {
             break;
         }
         // SAFETY: a live CountingWrapper; `target` is a final field.
-        h = unsafe { obj::read::<crate::heap::Oop>(h as crate::heap::Oop, counting_target()) } as usize;
+        h = unsafe { obj::read_ref(h as crate::heap::Oop, counting_target()) } as usize;
     }
     h
 }
@@ -159,11 +155,11 @@ pub(super) fn handle_target(h: usize) -> Option<&'static Method> {
     }
     // SAFETY: a live MethodHandle and its LambdaForm.
     unsafe {
-        let form = obj::read::<crate::heap::Oop>(h as crate::heap::Oop, crate::interp::indy::mh_form());
+        let form = obj::read_ref(h as crate::heap::Oop, crate::interp::indy::mh_form());
         if form.is_null() {
             return None;
         }
-        let entry = obj::read::<crate::heap::Oop>(form, crate::interp::indy::lf_vmentry());
+        let entry = obj::read_ref(form, crate::interp::indy::lf_vmentry());
         member_target(entry as usize)
     }
 }

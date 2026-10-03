@@ -138,13 +138,13 @@ fn refs(o: Oop, mut f: impl FnMut(usize)) {
     match k.kind {
         KlassKind::Instance => {
             for &off in k.ref_offsets.iter() {
-                reference(unsafe { obj::read::<usize>(o, off) });
+                reference(unsafe { obj::read_ref(o, off) } as usize);
             }
         }
         KlassKind::ObjArray { .. } => {
             let len = unsafe { obj::read::<i32>(o, ARRAY_LENGTH_OFFSET) } as usize;
             for i in 0..len {
-                reference(unsafe { obj::read::<usize>(o, ARRAY_BASE_OFFSET + 8 * i as u32) });
+                reference(unsafe { obj::load_elem(o, i) } as usize);
             }
         }
         KlassKind::TypeArray { .. } => {}
@@ -254,11 +254,12 @@ impl Shared<'_> {
         if let KlassKind::ObjArray { .. } = k.kind {
             let len = unsafe { obj::read::<i32>(start as Oop, ARRAY_LENGTH_OFFSET) } as usize;
             let base = start + ARRAY_BASE_OFFSET as usize;
-            let from = card.max(base).saturating_sub(base).div_ceil(8);
-            let to = ((card + CARD_SIZE).saturating_sub(base) / 8).min(len);
+            let size = crate::heap::REF_SIZE as usize;
+            let from = card.max(base).saturating_sub(base).div_ceil(size);
+            let to = ((card + CARD_SIZE).saturating_sub(base) / size).min(len);
             for i in from..to {
                 // SAFETY: an element of the array.
-                let r = unsafe { *((base + 8 * i) as *const usize) };
+                let r = unsafe { obj::load_elem(start as Oop, i) } as usize;
                 if r != 0 {
                     out.push(r);
                 }

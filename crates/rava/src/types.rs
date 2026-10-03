@@ -54,7 +54,8 @@ impl BasicType {
             BasicType::Boolean | BasicType::Byte => 1,
             BasicType::Char | BasicType::Short => 2,
             BasicType::Int | BasicType::Float => 4,
-            BasicType::Long | BasicType::Double | BasicType::Reference => 8,
+            BasicType::Long | BasicType::Double => 8,
+            BasicType::Reference => crate::heap::REF_SIZE,
             BasicType::Void => 0,
         }
     }

@@ -136,7 +136,7 @@ fn define_class0(t: &mut Thread, a: &[u64]) -> JResult<u64> {
     };
     let mirror = rt::mirror_of(t, k)?;
     // SAFETY: live Class mirror.
-    unsafe { obj::write::<Oop>(mirror, class_data(), data) };
+    unsafe { obj::write_ref(mirror, class_data(), data) };
     if initialize {
         rt::initialize(t, k)?;
     }
@@ -186,8 +186,8 @@ fn retrieve_directives(t: &mut Thread, _: &[u64]) -> JResult<u64> {
         let field = |name: &str, desc: &str| k.declared_field(Symbol::intern(name), Symbol::intern(desc)).expect("directive field").offset;
         // SAFETY: fields of the fresh instance of the declaring class.
         unsafe {
-            obj::write::<Oop>(d, field(names_field, "[Ljava/lang/String;"), names);
-            obj::write::<Oop>(d, field(enabled_field, "[Z"), bools);
+            obj::write_ref(d, field(names_field, "[Ljava/lang/String;"), names);
+            obj::write_ref(d, field(enabled_field, "[Z"), bools);
         }
     }
     let deflt = k.declared_field(Symbol::intern("deflt"), Symbol::intern("Z")).expect("deflt").offset;

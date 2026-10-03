@@ -31,8 +31,8 @@ pub fn mirror_of(t: &mut Thread, k: &'static Klass) -> JResult<Oop> {
     // SAFETY: fresh Class instance; offsets from its layout (with injected fields).
     unsafe {
         obj::write::<u64>(m, klass_offset(), k as *const Klass as u64);
-        obj::write::<Oop>(m, loader_offset(), k.loader());
-        obj::write::<Oop>(m, component_offset(), component);
+        obj::write_ref(m, loader_offset(), k.loader());
+        obj::write_ref(m, component_offset(), component);
     }
     crate::natives::set_mirror_module(m, k);
     match k.mirror.compare_exchange(std::ptr::null_mut(), m, Ordering::AcqRel, Ordering::Acquire) {

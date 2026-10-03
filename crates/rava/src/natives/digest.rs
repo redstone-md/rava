@@ -90,7 +90,7 @@ fn compress<W: Copy, const S: usize, const B: usize>(
         return Err(throw_new(t, "java/lang/NullPointerException", ""));
     }
     // SAFETY: the receiver's state array and the byte[] argument are live.
-    let (state, bytes) = unsafe { (obj::read::<Oop>(this, state_offset), obj::array_slice::<u8>(buf)) };
+    let (state, bytes) = unsafe { (obj::read_ref(this, state_offset), obj::array_slice::<u8>(buf)) };
     let blocks = usize::try_from(ofs).ok().and_then(|o| bytes.get(o..o.checked_add(B * n)?));
     let (Some(blocks), false) = (blocks, state.is_null()) else {
         return Err(throw_new(t, "java/lang/ArrayIndexOutOfBoundsException", &format!("Index {ofs} out of bounds for length {}", bytes.len())));

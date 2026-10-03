@@ -113,7 +113,7 @@ fn exec_one(t: &mut Thread, f: &mut Frame) -> JResult<Option<u64>> {
             0x2f => { let (a, i) = s::array_index(t, f)?; f.push_l(unsafe { *obj::array_data::<i64>(a).add(i) }); f.pc += 1 }
             0x30 => { let (a, i) = s::array_index(t, f)?; f.push(unsafe { *obj::array_data::<u32>(a).add(i) } as u64); f.pc += 1 }
             0x31 => { let (a, i) = s::array_index(t, f)?; let v = unsafe { *obj::array_data::<u64>(a).add(i) }; f.push(v); f.push(0); f.pc += 1 }
-            0x32 => { let (a, i) = s::array_index(t, f)?; f.push(unsafe { *obj::array_data::<u64>(a).add(i) }); f.pc += 1 }
+            0x32 => { let (a, i) = s::array_index(t, f)?; f.push(unsafe { obj::load_elem(a, i) } as u64); f.pc += 1 }
             0x33 => { let (a, i) = s::array_index(t, f)?; f.push_i(unsafe { *obj::array_data::<i8>(a).add(i) } as i32); f.pc += 1 }
             0x34 => { let (a, i) = s::array_index(t, f)?; f.push_i(unsafe { *obj::array_data::<u16>(a).add(i) } as i32); f.pc += 1 }
             0x35 => { let (a, i) = s::array_index(t, f)?; f.push_i(unsafe { *obj::array_data::<i16>(a).add(i) } as i32); f.pc += 1 }

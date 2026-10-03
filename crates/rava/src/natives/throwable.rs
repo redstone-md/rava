@@ -59,7 +59,7 @@ fn fill_in_stack_trace(t: &mut Thread, a: &[u64]) -> JResult<u64> {
             data[2 * i] = *m as *const Method as i64;
             data[2 * i + 1] = *bci as i64;
         }
-        obj::write::<Oop>(ex, backtrace_offset(), bt);
+        obj::write_ref(ex, backtrace_offset(), bt);
         obj::write::<i32>(ex, depth_offset(), frames.len() as i32);
     }
     ret_ref(ex)
@@ -68,7 +68,7 @@ fn fill_in_stack_trace(t: &mut Thread, a: &[u64]) -> JResult<u64> {
 /// The recorded frames of an exception.
 pub fn backtrace_of(ex: Oop) -> Vec<(&'static Method, i32)> {
     // SAFETY: live Throwable.
-    frames_of_backtrace(unsafe { obj::read::<Oop>(ex, backtrace_offset()) })
+    frames_of_backtrace(unsafe { obj::read_ref(ex, backtrace_offset()) })
 }
 
 /// Decodes a backtrace `long[]` written by `fill_in_stack_trace`.
@@ -85,7 +85,7 @@ fn init_stack_trace_elements(t: &mut Thread, a: &[u64]) -> JResult<u64> {
     let (elements, backtrace) = (a[0] as Oop, a[1] as Oop);
     for (i, (m, bci)) in frames_of_backtrace(backtrace).into_iter().enumerate() {
         // SAFETY: the element array has `depth` entries, pre-populated by the JDK.
-        let e = unsafe { *obj::array_data::<Oop>(elements).add(i) };
+        let e = unsafe { obj::load_elem(elements, i) };
         if !e.is_null() {
             fill_element(t, e, m, bci)?;
         }
@@ -96,12 +96,12 @@ fn init_stack_trace_elements(t: &mut Thread, a: &[u64]) -> JResult<u64> {
 fn fill_element(t: &mut Thread, e: Oop, m: &'static Method, bci: i32) -> JResult<()> {
     let class = rt::new_string(t, &m.holder.java_name())?;
     // SAFETY: live StackTraceElement; each string is stored as soon as it exists.
-    unsafe { obj::write::<Oop>(e, ste_class(), class) };
+    unsafe { obj::write_ref(e, ste_class(), class) };
     let method = rt::new_string(t, m.name.as_str())?;
-    unsafe { obj::write::<Oop>(e, ste_method(), method) };
+    unsafe { obj::write_ref(e, ste_method(), method) };
     if let Some(f) = source_file(m) {
         let file = rt::new_string(t, f)?;
-        unsafe { obj::write::<Oop>(e, ste_file(), file) };
+        unsafe { obj::write_ref(e, ste_file(), file) };
     }
     unsafe { obj::write::<i32>(e, ste_line(), if m.is_native() { -2 } else { line_number(m, bci) }) };
     // As HotSpot's fill_in: the class (StackTraceElement.computeFormat reads, then clears it),
@@ -109,14 +109,14 @@ fn fill_element(t: &mut Thread, e: Oop, m: &'static Method, bci: i32) -> JResult
     let mirror = rt::mirror_of(t, m.holder)?;
     // SAFETY: live objects; the module and loader fields hold strings or null.
     unsafe {
-        obj::write::<Oop>(e, ste_class_object(), mirror);
-        let module = obj::read::<Oop>(mirror, super::module::class_module());
+        obj::write_ref(e, ste_class_object(), mirror);
+        let module = obj::read_ref(mirror, super::module::class_module());
         if !module.is_null() {
-            obj::write::<Oop>(e, ste_module(), obj::read::<Oop>(module, module_name()));
+            obj::write_ref(e, ste_module(), obj::read_ref(module, module_name()));
         }
         let loader = m.holder.loader.load(std::sync::atomic::Ordering::Acquire);
         if !loader.is_null() {
-            obj::write::<Oop>(e, ste_loader(), obj::read::<Oop>(loader, loader_name()));
+            obj::write_ref(e, ste_loader(), obj::read_ref(loader, loader_name()));
         }
     }
     Ok(())
@@ -129,7 +129,7 @@ vm_field!(sfi_bci, "java/lang/StackFrameInfo", "bci", "I");
 fn init_stack_trace_element(t: &mut Thread, a: &[u64]) -> JResult<u64> {
     let (e, sfi) = (a[0] as Oop, a[1] as Oop);
     // SAFETY: a StackFrameInfo filled by the stack walker.
-    let (mn, bci) = unsafe { (obj::read::<Oop>(sfi, sfi_member()), obj::read::<i32>(sfi, sfi_bci())) };
+    let (mn, bci) = unsafe { (obj::read_ref(sfi, sfi_member()), obj::read::<i32>(sfi, sfi_bci())) };
     if let Some(m) = super::mh::member_target(mn) {
         fill_element(t, e, m, bci)?;
     }
@@ -166,7 +166,7 @@ pub fn describe(ex: Oop) -> String {
             break;
         }
         // SAFETY: live Throwable.
-        let (msg, cause) = unsafe { (obj::read::<Oop>(cur, message_offset()), obj::read::<Oop>(cur, cause_offset())) };
+        let (msg, cause) = unsafe { (obj::read_ref(cur, message_offset()), obj::read_ref(cur, cause_offset())) };
         let prefix = if depth == 0 { "" } else { "Caused by: " };
         out += &format!("{prefix}{}", rt::class_name_of(cur));
         if !msg.is_null() {

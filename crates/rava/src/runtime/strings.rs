@@ -40,7 +40,7 @@ pub fn new_string_utf16(t: &mut Thread, units: &[u16]) -> JResult<Oop> {
     let s = alloc_instance(t, string_class)?;
     // SAFETY: `s` is a fresh String; offsets come from its layout.
     unsafe {
-        obj::write::<Oop>(s, value_offset(), value);
+        obj::write_ref(s, value_offset(), value);
         obj::write::<u8>(s, coder_offset(), if latin1 { LATIN1 } else { UTF16 });
     }
     Ok(s)
@@ -50,7 +50,7 @@ pub fn new_string_utf16(t: &mut Thread, units: &[u16]) -> JResult<Oop> {
 pub fn string_units(s: Oop) -> Vec<u16> {
     // SAFETY: `s` is a live String whose `value` is a byte[].
     unsafe {
-        let value = obj::read::<Oop>(s, value_offset());
+        let value = obj::read_ref(s, value_offset());
         let data = obj::array_slice::<u8>(value);
         if obj::read::<u8>(s, coder_offset()) == LATIN1 {
             data.iter().map(|&b| b as u16).collect()

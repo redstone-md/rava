@@ -169,7 +169,7 @@ fn class_init_name(t: &mut Thread, a: &[u64]) -> JResult<u64> {
     static NAME: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
     let off = rt::field_offset(&NAME, "java/lang/Class", "name", "Ljava/lang/String;");
     // SAFETY: live Class mirror.
-    unsafe { obj::write::<Oop>(mirror, off, s) };
+    unsafe { obj::write_ref(mirror, off, s) };
     ret_ref(s)
 }
 

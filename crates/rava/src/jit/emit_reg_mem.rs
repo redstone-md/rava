@@ -5,7 +5,7 @@
 
 use super::asm::{mem, mem_idx, Alu, Cond, R};
 use super::compile::Emitter;
-use super::emit_obj::{load_typed_to, normalize_into, store_typed_from};
+use super::emit_obj::{encode_ref, load_static_to, load_typed_to, normalize_into, store_typed_from};
 use super::vstack::Loc;
 use crate::heap::{ARRAY_BASE_OFFSET, ARRAY_LENGTH_OFFSET};
 use crate::klass::{InitState, Klass};
@@ -60,7 +60,8 @@ impl Emitter {
         match op {
             0x2e => a.load_sx(4, d, mem_idx(ra, ri, 4, BASE)),
             0x30 => a.load(false, d, mem_idx(ra, ri, 4, BASE)),
-            0x2f | 0x31 | 0x32 => a.load(true, d, mem_idx(ra, ri, 8, BASE)),
+            0x2f | 0x31 => a.load(true, d, mem_idx(ra, ri, 8, BASE)),
+            0x32 => load_typed_to(a, d, BasicType::Reference, mem_idx(ra, ri, crate::heap::REF_SIZE as u8, BASE)),
             0x33 => a.load_sx(1, d, mem_idx(ra, ri, 1, BASE)),
             0x34 => a.load_zx(2, d, mem_idx(ra, ri, 2, BASE)),
             _ => a.load_sx(2, d, mem_idx(ra, ri, 2, BASE)),
@@ -141,6 +142,9 @@ impl Emitter {
                     self.a.mov_rr(true, R::Rdx, rv);
                     rv = R::Rdx;
                 }
+                if ty == BasicType::Reference {
+                    rv = encode_ref(&mut self.a, rv, R::Rdx);
+                }
                 store_typed_from(&mut self.a, rv, ty, mem(ro, offset as i32));
                 if volatile {
                     self.a.storeload();
@@ -149,7 +153,7 @@ impl Emitter {
             (0xb2, Some(Resolved::StaticField { holder, slot, ty, .. })) if holder.init.state() == InitState::Initialized => {
                 let d = self.alloc(&[]);
                 self.a.mov_ri(R::R11, slot as *const _ as i64);
-                load_typed_to(&mut self.a, d, ty, mem(R::R11, 0));
+                load_static_to(&mut self.a, d, ty, mem(R::R11, 0));
                 self.push_w(ty.slots() == 2, Loc::Reg(d));
             }
             (0xb3, Some(Resolved::StaticField { holder, slot, ty, volatile })) if holder.init.state() == InitState::Initialized => {

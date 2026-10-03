@@ -63,7 +63,7 @@ fn object_array(t: &mut Thread, len: i32) -> JResult<Oop> {
 fn linkage_from(t: &mut Thread, mn: Oop, appendix_box: Oop) -> JResult<Linkage> {
     let invoker = member_target(mn).ok_or_else(|| throw_new(t, "java/lang/InternalError", "unresolved invoker"))?;
     // SAFETY: the one-element Object[] passed to the up-call.
-    let appendix = unsafe { *obj::array_data::<Oop>(appendix_box) } as usize;
+    let appendix = unsafe { obj::load_elem(appendix_box, 0) } as usize;
     Ok(Linkage { invoker, appendix })
 }
 
@@ -169,8 +169,8 @@ fn invoke_basic(t: &mut Thread, args: *mut u64) -> JResult<u64> {
     }
     // SAFETY: live MethodHandle with a LambdaForm whose vmentry was resolved by Java code.
     let target = unsafe {
-        let form = obj::read::<Oop>(mh, mh_form());
-        member_target(obj::read::<Oop>(form, lf_vmentry()))
+        let form = obj::read_ref(mh, mh_form());
+        member_target(obj::read_ref(form, lf_vmentry()))
     };
     let target = target.ok_or_else(|| throw_new(t, "java/lang/InternalError", "LambdaForm without vmentry"))?;
     super::invoke(t, target, args)

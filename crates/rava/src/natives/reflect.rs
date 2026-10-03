@@ -77,7 +77,7 @@ pub(super) fn register(r: &mut NativeRegistry) {
 pub(crate) fn field_of(field: Oop) -> (&'static Klass, usize) {
     // SAFETY: live Field object created by the VM's reflection natives.
     unsafe {
-        let clazz = obj::read::<Oop>(field, field_clazz());
+        let clazz = obj::read_ref(field, field_clazz());
         let k = rt::klass_of_mirror(clazz).expect("Field.clazz of a primitive");
         (k, obj::read::<i32>(field, field_slot()) as usize)
     }
@@ -170,14 +170,14 @@ pub(crate) fn executable_of(r: Oop) -> &'static Method {
 fn executable(obj_ref: Oop, clazz: u32, slot: u32) -> &'static Method {
     // SAFETY: live reflection object created by the VM.
     unsafe {
-        let k = rt::klass_of_mirror(obj::read::<Oop>(obj_ref, clazz)).expect("declaring class");
+        let k = rt::klass_of_mirror(obj::read_ref(obj_ref, clazz)).expect("declaring class");
         &k.methods()[obj::read::<i32>(obj_ref, slot) as usize]
     }
 }
 
 /// Unboxes the `Object[]` arguments into call slots after `prefix`.
 fn build_args(t: &mut Thread, m: &'static Method, prefix: Option<u64>, args: Oop) -> JResult<Vec<u64>> {
-    let given: &[Oop] = if args.is_null() { &[] } else { unsafe { obj::array_slice::<Oop>(args) } };
+    let given: Vec<Oop> = if args.is_null() { Vec::new() } else { unsafe { obj::ref_elems(args) } };
     if given.len() != m.sig.params.len() {
         return Err(throw_new(t, "java/lang/IllegalArgumentException", "wrong number of arguments"));
     }
