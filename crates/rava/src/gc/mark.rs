@@ -6,7 +6,7 @@
 //! trace stops at them, and the old objects on dirty cards are scanned as extra roots.
 
 use super::safepoint;
-use super::space::Space;
+use super::space::{PageMeta, Space};
 use crate::heap::{obj, Oop, ARRAY_BASE_OFFSET, ARRAY_LENGTH_OFFSET};
 use crate::klass::{Klass, KlassKind};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
@@ -99,27 +99,37 @@ impl Shared<'_> {
     }
 
     fn scan(&self, o: Oop, stack: &mut Vec<usize>) {
-        let mut reference = |r: usize| {
-            if r != 0 && self.mark_start(r) {
+        refs(o, |r| {
+            if self.mark_start(r) {
                 stack.push(r);
             }
-        };
-        // SAFETY: a marked, live object.
-        let k: &'static Klass = unsafe { obj::klass(o) };
-        match k.kind {
-            KlassKind::Instance => {
-                for &off in k.ref_offsets.iter() {
-                    reference(unsafe { obj::read::<usize>(o, off) });
-                }
-            }
-            KlassKind::ObjArray { .. } => {
-                let len = unsafe { obj::read::<i32>(o, ARRAY_LENGTH_OFFSET) } as usize;
-                for i in 0..len {
-                    reference(unsafe { obj::read::<usize>(o, ARRAY_BASE_OFFSET + 8 * i as u32) });
-                }
-            }
-            KlassKind::TypeArray { .. } => {}
+        });
+    }
+}
+
+/// Calls `f` with each non-null reference field or element of the live object `o`.
+#[inline]
+fn refs(o: Oop, mut f: impl FnMut(usize)) {
+    let mut reference = |r: usize| {
+        if r != 0 {
+            f(r);
         }
+    };
+    // SAFETY: a marked, live object.
+    let k: &'static Klass = unsafe { obj::klass(o) };
+    match k.kind {
+        KlassKind::Instance => {
+            for &off in k.ref_offsets.iter() {
+                reference(unsafe { obj::read::<usize>(o, off) });
+            }
+        }
+        KlassKind::ObjArray { .. } => {
+            let len = unsafe { obj::read::<i32>(o, ARRAY_LENGTH_OFFSET) } as usize;
+            for i in 0..len {
+                reference(unsafe { obj::read::<usize>(o, ARRAY_BASE_OFFSET + 8 * i as u32) });
+            }
+        }
+        KlassKind::TypeArray { .. } => {}
     }
 }
 
@@ -216,8 +226,9 @@ impl Shared<'_> {
         }
     }
 
-    /// Scans the old object at `start` for a dirty card at `card`: an object array only in the
-    /// card's elements, anything else whole and once (`last` is the last one scanned whole).
+    /// Collects the references of the old object at `start` for a dirty card at `card`, without
+    /// marking: an object array only in the card's elements, anything else whole and once
+    /// (`last` is the last one scanned whole).
     fn scan_old(&self, start: usize, card: usize, last: &mut usize, out: &mut Vec<usize>) {
         use super::cards::CARD_SIZE;
         // SAFETY: a live old object.
@@ -230,7 +241,7 @@ impl Shared<'_> {
             for i in from..to {
                 // SAFETY: an element of the array.
                 let r = unsafe { *((base + 8 * i) as *const usize) };
-                if r != 0 && self.mark_start(r) {
+                if r != 0 {
                     out.push(r);
                 }
             }
@@ -238,47 +249,62 @@ impl Shared<'_> {
         }
         if start != *last {
             *last = start;
-            self.scan(start as Oop, out);
+            refs(start as Oop, |r| out.push(r));
         }
     }
 
-    /// Scans the old objects on the dirty cards of `[from, to)` (page area), once each, and
-    /// cleans the cards.
+    /// Collects the references of the old objects on the dirty cards of `[from, to)` (whole
+    /// pages), once each, and cleans the cards. Most dirty cards lie on pages allocated since
+    /// the last collection (initializing stores), with no mark set: those are only cleaned.
+    /// Elsewhere, only the marked cells of each card are visited, a mark word at a time.
     fn page_cards(&self, from: usize, to: usize, out: &mut Vec<usize>) {
         use super::cards::CARD_SIZE;
+        use super::space::PAGE_SIZE;
         let space = self.space;
         let mut last = 0;
-        super::cards::drain(from, to, &mut |card| {
-            let Some(index) = space.page_index(card) else { return };
-            let Some(meta) = space.pages[index].as_ref() else { return };
-            let page = space.page_addr(index);
-            let first = meta.cell_of(card - page);
-            let end = (meta.cell_of(card + CARD_SIZE - 1 - page) + 1).min(meta.cells());
-            for cell in first..end {
-                let start = page + cell * meta.cell_size as usize;
-                // SAFETY: inside a page in use; old objects have their mark set.
-                let old = unsafe { (*(meta.marks.as_ptr().add(cell / 64) as *const AtomicU64)).load(Ordering::Relaxed) } & (1 << (cell % 64)) != 0;
-                if old && unsafe { *(start as *const usize) } != 0 {
-                    self.scan_old(start, card, &mut last, out);
+        for page in (from..to).step_by(PAGE_SIZE) {
+            let meta = space.page_index(page).and_then(|i| space.pages[i].as_ref());
+            // SAFETY: mark words of a page in use; nothing marks during the card phase.
+            let word = |m: &PageMeta, w: usize| unsafe { (*(m.marks.as_ptr().add(w) as *const AtomicU64)).load(Ordering::Relaxed) };
+            let Some(meta) = meta.filter(|m| (0..m.marks.len()).any(|w| word(m, w) != 0)) else {
+                super::cards::clean(page, page + PAGE_SIZE);
+                continue;
+            };
+            let size = meta.cell_size as usize;
+            super::cards::drain(page, page + PAGE_SIZE, &mut |card| {
+                let first = meta.cell_of(card - page);
+                let end = (meta.cell_of(card + CARD_SIZE - 1 - page) + 1).min(meta.cells());
+                if first >= end {
+                    return;
                 }
-            }
-        });
+                for w in first / 64..end.div_ceil(64) {
+                    let lo = (first.max(w * 64) - w * 64) as u32;
+                    let hi = (end.min(w * 64 + 64) - w * 64) as u32;
+                    let range = (u64::MAX >> (64 - (hi - lo))) << lo;
+                    let mut bits = word(meta, w) & range;
+                    while bits != 0 {
+                        let start = page + (w * 64 + bits.trailing_zeros() as usize) * size;
+                        bits &= bits - 1;
+                        // SAFETY: inside a page in use; old objects have their mark set.
+                        if unsafe { *(start as *const usize) } != 0 {
+                            self.scan_old(start, card, &mut last, out);
+                        }
+                    }
+                }
+            });
+        }
     }
 }
 
-/// The root tasks of a collection: threads, classes in chunks, other roots, and (young) the
-/// card table in chunks. A young collection scans only the statics of the first `old`
-/// classes, plus the noted roots.
+/// The root tasks of a collection: (young) the card table in chunks, which come first, then
+/// threads, classes in chunks and other roots. A young collection scans only the statics of
+/// the first `old` classes, plus the noted roots.
 fn tasks(space: &Space, classes: usize, old: usize, young: bool) -> Vec<Task> {
     const CLASS_CHUNK: usize = 512;
     let old = if young { old.min(classes) } else { 0 };
     let chunks = |from: usize, to: usize| (from..to).step_by(CLASS_CHUNK).map(move |c| (c, (c + CLASS_CHUNK).min(to)));
-    let mut tasks: Vec<Task> = safepoint::all_threads().into_iter().map(Task::Thread).collect();
-    tasks.extend(chunks(0, old).map(|(a, b)| Task::Statics(a, b)));
-    tasks.extend(chunks(old, classes).map(|(a, b)| Task::Classes(a, b)));
-    tasks.push(Task::Other(young));
+    let mut tasks = Vec::new();
     if young {
-        tasks.push(Task::Noted);
         // Chunks of whole pages, so no object spans two tasks.
         let chunk = 64 * super::space::PAGE_SIZE;
         tasks.extend((space.base..space.fresh).step_by(chunk).map(|c| Task::Cards(c, (c + chunk).min(space.fresh))));
@@ -286,7 +312,12 @@ fn tasks(space: &Space, classes: usize, old: usize, young: bool) -> Vec<Task> {
         if area.fresh > area.base {
             tasks.push(Task::LargeCards(area.base, area.fresh));
         }
+        tasks.push(Task::Noted);
     }
+    tasks.extend(safepoint::all_threads().into_iter().map(Task::Thread));
+    tasks.extend(chunks(0, old).map(|(a, b)| Task::Statics(a, b)));
+    tasks.extend(chunks(old, classes).map(|(a, b)| Task::Classes(a, b)));
+    tasks.push(Task::Other(young));
     tasks
 }
 
@@ -315,10 +346,22 @@ pub(super) fn mark(space: &mut Space, young: bool) -> usize {
     let classes = crate::vm::vm().all_classes();
     let (noted, old) = super::recent::take(classes.len());
     let tasks = tasks(shared.space, classes.len(), old, young);
-    let next = AtomicUsize::new(0);
+    // The card tasks run first, and nothing is marked until all are done: a mark set meanwhile
+    // would make a young object look old, to be scanned again as a card root.
+    let cards = tasks.iter().take_while(|t| matches!(t, Task::Cards(..) | Task::LargeCards(..))).count();
+    let (next_card, next) = (AtomicUsize::new(0), AtomicUsize::new(cards));
+    let barrier = std::sync::Barrier::new(workers);
     // Each worker takes root tasks until none is left, then traces from what it found.
     let worker = || {
         let mut found = Vec::with_capacity(4 * PACKET);
+        if cards > 0 {
+            let mut refs = Vec::new();
+            while let Some(task) = tasks[..cards].get(next_card.fetch_add(1, Ordering::Relaxed)) {
+                shared.run(task, &classes, &noted, &mut refs);
+            }
+            barrier.wait();
+            refs.into_iter().for_each(|r| shared.precise(r, &mut found));
+        }
         loop {
             let i = next.fetch_add(1, Ordering::Relaxed);
             let Some(task) = tasks.get(i) else { break };
