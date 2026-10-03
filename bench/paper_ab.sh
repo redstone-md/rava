@@ -16,7 +16,8 @@
 #   env.txt   host, CPU, kernel, toolchains, Paper jar and server.properties hashes, seed, the
 #             RAVA_*/JAVA_* environment, the repository head;
 #   runs.tsv  one row per run: time, round, label, commit, binary sha256, wall seconds from exec
-#             to the "Done (" line, the server's own Done time, user/sys CPU, milestone offsets;
+#             to the "Done (" line, the server's own Done time, user/sys CPU, peak and current
+#             resident memory (MiB) at Done, milestone offsets;
 #   logs/     the server log of every run (gzip).
 set -euo pipefail
 ROUNDS=3
@@ -74,7 +75,7 @@ done
   [ -n "${JAVA_TOOL_OPTIONS:-}" ] && echo "env JAVA_TOOL_OPTIONS set (sandbox proxy/trust-store options, not recorded)"
   true
 } > "$OUT/env.txt"
-[ -f "$OUT/runs.tsv" ] || printf 'time_utc\tround\tlabel\tcommit\tbin_sha256\twall_s\tdone_s\tuser_s\tsys_s\tmilestones\n' > "$OUT/runs.tsv"
+[ -f "$OUT/runs.tsv" ] || printf 'time_utc\tround\tlabel\tcommit\tbin_sha256\twall_s\tdone_s\tuser_s\tsys_s\thwm_mb\trss_mb\tmilestones\n' > "$OUT/runs.tsv"
 
 run_one() { # label round
   local label=$1 round=$2 d
@@ -97,7 +98,12 @@ run_one() { # label round
   end=$(date +%s.%N)
   local ut=0 st=0 tck
   tck=$(getconf CLK_TCK)
+  local hwm=- rss=-
   if [ -r /proc/$pid/stat ]; then read -r ut st < <(awk '{print $14, $15}' /proc/$pid/stat); fi
+  if [ -r /proc/$pid/status ]; then
+    hwm=$(awk '/^VmHWM/{printf "%.0f", $2/1024}' /proc/$pid/status)
+    rss=$(awk '/^VmRSS/{printf "%.0f", $2/1024}' /proc/$pid/status)
+  fi
   echo stop >&3
   exec 3>&-
   for _ in $(seq 1 240); do kill -0 $pid 2>/dev/null || break; sleep 0.25; done
@@ -124,11 +130,11 @@ for key, pat in marks:
 print(",".join(out))
 PY
 )
-  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$round" "$label" "${COMMIT[$label]}" "${SHA[$label]}" \
-    "$wall" "${done_s:--}" "$(echo "scale=1; $ut/$tck" | bc)" "$(echo "scale=1; $st/$tck" | bc)" "$ms" >> "$OUT/runs.tsv"
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$round" "$label" "${COMMIT[$label]}" "${SHA[$label]}" \
+    "$wall" "${done_s:--}" "$(echo "scale=1; $ut/$tck" | bc)" "$(echo "scale=1; $st/$tck" | bc)" "$hwm" "$rss" "$ms" >> "$OUT/runs.tsv"
   gzip -c "$d/out.txt" > "$OUT/logs/r${round}-${label//\//_}.log.gz"
   rm -rf "$d"
-  echo "round $round $label wall $wall done ${done_s:--}"
+  echo "round $round $label wall $wall done ${done_s:--} hwm ${hwm}M"
 }
 
 # Alternate label order every round so no variant is systematically penalised
