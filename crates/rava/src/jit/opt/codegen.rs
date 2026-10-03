@@ -490,9 +490,9 @@ impl Gen<'_> {
         if frames.len() == 1 {
             self.a.store_imm(at, (outer.bci as i32) << 1);
         } else {
-            let site: &'static crate::thread::InlinedSite = Box::leak(Box::new(crate::thread::InlinedSite { frames: frames.into() }));
-            self.a.mov_ri(R::Rax, site as *const _ as i64);
-            self.a.store(true, at, R::Rax);
+            // In low memory, so the store takes an immediate.
+            let site: &'static crate::thread::InlinedSite = crate::low::leak(crate::thread::InlinedSite { frames: frames.into() });
+            self.a.store_const(at, site as *const _ as i64, R::Rax);
         }
         self.a.lea(R::Rcx, self.hdr(header::METHOD));
         self.a.store(true, mem(R::R12, offsets::TOP), R::Rcx);

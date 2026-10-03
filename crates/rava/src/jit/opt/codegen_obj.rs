@@ -317,8 +317,7 @@ impl Gen<'_> {
                 self.a.alu_rm(true, Alu::Cmp, R::Rdx, at(end));
                 self.a.jcc(Cond::A, slow);
                 self.a.store(true, at(bump), R::Rdx);
-                self.a.mov_ri(R::Rdx, k as *const Klass as i64);
-                self.a.store(true, mem(R::Rax, 0), R::Rdx);
+                self.a.store_const(mem(R::Rax, 0), k as *const Klass as i64, R::Rdx);
             }
             None => self.a.jmp(slow),
         }
@@ -347,8 +346,7 @@ impl Gen<'_> {
                     self.a.jcc(Cond::A, slow);
                     self.a.store(true, at(bump), R::Rdx);
                     self.a.store_imm32(mem(R::Rax, crate::heap::ARRAY_LENGTH_OFFSET as i32), n);
-                    self.a.mov_ri(R::Rdx, k as *const Klass as i64);
-                    self.a.store(true, mem(R::Rax, 0), R::Rdx);
+                    self.a.store_const(mem(R::Rax, 0), k as *const Klass as i64, R::Rdx);
                     self.a.jmp(done);
                 }
                 None => self.a.jmp(slow),
@@ -375,8 +373,7 @@ impl Gen<'_> {
                 self.a.jcc(Cond::A, slow);
                 self.a.store(true, at(bump), R::Rdx);
                 self.a.store(false, mem(R::Rax, crate::heap::ARRAY_LENGTH_OFFSET as i32), R::R11);
-                self.a.mov_ri(R::Rdx, k as *const Klass as i64);
-                self.a.store(true, mem(R::Rax, 0), R::Rdx);
+                self.a.store_const(mem(R::Rax, 0), k as *const Klass as i64, R::Rdx);
                 self.a.jmp(done);
             }
         }

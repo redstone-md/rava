@@ -169,12 +169,12 @@ impl Vm {
         klass.loader.store(loader, std::sync::atomic::Ordering::Release);
         self.record_class(klass);
         let cf = klass.cf.as_ref().unwrap();
-        let methods: Box<[Method]> =
+        let methods: Vec<Method> =
             cf.methods.iter().map(|m| {
                 let stub = loader.is_null() && self.natives.has_stub(klass.name.as_str(), m.name.as_str(), m.desc.as_str());
                 Method::new(klass, m.name, m.desc, m.access, m.code.as_ref(), stub)
             }).collect();
-        let _ = klass.methods.set(methods);
+        let _ = klass.methods.set(crate::low::leak_slice(methods));
         klass.set_vtable(build_vtable(klass));
         if hidden_name.is_some() {
             return Ok(klass);
@@ -232,7 +232,7 @@ impl Vm {
         }));
         klass.loader.store(loader, std::sync::atomic::Ordering::Release);
         self.record_class(klass);
-        let _ = klass.methods.set(Box::new([]));
+        let _ = klass.methods.set(&[]);
         klass.set_vtable(object.vtable().to_vec().into_boxed_slice());
         Ok(self.publish(loader, klass))
     }
