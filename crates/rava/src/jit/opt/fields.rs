@@ -55,7 +55,7 @@ pub fn forward(g: &mut Graph) {
         if !reachable(v) || g.resolve(v) != v {
             continue;
         }
-        if off == 0 && bt == BasicType::Long {
+        if off == 0 && bt == BasicType::Int {
             klass_loads.push((v, k));
             continue;
         }

@@ -261,7 +261,7 @@ impl Emitter {
                 self.a.load(true, R::Rax, self.stk(args));
                 self.a.test_rr(true, R::Rax, R::Rax);
                 self.a.jcc(Cond::E, slow);
-                self.a.load(true, R::Rax, mem(R::Rax, 0));
+                self.a.load(false, R::Rax, mem(R::Rax, 0));
                 self.a.load(true, R::Rax, mem(R::Rax, offset_of!(Klass, mirror) as i32));
                 self.a.test_rr(true, R::Rax, R::Rax);
                 self.a.jcc(Cond::E, slow);
@@ -343,7 +343,7 @@ impl Emitter {
         self.a.load(true, R::Rsi, mem(R::Rsi, klass_field));
         self.a.test_rr(true, R::Rsi, R::Rsi);
         self.a.jcc(Cond::E, done);
-        self.a.load(true, R::Rdi, mem(R::Rdi, 0));
+        self.a.load(false, R::Rdi, mem(R::Rdi, 0));
         self.a.mov_ri(R::Rax, 1);
         self.a.alu_rr(true, Alu::Cmp, R::Rdi, R::Rsi);
         self.a.jcc(Cond::E, done);

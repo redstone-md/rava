@@ -337,7 +337,7 @@ impl Space {
             }
             let start = page + cell * meta.cell_size as usize;
             // SAFETY: inside a page in use.
-            let klass = unsafe { *(start as *const usize) };
+            let klass = unsafe { *(start as *const u32) };
             return (klass != 0).then_some(start);
         }
         let (&start, l) = self.large.range(..=addr).next_back()?;

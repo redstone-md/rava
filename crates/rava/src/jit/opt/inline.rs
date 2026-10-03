@@ -296,8 +296,9 @@ impl Builder {
         self.exact.iter().rev().find(|&&(x, _)| x == v).map(|&(_, k)| k)
     }
 
+    /// The receiver's class word: 32 bits at offset 0, zero-extended (classes live in low memory).
     fn klass_of(&mut self, receiver: V) -> V {
-        self.add(Inst::LoadField(receiver, 0, BasicType::Long), Ty::J)
+        self.add(Inst::LoadField(receiver, 0, BasicType::Int), Ty::J)
     }
 
     /// `target` as intrinsic `i` on `args` in the current block, which then goes to `k`.

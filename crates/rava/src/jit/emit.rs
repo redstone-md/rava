@@ -244,7 +244,7 @@ impl Emitter {
                 let bools = crate::vm::vm().primitive_array_class(BasicType::Boolean).ok().map_or(0, |k| k as *const Klass as i64);
                 let plain = self.a.new_label();
                 self.a.mov_ri(R::Rsi, bools);
-                self.a.alu_rm(true, Alu::Cmp, R::Rsi, mem(R::Rax, 0));
+                self.a.alu_rm(false, Alu::Cmp, R::Rsi, mem(R::Rax, 0));
                 self.a.jcc(Cond::Ne, plain);
                 self.a.alu_ri(false, Alu::And, R::Rdx, 1);
                 self.a.bind(plain);

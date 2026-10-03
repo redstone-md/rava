@@ -14,7 +14,7 @@ use std::mem::offset_of;
 use std::rc::Rc;
 
 /// Offset of array element 0.
-const BASE: i32 = 24;
+const BASE: i32 = crate::heap::ARRAY_BASE_OFFSET as i32;
 
 fn scale(bt: BasicType) -> u8 {
     bt.size() as u8
@@ -81,7 +81,7 @@ impl Gen<'_> {
                 let ra = self.reg(x, R::Rax);
                 let r = self.out(v);
                 self.fault_site();
-                self.a.load_sx(4, r, mem(ra, 16));
+                self.a.load_sx(4, r, mem(ra, crate::heap::ARRAY_LENGTH_OFFSET as i32));
                 self.put(v, r);
             }
             Inst::LoadIndexed(arr, idx, bt) => {
@@ -112,7 +112,7 @@ impl Gen<'_> {
                     let rx = self.reg(x, R::Rax);
                     self.a.test_rr(true, rx, rx);
                     self.a.jcc(Cond::E, done);
-                    self.a.load(true, R::Rcx, mem(rx, 0));
+                    self.a.load(false, R::Rcx, mem(rx, 0));
                     let kk = self.class_operand(k);
                     self.cmp_class(None, kk);
                     match depth.filter(|_| !exact) {
@@ -152,9 +152,9 @@ impl Gen<'_> {
                 let rx = self.reg(x, R::Rdx);
                 self.a.test_rr(true, rx, rx);
                 self.a.jcc(Cond::E, ok);
-                self.a.load(true, R::Rcx, mem(rx, 0));
+                self.a.load(false, R::Rcx, mem(rx, 0));
                 let ra = self.reg(arr, R::Rax);
-                self.a.load(true, R::Rdx, mem(ra, 0));
+                self.a.load(false, R::Rdx, mem(ra, 0));
                 self.a.load(true, R::Rdx, mem(R::Rdx, offset_of!(Klass, elem_klass) as i32));
                 self.a.alu_rr(true, Alu::Cmp, R::Rcx, R::Rdx);
                 self.a.jcc(Cond::E, ok);
@@ -217,7 +217,7 @@ impl Gen<'_> {
         let bools = crate::vm::vm().primitive_array_class(BasicType::Boolean).ok().map_or(0, |k| k as *const Klass as i64);
         let plain = self.a.new_label();
         self.a.mov_ri(R::R11, bools);
-        self.a.alu_rm(true, Alu::Cmp, R::R11, mem(ra, 0));
+        self.a.alu_rm(false, Alu::Cmp, R::R11, mem(ra, 0));
         self.a.jcc(Cond::Ne, plain);
         self.a.alu_ri(false, Alu::And, R::Rdx, 1);
         self.a.bind(plain);
@@ -264,7 +264,7 @@ impl Gen<'_> {
         let rx = self.reg(x, R::Rax);
         self.a.test_rr(true, rx, rx);
         self.a.jcc(Cond::E, null_ok);
-        self.a.load(true, R::Rcx, mem(rx, 0));
+        self.a.load(false, R::Rcx, mem(rx, 0));
         if answer {
             self.a.mov_ri(R::Rax, 1);
         }
@@ -362,7 +362,7 @@ impl Gen<'_> {
                 self.a.alu_rm(true, Alu::Cmp, R::Rdx, at(end));
                 self.a.jcc(Cond::A, slow);
                 self.a.store(true, at(bump), R::Rdx);
-                self.a.store_const(mem(R::Rax, 0), k as *const Klass as i64, R::Rdx);
+                self.a.store_imm32(mem(R::Rax, 0), crate::heap::klass_word(k) as i32);
             }
             None => self.a.jmp(slow),
         }
@@ -391,7 +391,7 @@ impl Gen<'_> {
                     self.a.jcc(Cond::A, slow);
                     self.a.store(true, at(bump), R::Rdx);
                     self.a.store_imm32(mem(R::Rax, crate::heap::ARRAY_LENGTH_OFFSET as i32), n);
-                    self.a.store_const(mem(R::Rax, 0), k as *const Klass as i64, R::Rdx);
+                    self.a.store_imm32(mem(R::Rax, 0), crate::heap::klass_word(k) as i32);
                     self.a.jmp(done);
                 }
                 None => self.a.jmp(slow),
@@ -418,7 +418,7 @@ impl Gen<'_> {
                 self.a.jcc(Cond::A, slow);
                 self.a.store(true, at(bump), R::Rdx);
                 self.a.store(false, mem(R::Rax, crate::heap::ARRAY_LENGTH_OFFSET as i32), R::R11);
-                self.a.store_const(mem(R::Rax, 0), k as *const Klass as i64, R::Rdx);
+                self.a.store_imm32(mem(R::Rax, 0), crate::heap::klass_word(k) as i32);
                 self.a.jmp(done);
             }
         }
@@ -451,7 +451,7 @@ impl Gen<'_> {
             Callee::Direct(m) => self.a.mov_ri(R::Rdx, m as *const Method as i64),
             Callee::Virtual(m) => {
                 self.load(R::Rcx, args[0]);
-                self.a.load(true, R::Rax, mem(R::Rcx, 0));
+                self.a.load(false, R::Rax, mem(R::Rcx, 0));
                 self.a.load(true, R::Rax, mem(R::Rax, offset_of!(Klass, vtable_ptr) as i32));
                 self.a.load(true, R::Rdx, mem(R::Rax, 8 * m.vtable_index()));
             }
@@ -489,7 +489,7 @@ impl Gen<'_> {
         match receiver {
             Some(receiver) => {
                 self.load(R::Rcx, receiver);
-                self.a.load(true, R::Rcx, mem(R::Rcx, 0));
+                self.a.load(false, R::Rcx, mem(R::Rcx, 0));
                 self.call_preserving(runtime::profile_call as *const () as usize, &[Arg::Reg(R::Rcx), Arg::Imm(cell), Arg::Imm(left as *const _ as i64)]);
                 self.a.test_rr(false, R::Rax, R::Rax);
                 self.a.jcc(Cond::E, done);
@@ -507,7 +507,7 @@ impl Gen<'_> {
         let found = self.a.new_label();
         self.load(R::R11, t);
         self.a.load(true, R::Rcx, self.slot(base));
-        self.a.load(true, R::Rdi, mem(R::Rcx, 0));
+        self.a.load(false, R::Rdi, mem(R::Rcx, 0));
         self.a.mov_rr(true, R::Rsi, R::R11);
         // The method stays on the stack across the call for the error path.
         self.a.push(R::R11);
@@ -533,7 +533,7 @@ impl Gen<'_> {
         let (hit, done, found, missing) = (self.a.new_label(), self.a.new_label(), self.a.new_label(), self.a.new_label());
         // The receiver from its register, not the frame slot just written (store forwarding).
         self.load(R::Rcx, receiver);
-        self.a.load(true, R::Rdi, mem(R::Rcx, 0));
+        self.a.load(false, R::Rdi, mem(R::Rcx, 0));
         // A site known megamorphic goes straight to the itable scan.
         let megamorphic = m.holder.is_interface() && crate::jit::profile::megamorphic(s.method, s.bci as usize);
         // The cell is in low memory, addressed absolutely (else through rax): the cached pair is

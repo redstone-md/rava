@@ -112,7 +112,7 @@ impl Emitter {
         self.a.load(true, R::Rax, self.stk(depth as i32 - 1));
         self.a.test_rr(true, R::Rax, R::Rax);
         self.a.jcc(Cond::E, done);
-        self.a.load(true, R::Rdi, mem(R::Rax, 0));
+        self.a.load(false, R::Rdi, mem(R::Rax, 0));
         self.subtype_rdi(k);
         self.a.test_rr(true, R::Rax, R::Rax);
         self.a.jcc(Cond::E, slow);
@@ -126,7 +126,7 @@ impl Emitter {
         self.a.load(true, R::Rax, slot);
         self.a.test_rr(true, R::Rax, R::Rax);
         self.a.jcc(Cond::E, done);
-        self.a.load(true, R::Rdi, mem(R::Rax, 0));
+        self.a.load(false, R::Rdi, mem(R::Rax, 0));
         self.subtype_rdi(k);
         self.a.bind(done);
         self.a.store(true, slot, R::Rax);
@@ -165,7 +165,7 @@ impl Emitter {
         self.a.jcc(Cond::A, slow);
         self.a.store(true, at(bump), R::Rdx);
         self.a.mov_ri(R::Rdx, k as *const Klass as i64);
-        self.a.store(true, mem(R::Rax, 0), R::Rdx);
+        self.a.store(false, mem(R::Rax, 0), R::Rdx);
     }
 
     /// `newarray` / `anewarray`: a negative length takes the interpreter's exception path.
@@ -196,9 +196,9 @@ impl Emitter {
     /// through when assignable (registers reloaded), else jumps to `slow`.
     pub(super) fn aastore_check(&mut self, array: M, index: M, value: M, slow: Label) {
         let ok = self.a.new_label();
-        self.a.load(true, R::Rsi, mem(R::Rax, 0));
+        self.a.load(false, R::Rsi, mem(R::Rax, 0));
         self.a.load(true, R::Rsi, mem(R::Rsi, offset_of!(Klass, elem_klass) as i32));
-        self.a.load(true, R::Rdi, mem(R::Rdx, 0));
+        self.a.load(false, R::Rdi, mem(R::Rdx, 0));
         self.a.alu_rr(true, Alu::Cmp, R::Rdi, R::Rsi);
         self.a.jcc(Cond::E, ok);
         self.a.call_abs(runtime::subtype as *const () as usize);

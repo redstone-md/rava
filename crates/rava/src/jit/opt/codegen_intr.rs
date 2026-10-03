@@ -88,7 +88,7 @@ impl Gen<'_> {
             Intrinsic::GetClass => {
                 let fail = self.deopt(s.expect("getClass has a deopt state"));
                 let o = self.reg(args[0], R::Rax);
-                self.a.load(true, R::Rax, mem(o, 0));
+                self.a.load(false, R::Rax, mem(o, 0));
                 self.a.load(true, R::Rax, mem(R::Rax, offset_of!(Klass, mirror) as i32));
                 self.a.test_rr(true, R::Rax, R::Rax);
                 self.a.jcc(Cond::E, fail);
@@ -129,7 +129,7 @@ impl Gen<'_> {
         self.a.jcc(Cond::E, done);
         self.a.test_rr(true, R::Rcx, R::Rcx);
         self.a.jcc(Cond::E, done);
-        self.a.load(true, R::Rdx, mem(o, 0));
+        self.a.load(false, R::Rdx, mem(o, 0));
         self.a.mov_ri(R::Rax, 1);
         self.a.alu_rr(true, Alu::Cmp, R::Rdx, R::Rcx);
         self.a.jcc(Cond::E, done);

@@ -62,7 +62,7 @@ impl Emitter {
             if self.tier == 1 {
                 self.profile_receiver(pc);
             }
-            self.a.load(true, R::Rax, mem(R::Rcx, 0));
+            self.a.load(false, R::Rax, mem(R::Rcx, 0));
             self.a.load(true, R::Rax, mem(R::Rax, offset_of!(Klass, vtable_ptr) as i32));
             self.a.load(true, R::Rdx, mem(R::Rax, 8 * m.vtable_index()));
         } else {
@@ -72,7 +72,7 @@ impl Emitter {
             // Inline cache: compare the receiver class with the cached pair, else miss handler.
             let cell = super::profile::cell(self.m, pc);
             let (hit, done, found) = (self.a.new_label(), self.a.new_label(), self.a.new_label());
-            self.a.load(true, R::Rdi, mem(R::Rcx, 0));
+            self.a.load(false, R::Rdi, mem(R::Rcx, 0));
             // rax holds the cell throughout: the cached pair is inline, so a hit is one compare.
             self.a.mov_ri(R::Rax, cell as *const runtime::IcCell as i64);
             self.a.alu_rm(true, super::asm::Alu::Cmp, R::Rdi, mem(R::Rax, runtime::IcCell::klass_offset()));
@@ -110,7 +110,7 @@ impl Emitter {
     fn profile_receiver(&mut self, pc: usize) {
         let cell = super::profile::cell(self.m, pc);
         let (other, done) = (self.a.new_label(), self.a.new_label());
-        self.a.load(true, R::Rdi, mem(R::Rcx, 0));
+        self.a.load(false, R::Rdi, mem(R::Rcx, 0));
         self.a.mov_ri(R::Rax, cell as *const runtime::IcCell as i64);
         for i in 0..2 {
             let next = self.a.new_label();
@@ -277,7 +277,7 @@ impl Emitter {
         self.member_target_rdx();
         if kind == "linkToVirtual" || kind == "linkToInterface" {
             self.set_bci(pc);
-            self.a.load(true, R::Rdi, mem(R::Rcx, 0));
+            self.a.load(false, R::Rdi, mem(R::Rcx, 0));
             self.a.mov_rr(true, R::Rsi, R::Rdx);
             self.a.call_abs(runtime::select_linked as *const () as usize);
             self.a.test_rr(true, R::Rax, R::Rax);

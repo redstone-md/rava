@@ -305,7 +305,7 @@ impl Shared<'_> {
                         let start = page + (w * 64 + bits.trailing_zeros() as usize) * size;
                         bits &= bits - 1;
                         // SAFETY: inside a page in use; old objects have their mark set.
-                        if unsafe { *(start as *const usize) } != 0 {
+                        if unsafe { *(start as *const u32) } != 0 {
                             self.scan_old(start, card, &mut last, out);
                         }
                     }
