@@ -241,6 +241,29 @@ impl Gen<'_> {
             self.a.alu_rr(false, Alu::Xor, R::Rax, R::Rax);
             self.a.jmp(after);
         } else {
+            if k.is_interface() {
+                // An interface: one of the class's interfaces, all of which (inherited ones
+                // included) its flattened itable lists; the runtime only for a class whose
+                // itable is not built yet.
+                let (scan, no, slow) = (self.a.new_label(), self.a.new_label(), self.a.new_label());
+                self.a.load(true, R::R11, mem(R::Rcx, std::mem::offset_of!(Klass, itable_raw) as i32));
+                self.a.test_rr(true, R::R11, R::R11);
+                self.a.jcc(Cond::E, slow);
+                self.a.load(true, R::Rax, mem(R::R11, 0));
+                self.a.bind(scan);
+                self.a.alu_ri(true, Alu::Add, R::R11, 16);
+                self.a.alu_ri(true, Alu::Sub, R::Rax, 1);
+                self.a.jcc(Cond::L, no);
+                self.a.alu_rm(true, Alu::Cmp, R::Rdx, mem(R::R11, -8));
+                self.a.jcc(Cond::Ne, scan);
+                self.a.mov_ri(R::Rax, 1);
+                self.a.jmp(done);
+                self.a.bind(no);
+                self.a.alu_rr(false, Alu::Xor, R::Rax, R::Rax);
+                self.a.jmp(after);
+                self.a.bind(slow);
+                self.a.mov_ri(R::Rax, 1);
+            }
             self.a.mov_ri(R::Rdx, cell as *const _ as i64);
             self.a.alu_rm(true, Alu::Cmp, R::Rcx, mem(R::Rdx, 0));
             self.a.jcc(Cond::E, done);
