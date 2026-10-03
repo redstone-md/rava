@@ -140,7 +140,7 @@ impl Builder {
                     return Some(true);
                 }
             }
-            let s = matches!(k, crate::jit::intrinsics::Intrinsic::GetClass).then_some(pre);
+            let s = matches!(k, crate::jit::intrinsics::Intrinsic::GetClass | crate::jit::intrinsics::Intrinsic::ArrayCopy).then_some(pre);
             let v = self.add(Inst::Intrinsic(k, args, s), if ret == BasicType::Void { Ty::I } else { Ty::of(ret) });
             if ret != BasicType::Void {
                 self.push(v);

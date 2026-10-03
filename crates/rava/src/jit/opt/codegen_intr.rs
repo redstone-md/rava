@@ -42,6 +42,12 @@ impl Gen<'_> {
                 self.a.bind(done);
                 self.put(v, R::Rax);
             }
+            Intrinsic::ArrayCopy => {
+                let fail = self.deopt(s.expect("arraycopy has a deopt state"));
+                self.call_preserving_vals(runtime::arraycopy_fast as *const () as usize, args);
+                self.a.test_rr(false, R::Rax, R::Rax);
+                self.a.jcc(Cond::E, fail);
+            }
             Intrinsic::Round(mode) => {
                 let a = self.xreg(args[0], X(1));
                 let r = self.xout(v);
