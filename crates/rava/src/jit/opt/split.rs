@@ -30,9 +30,7 @@ pub fn split(g: &mut Graph) {
 
 /// Adds `Copy(v)` to block `b` (at its end), a value of its own.
 fn copy(g: &mut Graph, b: B, v: V) -> V {
-    let c = g.add(b, Inst::Copy(v), g.ty(v));
-    g.alias.push(c);
-    c
+    g.add(b, Inst::Copy(v), g.ty(v))
 }
 
 /// A read of a value: in block `b` by instruction or terminator, or on the edge from `b` into
