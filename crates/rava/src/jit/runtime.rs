@@ -406,6 +406,8 @@ pub extern "sysv64" fn arraycopy_fast(src: crate::heap::Oop, sp: u64, dst: crate
 
 /// Calls a site compiled without a receiver profile records before its method is recompiled.
 pub(super) const REPROFILE_CALLS: u32 = 2000;
+/// Calls of a site compiled as cold before it counts as hot.
+pub(super) const HOT_COLD_CALLS: u32 = 10000;
 
 /// Records a receiver class at a call compiled without a profile (`ic_cell` is the site's
 /// profile); returns 1 when `left` (the site's remaining count, already decremented) ran out.
@@ -426,10 +428,13 @@ pub extern "sysv64" fn profile_call(k: *const Klass, cell: *const IcCell, left: 
 
 /// A site of `m`'s optimized code compiled without a profile turned hot: recompile `m` with
 /// what the site recorded (a few times at most per method).
-pub extern "sysv64" fn request_reprofile(m: *const Method) {
+pub extern "sysv64" fn request_reprofile(m: *const Method, site: *const Method, bci: u64) {
     use std::sync::atomic::Ordering;
-    // SAFETY: a live method.
+    // SAFETY: live methods (`site` null unless a cold site turned hot).
     let m: &'static Method = unsafe { &*m };
+    if let Some(site) = unsafe { site.as_ref() } {
+        super::profile::mark_hot_site(site, bci as usize);
+    }
     if m.reprofiles.fetch_add(1, Ordering::Relaxed) < MAX_REPROFILES {
         super::queue::submit(super::queue::Job::Reprofile(m));
     }

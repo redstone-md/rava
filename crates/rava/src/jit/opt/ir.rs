@@ -325,6 +325,9 @@ pub struct Graph {
     /// Virtual and interface calls whose site had no receiver profile when compiled: the code
     /// profiles them itself and asks for a recompilation once they turn hot (`codegen_obj.rs`).
     pub unprofiled: std::collections::HashSet<V>,
+    /// Calls not inlined because their site looked cold: the code counts them and marks the
+    /// site hot (and asks for a recompilation) if it runs often after all.
+    pub cold_calls: std::collections::HashSet<V>,
 }
 
 impl Graph {
