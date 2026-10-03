@@ -1,6 +1,6 @@
 //! Code generation of intrinsics (`jit/intrinsics.rs`): `Math` rounding, square root, min, max
 //! and abs, `Unsafe` memory access, `Class.isInstance`, `Object.getClass`, float bit
-//! conversions and the identity hash.
+//! conversions, bit counts and the identity hash.
 
 use super::codegen::{Arg, Gen};
 use super::ir::*;
@@ -29,6 +29,16 @@ impl Gen<'_> {
                     self.a.mov_xr(wide, r, a);
                     self.xput(v, r);
                 }
+            }
+            Intrinsic::BitCount(opcode, wide) => {
+                let a = self.reg(args[0], R::Rax);
+                let r = self.out(v);
+                // The instructions merge into their destination on older cores: start it fresh.
+                if r != a {
+                    self.a.alu_rr(false, Alu::Xor, r, r);
+                }
+                self.a.bit_count(opcode, wide, r, a);
+                self.put(v, r);
             }
             Intrinsic::IdentityHash => {
                 let done = self.a.new_label();
