@@ -443,7 +443,9 @@ impl Builder {
             _ => return None,
         };
         let held = self.sc.stack.iter().chain(self.sc.locals.iter()).any(|&s| s == Some(a));
-        if self.g.blocks[self.cur as usize].insts.last() != Some(&a) || held {
+        // The load is the block's last instruction but for constants (the mask itself).
+        let last = self.g.blocks[self.cur as usize].insts.iter().rev().find(|&&v| self.g.constant(v).is_none());
+        if last != Some(&a) || held {
             return None;
         }
         self.g.values[a as usize].inst = Inst::LoadIndexed(arr, idx, unsigned);
