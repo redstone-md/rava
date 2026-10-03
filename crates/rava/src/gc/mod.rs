@@ -83,6 +83,8 @@ pub struct Heap {
     /// The space's page metadata (a fixed-size table), for runs on pages a thread owns.
     pages: *mut Option<space::PageMeta>,
     base: usize,
+    /// When the heap was made (the VM's start), for the log's timestamps.
+    created: std::time::Instant,
 }
 
 // The space is only touched under its lock (or with the world stopped).
@@ -99,7 +101,7 @@ impl Heap {
         let min_trigger = std::env::var("RAVA_GC_MB").ok().and_then(|v| v.parse::<usize>().ok()).map_or(128 << 20, |mb| mb << 20);
         let mut space = Space::new(reserve);
         let (pages, base) = (space.pages.as_mut_ptr(), space.base);
-        Heap { space: Mutex::new(space), min_trigger, max_heap, small_allocated: Default::default(), pages, base }
+        Heap { space: Mutex::new(space), min_trigger, max_heap, small_allocated: Default::default(), pages, base, created: std::time::Instant::now() }
     }
 
     /// `bytes` of zeroed, 8-aligned memory for `t`, collecting when the heap has grown enough.
@@ -260,7 +262,8 @@ impl Heap {
         });
         if let (Some((marked, live, allocated, touched)), true) = (done, std::env::var_os("RAVA_GC_LOG").is_some()) {
             eprintln!(
-                "[gc] {} after {} MiB allocated: marked {marked} objects, {} MiB live of {}+{} MiB touched, {:.1} ms (stop {:.1}, mark {:.1}, sweep {:.1})",
+                "[gc {:.3}s] {} after {} MiB allocated: marked {marked} objects, {} MiB live of {}+{} MiB touched, {:.1} ms (stop {:.1}, mark {:.1}, sweep {:.1})",
+                self.created.elapsed().as_secs_f64(),
                 if full { "full" } else { "young" },
                 allocated >> 20,
                 live >> 20,
