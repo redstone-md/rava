@@ -42,6 +42,21 @@ pub(super) fn frequent_receivers(m: &'static Method, bci: usize) -> Vec<&'static
     cell.frequent().into_iter().map(|k| unsafe { &*(k as *const Klass) }).collect()
 }
 
+fn hot_sites() -> &'static std::sync::Mutex<std::collections::HashSet<(usize, u32)>> {
+    static S: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<(usize, u32)>>> = std::sync::OnceLock::new();
+    S.get_or_init(Default::default)
+}
+
+/// Marks `m`'s call at `bci` as run often from optimized code that judged it cold.
+pub(crate) fn mark_hot_site(m: &'static Method, bci: usize) {
+    hot_sites().lock().unwrap().insert((m as *const Method as usize, bci as u32));
+}
+
+/// Whether `m`'s call at `bci` turned out hot after being compiled as a cold call.
+pub(crate) fn hot_site(m: &'static Method, bci: usize) -> bool {
+    hot_sites().lock().unwrap().contains(&(m as *const Method as usize, bci as u32))
+}
+
 /// Whether `m`'s call at `bci` has recorded no receiver class at all (never run by profiling
 /// code before this compilation).
 pub(crate) fn unprofiled(m: &'static Method, bci: usize) -> bool {

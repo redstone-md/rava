@@ -83,6 +83,7 @@ impl Builder {
     fn emit_miss(&mut self, plans: Vec<(&'static Method, Guard)>, callee: Callee, args: Vec<V>, s: Rc<State>, ret: BasicType, miss: Option<Rc<State>>) -> bool {
         let all = plans.len();
         // What is known at the call holds after it, on every path through the callee.
+        self.cold_call = false;
         let known = self.nonnull.clone();
         let first = args.first().and_then(|&a| self.g.constant(a));
         let k = self.g.new_block(-1);
@@ -93,8 +94,14 @@ impl Builder {
             // A guarded target the VM compiles in place (`Object.hashCode` for a class that
             // does not override it).
             let intrinsic = crate::jit::intrinsics::intrinsic(target).filter(|k| k.is_stateless());
-            let freq = self.sc.frequency(s.bci as usize);
+            let mut freq = self.sc.frequency(s.bci as usize);
+            if crate::jit::profile::hot_site(self.sc.m, s.bci as usize) {
+                freq = freq.max(1.0);
+            }
             let ok = intrinsic.is_some() || decide(target, first, &self.chain, 3, self.spent, freq).is_some();
+            if !ok && intrinsic.is_none() && crate::jit::inline_plan::cold_site(target, freq) {
+                self.cold_call = true;
+            }
             if env_once!("RAVA_INLINE_LOG").is_some() {
                 let indent = "  ".repeat(self.chain.len());
                 let why = if ok { String::new() } else { format!(" ({})", crate::jit::inline_plan::refusal(target, &self.chain, 3, self.spent, freq)) };
@@ -173,6 +180,9 @@ impl Builder {
         let v = self.add(Inst::Call(callee, args, s), if ret == BasicType::Void { Ty::I } else { Ty::of(ret) });
         if self.unprofiled_call {
             self.g.unprofiled.insert(v);
+        }
+        if std::mem::take(&mut self.cold_call) {
+            self.g.cold_calls.insert(v);
         }
         (ret != BasicType::Void).then_some(v)
     }

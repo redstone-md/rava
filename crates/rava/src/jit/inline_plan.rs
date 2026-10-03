@@ -92,7 +92,7 @@ pub(super) fn decide(target: &'static Method, first: Option<i64>, chain: &Chain,
 }
 
 /// A call site too rarely run to inline more than a trivial method there (`@ForceInline` aside).
-fn cold_site(target: &'static Method, freq: f32) -> bool {
+pub(super) fn cold_site(target: &'static Method, freq: f32) -> bool {
     freq < COLD_SITE && target.code.is_some_and(|c| c.code.len() > MAX_TRIVIAL_SIZE) && !target.has_annotation("Ljdk/internal/vm/annotation/ForceInline;")
 }
 
