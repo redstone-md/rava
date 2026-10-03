@@ -552,17 +552,19 @@ impl Builder {
 
     /// Checks `v` for null unless it is known not to be; it is known afterwards.
     pub fn null_check(&mut self, v: V, s: Rc<State>) {
-        if self.nonnull.contains(&v) || self.g.constant(v).is_some_and(|c| c != 0) {
+        if self.nullness(v) == Some(false) {
             return;
         }
         self.add(Inst::NullCheck(v, s), Ty::A);
         self.nonnull.push(v);
     }
 
-    /// Whether `v` is known to be null (`Some(true)`) or not (`Some(false)`).
+    /// Whether `v` is known to be null (`Some(true)`) or not (`Some(false)`): an allocation's
+    /// result never is, wherever it flows (the per-block facts do not survive merges).
     pub fn nullness(&self, v: V) -> Option<bool> {
         match self.g.constant(v) {
             Some(c) => Some(c == 0),
+            None if matches!(self.g.inst(self.g.resolve(v)), Inst::New(..) | Inst::NewArray(..) | Inst::NewMulti(..)) => Some(false),
             None => self.nonnull.contains(&v).then_some(false),
         }
     }
