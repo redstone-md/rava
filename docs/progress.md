@@ -805,3 +805,37 @@ mostly the slow-path calls around allocation refills (6 million per start) and r
 interval (by block liveness): loops lose their moves (an int-array sum 3.6 -> 2.9 ms), but the
 benchmark did not move, and the register sharing needed care (no eviction of a shared
 register, no sharing with a non-first operand or with another phi).
+
+## 2026-10-03 (cont.) — parity on the server's own clock
+
+A/B (`bench/paper_ab.sh -n 4`, server `Done` time, means): `a3b47ec` 29.49 s against java 29.79
+s, and `62b4ad9` 29.47 against 29.16 in the next session: within the ±0.4 s that java itself
+moves between sessions. By milestone (50 ms polling, two runs each), rava reaches `Preparing
+level` ~2.4 s earlier and loses ~3.5 s in world generation (stronghold placement's biome search
+on `Worker-Main`, then the spawn chunks on the one `Paper Common Worker`).
+
+**What moved it:**
+
+- collector: card roots are collected before any marking (a young object marked by another
+  worker had looked old and been rescanned), pages without old objects only have their cards
+  cleaned (card scanning 890 -> 560 ms CPU per start); marked objects are prefetched through an
+  8-entry FIFO ahead of the scan (largest full collection 140 -> 105 ms, pauses ~990 -> ~820 ms);
+- classes live in the low 2 GiB (`MAP_32BIT`), so type guards compare against an imm32 instead
+  of a 10-byte `movabs` (they were most of the `movabs` samples in hot code);
+- each class caches its last itable hit (HotSpot's secondary super cache) for interface
+  `checkcast` and megamorphic interface calls;
+- implicit null checks: a null check right before an access of the same object emits nothing,
+  and the SIGSEGV handler (`jit/fault.rs`) resumes at its deoptimization stub (24k of 33k null
+  checks in a start; explicit tests had been ~6% of hot samples);
+- range check elimination for counted loops (`opt/rce.rs`): `i < a.length` from a constant
+  start needs no bounds check, and loop-invariant bounds become one `RangeGuard` in the
+  preheader that deoptimizes to the loop-entry state;
+- intrinsics: `Math.floorMod/floorDiv` by a constant power of two (the biome lookup's sign
+  fix-up branch mispredicted on hashed values), `Integer/Long.bitCount`,
+  `numberOfLeadingZeros/TrailingZeros` (popcnt, lzcnt, tzcnt);
+- SHA-256 unrolled with BMI2 rotates (154 -> 260 MB/s): Paper's launcher hashes 94 MB of jars
+  before `Main` starts, which had cost 0.37 s more than on HotSpot.
+
+**Dropped:** prefetching the next hole of a reused page at refill (no change), allocating from
+empty pages before holes (pauses 0.9 -> 1.5 s, 250 MB more touched), full collections at 3x
+instead of 2x the old generation (neutral), 128-byte cards (no faster to scan).
