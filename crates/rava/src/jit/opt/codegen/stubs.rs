@@ -74,18 +74,29 @@ impl Gen<'_> {
         }
         let common = self.a.new_label();
         let list = std::mem::take(&mut self.deopt_list);
+        // Points with the same descriptor (common along a block) share one stub.
+        let mut stubs: std::collections::HashMap<Vec<u8>, Label> = std::collections::HashMap::new();
         for (l, s) in &list {
+            let desc = self.deopt_desc(s).encode();
+            if let Some(&shared) = stubs.get(&desc) {
+                self.a.bind(*l);
+                self.a.jmp(shared);
+                continue;
+            }
             self.a.bind(*l);
-            self.deopt_stub(s, common);
+            // rax: no value lives there (rcx and rdx may hold some, saved by the common part).
+            // Descriptors live in low memory, so its address is a 32-bit immediate.
+            self.a.mov_ri(R::Rax, crate::low::leak_slice(desc.clone()).as_ptr() as i64);
+            self.a.jmp(common);
+            stubs.insert(desc, *l);
         }
         if !list.is_empty() {
             self.deopt_common(common);
         }
     }
 
-    /// A deoptimization point: its descriptor (where each frame slot's value is) into rdx, then
-    /// the method's common stub.
-    fn deopt_stub(&mut self, s: &State, common: Label) {
+    /// The descriptor of a deoptimization point: where each frame slot's value is.
+    fn deopt_desc(&self, s: &State) -> crate::jit::opt::deopt::Desc {
         use crate::jit::opt::deopt::Remat;
         let scopes = scopes(s);
         let loc_of = |v: V| self.home[v as usize].unwrap_or(self.loc[v as usize]);
@@ -116,10 +127,7 @@ impl Gen<'_> {
             }
         }
         let frames = scopes.iter().map(|sc| crate::jit::opt::deopt::Frame { method: sc.method, frame: sc.frame, bci: sc.bci, depth: sc.stack.len() as u32 }).collect();
-        let desc: &'static crate::jit::opt::deopt::Desc = Box::leak(Box::new(crate::jit::opt::deopt::Desc { frames, slots, remats }));
-        // rax: no value lives there (rcx and rdx may hold some, saved by the common part).
-        self.a.mov_ri(R::Rax, desc as *const _ as i64);
-        self.a.jmp(common);
+        crate::jit::opt::deopt::Desc { frames, slots, remats }
     }
 
     /// Saves the allocatable registers where the runtime reads the state's values from, then
