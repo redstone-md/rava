@@ -25,8 +25,9 @@ pub const LARGE_THRESHOLD: usize = 32 << 10;
 /// holes unreused: the heap faulted in 0.3-0.6 GiB more fresh memory (peak RSS 1.9 -> 2.5 GiB).
 const MIN_RUN: usize = 256;
 
-pub const CLASS_SIZES: [u32; 44] = [
-    16, 32, 48, 64, 80, 96, 112, 128, 144, 160, 176, 192, 208, 224, 240, 256, //
+pub const CLASS_SIZES: [u32; 59] = [
+    16, 24, 32, 40, 48, 56, 64, 72, 80, 88, 96, 104, 112, 120, 128, 136, 144, 152, 160, 168, 176, 184, 192, 200, //
+    208, 216, 224, 232, 240, 248, 256, //
     320, 384, 448, 512, 640, 768, 896, 1024, 1280, 1536, 1792, 2048, //
     2560, 3072, 3584, 4096, 5120, 6144, 7168, 8192, //
     10240, 12288, 14336, 16384, 20480, 24576, 28672, 32768,
@@ -37,7 +38,7 @@ pub const CLASSES: usize = CLASS_SIZES.len();
 #[inline]
 pub fn class_of(bytes: usize) -> usize {
     if bytes <= 256 {
-        return (bytes.max(1) + 15) / 16 - 1;
+        return (bytes.max(16) + 7) / 8 - 2;
     }
     CLASS_SIZES.iter().position(|&s| s as usize >= bytes).expect("small object")
 }
