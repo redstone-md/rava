@@ -388,15 +388,18 @@ fn scan(g: &Graph, iv: &Intervals, full: &Intervals, loops: &LoopMap) -> (Vec<Lo
         }
         let allowed = |c: Loc| cands.contains(&c);
         // Coalescing: the result takes the register of its first operand when that dies here
-        // (code generation computes into the first operand's register).
-        let first = match g.values[v].inst {
-            Inst::Phi(_) => None,
-            ref inst => inputs(g, inst).first().copied(),
+        // (code generation computes into the first operand's register), or of a commutative
+        // operation's second operand (computed into it the other way round).
+        let operands = match g.values[v].inst {
+            Inst::Phi(_) => Vec::new(),
+            ref inst => inputs(g, inst),
         };
-        let hint = first.filter(|&x| iv.end[x as usize] == iv.start[v]).and_then(|x| {
+        let commutes = matches!(g.values[v].inst, Inst::Bin(BinOp::Add | BinOp::Mul | BinOp::And | BinOp::Or | BinOp::Xor, ..));
+        let reuse = |x: V| {
             let c = loc[x as usize];
-            (allowed(c) && !active.iter().any(|&a| a != x as usize && loc[a] == c)).then_some((x as usize, c))
-        });
+            (iv.end[x as usize] == iv.start[v] && allowed(c) && !active.iter().any(|&a| a != x as usize && loc[a] == c)).then_some((x as usize, c))
+        };
+        let hint = operands.first().and_then(|&x| reuse(x)).or_else(|| operands.get(1).filter(|_| commutes).and_then(|&y| reuse(y)));
         if let Some((x, c)) = hint {
             loc[v] = c;
             active.retain(|&a| a != x);
