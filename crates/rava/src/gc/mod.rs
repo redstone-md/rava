@@ -35,6 +35,9 @@ pub struct ClassCache {
 
 pub struct AllocCache {
     classes: [ClassCache; CLASSES],
+    /// Where each class's current run ends; past the bump limit its cells are not zeroed yet
+    /// (`space::next_chunk`).
+    stops: [usize; CLASSES],
     /// Bytes of retired runs not yet added to `Heap::small_allocated` (flushed per MiB and
     /// when taking a page, so refills within a page touch no shared counter).
     pending: usize,
@@ -67,7 +70,7 @@ pub(crate) fn step_cache_offsets() -> (usize, usize) {
 
 impl Default for AllocCache {
     fn default() -> Self {
-        AllocCache { classes: [ClassCache::default(); CLASSES], pending: 0 }
+        AllocCache { classes: [ClassCache::default(); CLASSES], stops: [0; CLASSES], pending: 0 }
     }
 }
 
@@ -122,6 +125,15 @@ impl Heap {
     #[cold]
     fn refill(&self, t: &mut Thread, class: usize) -> Option<()> {
         let retired = t.alloc.classes[class];
+        if retired.page != 0 && t.alloc.stops[class] > retired.end {
+            // The run goes on: zero its next chunk.
+            let index = retired.page - 1;
+            // SAFETY: as below, the page is owned by this thread's cache.
+            let meta = unsafe { (*self.pages.add(index)).as_mut().expect("owned page") };
+            let end = space::next_chunk(meta, self.base + (index << space::PAGE_SHIFT), retired.end, t.alloc.stops[class]);
+            t.alloc.classes[class].end = end;
+            return Some(());
+        }
         t.alloc.pending += retired.bump - retired.start;
         if t.alloc.pending >= 1 << 20 {
             self.flush_pending(t);
@@ -131,8 +143,9 @@ impl Heap {
             // SAFETY: the page is owned by this thread's cache, so outside collections (which
             // cannot run while this thread allocates) only this thread touches its metadata.
             let meta = unsafe { (*self.pages.add(index)).as_mut().expect("owned page") };
-            if let Some((bump, end)) = space::next_run_in(meta, self.base + (index << space::PAGE_SHIFT)) {
+            if let Some((bump, end, stop)) = space::next_run_in(meta, self.base + (index << space::PAGE_SHIFT)) {
                 t.alloc.classes[class] = ClassCache { bump, end, page: retired.page, start: bump };
+                t.alloc.stops[class] = stop;
                 return Some(());
             }
         }
@@ -140,7 +153,7 @@ impl Heap {
         self.flush_pending(t);
         self.maybe_collect(t);
         let mut space = self.space.lock().unwrap();
-        let (page, bump, end) = match space.take_run(class) {
+        let (page, bump, end, stop) = match space.take_run(class) {
             Some(r) => r,
             None => {
                 drop(space);
@@ -150,6 +163,7 @@ impl Heap {
             }
         };
         t.alloc.classes[class] = ClassCache { bump, end, page: page + 1, start: bump };
+        t.alloc.stops[class] = stop;
         Some(())
     }
 
