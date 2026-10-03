@@ -39,17 +39,20 @@ pub(super) enum Intrinsic {
     /// `Object.hashCode` / `System.identityHashCode`: the hash in the mark word once assigned
     /// (0 for null), else the runtime assigns it.
     IdentityHash,
+    /// `System.arraycopy`: checked and copied by a runtime helper called directly (no native
+    /// frame); any check failing leaves compiled code for the interpreter to throw.
+    ArrayCopy,
 }
 
 impl Intrinsic {
     /// Needs no deoptimization state (usable where the optimizing tier has none at hand).
     pub(super) fn is_stateless(self) -> bool {
-        !matches!(self, Intrinsic::GetClass)
+        !matches!(self, Intrinsic::GetClass | Intrinsic::ArrayCopy)
     }
 
     /// Without side effects (usable inside inlined leaf bodies).
     pub(super) fn is_pure(self) -> bool {
-        !matches!(self, Intrinsic::UnsafePut(..) | Intrinsic::CompareAndSet(_) | Intrinsic::IdentityHash | Intrinsic::UnsafeGet(_, true))
+        !matches!(self, Intrinsic::UnsafePut(..) | Intrinsic::CompareAndSet(_) | Intrinsic::IdentityHash | Intrinsic::UnsafeGet(_, true) | Intrinsic::ArrayCopy)
     }
 }
 
@@ -117,6 +120,7 @@ pub(super) fn intrinsic(m: &Method) -> Option<Intrinsic> {
         }
         "java/lang/Class" if name == "isInstance" && desc == "(Ljava/lang/Object;)Z" => Some(Intrinsic::IsInstance),
         "java/lang/Object" if name == "getClass" && desc == "()Ljava/lang/Class;" => Some(Intrinsic::GetClass),
+        "java/lang/System" if name == "arraycopy" && desc == "(Ljava/lang/Object;ILjava/lang/Object;II)V" => Some(Intrinsic::ArrayCopy),
         "java/lang/Thread" if name == "currentThread" && desc == "()Ljava/lang/Thread;" => Some(Intrinsic::CurrentThread),
         "java/lang/Double" | "java/lang/Float" => match (name, desc) {
             ("doubleToRawLongBits", "(D)J") => Some(Intrinsic::Bits(BasicType::Long)),
@@ -157,6 +161,8 @@ impl Emitter {
     pub(super) fn try_intrinsic(&mut self, pc: usize, depth: u16, m: &'static Method, args: i32) -> bool {
         let Some(k) = bound_intrinsic(m) else { return false };
         match k {
+            // The optimizing tier's only.
+            Intrinsic::ArrayCopy => return false,
             Intrinsic::Round(mode) => {
                 self.a.fload(true, X(0), self.stk(args));
                 self.a.round_sd(X(0), X(0), mode);

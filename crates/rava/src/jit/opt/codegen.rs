@@ -346,6 +346,56 @@ impl Gen<'_> {
         }
     }
 
+    /// Calls a Rust helper with up to six values as its arguments, the allocatable caller-saved
+    /// registers preserved as in `call_preserving` (and the helper must not collect: nothing
+    /// links the frame). The result is in rax.
+    pub fn call_preserving_vals(&mut self, addr: usize, vals: &[V]) {
+        const PARAMS: [R; 6] = [R::Rdi, R::Rsi, R::Rdx, R::Rcx, R::R8, R::R9];
+        let gprs = self.live_gprs.clone();
+        let xmms = self.live_xmms.clone();
+        for &r in &gprs {
+            self.a.push(r);
+        }
+        let pad = gprs.len() % 2 == 1;
+        if pad {
+            self.a.push(R::Rax);
+        }
+        let xbytes = (8 * xmms.len() as i32 + 15) & !15;
+        if xbytes > 0 {
+            self.a.alu_ri(true, Alu::Sub, R::Rsp, xbytes);
+            for (i, &x) in xmms.iter().enumerate() {
+                self.a.fstore(true, mem(R::Rsp, 8 * i as i32), X(x));
+            }
+        }
+        // Through the stack, so no argument register is written before every value is read;
+        // spill slots are rsp-relative, so their offsets follow the pushes.
+        let mut below = 8 * (gprs.len() + pad as usize) as i32 + xbytes;
+        for &v in vals {
+            match self.loc[v as usize] {
+                Loc::Stack(n) => self.a.load(true, R::R11, mem(R::Rsp, 8 * n + below)),
+                l => moves::mov(&mut self.a, Loc::Reg(R::R11), l),
+            }
+            self.a.push(R::R11);
+            below += 8;
+        }
+        for i in (0..vals.len()).rev() {
+            self.a.pop(PARAMS[i]);
+        }
+        self.a.call_abs(addr);
+        if xbytes > 0 {
+            for (i, &x) in xmms.iter().enumerate() {
+                self.a.fload(true, X(x), mem(R::Rsp, 8 * i as i32));
+            }
+            self.a.alu_ri(true, Alu::Add, R::Rsp, xbytes);
+        }
+        if pad {
+            self.a.pop(R::R11);
+        }
+        for r in gprs.iter().rev() {
+            self.a.pop(*r);
+        }
+    }
+
     /// Before a call out: stores in the frame header where the call is (its bytecode index, or
     /// for a call from inlined bodies its `InlinedSite`, so stack walks see the inlined frames
     /// hidden ones aside) and publishes the header as `Thread::top`; with `sp`, also the
