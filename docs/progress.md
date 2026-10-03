@@ -726,3 +726,14 @@ is within noise (4 rounds: median 33.6 s against 33.7 s; `java` 29.2 s).
 Also seen: the optimizing tier's code for `ShiftedNoise.compute` is 30 KB because it inlines the
 whole noise chain, which then makes it too large to inline anywhere (C2 keeps it at 1 KB and calls
 `NormalNoise.getValue`); time there is noise sampling either way, so it is not a lever by itself.
+
+**InlineSmallCode back to C2's 2500 bytes.** The tier inlined callees with up to 7500 bytes of
+optimized code, so hot methods grew to 30-70 KiB (`doFill` 71 KiB against C2's 33, with
+`getInterpolatedState` and `setBlockState` inlined that C2 calls). Sweeping the limit on the start
+(1200, 2500, 4000, 7500, 15000) put 2500 best; a 5-round A/B: Done median 31.65 s against
+32.01 s (`java` 28.5 s). Entry costs are not the gap: the samples on the first instructions of
+compiled methods are the same in both VMs (~1.3k of the workers' JIT samples).
+
+Allocation volume is: over the start rava allocates ~12 GB against `java`'s ~6.5 GB (16-byte
+headers, 8-byte references, 24-byte array base against 12/4/16 with compressed oops), so it
+collects about as often while allocating twice the bytes (pauses 1.06 s against 0.81 s).
