@@ -35,7 +35,7 @@ pub(super) fn register(r: &mut NativeRegistry) {
         let cp = rt::alloc_instance(t, cp_class)?;
         let f = cp_class.declared_field(Symbol::intern("constantPoolOop"), Symbol::intern("Ljava/lang/Object;")).expect("constantPoolOop");
         // SAFETY: fresh ConstantPool.
-        unsafe { obj::write::<u64>(cp, f.offset, a[0]) };
+        unsafe { obj::write_ref(cp, f.offset, a[0] as Oop) };
         ret_ref(cp)
     });
     r.add(C, "isHidden", "()Z", |_, a| ret_bool(klass(a[0]).is_some_and(|k| k.is_hidden())));

@@ -314,6 +314,7 @@ pub(crate) unsafe fn read_field(o: Oop, offset: u32, ty: BasicType) -> u64 {
         BasicType::Short => obj::read::<i16>(o, offset) as i64 as u64,
         BasicType::Int => obj::read::<i32>(o, offset) as i64 as u64,
         BasicType::Float => obj::read::<u32>(o, offset) as u64,
+        BasicType::Reference => obj::read_ref(o, offset) as u64,
         _ => obj::read::<u64>(o, offset),
     }
 }
@@ -325,6 +326,7 @@ pub(crate) unsafe fn write_field(o: Oop, offset: u32, ty: BasicType, v: u64) {
         BasicType::Byte => obj::write::<u8>(o, offset, v as u8),
         BasicType::Char | BasicType::Short => obj::write::<u16>(o, offset, v as u16),
         BasicType::Int | BasicType::Float => obj::write::<u32>(o, offset, v as u32),
+        BasicType::Reference => obj::write_ref(o, offset, v as Oop),
         _ => obj::write::<u64>(o, offset, v),
     }
 }

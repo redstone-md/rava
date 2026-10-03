@@ -48,7 +48,7 @@ impl Emitter {
                 self.init_check(holder, slow);
                 self.a.mov_ri(R::Rcx, slot as *const _ as i64);
                 if op == 0xb2 {
-                    load_typed(&mut self.a, ty, mem(R::Rcx, 0));
+                    load_static_to(&mut self.a, R::Rax, ty, mem(R::Rcx, 0));
                     self.a.store(true, self.stk(d), R::Rax);
                 } else {
                     self.a.load(true, R::Rdx, self.stk(d - ty.slots() as i32));
@@ -271,8 +271,20 @@ pub(super) fn load_typed(a: &mut Asm, ty: BasicType, m: M) {
     load_typed_to(a, R::Rax, ty, m)
 }
 
-/// Loads a field of type `ty` at `m` into `dst` in slot encoding.
-pub(super) fn load_typed_to(a: &mut Asm, dst: R, ty: BasicType, m: M) {
+/// Loads a field or element of type `ty` at `m`, in a heap object, into `dst` in slot encoding
+/// (a compressed reference decoded). The load is the first instruction (a fault site).
+pub(crate) fn load_typed_to(a: &mut Asm, dst: R, ty: BasicType, m: M) {
+    if ty == BasicType::Reference && crate::heap::COMPRESSED {
+        a.load(false, dst, m);
+        a.shift_ri(true, Shift::Shl, dst, crate::heap::NARROW_SHIFT as u8);
+        return;
+    }
+    load_static_to(a, dst, ty, m)
+}
+
+/// Loads a static slot (or other full-width storage) of type `ty` at `m` into `dst` in slot
+/// encoding.
+pub(crate) fn load_static_to(a: &mut Asm, dst: R, ty: BasicType, m: M) {
     match ty {
         // Booleans hold 0 or 1, so their loads zero-extend, which also serves `b[i] & 0xff`.
         BasicType::Boolean => a.load_zx(1, dst, m),
@@ -285,13 +297,31 @@ pub(super) fn load_typed_to(a: &mut Asm, dst: R, ty: BasicType, m: M) {
     }
 }
 
-/// Stores rdx (slot encoding) into a field of type `ty` at `m`.
+/// Stores rdx (slot encoding) into a field of type `ty` at `m` (rdx is encoded first: a
+/// reference store clobbers it).
 pub(super) fn store_typed(a: &mut Asm, ty: BasicType, m: M) {
+    if ty == BasicType::Reference {
+        encode_ref(a, R::Rdx, R::Rdx);
+    }
     store_typed_from(a, R::Rdx, ty, m)
 }
 
-/// Stores `src` (slot encoding) into a field of type `ty` at `m`, which lies in a heap object;
-/// a boolean store masks `src`, a reference store marks its card. Clobbers r11.
+/// The register holding reference `src` in its stored form (`heap::encode`): `src` itself
+/// unless references are compressed, else `tmp` (which may be `src`) with the compressed value.
+pub(crate) fn encode_ref(a: &mut Asm, src: R, tmp: R) -> R {
+    if !crate::heap::COMPRESSED {
+        return src;
+    }
+    if src != tmp {
+        a.mov_rr(true, tmp, src);
+    }
+    a.shift_ri(true, Shift::Shr, tmp, crate::heap::NARROW_SHIFT as u8);
+    tmp
+}
+
+/// Stores `src` (slot encoding; a reference in its stored form, `encode_ref`) into a field of
+/// type `ty` at `m`, which lies in a heap object; a boolean store masks `src`, a reference store
+/// marks its card. The store is the first instruction (a fault site). Clobbers r11.
 pub(crate) fn store_typed_from(a: &mut Asm, src: R, ty: BasicType, m: M) {
     store_raw(a, src, ty, m);
     if ty == BasicType::Reference {
@@ -323,9 +353,73 @@ pub(crate) fn card_mark_checked(a: &mut Asm, m: M) {
     a.bind(skip);
 }
 
-/// Stores `src` into a field of type `ty` at `m` without a write barrier.
+/// Unsafe access to a reference at `base + offset`: `heap` emits it for a heap object, `slot` for
+/// a null base (a static slot's absolute address, full width). With uncompressed references the
+/// two are the same code and only `heap` is emitted.
+pub(crate) fn unsafe_ref(a: &mut Asm, base: R, heap: impl FnOnce(&mut Asm), slot: impl FnOnce(&mut Asm)) {
+    if !crate::heap::COMPRESSED {
+        return heap(a);
+    }
+    let (absolute, done) = (a.new_label(), a.new_label());
+    a.test_rr(true, base, base);
+    a.jcc(Cond::E, absolute);
+    heap(a);
+    a.jmp(done);
+    a.bind(absolute);
+    slot(a);
+    a.bind(done);
+}
+
+/// An Unsafe load of type `ty` at `m` (base `base`, null for an absolute address) into `dst`.
+pub(crate) fn unsafe_load(a: &mut Asm, dst: R, ty: BasicType, base: R, m: M) {
+    if ty != BasicType::Reference {
+        return load_static_to(a, dst, ty, m);
+    }
+    unsafe_ref(a, base, |a| load_typed_to(a, dst, ty, m), |a| load_static_to(a, dst, ty, m));
+}
+
+/// An Unsafe store of `src` (slot encoding) of type `ty` at `m` (base `base`, null for an
+/// absolute address), with the write barrier of a reference. `m` must not use r11; clobbers r11.
+pub(crate) fn unsafe_store(a: &mut Asm, src: R, ty: BasicType, base: R, m: M) {
+    if ty != BasicType::Reference {
+        return store_raw(a, src, ty, m);
+    }
+    unsafe_ref(
+        a,
+        base,
+        |a| {
+            let enc = encode_ref(a, src, R::R11);
+            store_raw(a, enc, ty, m);
+        },
+        |a| a.store(true, m, src),
+    );
+    card_mark_checked(a, m);
+}
+
+/// An Unsafe compare-and-set of type `ty` at `m` (base `base`, null for an absolute address):
+/// expected value in rax, new one in r11 (both clobbered); leaves the flags (ZF: done) and, for
+/// a reference, marks the card.
+pub(crate) fn unsafe_cas(a: &mut Asm, ty: BasicType, base: R, m: M) {
+    if ty != BasicType::Reference {
+        return a.lock_cmpxchg_w(ty != BasicType::Int, m, R::R11);
+    }
+    unsafe_ref(
+        a,
+        base,
+        |a| {
+            encode_ref(a, R::Rax, R::Rax);
+            encode_ref(a, R::R11, R::R11);
+            a.lock_cmpxchg_w(!crate::heap::COMPRESSED, m, R::R11);
+        },
+        |a| a.lock_cmpxchg_w(true, m, R::R11),
+    );
+}
+
+/// Stores `src` into a field of type `ty` at `m` without a write barrier (a reference in its
+/// stored form, `encode_ref`).
 pub(crate) fn store_raw(a: &mut Asm, src: R, ty: BasicType, m: M) {
     match ty {
+        BasicType::Reference if crate::heap::COMPRESSED => a.store(false, m, src),
         BasicType::Boolean => {
             a.alu_ri(false, Alu::And, src, 1);
             a.store8(m, src);

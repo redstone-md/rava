@@ -283,7 +283,7 @@ impl Klass {
     pub fn elem_size(&self) -> u32 {
         match self.kind {
             KlassKind::TypeArray { elem } => elem.size(),
-            _ => 8,
+            _ => crate::heap::REF_SIZE,
         }
     }
 

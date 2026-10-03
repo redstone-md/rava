@@ -156,7 +156,7 @@ pub(crate) fn mark_started(t: &Thread, jt: Oop) {
     // SAFETY: live java.lang.Thread whose holder exists after construction.
     unsafe {
         obj::write::<i64>(jt, eetop_offset(), eetop);
-        let holder = obj::read::<Oop>(jt, holder_offset());
+        let holder = obj::read_ref(jt, holder_offset());
         if !holder.is_null() {
             obj::write::<i32>(holder, status_offset(), STATUS_RUNNABLE);
         }
@@ -166,7 +166,7 @@ pub(crate) fn mark_started(t: &Thread, jt: Oop) {
 fn mark_terminated(jt: Oop) {
     // SAFETY: as above.
     unsafe {
-        let holder = obj::read::<Oop>(jt, holder_offset());
+        let holder = obj::read_ref(jt, holder_offset());
         if !holder.is_null() {
             obj::write::<i32>(holder, status_offset(), STATUS_TERMINATED);
         }
@@ -190,7 +190,7 @@ fn start0(t: &mut Thread, a: &[u64]) -> JResult<u64> {
     // SAFETY: live receiver.
     unsafe { obj::write::<i64>(jt, eetop_offset(), -1) };
     // SAFETY: a started thread has its field holder.
-    let daemon = unsafe { obj::read::<bool>(obj::read::<Oop>(jt, holder_offset()), daemon_offset()) };
+    let daemon = unsafe { obj::read::<bool>(obj::read_ref(jt, holder_offset()), daemon_offset()) };
     if !daemon {
         *non_daemon().0.lock().unwrap() += 1;
     }
@@ -229,7 +229,7 @@ fn run_thread(jt: Oop, daemon: bool) {
     starting().lock().unwrap().retain(|&o| o != jt as usize);
     mark_started(&t, jt);
     // SAFETY: the attached thread's own object; its name is a live String (or null).
-    let name = unsafe { obj::read::<Oop>(jt, name_offset()) };
+    let name = unsafe { obj::read_ref(jt, name_offset()) };
     if !name.is_null() {
         set_os_thread_name(&rt::java_string_to_rust(name));
     }

@@ -131,7 +131,7 @@ fn get_mount_entry(t: &mut Thread, a: &[u64]) -> JResult<u64> {
     for (f, v) in [(mnt_name(), name), (mnt_dir(), dir), (mnt_fstype(), fstype), (mnt_opts(), opts)] {
         let arr = byte_array(t, Some(&v))?;
         // SAFETY: a live UnixMountEntry.
-        unsafe { obj::write::<Oop>(entry, f, arr) };
+        unsafe { obj::write_ref(entry, f, arr) };
     }
     // SAFETY: a live UnixMountEntry.
     unsafe { obj::write::<i64>(entry, mnt_dev(), dev) };

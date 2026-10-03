@@ -234,8 +234,10 @@ impl Emitter {
                 let (array, index) = (self.stk(array_slot), self.stk(array_slot + 1));
                 self.aastore_check(array, index, value, slow);
                 self.a.bind(store);
-                self.a.store(true, mem_idx(R::Rax, R::Rcx, 8, base), R::Rdx);
-                super::emit_obj::card_mark(&mut self.a, mem_idx(R::Rax, R::Rcx, 8, base));
+                let at = mem_idx(R::Rax, R::Rcx, crate::heap::REF_SIZE as u8, base);
+                super::emit_obj::encode_ref(&mut self.a, R::Rdx, R::Rdx);
+                super::emit_obj::store_raw(&mut self.a, R::Rdx, BasicType::Reference, at);
+                super::emit_obj::card_mark(&mut self.a, at);
             }
             0x54 => {
                 // boolean[] stores value & 1; byte[] stores the low byte.

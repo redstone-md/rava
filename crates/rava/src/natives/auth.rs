@@ -29,8 +29,8 @@ pub(super) fn register(r: &mut NativeRegistry) {
         unsafe {
             obj::write::<i64>(this, uid_offset(), uid as i64);
             obj::write::<i64>(this, gid_offset(), gid as i64);
-            obj::write::<Oop>(this, groups_offset(), arr);
-            obj::write::<Oop>(this, username_offset(), name);
+            obj::write_ref(this, groups_offset(), arr);
+            obj::write_ref(this, username_offset(), name);
         }
         ret_void()
     });

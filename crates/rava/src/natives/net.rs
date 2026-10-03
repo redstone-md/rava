@@ -29,7 +29,7 @@ fn errno() -> i32 {
 /// IPv4 address of a `java.net.InetAddress` (host byte order).
 fn ipv4_of(addr: Oop) -> u32 {
     // SAFETY: a live Inet4Address and its holder.
-    unsafe { obj::read::<i32>(obj::read::<Oop>(addr, ia_holder()), holder_address()) as u32 }
+    unsafe { obj::read::<i32>(obj::read_ref(addr, ia_holder()), holder_address()) as u32 }
 }
 
 fn sockaddr(addr: Oop, port: u64) -> libc::sockaddr_in {

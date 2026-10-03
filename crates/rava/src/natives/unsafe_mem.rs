@@ -43,11 +43,47 @@ macro_rules! typed {
     };
 }
 
+/// Compare-and-exchange of a reference (`a`: this, base, offset, expected, new): the witness.
+/// A null base names a static slot (full width); otherwise a heap field or element, compressed
+/// when heap references are.
+fn cas_reference(a: &[u64]) -> u64 {
+    let at = addr(a[1], a[2]) as usize;
+    crate::gc::cards::dirty(at);
+    if a[1] != 0 && crate::heap::COMPRESSED {
+        // SAFETY: an aligned reference field or element (Unsafe's contract).
+        let cell = unsafe { &*(at as *const AtomicI32) };
+        let (expected, new) = (crate::heap::encode(a[4] as Oop) as i32, crate::heap::encode(a[5] as Oop) as i32);
+        let witness = cell.compare_exchange(expected, new, Ordering::SeqCst, Ordering::SeqCst).unwrap_or_else(|v| v);
+        return crate::heap::decode(witness as u32 as u64) as u64;
+    }
+    // SAFETY: an aligned reference slot (Unsafe's contract).
+    let cell = unsafe { &*(at as *const AtomicI64) };
+    cell.compare_exchange(a[4] as i64, a[5] as i64, Ordering::SeqCst, Ordering::SeqCst).unwrap_or_else(|v| v) as u64
+}
+
 pub(super) fn register(r: &mut NativeRegistry) {
     r.add(U, "registerNatives", "()V", |_, _| ret_void());
     typed!(r, "Int", "I", i32, |v: i32| v as i64 as u64, |s: u64| s as i32);
     typed!(r, "Long", "J", i64, |v: i64| v as u64, |s: u64| s as i64);
-    typed!(r, "Reference", "Ljava/lang/Object;", u64, |v: u64| v, |s: u64| s);
+    for (get, put) in [("getReference", "putReference"), ("getReferenceVolatile", "putReferenceVolatile")] {
+        r.add(U, get, "(Ljava/lang/Object;J)Ljava/lang/Object;", |_, a| {
+            // SAFETY: Unsafe's contract: a reference field or element, or (null base) a static slot.
+            Ok(unsafe { if a[1] == 0 { std::ptr::read_volatile(a[2] as *const u64) } else { crate::heap::obj::load_ref_at(addr(a[1], a[2]) as usize) as u64 } })
+        });
+        r.add(U, put, "(Ljava/lang/Object;JLjava/lang/Object;)V", |_, a| {
+            // SAFETY: as above.
+            unsafe {
+                if a[1] == 0 {
+                    std::ptr::write_volatile(a[2] as *mut u64, a[4]);
+                    crate::gc::cards::dirty(a[2] as usize);
+                } else {
+                    crate::heap::obj::store_ref_at(addr(a[1], a[2]) as usize, a[4] as Oop);
+                }
+            }
+            fence(Ordering::SeqCst);
+            ret_void()
+        });
+    }
     typed!(r, "Boolean", "Z", u8, |v: u8| (v != 0) as u64, |s: u64| (s & 1) as u8);
     typed!(r, "Byte", "B", i8, |v: i8| v as i64 as u64, |s: u64| s as i8);
     typed!(r, "Short", "S", i16, |v: i16| v as i64 as u64, |s: u64| s as i16);
@@ -72,14 +108,10 @@ pub(super) fn register(r: &mut NativeRegistry) {
         ret_long(cell.compare_exchange(a[4] as i64, a[6] as i64, Ordering::SeqCst, Ordering::SeqCst).unwrap_or_else(|v| v))
     });
     r.add(U, "compareAndSetReference", "(Ljava/lang/Object;JLjava/lang/Object;Ljava/lang/Object;)Z", |_, a| {
-        let cell = unsafe { &*(addr(a[1], a[2]) as *const AtomicI64) };
-        crate::gc::cards::dirty(addr(a[1], a[2]) as usize);
-        ret_bool(cell.compare_exchange(a[4] as i64, a[5] as i64, Ordering::SeqCst, Ordering::SeqCst).is_ok())
+        ret_bool(cas_reference(a) == a[4])
     });
     r.add(U, "compareAndExchangeReference", "(Ljava/lang/Object;JLjava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;", |_, a| {
-        let cell = unsafe { &*(addr(a[1], a[2]) as *const AtomicI64) };
-        crate::gc::cards::dirty(addr(a[1], a[2]) as usize);
-        Ok(cell.compare_exchange(a[4] as i64, a[5] as i64, Ordering::SeqCst, Ordering::SeqCst).unwrap_or_else(|v| v) as u64)
+        Ok(cas_reference(a))
     });
     r.add(U, "arrayBaseOffset0", "(Ljava/lang/Class;)I", |_, _| ret_int(ARRAY_BASE_OFFSET as i32));
     r.add(U, "arrayIndexScale0", "(Ljava/lang/Class;)I", |_, a| {

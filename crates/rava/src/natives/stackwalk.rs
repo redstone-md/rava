@@ -79,8 +79,8 @@ fn fill(t: &mut Thread, mode: u64, walk: &mut Walk, batch: i32, start: i32, buff
             unsafe { obj::store_elem(buffer, i as usize, mirror) };
         } else {
             // SAFETY: the element is a StackFrameInfo pre-allocated by the walker.
-            let info = unsafe { *obj::array_data::<Oop>(buffer).add(i as usize) };
-            let mn = unsafe { obj::read::<Oop>(info, sfi_member_name()) };
+            let info = unsafe { obj::load_elem(buffer, i as usize) };
+            let mn = unsafe { obj::read_ref(info, sfi_member_name()) };
             super::mh::init_member_name(t, mn, m)?;
             unsafe { obj::write::<i32>(info, sfi_bci(), bci.max(0)) };
         }

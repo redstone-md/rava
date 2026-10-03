@@ -68,7 +68,7 @@ pub(super) fn arraycopy(t: &mut Thread, a: &[u64]) -> JResult<u64> {
             // Element-wise store check; copies the prefix that fits, then throws.
             for i in 0..len as usize {
                 // SAFETY: indices within the checked bounds.
-                let v = unsafe { *obj::array_data::<Oop>(src).add(sp as usize + i) };
+                let v = unsafe { obj::load_elem(src, sp as usize + i) };
                 if !v.is_null() && !unsafe { obj::klass(v) }.is_subtype_of(de) {
                     let msg = format!(
                         "arraycopy: element type mismatch: can not cast one of the elements of {}[] to the type of the destination array, {}",

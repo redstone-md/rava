@@ -55,7 +55,7 @@ pub(super) fn register(r: &mut NativeRegistry) {
     r.add("java/lang/ref/PhantomReference", "refersTo0", "(Ljava/lang/Object;)Z", refers_to);
     r.add("java/lang/ref/Reference", "clear0", "()V", |_, a| {
         // SAFETY: live Reference.
-        unsafe { crate::heap::obj::write::<Oop>(a[0] as Oop, referent_offset(), std::ptr::null_mut()) };
+        unsafe { crate::heap::obj::write_ref(a[0] as Oop, referent_offset(), std::ptr::null_mut()) };
         ret_void()
     });
     r.add("java/lang/ref/Finalizer", "isFinalizationEnabled", "()Z", |_, _| ret_bool(false));
@@ -134,8 +134,8 @@ crate::runtime::vm_field!(referent_offset, "java/lang/ref/Reference", "referent"
 
 fn refers_to(_: &mut Thread, a: &[u64]) -> JResult<u64> {
     // SAFETY: live Reference.
-    let referent = unsafe { crate::heap::obj::read::<u64>(a[0] as Oop, referent_offset()) };
-    ret_bool(referent == a[1])
+    let referent = unsafe { crate::heap::obj::read_ref(a[0] as Oop, referent_offset()) };
+    ret_bool(referent as u64 == a[1])
 }
 
 fn set_system_stream(name: &str, desc: &str, value: u64) -> JResult<u64> {

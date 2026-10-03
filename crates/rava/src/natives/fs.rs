@@ -18,7 +18,7 @@ const BA_HIDDEN: i32 = 0x08;
 
 fn path_of(file: Oop) -> String {
     // SAFETY: live java.io.File.
-    rt::java_string_to_rust(unsafe { obj::read::<Oop>(file, file_path()) })
+    rt::java_string_to_rust(unsafe { obj::read_ref(file, file_path()) })
 }
 
 pub(super) fn register(r: &mut NativeRegistry) {

@@ -46,11 +46,11 @@ vm_field!(module_loader, "java/lang/Module", "loader", "Ljava/lang/ClassLoader;"
 fn define_module(t: &mut Thread, a: &[u64]) -> JResult<u64> {
     let (module, packages) = (a[0] as Oop, a[4] as Oop);
     // SAFETY: live Module; `pns` is an Object[] of package-name Strings.
-    let loader = unsafe { obj::read::<Oop>(module, module_loader()) } as usize;
+    let loader = unsafe { obj::read_ref(module, module_loader()) } as usize;
     let names: Vec<String> = if packages.is_null() {
         Vec::new()
     } else {
-        unsafe { obj::array_slice::<Oop>(packages) }.iter().map(|&s| rt::java_string_to_rust(s).replace('.', "/")).collect()
+        unsafe { obj::ref_elems(packages) }.iter().map(|&s| rt::java_string_to_rust(s).replace('.', "/")).collect()
     };
     let is_java_base = names.iter().any(|p| p == "java/lang") && loader == 0;
     {
@@ -84,7 +84,7 @@ pub(crate) fn module_of(k: &'static Klass) -> Oop {
     }
     drop(reg);
     // SAFETY: live ClassLoader.
-    unsafe { obj::read::<Oop>(loader as Oop, loader_unnamed()) }
+    unsafe { obj::read_ref(loader as Oop, loader_unnamed()) }
 }
 
 fn bottom_element(mut k: &'static Klass) -> &'static Klass {
@@ -99,7 +99,7 @@ pub(crate) fn set_mirror_module(mirror: Oop, k: &'static Klass) {
     let m = module_of(k);
     if !m.is_null() {
         // SAFETY: live Class mirror.
-        unsafe { obj::write::<Oop>(mirror, class_module(), m) };
+        unsafe { obj::write_ref(mirror, class_module(), m) };
     }
 }
 
@@ -129,6 +129,6 @@ pub(crate) fn set_primitive_mirror_module(mirror: Oop) {
     let base = registry().lock().unwrap().java_base as Oop;
     if !base.is_null() {
         // SAFETY: live Class mirror.
-        unsafe { obj::write::<Oop>(mirror, class_module(), base) };
+        unsafe { obj::write_ref(mirror, class_module(), base) };
     }
 }

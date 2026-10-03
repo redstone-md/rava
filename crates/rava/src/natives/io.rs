@@ -124,7 +124,7 @@ pub(super) fn register(r: &mut NativeRegistry) {
 fn stream_fd(stream: Oop, field: u32) -> i32 {
     // SAFETY: live stream with a FileDescriptor.
     unsafe {
-        let fdo = obj::read::<Oop>(stream, field);
+        let fdo = obj::read_ref(stream, field);
         if fdo.is_null() { -1 } else { obj::read::<i32>(fdo, fd_int()) }
     }
 }
@@ -172,7 +172,7 @@ pub(super) fn open_into(t: &mut Thread, stream: Oop, field: u32, path: Oop, flag
         return Err(throw_new(t, "java/io/FileNotFoundException", &format!("{name} (Is a directory)")));
     }
     // SAFETY: live stream whose FileDescriptor was created by the constructor.
-    unsafe { obj::write::<i32>(obj::read::<Oop>(stream, field), fd_int(), fd) };
+    unsafe { obj::write::<i32>(obj::read_ref(stream, field), fd_int(), fd) };
     ret_void()
 }
 

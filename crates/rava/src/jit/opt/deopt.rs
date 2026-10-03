@@ -258,6 +258,7 @@ pub extern "sysv64" fn deopt(t: *mut Thread, base: *mut u64, desc: *const u8, sa
                     BasicType::Boolean | BasicType::Byte => crate::heap::obj::write::<u8>(obj, offset, raw as u8),
                     BasicType::Char | BasicType::Short => crate::heap::obj::write::<u16>(obj, offset, raw as u16),
                     BasicType::Int | BasicType::Float => crate::heap::obj::write::<u32>(obj, offset, raw as u32),
+                    BasicType::Reference => crate::heap::obj::write_ref(obj, offset, raw as crate::heap::Oop),
                     _ => crate::heap::obj::write::<u64>(obj, offset, raw),
                 }
             }

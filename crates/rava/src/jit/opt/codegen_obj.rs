@@ -17,12 +17,7 @@ use std::rc::Rc;
 const BASE: i32 = 24;
 
 fn scale(bt: BasicType) -> u8 {
-    match bt {
-        BasicType::Boolean | BasicType::Byte => 1,
-        BasicType::Char | BasicType::Short => 2,
-        BasicType::Int | BasicType::Float => 4,
-        _ => 8,
-    }
+    bt.size() as u8
 }
 
 impl Gen<'_> {
@@ -63,14 +58,17 @@ impl Gen<'_> {
             }
             Inst::StoreField(o, off, bt, x) => {
                 let ro = self.reg(o, R::Rax);
-                let rx = self.value_reg(x, bt, R::R11);
+                let mut rx = self.value_reg(x, bt, R::R11);
+                if bt == BasicType::Reference {
+                    rx = crate::jit::emit_obj::encode_ref(&mut self.a, rx, R::R11);
+                }
                 self.fault_site();
                 self.store_typed(v, rx, bt, mem(ro, off as i32));
             }
             Inst::LoadStatic(addr, bt) => {
                 let at = self.absolute(addr, R::R11);
                 let r = self.out(v);
-                load_typed_to(&mut self.a, r, bt, at);
+                crate::jit::emit_obj::load_static_to(&mut self.a, r, bt, at);
                 self.put(v, r);
             }
             Inst::StoreStatic(addr, bt, x) => {
@@ -206,7 +204,10 @@ impl Gen<'_> {
     fn store_indexed(&mut self, v: V, arr: V, idx: V, bt: BasicType, x: V) {
         if bt != BasicType::Byte {
             let at = self.element(arr, idx, bt);
-            let rx = self.value_reg(x, bt, R::Rdx);
+            let mut rx = self.value_reg(x, bt, R::Rdx);
+            if bt == BasicType::Reference {
+                rx = crate::jit::emit_obj::encode_ref(&mut self.a, rx, R::Rdx);
+            }
             return self.store_typed(v, rx, bt, at);
         }
         // bastore: boolean[] stores value & 1, byte[] the low byte. The class test uses r11

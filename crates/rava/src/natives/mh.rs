@@ -50,7 +50,7 @@ pub(super) fn register(r: &mut NativeRegistry) {
     r.add(MHN, "getMemberVMInfo", "(Ljava/lang/invoke/MemberName;)Ljava/lang/Object;", |t, a| {
         let index = rt::box_value(t, BasicType::Long, vmindex(a[0] as Oop) as u64)?;
         // SAFETY: live MemberName.
-        let clazz = unsafe { obj::read::<Oop>(a[0] as Oop, mn_clazz()) };
+        let clazz = unsafe { obj::read_ref(a[0] as Oop, mn_clazz()) };
         let object = crate::loader::load("java/lang/Object").expect("Object");
         let arr = rt::alloc_array(t, crate::vm::vm().array_class_of(object).expect("Object[]"), 2)?;
         unsafe {
@@ -62,7 +62,7 @@ pub(super) fn register(r: &mut NativeRegistry) {
     for name in ["setCallSiteTargetNormal", "setCallSiteTargetVolatile"] {
         r.add(MHN, name, "(Ljava/lang/invoke/CallSite;Ljava/lang/invoke/MethodHandle;)V", |_, a| {
             // SAFETY: live CallSite.
-            unsafe { obj::write::<Oop>(a[0] as Oop, callsite_target(), a[1] as Oop) };
+            unsafe { obj::write_ref(a[0] as Oop, callsite_target(), a[1] as Oop) };
             std::sync::atomic::fence(std::sync::atomic::Ordering::SeqCst);
             ret_void()
         });
@@ -78,7 +78,7 @@ fn vmindex(mn: Oop) -> i64 {
 pub(crate) fn member_target(mn: Oop) -> Option<&'static Method> {
     // SAFETY: live MemberName; vmtarget holds a leaked `&'static Method` or 0.
     unsafe {
-        let rmn = obj::read::<Oop>(mn, mn_method());
+        let rmn = obj::read_ref(mn, mn_method());
         if rmn.is_null() {
             return None;
         }
@@ -90,9 +90,9 @@ pub(crate) fn member_target(mn: Oop) -> Option<&'static Method> {
 /// Method descriptor of a `MethodType`.
 pub(crate) fn method_type_descriptor(mt: Oop) -> String {
     // SAFETY: live MethodType.
-    let (rtype, ptypes) = unsafe { (obj::read::<Oop>(mt, mt_rtype()), obj::read::<Oop>(mt, mt_ptypes())) };
+    let (rtype, ptypes) = unsafe { (obj::read_ref(mt, mt_rtype()), obj::read_ref(mt, mt_ptypes())) };
     let mut d = String::from("(");
-    for &p in unsafe { obj::array_slice::<Oop>(ptypes) }.iter() {
+    for &p in unsafe { obj::ref_elems(ptypes) }.iter() {
         d += &class_descriptor(p);
     }
     d.push(')');
@@ -141,10 +141,10 @@ fn fill_method(t: &mut Thread, mn: Oop, m: &'static Method, requested: i32) -> J
     // SAFETY: live objects; offsets from their layouts.
     unsafe {
         obj::write::<u64>(rmn, rmn_vmtarget(), m as *const Method as u64);
-        obj::write::<Oop>(rmn, rmn_vmholder(), holder);
-        obj::write::<Oop>(mn, mn_method(), rmn);
+        obj::write_ref(rmn, rmn_vmholder(), holder);
+        obj::write_ref(mn, mn_method(), rmn);
         obj::write::<i32>(mn, mn_flags(), flags);
-        obj::write::<Oop>(mn, mn_clazz(), holder);
+        obj::write_ref(mn, mn_clazz(), holder);
         obj::write::<i64>(mn, mn_vmindex(), m.vtable_index() as i64);
     }
     Ok(())
@@ -160,7 +160,7 @@ fn fill_field(t: &mut Thread, mn: Oop, holder: &'static Klass, index: usize, kin
     // SAFETY: live MemberName.
     unsafe {
         obj::write::<i32>(mn, mn_flags(), flags);
-        obj::write::<Oop>(mn, mn_clazz(), mirror);
+        obj::write_ref(mn, mn_clazz(), mirror);
         obj::write::<i64>(mn, mn_vmindex(), vmindex);
     }
     Ok(())
@@ -170,7 +170,7 @@ fn resolve(t: &mut Thread, a: &[u64]) -> JResult<u64> {
     let (mn, speculative) = (a[0] as Oop, a[3] != 0);
     // SAFETY: live MemberName with clazz, name, type and flags filled by Java code.
     let (clazz, name, ty, flags) = unsafe {
-        (obj::read::<Oop>(mn, mn_clazz()), obj::read::<Oop>(mn, mn_name()), obj::read::<Oop>(mn, mn_type()), obj::read::<i32>(mn, mn_flags()))
+        (obj::read_ref(mn, mn_clazz()), obj::read_ref(mn, mn_name()), obj::read_ref(mn, mn_type()), obj::read::<i32>(mn, mn_flags()))
     };
     let Some(defc) = rt::klass_of_mirror(clazz) else {
         return Err(throw_new(t, "java/lang/IllegalArgumentException", "primitive class"));
@@ -246,11 +246,11 @@ fn expand(t: &mut Thread, a: &[u64]) -> JResult<u64> {
         let ty = rt::intern_str(t, m.desc.as_str())?;
         // SAFETY: live MemberName.
         unsafe {
-            if obj::read::<Oop>(mn, mn_name()).is_null() {
-                obj::write::<Oop>(mn, mn_name(), name);
+            if obj::read_ref(mn, mn_name()).is_null() {
+                obj::write_ref(mn, mn_name(), name);
             }
-            if obj::read::<Oop>(mn, mn_type()).is_null() {
-                obj::write::<Oop>(mn, mn_type(), ty);
+            if obj::read_ref(mn, mn_type()).is_null() {
+                obj::write_ref(mn, mn_type(), ty);
             }
         }
     }
