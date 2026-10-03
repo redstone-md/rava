@@ -150,10 +150,17 @@ impl Gen<'_> {
         }
         self.load(r, x);
         match op {
-            BinOp::Mul => {
-                let s = self.reg(y, R::R11);
-                self.a.imul_rr(w, r, s);
-            }
+            BinOp::Mul => match self.loc[y as usize] {
+                Loc::Stack(s) => self.a.imul_rm(w, r, super::moves::spill(s)),
+                Loc::Frame(s) => {
+                    let m = self.slot(s);
+                    self.a.imul_rm(w, r, m)
+                }
+                _ => {
+                    let s = self.reg(y, R::R11);
+                    self.a.imul_rr(w, r, s);
+                }
+            },
             _ => {
                 let alu = match op {
                     BinOp::Add => Alu::Add,

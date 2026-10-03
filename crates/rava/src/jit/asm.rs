@@ -360,6 +360,10 @@ impl Asm {
     pub fn imul_rr(&mut self, w: bool, dst: R, src: R) {
         self.op_rr(w, &[0x0F, 0xAF], dst as u8, src as u8);
     }
+    /// `imul dst, [m]`.
+    pub fn imul_rm(&mut self, w: bool, dst: R, m: M) {
+        self.op_rm(w, &[0x0F, 0xAF], dst as u8, m);
+    }
     /// `imul dst, src, imm32`.
     pub fn imul_rri(&mut self, w: bool, dst: R, src: R, imm: i32) {
         self.op_rr(w, &[0x69], dst as u8, src as u8);
