@@ -673,3 +673,41 @@ first, so allocating the first operand's register must exclude it or `a + b` com
 Baseline float codegen is still ~3x C1 (operands still reload from the frame each op, no CSE, bounds
 checks on every array access) — SSE result-chaining is the first and safest of those, landed; the
 rest (keeping loaded locals/constants in xmm, array-bounds hoisting) are the follow-ups.
+
+## 2026-10-03 — a working profiler, and what C2 actually buys on world generation
+
+**Profiling works here.** `/usr/bin/perf` refuses this kernel, but the real binary
+`/usr/lib/linux-tools-6.8.0-142/perf` runs as root (no hardware counters in this VM, so
+`task-clock` sampling). With `RAVA_PERF_MAP=1` and the `release-diag` profile JIT and runtime
+frames resolve; for `java`, `jcmd PID Compiler.perfmap` while it runs (or
+`-XX:+DumpPerfMapAtExit`), and C2's code bytes can be read from `/proc/PID/mem`. Recording only the
+world-generation window (overworld spawn milestone to `Done`) over the same seed:
+
+- Chunk workers (Paper Common Worker): **~14 CPU-s in rava against ~8 in `java`**; the gap is
+  there, not in parallelism (both runs keep the workers about one core busy — the chunk pipeline's
+  dependency chain bounds it) and not on the main thread.
+- Hot `java` code there is all C2; hot rava code is all the optimizing tier (the baseline tier and
+  interpreter are not on this path, so the SSE stack caching above does not move the start).
+- Worker time outside compiled code: rava ~14% (GC marking during pauses ~6%, allocation slow
+  path ~5%, `subtype` ~1%), `java` ~3%.
+
+**Ablating C2 on the same start** (`java` flags, world-generation wall, ~9.2 s baseline): no
+escape analysis, no loop optimizations (unrolling, predication, peeling, unswitching, superword,
+range-check elimination), no implicit null checks, no `@Stable` folding, no lock elimination,
+no split-if — **all within noise**. `-UseTypeProfile -UseTypeSpeculation` +35 %; `-Inline`
++170 % (worse than C1 alone, which takes 21 s); compressed oops off and Serial GC: no change.
+So what matters is inlining and what is done across inlined code, not loop or allocation
+optimizations, object size or the collector.
+
+**Per-method comparisons mislead**: the compilers inline differently. `BlendedNoise.compute`
+looked 3.3x slower, but C2 calls `ImprovedNoise.sampleAndLerp` out of line: with it, `java`
+spends 1436 samples on blended noise against rava's 830 — the optimizing tier is *faster* on this
+numeric kernel (as on `NoiseBench`). The loss is in call-heavy object code.
+
+Ruled out by measurement on the start, as changes to rava: a larger young generation, lower
+tier-2 thresholds, treating every call site as hot or none as cold, a larger inlining budget.
+
+What remains, consistent with the earlier breakdown: the **call protocol** (megamorphic call
+6.5 ns against C2's 3.5 ns; per call: arguments stored to frame slots and reloaded by the
+callee, BCI and frame anchor stores, four dependent loads to reach the entry, a pending-exception
+check after the call), the allocation slow path and stop-the-world marking.
