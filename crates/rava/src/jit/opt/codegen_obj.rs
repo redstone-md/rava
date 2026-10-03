@@ -367,6 +367,9 @@ impl Gen<'_> {
         self.save_around(v);
         let fail = self.restoring(v, deopt);
         self.link(s, false);
+        if self.g.unprofiled.contains(&v) {
+            self.profile_call(s, args[0]);
+        }
         match callee {
             Callee::Direct(m) => self.a.mov_ri(R::Rdx, m as *const Method as i64),
             Callee::Virtual(m) => {
@@ -390,6 +393,26 @@ impl Gen<'_> {
         } else {
             self.put(v, R::Rax);
         }
+    }
+
+    /// A call compiled without a receiver profile: records the receiver's class in the site's
+    /// profile (as first-tier code does) and counts down; at zero the method is recompiled,
+    /// so a path that was cold when it was compiled gets its calls inlined once it runs.
+    fn profile_call(&mut self, s: &State, receiver: V) {
+        let cell = crate::jit::profile::cell(s.method, s.bci as usize) as *const IcCell as i64;
+        let left: &'static std::sync::atomic::AtomicU32 = Box::leak(Box::new(std::sync::atomic::AtomicU32::new(runtime::REPROFILE_CALLS)));
+        let done = self.a.new_label();
+        self.a.mov_ri(R::Rax, left as *const _ as i64);
+        self.a.alu_mi(false, Alu::Cmp, mem(R::Rax, 0), 0);
+        self.a.jcc(Cond::E, done);
+        self.a.alu_mi(false, Alu::Sub, mem(R::Rax, 0), 1);
+        self.load(R::Rcx, receiver);
+        self.a.load(true, R::Rcx, mem(R::Rcx, 0));
+        self.call_preserving(runtime::profile_call as *const () as usize, &[Arg::Reg(R::Rcx), Arg::Imm(cell), Arg::Imm(left as *const _ as i64)]);
+        self.a.test_rr(false, R::Rax, R::Rax);
+        self.a.jcc(Cond::E, done);
+        self.call_preserving(runtime::request_reprofile as *const () as usize, &[Arg::Imm(self.root as *const Method as i64)]);
+        self.a.bind(done);
     }
 
     /// rdx := the implementation of the `Method*` in `t` for the receiver at frame slot `base`.

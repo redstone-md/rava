@@ -65,7 +65,10 @@ impl Builder {
             && plans.iter().all(|(_, g)| matches!(g, Guard::Klass(_)))
             && !crate::jit::profile::megamorphic(self.sc.m, pc)
             && self.speculates(self.sc.m, pc);
-        self.emit_miss(plans, callee, args, s, m.sig.ret, profiled.then_some(pre))
+        self.unprofiled_call = plans.is_empty() && matches!(callee, Callee::Virtual(_) | Callee::Interface(_)) && crate::jit::profile::unprofiled(self.sc.m, pc);
+        let r = self.emit_miss(plans, callee, args, s, m.sig.ret, profiled.then_some(pre));
+        self.unprofiled_call = false;
+        r
     }
 
     /// The call `callee(args)` returning `ret`, with each of `plans` (a target and what it
@@ -168,6 +171,9 @@ impl Builder {
     /// A call instruction; returns its result.
     fn call(&mut self, callee: Callee, args: Vec<V>, s: Rc<State>, ret: BasicType) -> Option<V> {
         let v = self.add(Inst::Call(callee, args, s), if ret == BasicType::Void { Ty::I } else { Ty::of(ret) });
+        if self.unprofiled_call {
+            self.g.unprofiled.insert(v);
+        }
         (ret != BasicType::Void).then_some(v)
     }
 

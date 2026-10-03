@@ -80,6 +80,16 @@ pub(in crate::jit) fn recompile(m: &'static Method) {
     }
 }
 
+/// Recompiles `m`'s optimized code with the profiles its cold-at-compile-time call sites
+/// recorded since; keeps the current code if that fails.
+pub(in crate::jit) fn reprofile(m: &'static Method) {
+    if m.compiled().is_some_and(|c| c.tier >= 2) {
+        if let Some(cm) = compile(m) {
+            m.install(cm);
+        }
+    }
+}
+
 /// Compiles `m`, or `None` when some instruction is not supported.
 pub fn compile(m: &'static Method) -> Option<CompiledMethod> {
     if m.is_native() {
