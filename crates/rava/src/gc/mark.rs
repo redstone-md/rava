@@ -14,6 +14,8 @@ use std::sync::Mutex;
 
 /// Objects a worker hands to the shared pool at a time.
 const PACKET: usize = 128;
+/// Objects prefetched ahead of the scan.
+const PREFETCH: usize = 8;
 
 /// State shared by the marking workers.
 struct Shared<'a> {
@@ -69,8 +71,24 @@ impl Shared<'_> {
     /// Scans objects, starting with `stack`, until no worker has any left.
     fn work(&self, mut stack: Vec<usize>) {
         let mut scanned = 0;
+        // Objects pass through a small FIFO between the stack and the scan, their first line
+        // prefetched on the way in, so the scan rarely waits on a miss.
+        let mut ring = [0usize; PREFETCH];
+        let (mut head, mut len) = (0, 0);
         loop {
-            while let Some(o) = stack.pop() {
+            loop {
+                while len < PREFETCH {
+                    let Some(o) = stack.pop() else { break };
+                    // SAFETY: a prefetch never faults.
+                    unsafe { std::arch::x86_64::_mm_prefetch::<{ std::arch::x86_64::_MM_HINT_T0 }>(o as *const i8) };
+                    ring[(head + len) % PREFETCH] = o;
+                    len += 1;
+                }
+                if len == 0 {
+                    break;
+                }
+                let o = ring[head];
+                (head, len) = ((head + 1) % PREFETCH, len - 1);
                 scanned += 1;
                 self.scan(o as Oop, &mut stack);
                 // Share surplus while others may be waiting for work.
