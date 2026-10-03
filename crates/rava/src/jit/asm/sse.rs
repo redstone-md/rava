@@ -19,6 +19,18 @@ impl Asm {
         self.b(op);
         self.b(0xC0 | lo(reg) << 3 | lo(rm));
     }
+    /// `xorps x, x`: zero idiom, which also ends any dependency on `x`'s old value.
+    fn zero_x(&mut self, x: X) {
+        self.sse_rr(0, false, 0x57, x.0, x.0);
+    }
+    /// Scalar conversions, `sqrtsd` and `roundsd` keep the destination's upper lanes, so they
+    /// wait for its last writer (often the previous loop iteration): clear it first, as other
+    /// compilers do, unless it is also the source.
+    fn break_dep(&mut self, dst: X, src: X) {
+        if dst.0 != src.0 {
+            self.zero_x(dst);
+        }
+    }
     fn fp(double: bool) -> u8 {
         if double { 0xF2 } else { 0xF3 }
     }
@@ -37,6 +49,7 @@ impl Asm {
         self.sse_rr(Self::fp(double), false, op, x.0, y.0);
     }
     pub fn fsqrt(&mut self, x: X, src: X) {
+        self.break_dep(x, src);
         self.sse_rr(0xF2, false, 0x51, x.0, src.0);
     }
     /// `lock cmpxchg [m], src` (compares with rax).
@@ -63,6 +76,7 @@ impl Asm {
     }
     /// `roundsd x, src, mode` (SSE4.1; mode 0 nearest-even, 1 floor, 2 ceil).
     pub fn round_sd(&mut self, x: X, src: X, mode: u8) {
+        self.break_dep(x, src);
         self.b(0x66);
         self.rex(false, x.0, 0, src.0, false);
         self.b(0x0F);
@@ -77,10 +91,12 @@ impl Asm {
     }
     /// Integer (`w`: 64-bit) to float/double.
     pub fn cvt_i2f(&mut self, double: bool, w: bool, x: X, r: R) {
+        self.zero_x(x);
         self.sse_rr(Self::fp(double), w, 0x2A, x.0, r as u8);
     }
     /// float↔double.
     pub fn cvt_f2f(&mut self, to_double: bool, dst: X, src: X) {
+        self.break_dep(dst, src);
         self.sse_rr(if to_double { 0xF3 } else { 0xF2 }, false, 0x5A, dst.0, src.0);
     }
     /// Truncating float/double to integer (`w`: 64-bit).
