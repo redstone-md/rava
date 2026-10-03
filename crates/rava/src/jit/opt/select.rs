@@ -18,6 +18,58 @@ pub fn convert(g: &mut Graph) {
             rewrite(g, b, shape);
         }
     }
+    fold_branches(g);
+}
+
+/// A branch on a selected constant (`if (it.hasNext())` once `hasNext` is inlined: the
+/// boolean merged into a `Select` of 1 and 0, then compared with 0) branches on the select's
+/// own condition; the select goes if nothing else reads it.
+fn fold_branches(g: &mut Graph) {
+    let mut reads = vec![0u32; g.values.len()];
+    let count = |x: V, reads: &mut Vec<u32>| reads[g.resolve(x) as usize] += 1;
+    let mut states = Vec::new();
+    for blk in g.blocks.iter().filter(|b| !matches!(b.term, Term::None)) {
+        for &v in &blk.insts {
+            if g.resolve(v) == v {
+                g.inst(v).inputs().into_iter().for_each(|x| count(x, &mut reads));
+                states.extend(g.inst(v).state().cloned());
+            }
+        }
+        blk.term.inputs().into_iter().for_each(|x| count(x, &mut reads));
+        if let Term::Deopt(s) = &blk.term {
+            states.push(s.clone());
+        }
+    }
+    for s in &states {
+        let mut xs = Vec::new();
+        super::liveness::state_values(g, s, &mut xs);
+        xs.into_iter().for_each(|x| count(x, &mut reads));
+    }
+    let mut gone = Vec::new();
+    for b in 0..g.blocks.len() {
+        let Term::If { cmp: cmp @ (Cmp::Eq | Cmp::Ne), ty: Ty::I, a, b: y, then, other, .. } = g.blocks[b].term else { continue };
+        let (sel, k) = match (g.constant(g.resolve(a)), g.constant(g.resolve(y))) {
+            (None, Some(k)) => (g.resolve(a), k),
+            (Some(k), None) => (g.resolve(y), k),
+            _ => continue,
+        };
+        let Inst::Select(c, sty, x, z, t, f) = *g.inst(sel) else { continue };
+        let (Some(tv), Some(fv)) = (g.constant(g.resolve(t)), g.constant(g.resolve(f))) else { continue };
+        let (on_t, on_f) = (super::canon::branch(cmp, Ty::I, tv, k), super::canon::branch(cmp, Ty::I, fv, k));
+        if on_t == on_f {
+            continue;
+        }
+        let (then, other) = if on_t { (then, other) } else { (other, then) };
+        g.blocks[b].term = Term::If { cmp: c, ty: sty, a: x, b: z, then, other, unordered: false };
+        if reads[sel as usize] == 1 {
+            gone.push(sel);
+        }
+    }
+    if !gone.is_empty() {
+        for blk in &mut g.blocks {
+            blk.insts.retain(|v| !gone.contains(v));
+        }
+    }
 }
 
 struct Shape {
