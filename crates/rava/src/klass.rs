@@ -134,7 +134,8 @@ pub struct Klass {
     /// Offsets of every reference field of an instance, inherited ones included.
     pub ref_offsets: Box<[u32]>,
     pub statics: Box<[AtomicU64]>,
-    pub(crate) methods: OnceLock<Box<[Method]>>,
+    /// In low memory (`crate::low`): code stores and passes methods as 32-bit immediates.
+    pub(crate) methods: OnceLock<&'static [Method]>,
     pub(crate) vtable: OnceLock<Box<[&'static Method]>>,
     pub init: InitLock,
     pub(crate) loader: AtomicPtr<crate::heap::ObjHeader>,

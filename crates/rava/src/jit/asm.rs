@@ -286,6 +286,17 @@ impl Asm {
             self.buf.extend_from_slice(&imm.to_le_bytes());
         }
     }
+    /// Stores the 64-bit constant `value` to `m`: one `mov qword [m], imm32` when it fits (a low
+    /// address, `crate::low`), else through `scratch`.
+    pub fn store_const(&mut self, m: M, value: i64, scratch: R) {
+        match i32::try_from(value) {
+            Ok(imm) => self.store_imm(m, imm),
+            Err(_) => {
+                self.mov_ri(scratch, value);
+                self.store(true, m, scratch);
+            }
+        }
+    }
     /// `mov qword [m], imm32` (sign-extended).
     pub fn store_imm(&mut self, m: M, imm: i32) {
         self.op_rm(true, &[0xC7], 0, m);
