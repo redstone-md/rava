@@ -156,7 +156,7 @@ pub(super) fn generate(g: &Graph, al: &Allocation, m: &'static Method, frame_slo
     gen.prologue(frame_slots, overflow);
     // Blocks that only deoptimize are not laid out: branches into them go straight to the
     // deoptimization stub, so the path that stays in compiled code falls through.
-    let order: Vec<B> = al.order.iter().copied().filter(|&b| !cold_exit(g, b)).collect();
+    let order = layout(g, &al.order.iter().copied().filter(|&b| !cold_exit(g, b)).collect::<Vec<B>>());
     for (i, &b) in order.iter().enumerate() {
         gen.a.bind(gen.labels[b as usize]);
         let mut insts = g.blocks[b as usize].insts.clone();
@@ -556,6 +556,43 @@ impl Gen<'_> {
         }
     }
 
+}
+
+/// The order to emit `order`'s blocks in (the entry first): each block is followed by its most
+/// frequent successor not yet placed, so the hot path falls through and the rarer side of a
+/// branch jumps (C2's block layout); a block whose successors are all placed is followed by
+/// the next unplaced block in build order. Values keep their locations whatever the order.
+fn layout(g: &Graph, order: &[B]) -> Vec<B> {
+    let mut rank = vec![usize::MAX; g.blocks.len()];
+    for (i, &b) in order.iter().enumerate() {
+        rank[b as usize] = i;
+    }
+    let mut placed = vec![false; g.blocks.len()];
+    let (mut out, mut seed) = (Vec::with_capacity(order.len()), 0);
+    let mut next = order.first().copied();
+    while out.len() < order.len() {
+        let b = match next {
+            Some(b) => b,
+            None => {
+                while placed[order[seed] as usize] {
+                    seed += 1;
+                }
+                order[seed]
+            }
+        };
+        placed[b as usize] = true;
+        out.push(b);
+        next = g.blocks[b as usize]
+            .term
+            .successors()
+            .into_iter()
+            .filter(|&s| rank[s as usize] != usize::MAX && !placed[s as usize])
+            .min_by(|&x, &y| {
+                let (fx, fy) = (g.blocks[x as usize].freq, g.blocks[y as usize].freq);
+                fy.partial_cmp(&fx).unwrap_or(std::cmp::Ordering::Equal).then(rank[x as usize].cmp(&rank[y as usize]))
+            });
+    }
+    out
 }
 
 /// Whether block `b` does nothing but deoptimize (no instructions, no phis): edges into it

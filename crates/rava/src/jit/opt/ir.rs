@@ -292,8 +292,13 @@ pub struct Block {
     pub bci: i32,
     /// Loop header: some predecessor comes later in bytecode order.
     pub loop_header: bool,
-    /// Position in code order (blocks are laid out in the order they are built).
+    /// Position in build order (which back edges, live ranges and the register allocator
+    /// follow).
     pub order: u32,
+    /// Estimated executions per entry of the compiled method (from first-tier branch profiles;
+    /// a block the builder makes inherits the frequency of the one it started from), for laying
+    /// out code so hot paths fall through.
+    pub freq: f32,
 }
 
 pub struct Value {
@@ -332,7 +337,7 @@ pub struct Graph {
 
 impl Graph {
     pub fn new_block(&mut self, bci: i32) -> B {
-        self.blocks.push(Block { insts: Vec::new(), term: Term::None, preds: Vec::new(), bci, loop_header: false, order: u32::MAX });
+        self.blocks.push(Block { insts: Vec::new(), term: Term::None, preds: Vec::new(), bci, loop_header: false, order: u32::MAX, freq: 0.0 });
         self.blocks.len() as B - 1
     }
 
