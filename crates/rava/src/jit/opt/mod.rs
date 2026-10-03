@@ -142,8 +142,11 @@ fn compile_timed(m: &'static Method) -> Option<CompiledMethod> {
         let locs: Vec<String> = al.loc.iter().enumerate().filter(|(_, l)| !matches!(l, regalloc::Loc::None | regalloc::Loc::Const(_))).map(|(v, l)| format!("v{v}={l:?}")).collect();
         eprintln!("[opt-alloc] {}", locs.join(" "));
     }
-    let (code, main) = codegen::generate(&g, &al, m, extent, monitor);
+    let (code, main, faults) = codegen::generate(&g, &al, m, extent, monitor);
     let entry = code_cache::install(&code);
+    if !faults.is_empty() {
+        super::fault::register(faults.into_iter().map(|(at, to)| (entry + at, entry + to)));
+    }
     code_cache::perf_map(entry, code.len(), &format!("{m} [opt]"));
     if log {
         eprintln!("[opt] {m}: {} values, {} blocks, {} spill slots -> {} bytes ({main} main)", g.values.len(), al.order.len(), al.spill_slots, code.len());

@@ -123,6 +123,14 @@ impl Asm {
         (self.buf, at)
     }
 
+    /// `finish_at`, also with the final positions of `more` (bound labels).
+    pub fn finish_labels(mut self, l: Label, more: &[Label]) -> (Vec<u8>, u32, Vec<u32>) {
+        self.resolve();
+        let pos = |l: &Label| self.labels[l.0 as usize].expect("bound label");
+        let (at, rest) = (pos(&l), more.iter().map(pos).collect());
+        (self.buf, at, rest)
+    }
+
     pub fn finish(mut self) -> Vec<u8> {
         self.resolve();
         self.buf
