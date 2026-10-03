@@ -13,6 +13,9 @@ use super::large::LargeArea;
 use std::collections::BTreeMap;
 
 pub const PAGE_SHIFT: usize = 18;
+/// Where the heap is reserved with compressed references, and the end of the range they reach.
+const NARROW_BASE: usize = 4 << 30;
+const NARROW_END: usize = 1 << (32 + crate::heap::NARROW_SHIFT);
 pub const PAGE_SIZE: usize = 1 << PAGE_SHIFT;
 /// Objects above this size get their own mapping.
 pub const LARGE_THRESHOLD: usize = 32 << 10;
@@ -208,19 +211,26 @@ pub struct Space {
 
 impl Space {
     pub fn new(reserve: usize) -> Space {
-        let reserve = reserve & !(PAGE_SIZE - 1);
-        // SAFETY: an anonymous, lazily committed reservation, aligned to the page size below.
-        let raw = unsafe {
-            libc::mmap(
-                std::ptr::null_mut(),
-                reserve + PAGE_SIZE,
-                libc::PROT_READ | libc::PROT_WRITE,
-                libc::MAP_PRIVATE | libc::MAP_ANONYMOUS | libc::MAP_NORESERVE,
-                -1,
-                0,
-            )
+        let reserve = reserve.min(if crate::heap::COMPRESSED { NARROW_END - NARROW_BASE - PAGE_SIZE } else { usize::MAX }) & !(PAGE_SIZE - 1);
+        let reserve_at = |hint: usize, flags: libc::c_int| {
+            // SAFETY: an anonymous, lazily committed reservation (at `hint` only if that range is
+            // free: MAP_FIXED_NOREPLACE never replaces a mapping).
+            unsafe {
+                libc::mmap(
+                    hint as *mut libc::c_void,
+                    reserve + PAGE_SIZE,
+                    libc::PROT_READ | libc::PROT_WRITE,
+                    libc::MAP_PRIVATE | libc::MAP_ANONYMOUS | libc::MAP_NORESERVE | flags,
+                    -1,
+                    0,
+                )
+            }
         };
+        // Compressed references need the heap below 32 GiB (zero-based, `heap::NARROW_SHIFT`):
+        // above the low 4 GiB (classes and code, `crate::low`), as HotSpot places it.
+        let raw = if crate::heap::COMPRESSED { reserve_at(NARROW_BASE, libc::MAP_FIXED_NOREPLACE) } else { reserve_at(0, 0) };
         assert!(raw != libc::MAP_FAILED, "cannot reserve {reserve} bytes of heap");
+        assert!(!crate::heap::COMPRESSED || raw as usize + reserve + PAGE_SIZE <= NARROW_END, "heap reservation above 32 GiB");
         let base = (raw as usize + PAGE_SIZE - 1) & !(PAGE_SIZE - 1);
         let pages_end = base + (reserve / 4 * 3 & !(PAGE_SIZE - 1));
         super::cards::init(base, reserve);
