@@ -737,3 +737,41 @@ compiled methods are the same in both VMs (~1.3k of the workers' JIT samples).
 Allocation volume is: over the start rava allocates ~12 GB against `java`'s ~6.5 GB (16-byte
 headers, 8-byte references, 24-byte array base against 12/4/16 with compressed oops), so it
 collects about as often while allocating twice the bytes (pauses 1.06 s against 0.81 s).
+
+## 2026-10-03 (cont.) — where the worldgen gap is, and profile-driven fixes
+
+**Measuring.** Per-method sample comparisons mislead (the compilers inline differently), and
+1-2% changes drown in the start's ±1 s noise. Two tools helped:
+
+- *Per-thread samples*: during the start one Paper worker thread does all world generation in
+  both VMs (java 16.5k samples, rava 26k at the time), so the gap is single-thread speed of
+  that worker: compiled code, allocation slow path, collector.
+- *Steady state*: after `Done`, `forceload add 3000 3000 3200 3200` makes the server generate
+  196 more chunks; the worker's samples there (java 28k, rava 47k) show the gap is not a
+  warm-up effect, and both VMs' hot code can be dumped and compared instruction by instruction
+  (`RAVA_JIT_DUMP`; for java `jcmd Compiler.perfmap` and `/proc/PID/mem`).
+
+**What moved the start** (Done median 32.55 -> 30.66 s, java 28.27 s):
+
+- profiling holes: a call site that had recorded no receiver when its method was compiled
+  (a path cold until then, such as `Beardifier`'s junction loop) stayed an unguarded
+  interface call forever; such sites now profile themselves from optimized code and ask for a
+  recompilation once hot;
+- speculation: after two recompilations a method was compiled without any speculation, so
+  cold-then-hot paths lost exact types through merges and inlined nothing; per-bytecode trap
+  limits (already kept) are enough;
+- smaller code-quality items: SSE conversions without false dependencies, InlineSmallCode at
+  C2's 2500 bytes, scalar replacement of objects whose fields change (iterators), branches on
+  inlined boolean results, final-class `checkcast`, deoptimization-only blocks out of line,
+  exact classes through boxing merges, `Class` queries on constants, `System.arraycopy`
+  intrinsic, reused heap runs zeroed 4 KiB at a time.
+
+**Measured and dropped:** a larger minimum run for reused pages, reusing only pages at most a
+quarter full, a hot-site inlining budget, a smaller total budget (8000), and returning
+trapping code to the profiling tier until it is hot again (HotSpot's way; at a cold start the
+time back in baseline code costs what the fresher profile gains).
+
+**Allocation volume** is about twice java's (16-byte headers, 8-byte references); the slow
+path (refills of reused runs, ~140 ns each, 6 million per start) and zeroing are ~6% of the
+worker. Shrinking headers would cut volume ~13%; `java -XX:-UseCompressedOops` (bigger
+objects) was neutral on the start, so it is not the first lever.
