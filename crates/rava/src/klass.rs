@@ -101,7 +101,23 @@ impl InitLock {
 /// One interface's block of a class's itable.
 pub(crate) type Itable = (usize, Box<[Option<&'static Method>]>);
 
+/// Laid out in declaration order: the fields generated code reads on dispatch and type checks
+/// come first, so they share the first cache lines.
+#[repr(C)]
 pub struct Klass {
+    /// Raw views read by generated code: the vtable's first entry, and an object array's
+    /// element class (null otherwise).
+    pub(crate) vtable_ptr: AtomicPtr<&'static Method>,
+    pub(crate) elem_klass: *const Klass,
+    /// Superclass chain length (Object: 0) and the ancestors at depths below `PRIMARY` (HotSpot's
+    /// primary supers display): a class at depth d below `PRIMARY` is a superclass of an object's
+    /// class exactly when it is that class or its `primary[d]`.
+    pub(crate) depth: u32,
+    pub(crate) primary: [*const Klass; PRIMARY],
+    /// The same itable flattened for generated code: `[count, (interface, block pointer)...]`,
+    /// or null until first built (`jit/stubs.rs` scans it).
+    pub(crate) itable_raw: AtomicPtr<usize>,
+    pub(crate) mirror: AtomicPtr<crate::heap::ObjHeader>,
     pub name: Symbol,
     pub kind: KlassKind,
     pub access: u16,
@@ -118,7 +134,6 @@ pub struct Klass {
     pub(crate) methods: OnceLock<Box<[Method]>>,
     pub(crate) vtable: OnceLock<Box<[&'static Method]>>,
     pub init: InitLock,
-    pub(crate) mirror: AtomicPtr<crate::heap::ObjHeader>,
     pub(crate) loader: AtomicPtr<crate::heap::ObjHeader>,
     pub(crate) resolved: Box<[OnceLock<Resolved>]>,
     pub(crate) array_klass: OnceLock<&'static Klass>,
@@ -126,22 +141,10 @@ pub struct Klass {
     /// Per implemented interface: its class and, by the interface method's index, the
     /// implementation (as HotSpot's itable: a short scan, then an indexed load).
     pub(crate) itable: OnceLock<Box<[Itable]>>,
-    /// The same itable flattened for generated code: `[count, (interface, block pointer)...]`,
-    /// or null until first built (`jit/stubs.rs` scans it).
-    pub(crate) itable_raw: AtomicPtr<usize>,
     /// Defined by `Lookup.defineHiddenClass` (not findable by name).
     hidden: bool,
     /// Nest host fixed at definition (hidden nestmates); otherwise from `NestHost`.
     pub(crate) nest_host: OnceLock<&'static Klass>,
-    /// Raw views read by generated code: the vtable's first entry, and an object array's
-    /// element class (null otherwise).
-    pub(crate) vtable_ptr: AtomicPtr<&'static Method>,
-    pub(crate) elem_klass: *const Klass,
-    /// Superclass chain length (Object: 0) and the ancestors at depths below `PRIMARY` (HotSpot's
-    /// primary supers display): a class at depth d below `PRIMARY` is a superclass of an object's
-    /// class exactly when it is that class or its `primary[d]`.
-    pub(crate) depth: u32,
-    pub(crate) primary: [*const Klass; PRIMARY],
 }
 
 /// Depths the primary supers display covers.
