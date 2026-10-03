@@ -54,8 +54,10 @@ const HOT_INVOCATIONS: u32 = 2000;
 const TIER2_BUDGET: usize = 16000;
 /// A callee whose optimized code is larger than this is called rather than inlined again
 /// (HotSpot's `InlineSmallCode`, 2500 bytes of C2 code): its own compilation already inlined
-/// what it calls. Optimized code here takes about three times C2's bytes per bytecode.
-const INLINE_SMALL_CODE: usize = 7500;
+/// what it calls. Optimized code here takes more bytes per bytecode than C2's, yet C2's limit
+/// itself measured best on the server start (2500 against 1200, 4000, 7500 and 15000): larger
+/// inlined bodies (30-70 KiB methods) cost more in code size than the calls they save.
+const INLINE_SMALL_CODE: usize = 2500;
 const TIER1_BUDGET: usize = 2000;
 /// Call-site frequencies (executions per entry of the compiled method, `opt/freq.rs`) for the
 /// optimizing tier, as C2's: at least `InlineFrequencyRatio` inlines up to `FreqInlineSize`,
