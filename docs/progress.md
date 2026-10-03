@@ -775,3 +775,33 @@ time back in baseline code costs what the fresher profile gains).
 path (refills of reused runs, ~140 ns each, 6 million per start) and zeroing are ~6% of the
 worker. Shrinking headers would cut volume ~13%; `java -XX:-UseCompressedOops` (bigger
 objects) was neutral on the start, so it is not the first lever.
+
+## 2026-10-03 (cont.) — a steady-state benchmark, and what the hot code is made of
+
+**Benchmark.** One process boots to `Done`, then generates five far 8x8-chunk regions in turn
+(`forceload add`, wait until idle, `forceload remove all`); the CPU seconds of regions 3-5 sum
+to within ±1% across runs, so changes of 1-2% in generated code show (the cold start's spread
+is ±1 s). It measured this series at -3.8% CPU against `e7b52a3`, and block layout by
+estimated frequency at -1.6%.
+
+**Hot generated code by instruction class** (steady state, worker thread, samples attributed
+to the instruction before each sampled IP; rava 36.4k, java 25.5k):
+
+| class | rava | java |
+|---|---|---|
+| loads/stores to the heap (with ALU ops on memory) | 14.3k | 11.1k |
+| branches | 6.1k | 2.6k |
+| floating point | 5.8k | 5.9k |
+| register moves | 3.1k | 1.0k |
+| spill loads/stores | 3.2k | 3.1k |
+| push/pop | 1.8k | 0.15k |
+| frame (r13) accesses | 1.0k | — |
+
+Spills and floating point match; the excess is branches (bounds checks 1.1k, unconditional
+jumps 1.0k, null tests 0.9k, class guards 0.5k), register moves, and pushes/pops, which are
+mostly the slow-path calls around allocation refills (6 million per start) and runtime calls.
+
+**Dropped:** coalescing phis with their back-edge inputs when the phi is dead over the input's
+interval (by block liveness): loops lose their moves (an int-array sum 3.6 -> 2.9 ms), but the
+benchmark did not move, and the register sharing needed care (no eviction of a shared
+register, no sharing with a non-first operand or with another phi).
