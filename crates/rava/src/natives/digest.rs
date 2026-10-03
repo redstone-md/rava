@@ -148,32 +148,81 @@ const K256: [u32; 64] = [
     0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2,
 ];
 
+/// Portable SHA-256, built for BMI2 (`rorx`) when the CPU has it.
 fn sha256(h: &mut [u32; 8], blocks: &[u8]) {
-    blocks.chunks_exact(64).for_each(|b| sha256_block(h, b));
+    #[cfg(target_arch = "x86_64")]
+    if std::arch::is_x86_feature_detected!("bmi2") {
+        #[target_feature(enable = "bmi2")]
+        unsafe fn bmi2(h: &mut [u32; 8], blocks: &[u8]) {
+            sha256_rounds(h, blocks)
+        }
+        // SAFETY: the CPU has BMI2.
+        return unsafe { bmi2(h, blocks) };
+    }
+    sha256_rounds(h, blocks)
 }
 
-fn sha256_block(h: &mut [u32; 8], block: &[u8]) {
-    let mut w = [0u32; 64];
-    for i in 0..16 {
-        w[i] = u32::from_be_bytes(block[4 * i..4 * i + 4].try_into().unwrap());
-    }
-    for i in 16..64 {
-        let s0 = w[i - 15].rotate_right(7) ^ w[i - 15].rotate_right(18) ^ (w[i - 15] >> 3);
-        let s1 = w[i - 2].rotate_right(17) ^ w[i - 2].rotate_right(19) ^ (w[i - 2] >> 10);
-        w[i] = w[i - 16].wrapping_add(s0).wrapping_add(w[i - 7]).wrapping_add(s1);
-    }
-    let [mut a, mut b, mut c, mut d, mut e, mut f, mut g, mut hh] = *h;
-    for i in 0..64 {
-        let s1 = e.rotate_right(6) ^ e.rotate_right(11) ^ e.rotate_right(25);
-        let ch = (e & f) ^ (!e & g);
-        let t1 = hh.wrapping_add(s1).wrapping_add(ch).wrapping_add(K256[i]).wrapping_add(w[i]);
-        let s0 = a.rotate_right(2) ^ a.rotate_right(13) ^ a.rotate_right(22);
-        let maj = (a & b) ^ (a & c) ^ (b & c);
-        let t2 = s0.wrapping_add(maj);
-        (hh, g, f, e, d, c, b, a) = (g, f, e, d.wrapping_add(t1), c, b, a, t1.wrapping_add(t2));
-    }
-    for (x, v) in h.iter_mut().zip([a, b, c, d, e, f, g, hh]) {
-        *x = x.wrapping_add(v);
+/// The rounds fully unrolled, eight at a time with the working variables renamed instead of
+/// moved, and the message schedule in a 16-word ring (its last words are written unread).
+#[inline(always)]
+#[allow(unused_assignments)]
+fn sha256_rounds(h: &mut [u32; 8], blocks: &[u8]) {
+    for block in blocks.chunks_exact(64) {
+        let mut w = [0u32; 16];
+        for (i, x) in w.iter_mut().enumerate() {
+            *x = u32::from_be_bytes(block[4 * i..4 * i + 4].try_into().unwrap());
+        }
+        let [mut a, mut b, mut c, mut d, mut e, mut f, mut g, mut hh] = *h;
+        macro_rules! round {
+            ($a:ident, $b:ident, $c:ident, $d:ident, $e:ident, $f:ident, $g:ident, $h:ident, $i:expr, $wi:expr) => {{
+                let t1 = $h
+                    .wrapping_add($e.rotate_right(6) ^ $e.rotate_right(11) ^ $e.rotate_right(25))
+                    .wrapping_add($g ^ ($e & ($f ^ $g)))
+                    .wrapping_add(K256[$i])
+                    .wrapping_add($wi);
+                let t2 = ($a.rotate_right(2) ^ $a.rotate_right(13) ^ $a.rotate_right(22)).wrapping_add(($a & $b) | ($c & ($a | $b)));
+                $d = $d.wrapping_add(t1);
+                $h = t1.wrapping_add(t2);
+            }};
+        }
+        macro_rules! scheduled {
+            ($i:expr) => {{
+                let (w15, w2) = (w[($i + 1) & 15], w[($i + 14) & 15]);
+                let s0 = w15.rotate_right(7) ^ w15.rotate_right(18) ^ (w15 >> 3);
+                let s1 = w2.rotate_right(17) ^ w2.rotate_right(19) ^ (w2 >> 10);
+                let v = w[$i & 15].wrapping_add(s0).wrapping_add(w[($i + 9) & 15]).wrapping_add(s1);
+                w[$i & 15] = v;
+                v
+            }};
+        }
+        macro_rules! eight {
+            ($i:expr, $w:ident) => {
+                round!(a, b, c, d, e, f, g, hh, $i, $w!($i));
+                round!(hh, a, b, c, d, e, f, g, $i + 1, $w!($i + 1));
+                round!(g, hh, a, b, c, d, e, f, $i + 2, $w!($i + 2));
+                round!(f, g, hh, a, b, c, d, e, $i + 3, $w!($i + 3));
+                round!(e, f, g, hh, a, b, c, d, $i + 4, $w!($i + 4));
+                round!(d, e, f, g, hh, a, b, c, $i + 5, $w!($i + 5));
+                round!(c, d, e, f, g, hh, a, b, $i + 6, $w!($i + 6));
+                round!(b, c, d, e, f, g, hh, a, $i + 7, $w!($i + 7));
+            };
+        }
+        macro_rules! given {
+            ($i:expr) => {
+                w[$i]
+            };
+        }
+        eight!(0, given);
+        eight!(8, given);
+        eight!(16, scheduled);
+        eight!(24, scheduled);
+        eight!(32, scheduled);
+        eight!(40, scheduled);
+        eight!(48, scheduled);
+        eight!(56, scheduled);
+        for (x, v) in h.iter_mut().zip([a, b, c, d, e, f, g, hh]) {
+            *x = x.wrapping_add(v);
+        }
     }
 }
 
