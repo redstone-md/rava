@@ -148,6 +148,29 @@ impl Gen<'_> {
             self.a.imul_rri(w, r, x, c);
             return self.put(v, r);
         }
+        // The register allocator gave a commutative result its second operand's register
+        // (`regalloc.rs`): combine the first into it.
+        if self.loc[y as usize] == Loc::Reg(r) && self.loc[x as usize] != Loc::Reg(r) {
+            match op {
+                BinOp::Mul => match self.loc[x as usize] {
+                    Loc::Stack(s) => self.a.imul_rm(w, r, super::moves::spill(s)),
+                    _ => {
+                        let s = self.reg(x, R::R11);
+                        self.a.imul_rr(w, r, s);
+                    }
+                },
+                _ => {
+                    let alu = match op {
+                        BinOp::Add => Alu::Add,
+                        BinOp::And => Alu::And,
+                        BinOp::Or => Alu::Or,
+                        _ => Alu::Xor,
+                    };
+                    self.alu_val(w, alu, r, x);
+                }
+            }
+            return self.put(v, r);
+        }
         self.load(r, x);
         match op {
             BinOp::Mul => match self.loc[y as usize] {
@@ -248,8 +271,25 @@ impl Gen<'_> {
             BinOp::Mul => 0x59,
             _ => 0x5E,
         };
-        // The result register is x's own when x dies here, else not y's (x op x aside).
+        // The result register is x's own when x dies here, else not y's (x op x aside) but
+        // for a commutative operation, which then combines x into y's register.
         let r = self.xout(v);
+        if matches!(op, BinOp::Add | BinOp::Mul) && self.loc[y as usize] == Loc::Xmm(r.0) && self.loc[x as usize] != Loc::Xmm(r.0) {
+            let m = match self.loc[x as usize] {
+                Loc::Const(c) => Some(self.const_mem(c)),
+                Loc::Stack(s) => Some(super::moves::spill(s)),
+                Loc::Frame(s) => Some(self.slot(s)),
+                _ => None,
+            };
+            match m {
+                Some(m) => self.a.farith_m(double, sse, r, m),
+                None => {
+                    let a = self.xreg(x, X(1));
+                    self.a.farith_rr(double, sse, r, a);
+                }
+            }
+            return self.xput(v, r);
+        }
         // A constant, spilled or parameter operand is used from memory.
         let m = match self.loc[y as usize] {
             Loc::Const(c) => Some(self.const_mem(c)),
