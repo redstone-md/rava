@@ -95,6 +95,8 @@ pub struct IcCell {
 pub(super) const IC_MAX_UPDATES: u32 = 4;
 /// Counted calls before a site's major receiver is trusted.
 const MAJOR_MIN_CALLS: u64 = 1000;
+/// Share of a megamorphic site's calls a recorded receiver class needs to be checked for first.
+const FREQUENT_PERCENT: u64 = 25;
 
 impl IcCell {
     /// The cached receiver class while the site has seen no other.
@@ -135,6 +137,28 @@ impl IcCell {
             return None;
         }
         (0..2).map(|i| (self.seen[i].load(Ordering::Relaxed), c[i])).find(|&(k, n)| k != 0 && n * 10 >= total * 9).map(|(k, _)| k)
+    }
+
+    /// The recorded receiver classes that each took at least `FREQUENT_PERCENT` of the calls
+    /// counted, most frequent first, once enough calls were: at a megamorphic site these are
+    /// still worth a class check and an inlined body ahead of the generic dispatch (as C2
+    /// type-checks the profiled receivers of a polymorphic site before its virtual call).
+    pub(super) fn frequent(&self) -> Vec<usize> {
+        use std::sync::atomic::Ordering;
+        let c = [self.counts[0].load(Ordering::Relaxed) as u64, self.counts[1].load(Ordering::Relaxed) as u64];
+        let total = c[0] + c[1] + self.others.load(Ordering::Relaxed) as u64;
+        if total < MAJOR_MIN_CALLS {
+            return Vec::new();
+        }
+        let mut out: Vec<(usize, u64)> = (0..2).map(|i| (self.seen[i].load(Ordering::Relaxed), c[i])).filter(|&(k, n)| k != 0 && n * 100 >= total * FREQUENT_PERCENT).collect();
+        out.sort_by_key(|&(_, n)| std::cmp::Reverse(n));
+        out.into_iter().map(|(k, _)| k).collect()
+    }
+
+    /// Counted calls per recorded receiver class and for all others (`RAVA_INLINE_LOG`).
+    pub(super) fn shares(&self) -> (u32, u32, u32) {
+        use std::sync::atomic::Ordering;
+        (self.counts[0].load(Ordering::Relaxed), self.counts[1].load(Ordering::Relaxed), self.others.load(Ordering::Relaxed))
     }
 
     pub(super) fn counts_offset() -> i32 {

@@ -176,9 +176,13 @@ impl Builder {
         let profiled = || -> Vec<(&'static Method, Guard)> {
             let mut receivers = crate::jit::profile::receivers(self.sc.m, pc);
             // A megamorphic site still inlines a receiver class it nearly always sees, with a
-            // call for the others (C2's major receiver).
+            // call for the others (C2's major receiver), else the recorded classes that each
+            // take a large share of its calls, checked before the generic dispatch.
             if receivers.is_empty() {
                 receivers.extend(crate::jit::profile::major_receiver(self.sc.m, pc));
+            }
+            if receivers.is_empty() {
+                receivers.extend(crate::jit::profile::frequent_receivers(self.sc.m, pc));
             }
             receivers.into_iter().filter_map(|k| crate::link::select_method(k, m).filter(|t| !t.is_abstract()).map(|t| (t, Guard::Klass(k)))).collect()
         };
