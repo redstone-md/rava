@@ -28,6 +28,7 @@ pub fn clobbers(g: &Graph, v: V) -> (bool, bool) {
         // A byte or non-float element store puts the value through rdx.
         Inst::StoreIndexed(_, _, BasicType::Float | BasicType::Double, _) => NONE,
         Inst::StoreIndexed(..) => (false, true),
+        Inst::Intrinsic(crate::jit::intrinsics::Intrinsic::BitCount(..), ..) => NONE,
         _ => BOTH,
     }
 }

@@ -240,6 +240,11 @@ impl Asm {
         self.op_rm(false, &op, dst as u8, m);
     }
     /// `movsxd dst, src32`.
+    /// `popcnt` / `lzcnt` / `tzcnt` (`F3 0F B8/BD/BC`), 64-bit with `w`.
+    pub fn bit_count(&mut self, opcode: u8, w: bool, dst: R, src: R) {
+        self.b(0xF3);
+        self.op_rr(w, &[0x0F, opcode], dst as u8, src as u8);
+    }
     pub fn movsxd(&mut self, dst: R, src: R) {
         self.op_rr(true, &[0x63], dst as u8, src as u8);
     }

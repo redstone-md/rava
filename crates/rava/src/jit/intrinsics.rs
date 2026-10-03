@@ -42,6 +42,10 @@ pub(super) enum Intrinsic {
     /// `System.arraycopy`: checked and copied by a runtime helper called directly (no native
     /// frame); any check failing leaves compiled code for the interpreter to throw.
     ArrayCopy,
+    /// `Integer`/`Long` `bitCount`, `numberOfLeadingZeros`, `numberOfTrailingZeros`: one
+    /// `popcnt`, `lzcnt` or `tzcnt` (its opcode), on a long with `true`. The count is at most
+    /// 64, so the 32-bit form's zero-extended result is also the sign-extended int.
+    BitCount(u8, bool),
 }
 
 impl Intrinsic {
@@ -122,6 +126,19 @@ pub(super) fn intrinsic(m: &Method) -> Option<Intrinsic> {
         "java/lang/Object" if name == "getClass" && desc == "()Ljava/lang/Class;" => Some(Intrinsic::GetClass),
         "java/lang/System" if name == "arraycopy" && desc == "(Ljava/lang/Object;ILjava/lang/Object;II)V" => Some(Intrinsic::ArrayCopy),
         "java/lang/Thread" if name == "currentThread" && desc == "()Ljava/lang/Thread;" => Some(Intrinsic::CurrentThread),
+        "java/lang/Integer" | "java/lang/Long" => {
+            let wide = holder == "java/lang/Long";
+            if desc != if wide { "(J)I" } else { "(I)I" } {
+                return None;
+            }
+            let (opcode, feature) = match name {
+                "bitCount" => (0xB8, std::arch::is_x86_feature_detected!("popcnt")),
+                "numberOfLeadingZeros" => (0xBD, std::arch::is_x86_feature_detected!("lzcnt")),
+                "numberOfTrailingZeros" => (0xBC, std::arch::is_x86_feature_detected!("bmi1")),
+                _ => return None,
+            };
+            feature.then_some(Intrinsic::BitCount(opcode, wide))
+        }
         "java/lang/Double" | "java/lang/Float" => match (name, desc) {
             ("doubleToRawLongBits", "(D)J") => Some(Intrinsic::Bits(BasicType::Long)),
             ("longBitsToDouble", "(J)D") => Some(Intrinsic::Bits(BasicType::Double)),
@@ -163,6 +180,11 @@ impl Emitter {
         match k {
             // The optimizing tier's only.
             Intrinsic::ArrayCopy => return false,
+            Intrinsic::BitCount(opcode, wide) => {
+                self.a.load(true, R::Rax, self.stk(args));
+                self.a.bit_count(opcode, wide, R::Rax, R::Rax);
+                self.a.store(true, self.stk(args), R::Rax);
+            }
             Intrinsic::Round(mode) => {
                 self.a.fload(true, X(0), self.stk(args));
                 self.a.round_sd(X(0), X(0), mode);
