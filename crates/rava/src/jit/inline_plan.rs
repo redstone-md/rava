@@ -143,7 +143,7 @@ pub(super) fn refusal(target: &'static Method, chain: &Chain, tier: u8, spent: u
 /// The statically bound target of the call at `pc`, excluding method-handle invokers.
 pub(super) fn bound_target(caller: &'static Method, code: &[u8], pc: usize) -> Option<&'static Method> {
     let index = u16::from_be_bytes([code[pc + 1], code[pc + 2]]);
-    let Some(Resolved::Method(m)) = caller.holder.resolved[index as usize].get().copied() else { return None };
+    let Some(Resolved::Method(m)) = caller.holder.resolved[index as usize].get() else { return None };
     if m.is_signature_polymorphic() {
         return None;
     }
@@ -218,7 +218,7 @@ fn is_leaf(m: &'static Method) -> bool {
         return false;
     }
     let (code, resolved) = (info.code, &m.holder.resolved);
-    let is = |pc: usize, f: fn(Resolved) -> bool| resolved[u16::from_be_bytes([code[pc + 1], code[pc + 2]]) as usize].get().copied().is_some_and(f);
+    let is = |pc: usize, f: fn(Resolved) -> bool| resolved[u16::from_be_bytes([code[pc + 1], code[pc + 2]]) as usize].get().is_some_and(f);
     let mut pc = 0;
     while pc < code.len() {
         let ok = match code[pc] {

@@ -339,7 +339,7 @@ pub(super) fn ldc(t: &mut Thread, f: &mut Frame, index: u16) -> JResult<()> {
         Cp::Double(v) => f.push_d(v),
         Cp::String(s) => {
             if let Some(Resolved::String(o)) = k.resolved[index as usize].get() {
-                f.push(*o as u64);
+                f.push(o as u64);
                 return Ok(());
             }
             let o = rt::intern_literal(t, cf.utf8_bytes(s).unwrap_or(&[]))?;

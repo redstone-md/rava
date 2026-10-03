@@ -24,7 +24,7 @@ fn field_decl(m: &'static Method, index: u16) -> Option<(&'static Klass, &'stati
     let cf = m.holder.cf.as_ref()?;
     let (_, name, desc) = cf.member_ref(index)?;
     let Cp::Field { class, .. } = cf.pool[index as usize] else { return None };
-    let Some(Resolved::Class(owner)) = m.holder.resolved[class as usize].get().copied() else { return None };
+    let Some(Resolved::Class(owner)) = m.holder.resolved[class as usize].get() else { return None };
     find_field(owner, name, desc)
 }
 
