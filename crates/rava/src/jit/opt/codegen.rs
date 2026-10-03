@@ -45,6 +45,8 @@ pub struct SlowCall {
     pub args: Vec<Arg>,
     pub link: Option<Rc<State>>,
     pub fail: Option<Label>,
+    /// The registers to keep around the call (`Allocation::live_at`).
+    pub preserve: super::regalloc::Preserve,
 }
 
 pub(super) struct Gen<'a> {
@@ -58,7 +60,11 @@ pub(super) struct Gen<'a> {
     pub epilogue: Label,
     deopts: HashMap<*const State, Label>,
     deopt_list: Vec<(Label, Rc<State>)>,
-    polls: Vec<(Label, Label)>,
+    polls: Vec<(Label, Label, super::regalloc::Preserve)>,
+    /// The registers runtime calls emitted now must keep (`Allocation::live_at`).
+    pub preserve: super::regalloc::Preserve,
+    live_at: &'a HashMap<V, super::regalloc::Preserve>,
+    live_at_end: &'a [super::regalloc::Preserve],
     edge_stubs: Vec<(Label, B, B)>,
     /// Callee-saved registers the prologue saves (the frame, and those allocated).
     saved: Vec<R>,
@@ -155,6 +161,9 @@ pub(super) fn generate(g: &Graph, al: &Allocation, m: &'static Method, frame_slo
         deopts: HashMap::new(),
         deopt_list: Vec::new(),
         polls: Vec::new(),
+        preserve: (0, 0),
+        live_at: &al.live_at,
+        live_at_end: &al.live_at_end,
         edge_stubs: Vec::new(),
         saved: Vec::new(),
         frame_bytes: 0,
@@ -204,12 +213,14 @@ pub(super) fn generate(g: &Graph, al: &Allocation, m: &'static Method, frame_slo
         }
         for &v in &insts {
             let pending = gen.pending_null.is_some();
+            gen.preserve = gen.live_at.get(&v).copied().unwrap_or(gen.all_registers());
             gen.inst(v);
             assert!(!pending || gen.pending_null.is_none(), "an implicit null check without its access");
             if let (Some(h @ Loc::Stack(_)), true) = (al.home[v as usize], g.resolve(v) == v && !matches!(g.inst(v), Inst::Phi(_))) {
                 moves::mov(&mut gen.a, h, al.loc[v as usize]);
             }
         }
+        gen.preserve = gen.live_at_end[b as usize];
         gen.term(b, order.get(i + 1).copied());
     }
     let stubs = gen.a.new_label();
@@ -228,6 +239,21 @@ pub(super) fn generate(g: &Graph, al: &Allocation, m: &'static Method, frame_slo
 }
 
 impl Gen<'_> {
+    /// Every caller-saved and SSE register this method allocates.
+    fn all_registers(&self) -> super::regalloc::Preserve {
+        let g = self.live_gprs.iter().fold(0u16, |m, &r| m | 1 << r as u8);
+        let x = self.live_xmms.iter().fold(0u16, |m, &x| m | 1 << x);
+        (g, x)
+    }
+
+    /// The registers of `preserve` this method allocates, in a fixed order.
+    fn preserved(&self) -> (Vec<R>, Vec<u8>) {
+        let (g, x) = self.preserve;
+        let gprs = self.live_gprs.iter().copied().filter(|&r| g & 1 << r as u8 != 0).collect();
+        let xmms = self.live_xmms.iter().copied().filter(|&r| x & 1 << r != 0).collect();
+        (gprs, xmms)
+    }
+
     /// Marks the next instruction as the access an implicit null check left its test to.
     pub(super) fn fault_site(&mut self) {
         if let Some(fail) = self.pending_null.take() {
@@ -311,6 +337,8 @@ impl Gen<'_> {
     fn emit_epilogue(&mut self, overflow: Label) {
         let restore = self.a.new_label();
         self.a.bind(self.epilogue);
+        // No value is live any more but the result, which the monitor exit keeps itself.
+        self.preserve = (0, 0);
         if let Some((_, at)) = self.lock {
             // Every exit (return, exception, deoptimization) releases the monitor; the result
             // stays in rax, and an IllegalMonitorStateException replaces it.
@@ -362,8 +390,7 @@ impl Gen<'_> {
                 _ => {}
             }
         }
-        let gprs = self.live_gprs.clone();
-        let xmms = self.live_xmms.clone();
+        let (gprs, xmms) = self.preserved();
         for &r in &gprs {
             self.a.push(r);
         }
@@ -406,8 +433,7 @@ impl Gen<'_> {
     /// links the frame). The result is in rax.
     pub fn call_preserving_vals(&mut self, addr: usize, vals: &[V]) {
         const PARAMS: [R; 6] = [R::Rdi, R::Rsi, R::Rdx, R::Rcx, R::R8, R::R9];
-        let gprs = self.live_gprs.clone();
-        let xmms = self.live_xmms.clone();
+        let (gprs, xmms) = self.preserved();
         for &r in &gprs {
             self.a.push(r);
         }
@@ -511,7 +537,7 @@ impl Gen<'_> {
         self.a.cmp8_mi(mem(R::R12, offsets::POLL), 0);
         self.a.jcc(Cond::Ne, stub);
         self.a.bind(back);
-        self.polls.push((stub, back));
+        self.polls.push((stub, back, self.preserve));
     }
 
     /// The deoptimization stub of `s` (shared by every guard with that state).
@@ -598,6 +624,7 @@ impl Gen<'_> {
             return self.a.jmp(l);
         }
         if self.polls_on(from, to) {
+            self.preserve = self.live_at_end[from as usize];
             self.poll();
         }
         let moves: Vec<(Loc, Loc)> =
