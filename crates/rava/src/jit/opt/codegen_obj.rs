@@ -280,7 +280,7 @@ impl Gen<'_> {
             self.a.jcc(Cond::E, done);
             let (cell, slow) = (cell as *const _ as i64, self.a.new_label());
             let args = vec![Arg::Reg(R::Rcx), Arg::Imm(k as *const Klass as i64), Arg::Imm(cell)];
-            self.slow_calls.push(SlowCall { entry: slow, back: after, addr: runtime::subtype_cached as *const () as usize, args, link: None, fail: None });
+            self.slow_calls.push(SlowCall { entry: slow, back: after, addr: runtime::subtype_cached as *const () as usize, args, link: None, fail: None, preserve: self.preserve });
             self.a.jmp(slow);
         }
         // null passes a cast (instanceof tests null before calling this).
@@ -302,7 +302,7 @@ impl Gen<'_> {
             crate::jit::emit_obj::monitor_exit_fast(&mut self.a, ro, slow);
         }
         let (addr, fail) = if enter { (runtime::monitor_enter as *const () as usize, None) } else { (runtime::monitor_exit as *const () as usize, Some(fail)) };
-        self.slow_calls.push(SlowCall { entry: slow, back: done, addr, args: vec![Arg::Thread, Arg::Val(o)], link: Some(s.clone()), fail });
+        self.slow_calls.push(SlowCall { entry: slow, back: done, addr, args: vec![Arg::Thread, Arg::Val(o)], link: Some(s.clone()), fail, preserve: self.preserve });
         self.a.bind(done);
     }
 
@@ -323,7 +323,7 @@ impl Gen<'_> {
             None => self.a.jmp(slow),
         }
         let args = vec![Arg::Thread, Arg::Imm(k as *const Klass as i64)];
-        self.slow_calls.push(SlowCall { entry: slow, back: done, addr: runtime::new_instance as *const () as usize, args, link: Some(s.clone()), fail: Some(fail) });
+        self.slow_calls.push(SlowCall { entry: slow, back: done, addr: runtime::new_instance as *const () as usize, args, link: Some(s.clone()), fail: Some(fail), preserve: self.preserve });
         self.a.bind(done);
         self.put(v, R::Rax);
     }
@@ -381,7 +381,7 @@ impl Gen<'_> {
             }
         }
         let args = vec![Arg::Thread, Arg::Imm(k as *const Klass as i64), Arg::Val(len)];
-        self.slow_calls.push(SlowCall { entry: slow, back: done, addr: runtime::new_array as *const () as usize, args, link: Some(s.clone()), fail: Some(fail) });
+        self.slow_calls.push(SlowCall { entry: slow, back: done, addr: runtime::new_array as *const () as usize, args, link: Some(s.clone()), fail: Some(fail), preserve: self.preserve });
         self.a.bind(done);
         self.put(v, R::Rax);
     }

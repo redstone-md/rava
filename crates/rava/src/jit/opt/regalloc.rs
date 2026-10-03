@@ -40,6 +40,9 @@ pub enum Loc {
     Const(i64),
 }
 
+/// Registers to keep around a runtime call: general purpose by `R` number, then SSE.
+pub type Preserve = (u16, u16);
+
 pub struct Allocation {
     pub loc: Vec<Loc>,
     /// Blocks in code order.
@@ -50,6 +53,11 @@ pub struct Allocation {
     /// the slot each is kept in meanwhile: its home slot, else one of `save_base..`.
     pub saves: std::collections::HashMap<V, Vec<(Loc, Loc)>>,
     pub save_base: i32,
+    /// The caller-saved and SSE registers (as masks by register number) holding values live at
+    /// each instruction and at the end of each block: what a runtime call from the
+    /// instruction's slow path, or from a poll on the block's way out, must preserve.
+    pub live_at: std::collections::HashMap<V, Preserve>,
+    pub live_at_end: Vec<Preserve>,
     /// Where a register-allocated value is also kept for states: a spill slot it is stored to
     /// at its definition, or for a parameter the frame slot it arrived in.
     pub home: Vec<Option<Loc>>,
@@ -210,6 +218,7 @@ pub fn allocate(g: &Graph) -> Allocation {
         most = most.max(next);
         saves.insert(call, live);
     }
+    let (live_at, live_at_end) = live_registers(g, &order, &pos, &range, &iv, &loc);
     for v in 0..g.values.len() as V {
         loc[v as usize] = loc[g.resolve(v) as usize];
     }
@@ -217,7 +226,57 @@ pub fn allocate(g: &Graph) -> Allocation {
     for v in 0..g.values.len() as V {
         home[v as usize] = home[g.resolve(v) as usize];
     }
-    Allocation { loc, order, spill_slots: spill_slots + most, saves, save_base: spill_slots, home }
+    Allocation { loc, order, spill_slots: spill_slots + most, saves, save_base: spill_slots, home, live_at, live_at_end }
+}
+
+/// The registers runtime calls must preserve at each instruction and block end (`Allocation::
+/// live_at`): those of every value live there, its own result and the inputs it reads last
+/// included (a slow path runs in the middle of the instruction). One sweep in position order.
+fn live_registers(g: &Graph, order: &[B], pos: &[u32], range: &[(u32, u32)], iv: &Intervals, loc: &[Loc]) -> (std::collections::HashMap<V, Preserve>, Vec<Preserve>) {
+    enum At {
+        Inst(V),
+        End(B),
+    }
+    let mut queries: Vec<(u32, At)> = Vec::new();
+    for &b in order {
+        for &v in &g.blocks[b as usize].insts {
+            if g.resolve(v) == v && !matches!(g.inst(v), Inst::Phi(_) | Inst::Const(_) | Inst::Param(_) | Inst::Copy(_)) {
+                queries.push((pos[v as usize], At::Inst(v)));
+            }
+        }
+        queries.push((range[b as usize].1, At::End(b)));
+    }
+    queries.sort_by_key(|q| q.0);
+    let bit = |l: Loc| -> Preserve {
+        match l {
+            Loc::Reg(r) if CALLER_SAVED.contains(&r) || SCRATCH.contains(&r) => (1 << r as u8, 0),
+            Loc::Xmm(x) => (0, 1 << x),
+            _ => (0, 0),
+        }
+    };
+    let mut by_start: Vec<usize> = (0..g.values.len()).filter(|&v| iv.used[v] && bit(loc[v]) != (0, 0)).collect();
+    by_start.sort_by_key(|&v| iv.start[v]);
+    let (mut next, mut active) = (0, Vec::new());
+    let mut at = std::collections::HashMap::new();
+    let mut ends = vec![(0, 0); g.blocks.len()];
+    for (p, q) in queries {
+        while next < by_start.len() && iv.start[by_start[next]] <= p {
+            active.push(by_start[next]);
+            next += 1;
+        }
+        active.retain(|&a| iv.end[a] >= p);
+        let mask = active.iter().fold((0u16, 0u16), |m, &a| {
+            let b = bit(loc[a]);
+            (m.0 | b.0, m.1 | b.1)
+        });
+        match q {
+            At::Inst(v) => {
+                at.insert(v, mask);
+            }
+            At::End(b) => ends[b as usize] = mask,
+        }
+    }
+    (at, ends)
 }
 
 /// Live intervals from block liveness; with `states`, uses by deoptimization states count

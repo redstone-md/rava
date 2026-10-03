@@ -48,6 +48,7 @@ impl Gen<'_> {
             if let Some(s) = &c.link {
                 self.link(s, true);
             }
+            self.preserve = c.preserve;
             self.call_preserving(c.addr, &c.args);
             if let Some(f) = c.fail {
                 self.a.test_rr(true, R::Rax, R::Rax);
@@ -64,8 +65,9 @@ impl Gen<'_> {
             self.a.bind(l);
             self.edge(from, to, false);
         }
-        for (stub, back) in std::mem::take(&mut self.polls) {
+        for (stub, back, preserve) in std::mem::take(&mut self.polls) {
             self.a.bind(stub);
+            self.preserve = preserve;
             self.anchor();
             self.call_preserving(runtime::safepoint as *const () as usize, &[Arg::Thread]);
             self.a.jmp(back);
