@@ -11,6 +11,7 @@
 //! A full collection clears every mark first; it runs once the old generation has doubled.
 
 pub mod cards;
+mod histo;
 mod large;
 mod mark;
 mod prefault;
@@ -238,6 +239,9 @@ impl Heap {
             }
             let before_mark = std::time::Instant::now();
             let marked = mark::mark(&mut space, !full);
+            if full && std::env::var_os("RAVA_GC_HISTO").is_some() {
+                histo::report(&space);
+            }
             if !full && std::env::var_os("RAVA_GC_VERIFY").is_some() {
                 verify_young(&mut space);
             }
