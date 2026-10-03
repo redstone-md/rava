@@ -68,16 +68,16 @@ impl Gen<'_> {
                 self.store_typed(v, rx, bt, mem(ro, off as i32));
             }
             Inst::LoadStatic(addr, bt) => {
-                self.a.mov_ri(R::R11, addr as i64);
+                let at = self.absolute(addr, R::R11);
                 let r = self.out(v);
-                load_typed_to(&mut self.a, r, bt, mem(R::R11, 0));
+                load_typed_to(&mut self.a, r, bt, at);
                 self.put(v, r);
             }
             Inst::StoreStatic(addr, bt, x) => {
                 self.load(R::Rdx, x);
                 normalize_into(&mut self.a, bt);
-                self.a.mov_ri(R::Rcx, addr as i64);
-                self.a.store(true, mem(R::Rcx, 0), R::Rdx);
+                let at = self.absolute(addr, R::Rcx);
+                self.a.store(true, at, R::Rdx);
             }
             Inst::ArrayLength(x) => {
                 let ra = self.reg(x, R::Rax);

@@ -133,7 +133,8 @@ pub struct Klass {
     instance_size: u32,
     /// Offsets of every reference field of an instance, inherited ones included.
     pub ref_offsets: Box<[u32]>,
-    pub statics: Box<[AtomicU64]>,
+    /// In low memory (`crate::low`): optimized code reads and writes statics absolutely.
+    pub statics: &'static [AtomicU64],
     /// In low memory (`crate::low`): code stores and passes methods as 32-bit immediates.
     pub(crate) methods: OnceLock<&'static [Method]>,
     pub(crate) vtable: OnceLock<Box<[&'static Method]>>,
@@ -211,7 +212,7 @@ impl Klass {
             fields: p.fields.into_boxed_slice(),
             instance_size: p.instance_size,
             ref_offsets: p.ref_offsets.into_boxed_slice(),
-            statics: (0..p.static_slots).map(|_| AtomicU64::new(0)).collect(),
+            statics: crate::low::leak_slice((0..p.static_slots).map(|_| AtomicU64::new(0)).collect()),
             methods: OnceLock::new(),
             vtable: OnceLock::new(),
             init: InitLock::new(if p.initialized { InitState::Initialized } else { InitState::Linked }),
