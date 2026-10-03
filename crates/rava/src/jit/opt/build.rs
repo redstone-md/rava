@@ -139,6 +139,8 @@ pub(super) struct Builder {
     /// Values whose class is known exactly where they are used (allocations, and receivers
     /// inside a body inlined behind an exact class check), innermost last.
     pub exact: Vec<(V, &'static crate::klass::Klass)>,
+    /// Phis made with all their inputs (the results of inlined bodies with several returns).
+    pub complete_phis: std::collections::HashSet<V>,
     /// Bounds checks of the current block: (array, index, check).
     pub bounds: Vec<(V, V, V)>,
     /// The three caches above as each finished block left them, for a block whose only
@@ -150,7 +152,7 @@ pub(super) struct Builder {
 /// Builds the graph of `m`; `None` if some instruction is not supported. Returns the frame size.
 pub(super) fn build(m: &'static Method) -> Option<(Graph, i32)> {
     let sc = Scope::new(m, None, 0)?;
-    let mut b = Builder { g: Graph::default(), extent: sc.frame_end(), sc, cur: 0, spent: 0, chain: vec![(m, None)], seq: 0, speculate: m.deopt_recompiles.load(std::sync::atomic::Ordering::Relaxed) < super::SPECULATIVE_RECOMPILES, nonnull: Vec::new(), stable: HashMap::new(), numbered: HashMap::new(), loads: HashMap::new(), exact: Vec::new(), bounds: Vec::new(), exits: HashMap::new() };
+    let mut b = Builder { g: Graph::default(), extent: sc.frame_end(), sc, cur: 0, spent: 0, chain: vec![(m, None)], seq: 0, speculate: m.deopt_recompiles.load(std::sync::atomic::Ordering::Relaxed) < super::SPECULATIVE_RECOMPILES, nonnull: Vec::new(), stable: HashMap::new(), numbered: HashMap::new(), loads: HashMap::new(), exact: Vec::new(), complete_phis: Default::default(), bounds: Vec::new(), exits: HashMap::new() };
     // The entry block reads the parameters, then enters bci 0 like any other edge.
     let start = b.g.new_block(-1);
     b.start_block(start);
