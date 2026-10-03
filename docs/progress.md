@@ -893,3 +893,12 @@ A/B (`bench/paper_ab.sh -n 5`, means): `836c68b` reaches `Done` in 28.07 s again
 **Measured and dropped:** a third compiler thread (same), the first full collection at 400 MB of
 old objects instead of 128 (same pauses). Deoptimizations (5.6k per start) are spread over
 start-up code, at most 75 at one site; collections take ~290 ms of world generation's 21 s.
+
+Later the same day, `42a3e5e`: `Done` in 28.11 s against java's 29.64 s (-5.2%), 29.11 against
+30.72 s from exec (-5.2%), all five rounds. Since `836c68b`: float compares and int-to-float
+conversions read spilled operands from memory, and a commutative operation's result may take
+its dying second operand's register (the noise lerps' `a + t * (b - a)`, accumulators).
+
+What remains in the hot code is mostly memory: the samples on class and null compares sit
+right after the loads of object headers they test (cache misses on objects that are larger
+here, 16-byte headers and 8-byte references against HotSpot's 12 and 4).
