@@ -109,7 +109,35 @@ pub(super) struct Gen<'a> {
     /// deoptimization stub of the one being emitted, and the faulting instructions with theirs.
     pub(super) implicit: std::collections::HashSet<V>,
     pub(super) pending_null: Option<Label>,
+    /// Loop headers whose test back edges repeat (`rotations`), with their successor in the loop.
+    rotations: HashMap<B, B>,
     faults: Vec<(Label, Label)>,
+}
+
+/// Loop rotation (C2's loop inversion, without copying code): a loop header that only merges
+/// values (phis) and tests them sends its back edges through a copy of its test, which
+/// branches straight to the body; an iteration then costs one taken branch instead of a jump
+/// back plus the header's untaken one. Only where neither successor has phis of its own (the
+/// copied branch skips the header's edges into them). Maps each such header to its successor in
+/// the loop.
+fn rotations(g: &Graph) -> HashMap<B, B> {
+    let mut out = HashMap::new();
+    for l in super::dom::Dom::new(g).loops(g) {
+        let h = &g.blocks[l.header as usize];
+        if !h.insts.iter().all(|&v| matches!(g.inst(v), Inst::Phi(_) | Inst::Const(_))) {
+            continue;
+        }
+        let Term::If { ty: Ty::I | Ty::J | Ty::A, then, other, .. } = h.term else { continue };
+        let stay = match (l.body[then as usize], l.body[other as usize]) {
+            (true, false) => then,
+            (false, true) => other,
+            _ => continue,
+        };
+        if phis(g, then).next().is_none() && phis(g, other).next().is_none() {
+            out.insert(l.header, stay);
+        }
+    }
+    out
 }
 
 /// The null checks whose object the next instruction accesses at a small offset (a field, the
@@ -182,6 +210,7 @@ pub(super) fn generate(g: &Graph, al: &Allocation, m: &'static Method, frame_slo
         short_loops: super::polls::short_loops(g),
         implicit: implicit_null_checks(g, &al.loc),
         pending_null: None,
+        rotations: rotations(g),
         faults: Vec::new(),
         frame_slots,
         root: m,
@@ -618,6 +647,19 @@ impl Gen<'_> {
         }
     }
 
+    /// The test of rotated loop header `h` repeated at the end of a back edge (`rotations`):
+    /// on to `stay` in the loop, else to the exit.
+    fn rotated(&mut self, h: B, stay: B) {
+        let Term::If { cmp, ty, a, b: y, then, other, .. } = self.g.blocks[h as usize].term else { unreachable!("a rotated header tests") };
+        let x = self.reg(a, R::Rax);
+        self.alu_val(ty != Ty::I, Alu::Cmp, x, y);
+        let (c, exit) = if then == stay { (cond(cmp), other) } else { (invert(cond(cmp)), then) };
+        let l = self.edge_target(h, stay);
+        self.a.jcc(c, l);
+        let l = self.edge_target(h, exit);
+        self.a.jmp(l);
+    }
+
     /// Leaves `from` for `to`: phi moves, a poll on back-edges, then the jump.
     fn edge(&mut self, from: B, to: B, fallthrough: bool) {
         if let Some(l) = self.cold_target(to) {
@@ -630,6 +672,9 @@ impl Gen<'_> {
         let moves: Vec<(Loc, Loc)> =
             phis(self.g, to).map(|p| (self.loc[p as usize], self.loc[phi_input(self.g, p, from, to) as usize])).collect();
         moves::parallel(&mut self.a, &moves);
+        if let (Some(&stay), true) = (self.rotations.get(&to), self.back_edge(from, to)) {
+            return self.rotated(to, stay);
+        }
         if !fallthrough {
             self.a.jmp(self.labels[to as usize]);
         }
