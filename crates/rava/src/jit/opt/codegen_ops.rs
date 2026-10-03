@@ -80,6 +80,21 @@ impl Gen<'_> {
                     self.a.jcc(Cond::Ae, fail);
                 }
             }
+            Inst::RangeGuard(arr, init, limit, s) => {
+                let (fail, ok) = (self.deopt(&s), self.a.new_label());
+                let ri = self.reg(init, R::Rax);
+                self.alu_val(false, Alu::Cmp, ri, limit);
+                self.a.jcc(Cond::Ge, ok);
+                self.a.test_rr(false, ri, ri);
+                self.a.jcc(Cond::S, fail);
+                let rl = self.reg(limit, R::R11);
+                let ra = self.reg(arr, R::Rax);
+                self.a.test_rr(true, ra, ra);
+                self.a.jcc(Cond::E, fail);
+                self.a.alu_rm(false, Alu::Cmp, rl, mem(ra, 16));
+                self.a.jcc(Cond::G, fail);
+                self.a.bind(ok);
+            }
             Inst::InitCheck(k, s) => {
                 let fail = self.deopt(&s);
                 crate::jit::emit_obj::init_check(&mut self.a, k, R::Rax, fail);

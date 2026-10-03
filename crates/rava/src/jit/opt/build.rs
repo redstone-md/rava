@@ -235,6 +235,12 @@ impl Builder {
             self.sc.locals = locals;
             self.sc.stack = stack;
             self.nonnull = nonnull;
+            let bci = self.g.blocks[block as usize].bci as usize;
+            if self.g.blocks[block as usize].loop_header && self.speculates(self.sc.m, bci) {
+                self.sc.bci = bci;
+                let s = self.state();
+                self.g.loop_entry.insert(block, s);
+            }
             self.build_block(self.g.blocks[block as usize].bci as usize)?;
         }
         Some(())

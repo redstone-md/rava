@@ -123,6 +123,10 @@ pub enum Inst {
     FlagCheck(usize, Rc<State>),
     /// Integer division by zero check.
     ZeroCheck(V, Rc<State>),
+    /// A counted loop's bounds-check predicate (`rce.rs`), `(array, init, limit)`: when the loop
+    /// runs (`init < limit`), deoptimizes unless the array is non-null, `init >= 0` and
+    /// `limit <= length`.
+    RangeGuard(V, V, V, Rc<State>),
     BoundsCheck(V, V, Rc<State>),
     InitCheck(&'static Klass, Rc<State>),
     LoadField(V, u32, BasicType),
@@ -173,7 +177,7 @@ impl Inst {
                 one(a);
                 one(b);
             }
-            Inst::StoreIndexed(a, b, _, c) => {
+            Inst::StoreIndexed(a, b, _, c) | Inst::RangeGuard(a, b, c, _) => {
                 one(a);
                 one(b);
                 one(c);
@@ -190,7 +194,7 @@ impl Inst {
     /// Replaces the state this instruction deoptimizes to.
     pub fn set_state(&mut self, new: Rc<State>) {
         match self {
-            Inst::NullCheck(_, s) | Inst::ZeroCheck(_, s) | Inst::BoundsCheck(_, _, s) | Inst::InitCheck(_, s) | Inst::FlagCheck(_, s) => *s = new,
+            Inst::NullCheck(_, s) | Inst::ZeroCheck(_, s) | Inst::BoundsCheck(_, _, s) | Inst::InitCheck(_, s) | Inst::FlagCheck(_, s) | Inst::RangeGuard(_, _, _, s) => *s = new,
             Inst::Call(_, _, s) | Inst::New(_, s) | Inst::NewArray(_, _, s) | Inst::NewMulti(_, _, s) => *s = new,
             Inst::CheckCast(_, _, s) | Inst::StoreCheck(_, _, s) | Inst::Intrinsic(_, _, Some(s)) | Inst::Monitor(_, _, s) => *s = new,
             _ => {}
@@ -200,7 +204,7 @@ impl Inst {
     /// The state a failure of this instruction deoptimizes to.
     pub fn state(&self) -> Option<&Rc<State>> {
         match self {
-            Inst::NullCheck(_, s) | Inst::ZeroCheck(_, s) | Inst::BoundsCheck(_, _, s) | Inst::InitCheck(_, s) | Inst::FlagCheck(_, s) => Some(s),
+            Inst::NullCheck(_, s) | Inst::ZeroCheck(_, s) | Inst::BoundsCheck(_, _, s) | Inst::InitCheck(_, s) | Inst::FlagCheck(_, s) | Inst::RangeGuard(_, _, _, s) => Some(s),
             Inst::Call(_, _, s) | Inst::New(_, s) | Inst::NewArray(_, _, s) | Inst::NewMulti(_, _, s) => Some(s),
             Inst::CheckCast(_, _, s) | Inst::StoreCheck(_, _, s) | Inst::Intrinsic(_, _, Some(s)) | Inst::Monitor(_, _, s) => Some(s),
             _ => None,
@@ -219,7 +223,7 @@ impl Inst {
             Inst::Bin(_, a, b) | Inst::Compare(_, a, b) | Inst::BoundsCheck(a, b, _) | Inst::LoadIndexed(a, b, _) => vec![*a, *b],
             Inst::StoreCheck(a, b, _) => vec![*a, *b],
             Inst::StoreField(a, _, _, b) => vec![*a, *b],
-            Inst::StoreIndexed(a, b, _, c) => vec![*a, *b, *c],
+            Inst::StoreIndexed(a, b, _, c) | Inst::RangeGuard(a, b, c, _) => vec![*a, *b, *c],
             Inst::Select(_, _, a, b, t, f) => vec![*a, *b, *t, *f],
         }
     }
@@ -333,6 +337,9 @@ pub struct Graph {
     /// Calls not inlined because their site looked cold: the code counts them and marks the
     /// site hot (and asks for a recompilation) if it runs often after all.
     pub cold_calls: std::collections::HashSet<V>,
+    /// The interpreter state on entering each loop header whose bytecode has not trapped (its
+    /// phis as the locals): where predicates hoisted out of the loop deoptimize (`rce.rs`).
+    pub loop_entry: std::collections::HashMap<B, std::rc::Rc<State>>,
 }
 
 impl Graph {
@@ -386,7 +393,7 @@ impl Graph {
             for &v in &blk.insts {
                 let inst = match &self.values[v as usize].inst {
                     Inst::Call(c, args, s) => format!("Call({c:?}, {args:?}) @{}", s.bci),
-                    i @ (Inst::NullCheck(..) | Inst::FlagCheck(..) | Inst::ZeroCheck(..) | Inst::BoundsCheck(..) | Inst::InitCheck(..) | Inst::CheckCast(..) | Inst::StoreCheck(..) | Inst::New(..) | Inst::NewArray(..) | Inst::NewMulti(..) | Inst::Monitor(..)) => {
+                    i @ (Inst::NullCheck(..) | Inst::FlagCheck(..) | Inst::ZeroCheck(..) | Inst::BoundsCheck(..) | Inst::RangeGuard(..) | Inst::InitCheck(..) | Inst::CheckCast(..) | Inst::StoreCheck(..) | Inst::New(..) | Inst::NewArray(..) | Inst::NewMulti(..) | Inst::Monitor(..)) => {
                         let s = i.state().unwrap();
                         format!("{} @{}:{}", format!("{i:?}").split(", State").next().unwrap_or(""), s.method.name, s.bci)
                     }
