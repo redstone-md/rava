@@ -15,6 +15,15 @@ struct Totals {
     bytes: usize,
     step8: usize,
     compact: usize,
+    /// 12-byte header, 8-byte references; 8-byte header, 4-byte references.
+    header12: usize,
+    header8: usize,
+}
+
+/// Bytes of an instance's fields (with references of `reference` bytes), the inherited included.
+fn field_bytes(k: &'static crate::klass::Klass, reference: usize) -> usize {
+    let own: usize = k.fields.iter().filter(|f| !f.is_static()).map(|f| if f.ty == crate::types::BasicType::Reference { reference } else { f.ty.size() as usize }).sum();
+    own + k.super_klass.map_or(0, |s| field_bytes(s, reference))
 }
 
 pub fn report(space: &Space) {
@@ -31,24 +40,27 @@ pub fn report(space: &Space) {
             let o = (page + c * cell) as Oop;
             // SAFETY: a marked cell holds a live object.
             let k = unsafe { obj::klass(o) };
-            let (bytes, compact) = match k.kind {
+            let (bytes, compact, h12, h8) = match k.kind {
                 KlassKind::Instance => {
                     let size = k.instance_size() as usize;
-                    (size, size - 16 + 12 - 4 * k.ref_offsets.len())
+                    (size, 12 + field_bytes(k, 4), 12 + field_bytes(k, 8), 8 + field_bytes(k, 4))
                 }
                 _ => {
                     // SAFETY: an array.
                     let len = unsafe { obj::array_length(o) } as usize;
                     let elem = k.elem_size() as usize;
                     let celem = if matches!(k.kind, KlassKind::ObjArray { .. }) { 4 } else { elem };
-                    (ARRAY_BASE_OFFSET as usize + elem * len, 16 + celem * len)
+                    (ARRAY_BASE_OFFSET as usize + elem * len, 16 + celem * len, 16 + elem * len, 12 + celem * len)
                 }
             };
             all.objects += 1;
             all.cells += cell;
             all.bytes += bytes;
             all.step8 += if bytes <= 256 { bytes.next_multiple_of(8) } else { cell };
-            all.compact += if compact <= 256 { compact.next_multiple_of(8) } else { compact.next_multiple_of(64) };
+            let rounded = |b: usize| if b <= 256 { b.next_multiple_of(8) } else { b.next_multiple_of(64) };
+            all.compact += rounded(compact);
+            all.header12 += rounded(h12);
+            all.header8 += rounded(h8);
             let e = by_class.entry(k.name.as_str()).or_default();
             e.0 += 1;
             e.1 += cell;
@@ -56,12 +68,14 @@ pub fn report(space: &Space) {
     }
     let mb = |b: usize| b >> 20;
     eprintln!(
-        "[gc-histo] {} objects: cells {} MiB, objects {} MiB, with 8-byte classes {} MiB, compact layout {} MiB; large {} MiB",
+        "[gc-histo] {} objects: cells {} MiB, objects {} MiB, with 8-byte classes {} MiB, compact layout {} MiB, 12-byte header {} MiB, 8-byte header and compact references {} MiB; large {} MiB",
         all.objects,
         mb(all.cells),
         mb(all.bytes),
         mb(all.step8),
         mb(all.compact),
+        mb(all.header12),
+        mb(all.header8),
         mb(space.large.values().filter(|l| l.marked).map(|l| l.size).sum())
     );
     let mut top: Vec<_> = by_class.into_iter().collect();
