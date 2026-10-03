@@ -115,14 +115,14 @@ impl Gen<'_> {
                     self.a.test_rr(true, rx, rx);
                     self.a.jcc(Cond::E, done);
                     self.a.load(true, R::Rcx, mem(rx, 0));
-                    self.a.mov_ri(R::Rdx, k as *const Klass as i64);
-                    self.a.alu_rr(true, Alu::Cmp, R::Rcx, R::Rdx);
+                    let kk = self.class_operand(k);
+                    self.cmp_class(None, kk);
                     match depth.filter(|_| !exact) {
                         None => self.a.jcc(Cond::Ne, fail),
                         Some(d) => {
                             self.a.jcc(Cond::E, done);
                             let at = std::mem::offset_of!(Klass, primary) as i32 + 8 * d as i32;
-                            self.a.alu_rm(true, Alu::Cmp, R::Rdx, mem(R::Rcx, at));
+                            self.cmp_class(Some(mem(R::Rcx, at)), kk);
                             self.a.jcc(Cond::Ne, fail);
                         }
                     }
@@ -224,6 +224,26 @@ impl Gen<'_> {
         self.a.store8(at, R::Rdx);
     }
 
+    /// Class `k` as an immediate when it is in low memory (`crate::low`), else loaded into rdx.
+    fn class_operand(&mut self, k: &'static Klass) -> Option<i32> {
+        let addr = k as *const Klass as usize;
+        if crate::low::is_low(addr) {
+            return Some(addr as i32);
+        }
+        self.a.mov_ri(R::Rdx, addr as i64);
+        None
+    }
+
+    /// Compares the class word at `m` (else the class in rcx) with `k` (`class_operand`).
+    fn cmp_class(&mut self, m: Option<M>, k: Option<i32>) {
+        match (m, k) {
+            (None, Some(imm)) => self.a.alu_ri(true, Alu::Cmp, R::Rcx, imm),
+            (None, None) => self.a.alu_rr(true, Alu::Cmp, R::Rcx, R::Rdx),
+            (Some(m), Some(imm)) => self.a.alu_mi(true, Alu::Cmp, m, imm),
+            (Some(m), None) => self.a.alu_rm(true, Alu::Cmp, R::Rdx, m),
+        }
+    }
+
     /// With `x` non-null: rax := 1 if its class is a subtype of `k` (jumping to `done` on the
     /// inline hits), else the runtime's answer.
     fn subtype_check(&mut self, x: V, k: &'static Klass, done: crate::jit::asm::Label) {
@@ -234,14 +254,14 @@ impl Gen<'_> {
         self.a.jcc(Cond::E, null_ok);
         self.a.load(true, R::Rcx, mem(rx, 0));
         self.a.mov_ri(R::Rax, 1);
-        self.a.mov_ri(R::Rdx, k as *const Klass as i64);
-        self.a.alu_rr(true, Alu::Cmp, R::Rcx, R::Rdx);
+        let kk = self.class_operand(k);
+        self.cmp_class(None, kk);
         self.a.jcc(Cond::E, done);
         let after = self.a.new_label();
         if let Some(d) = crate::jit::emit_obj::primary_depth(k) {
             // A class: its ancestor at k's depth is k, or the answer is no.
             let at = std::mem::offset_of!(Klass, primary) as i32 + 8 * d as i32;
-            self.a.alu_rm(true, Alu::Cmp, R::Rdx, mem(R::Rcx, at));
+            self.cmp_class(Some(mem(R::Rcx, at)), kk);
             self.a.jcc(Cond::E, done);
             self.a.alu_rr(false, Alu::Xor, R::Rax, R::Rax);
             self.a.jmp(after);
@@ -253,7 +273,7 @@ impl Gen<'_> {
                 let (scan, no, slow) = (self.a.new_label(), self.a.new_label(), self.a.new_label());
                 let hit = std::mem::offset_of!(Klass, itable_hit) as i32;
                 self.a.load(true, R::R11, mem(R::Rcx, hit));
-                self.a.alu_rm(true, Alu::Cmp, R::Rdx, mem(R::R11, 0));
+                self.cmp_class(Some(mem(R::R11, 0)), kk);
                 self.a.jcc(Cond::E, done);
                 self.a.load(true, R::R11, mem(R::Rcx, std::mem::offset_of!(Klass, itable_raw) as i32));
                 self.a.test_rr(true, R::R11, R::R11);
@@ -263,7 +283,7 @@ impl Gen<'_> {
                 self.a.alu_ri(true, Alu::Add, R::R11, 16);
                 self.a.alu_ri(true, Alu::Sub, R::Rax, 1);
                 self.a.jcc(Cond::L, no);
-                self.a.alu_rm(true, Alu::Cmp, R::Rdx, mem(R::R11, -8));
+                self.cmp_class(Some(mem(R::R11, -8)), kk);
                 self.a.jcc(Cond::Ne, scan);
                 self.a.lea(R::Rax, mem(R::R11, -8));
                 self.a.store(true, mem(R::Rcx, hit), R::Rax);
