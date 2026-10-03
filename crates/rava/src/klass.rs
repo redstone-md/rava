@@ -117,6 +117,9 @@ pub struct Klass {
     /// The same itable flattened for generated code: `[count, (interface, block pointer)...]`,
     /// or null until first built (`jit/stubs.rs` scans it).
     pub(crate) itable_raw: AtomicPtr<usize>,
+    /// The `(interface, block pointer)` pair of `itable_raw` an inline scan found last (HotSpot's
+    /// secondary super cache), checked before scanning; a pair of zeros until then.
+    pub(crate) itable_hit: AtomicPtr<usize>,
     pub(crate) mirror: AtomicPtr<crate::heap::ObjHeader>,
     pub name: Symbol,
     pub kind: KlassKind,
@@ -164,6 +167,9 @@ pub(crate) struct KlassParts {
     pub initialized: bool,
     pub hidden: bool,
 }
+
+/// The `itable_hit` of a class no scan has hit yet: no interface is null.
+static NO_ITABLE_HIT: [usize; 2] = [0, 0];
 
 /// Classes live in the low 2 GiB of the address space where the system allows it (`MAP_32BIT`),
 /// so generated code compares and stores class pointers as 32-bit immediates (`cmp r, imm32`)
@@ -238,6 +244,7 @@ impl Klass {
             array_klass: OnceLock::new(),
             itable: OnceLock::new(),
             itable_raw: AtomicPtr::new(std::ptr::null_mut()),
+            itable_hit: AtomicPtr::new(NO_ITABLE_HIT.as_ptr() as *mut usize),
             hidden: p.hidden,
             nest_host: OnceLock::new(),
             vtable_ptr: AtomicPtr::new(std::ptr::null_mut()),
