@@ -279,7 +279,7 @@ impl<'g> Replace<'g> {
                 }
                 Inst::LoadField(base, off, bt) if self.cands.contains_key(&self.g.resolve(base)) => {
                     let base = self.g.resolve(base);
-                    let x = if off == 0 && bt == BasicType::Long {
+                    let x = if off == 0 && bt == BasicType::Int {
                         let k = self.cands[&base].klass;
                         self.fresh(Inst::Const(k as *const Klass as i64), Ty::J)
                     } else {

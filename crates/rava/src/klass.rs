@@ -175,7 +175,10 @@ static NO_ITABLE_HIT: [usize; 2] = [0, 0];
 /// Classes live in low memory (`crate::low`): generated code compares and stores class pointers
 /// as 32-bit immediates.
 pub(crate) fn leak(k: Klass) -> &'static Klass {
-    crate::low::leak(k)
+    let k = crate::low::leak(k);
+    // Object headers hold a class in 32 bits.
+    assert!(crate::low::is_low(k as *const Klass as usize), "out of low memory for classes");
+    k
 }
 
 impl Klass {

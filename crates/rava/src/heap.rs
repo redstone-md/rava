@@ -1,9 +1,10 @@
 //! The Java heap and the object model.
 //!
-//! Every object starts with a 16-byte header: the `Klass` pointer and a mark word (identity hash
-//! and, later, lock/GC bits). Instance fields follow at fixed offsets. Arrays store their length
-//! as an `i32` at offset 16 and elements from offset 24. A reference is a raw pointer to the
-//! header; null is 0.
+//! Every object starts with a 16-byte header: the `Klass` pointer in 32 bits (classes live in
+//! low memory, `crate::low`), 4 bytes the object's own data may use, and at offset 8 the mark
+//! word (identity hash, lock bits). An array stores its length in those 4 bytes and elements
+//! from offset 16; an instance's first field of at most 4 bytes goes there, the others from
+//! offset 16 (`loader::FieldLayout`). A reference is a raw pointer to the header; null is 0.
 //!
 //! Inside the heap (reference fields, `Object[]` elements) a reference may be stored compressed
 //! (`COMPRESSED`): as a 32-bit value, the address shifted right by `NARROW_SHIFT`, as HotSpot's
@@ -17,8 +18,10 @@ use crate::klass::Klass;
 use std::sync::atomic::AtomicU64;
 
 pub const HEADER_SIZE: u32 = 16;
-pub const ARRAY_LENGTH_OFFSET: u32 = 16;
-pub const ARRAY_BASE_OFFSET: u32 = 24;
+/// The 4 bytes of the header after the class pointer, free for the object's data.
+pub const HEADER_GAP: u32 = 4;
+pub const ARRAY_LENGTH_OFFSET: u32 = HEADER_GAP;
+pub const ARRAY_BASE_OFFSET: u32 = 16;
 
 /// Whether heap references are stored in 32 bits.
 pub const COMPRESSED: bool = true;
@@ -49,7 +52,10 @@ pub fn decode(raw: u64) -> Oop {
 
 #[repr(C)]
 pub struct ObjHeader {
-    klass: *const Klass,
+    /// The class's address (below 4 GiB).
+    klass: u32,
+    /// Data of the object (`HEADER_GAP`).
+    gap: u32,
     mark: AtomicU64,
 }
 
@@ -63,7 +69,7 @@ pub mod obj {
 
     #[inline(always)]
     pub unsafe fn klass(obj: Oop) -> &'static Klass {
-        &*(*obj).klass
+        &*((*obj).klass as usize as *const Klass)
     }
 
     #[inline(always)]
@@ -162,12 +168,20 @@ pub mod obj {
     }
 }
 
+/// The header word naming `klass`.
+#[inline(always)]
+pub fn klass_word(klass: &'static Klass) -> u32 {
+    let at = klass as *const Klass as usize;
+    debug_assert!(at < 1 << 32, "classes live in low memory");
+    at as u32
+}
+
 /// Writes the header of a new instance into zeroed memory `mem`.
 ///
 /// # Safety
 /// `mem` must be zeroed, 8-aligned and at least `klass.instance_size()` bytes.
 pub unsafe fn init_instance(mem: *mut u8, klass: &'static Klass) -> Oop {
-    std::ptr::write(mem as *mut *const Klass, klass);
+    std::ptr::write(mem as *mut u32, klass_word(klass));
     mem as Oop
 }
 
@@ -176,7 +190,7 @@ pub unsafe fn init_instance(mem: *mut u8, klass: &'static Klass) -> Oop {
 /// # Safety
 /// `mem` must be zeroed, 8-aligned and large enough for `length` elements.
 pub unsafe fn init_array(mem: *mut u8, klass: &'static Klass, length: i32) -> Oop {
-    std::ptr::write(mem as *mut *const Klass, klass);
+    std::ptr::write(mem as *mut u32, klass_word(klass));
     obj::write::<i32>(mem as Oop, ARRAY_LENGTH_OFFSET, length);
     mem as Oop
 }

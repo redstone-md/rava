@@ -101,11 +101,11 @@ impl Emitter {
         }
         if let Entry::Klass(k) = entry {
             self.a.mov_ri(R::Rdx, k as *const Klass as i64);
-            self.a.alu_rm(true, super::asm::Alu::Cmp, R::Rdx, mem(R::Rcx, 0));
+            self.a.alu_rm(false, super::asm::Alu::Cmp, R::Rdx, mem(R::Rcx, 0));
             self.a.jcc(super::asm::Cond::Ne, restart);
         }
         if let Entry::Vtable(index) = entry {
-            self.a.load(true, R::Rax, mem(R::Rcx, 0));
+            self.a.load(false, R::Rax, mem(R::Rcx, 0));
             self.a.load(true, R::Rax, mem(R::Rax, std::mem::offset_of!(Klass, vtable_ptr) as i32));
             self.a.mov_ri(R::Rdx, callee as *const Method as i64);
             self.a.alu_rm(true, super::asm::Alu::Cmp, R::Rdx, mem(R::Rax, 8 * index));

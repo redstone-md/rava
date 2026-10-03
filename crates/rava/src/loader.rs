@@ -1,7 +1,7 @@
 //! Boot class loading: find bytes, parse, lay out fields, build methods and the vtable.
 
 use crate::classfile::ClassFile;
-use crate::heap::{Oop, HEADER_SIZE};
+use crate::heap::{Oop, HEADER_GAP, HEADER_SIZE};
 use crate::klass::{FieldDesc, Klass, KlassKind, KlassParts, ACC_ABSTRACT, ACC_FINAL, ACC_PUBLIC};
 use crate::method::Method;
 use crate::symbol::Symbol;
@@ -291,8 +291,21 @@ impl FieldLayout {
             f.offset = static_slots;
             static_slots += 1;
         }
+        // The header's free 4 bytes (`heap::HEADER_GAP`) take the first fields of up to 4 bytes
+        // that fit, after what superclasses put there.
+        let mut gap = super_klass.map_or(HEADER_GAP, |s| {
+            s.supers().flat_map(|c| c.fields.iter()).filter(|f| !f.is_static() && f.offset < HEADER_SIZE).map(|f| f.offset + f.ty.size()).max().unwrap_or(HEADER_GAP)
+        });
         for width in [8, 4, 2, 1] {
             for f in fields.iter_mut().filter(|f| !f.is_static() && f.ty.size() == width) {
+                if width <= 4 && gap.next_multiple_of(width) + width <= 8 {
+                    f.offset = gap.next_multiple_of(width);
+                    gap = f.offset + width;
+                    if f.ty.is_ref() {
+                        ref_offsets.push(f.offset);
+                    }
+                    continue;
+                }
                 size = (size + width - 1) & !(width - 1);
                 f.offset = size;
                 if f.ty.is_ref() {

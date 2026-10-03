@@ -75,12 +75,12 @@ impl Gen<'_> {
                 if let Loc::Const(c) = self.loc[idx as usize].clone() {
                     // The index as an unsigned 32-bit immediate: length <= index fails.
                     self.fault_site();
-                    self.a.alu_mi(false, Alu::Cmp, mem(ra, 16), c as i32);
+                    self.a.alu_mi(false, Alu::Cmp, mem(ra, crate::heap::ARRAY_LENGTH_OFFSET as i32), c as i32);
                     self.a.jcc(Cond::Be, fail);
                 } else {
                     let ri = self.reg(idx, R::R11);
                     self.fault_site();
-                    self.a.alu_rm(false, Alu::Cmp, ri, mem(ra, 16));
+                    self.a.alu_rm(false, Alu::Cmp, ri, mem(ra, crate::heap::ARRAY_LENGTH_OFFSET as i32));
                     self.a.jcc(Cond::Ae, fail);
                 }
             }
@@ -101,7 +101,7 @@ impl Gen<'_> {
                 let ra = self.reg(arr, R::Rax);
                 self.a.test_rr(true, ra, ra);
                 self.a.jcc(Cond::E, fail);
-                self.a.alu_rm(false, Alu::Cmp, rl, mem(ra, 16));
+                self.a.alu_rm(false, Alu::Cmp, rl, mem(ra, crate::heap::ARRAY_LENGTH_OFFSET as i32));
                 self.a.jcc(Cond::G, fail);
                 self.a.bind(ok);
             }
