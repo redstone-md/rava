@@ -31,12 +31,14 @@ impl Gen<'_> {
             Inst::LoadField(o, off, bt @ (BasicType::Float | BasicType::Double)) => {
                 let ro = self.reg(o, R::Rax);
                 let r = self.xout(v);
+                self.fault_site();
                 self.a.fload(bt == BasicType::Double, r, mem(ro, off as i32));
                 self.xput(v, r);
             }
             Inst::StoreField(o, off, bt @ (BasicType::Float | BasicType::Double), x) => {
                 let a = self.xreg(x, X(0));
                 let ro = self.reg(o, R::Rax);
+                self.fault_site();
                 self.a.fstore(bt == BasicType::Double, mem(ro, off as i32), a);
             }
             Inst::LoadIndexed(arr, idx, bt @ (BasicType::Float | BasicType::Double)) => {
@@ -55,12 +57,14 @@ impl Gen<'_> {
             Inst::LoadField(o, off, bt) => {
                 let ro = self.reg(o, R::Rax);
                 let r = self.out(v);
+                self.fault_site();
                 load_typed_to(&mut self.a, r, bt, mem(ro, off as i32));
                 self.put(v, r);
             }
             Inst::StoreField(o, off, bt, x) => {
                 let ro = self.reg(o, R::Rax);
                 let rx = self.value_reg(x, bt, R::R11);
+                self.fault_site();
                 self.store_typed(v, rx, bt, mem(ro, off as i32));
             }
             Inst::LoadStatic(addr, bt) => {
@@ -78,6 +82,7 @@ impl Gen<'_> {
             Inst::ArrayLength(x) => {
                 let ra = self.reg(x, R::Rax);
                 let r = self.out(v);
+                self.fault_site();
                 self.a.load_sx(4, r, mem(ra, 16));
                 self.put(v, r);
             }

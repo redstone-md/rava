@@ -99,12 +99,46 @@ pub(super) struct Gen<'a> {
     pub unbarriered: Vec<bool>,
     /// Headers of short counted loops, whose back edges do not poll (`counted.rs`).
     short_loops: Vec<bool>,
+    /// Null checks left to the access right after them (`implicit_null_checks`), the
+    /// deoptimization stub of the one being emitted, and the faulting instructions with theirs.
+    pub(super) implicit: std::collections::HashSet<V>,
+    pub(super) pending_null: Option<Label>,
+    faults: Vec<(Label, Label)>,
+}
+
+/// The null checks whose object the next instruction accesses at a small offset (a field, the
+/// array length, a bounds check): a null faults there instead (`jit/fault.rs`). Not where the
+/// check has failed before (the recompilation then tests explicitly, as C2 does), nor for a
+/// constant.
+fn implicit_null_checks(g: &Graph, loc: &[Loc]) -> std::collections::HashSet<V> {
+    let mut out = std::collections::HashSet::new();
+    for b in &g.blocks {
+        for w in b.insts.windows(2) {
+            let (v, next) = (w[0], w[1]);
+            let Inst::NullCheck(x, s) = g.inst(v) else { continue };
+            let o = g.resolve(*x);
+            if g.resolve(v) != v || g.resolve(next) != next || matches!(loc[o as usize], Loc::Const(_)) || crate::jit::profile::trapped(s.method, s.bci as usize) {
+                continue;
+            }
+            let same = |y: &V| g.resolve(*y) == o;
+            let ok = match g.inst(next) {
+                Inst::LoadField(y, off, _) => same(y) && *off < 4096,
+                Inst::StoreField(y, off, bt, _) => same(y) && *off < 4096 && *bt != crate::types::BasicType::Boolean,
+                Inst::ArrayLength(y) | Inst::BoundsCheck(y, ..) => same(y),
+                _ => false,
+            };
+            if ok {
+                out.insert(v);
+            }
+        }
+    }
+    out
 }
 
 /// Emits `g` for `m`, whose frame (inlined frames included) takes `frame_slots` value-stack slots;
 /// a synchronized method holds `monitor` while it runs. Returns the code and the size of its
 /// main part (without the out-of-line stubs after it, as C2 sizes code for inlining).
-pub(super) fn generate(g: &Graph, al: &Allocation, m: &'static Method, frame_slots: i32, monitor: Option<Monitor>) -> (Vec<u8>, usize) {
+pub(super) fn generate(g: &Graph, al: &Allocation, m: &'static Method, frame_slots: i32, monitor: Option<Monitor>) -> (Vec<u8>, usize, Vec<(usize, usize)>) {
     let max_locals = m.code.expect("compiled method has code").max_locals as i32;
     let mut a = Asm::default();
     a.enable_peephole();
@@ -137,6 +171,9 @@ pub(super) fn generate(g: &Graph, al: &Allocation, m: &'static Method, frame_slo
         slow_calls: Vec::new(),
         unbarriered: super::barrier::unbarriered(g),
         short_loops: super::polls::short_loops(g),
+        implicit: implicit_null_checks(g, &al.loc),
+        pending_null: None,
+        faults: Vec::new(),
         frame_slots,
         root: m,
     };
@@ -166,7 +203,9 @@ pub(super) fn generate(g: &Graph, al: &Allocation, m: &'static Method, frame_slo
             insts[..n].sort_by_key(|&v| al.loc[v as usize] == Loc::Reg(R::Rsi));
         }
         for &v in &insts {
+            let pending = gen.pending_null.is_some();
             gen.inst(v);
+            assert!(!pending || gen.pending_null.is_none(), "an implicit null check without its access");
             if let (Some(h @ Loc::Stack(_)), true) = (al.home[v as usize], g.resolve(v) == v && !matches!(g.inst(v), Inst::Phi(_))) {
                 moves::mov(&mut gen.a, h, al.loc[v as usize]);
             }
@@ -182,8 +221,21 @@ pub(super) fn generate(g: &Graph, al: &Allocation, m: &'static Method, frame_slo
     for (bits, l) in pool {
         gen.a.data8(l, bits);
     }
-    let (code, main) = gen.a.finish_at(stubs);
-    (code, main as usize)
+    let marks: Vec<Label> = gen.faults.iter().flat_map(|&(at, to)| [at, to]).collect();
+    let (code, main, pos) = gen.a.finish_labels(stubs, &marks);
+    let faults = pos.chunks(2).map(|p| (p[0] as usize, p[1] as usize)).collect();
+    (code, main as usize, faults)
+}
+
+impl Gen<'_> {
+    /// Marks the next instruction as the access an implicit null check left its test to.
+    pub(super) fn fault_site(&mut self) {
+        if let Some(fail) = self.pending_null.take() {
+            let at = self.a.new_label();
+            self.a.bind(at);
+            self.faults.push((at, fail));
+        }
+    }
 }
 
 impl Gen<'_> {

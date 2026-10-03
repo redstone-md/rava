@@ -50,6 +50,9 @@ impl Gen<'_> {
                 self.a.cmp8_mi(mem(R::Rax, 0), 0);
                 self.a.jcc(Cond::Ne, fail);
             }
+            Inst::NullCheck(_, s) if self.implicit.contains(&v) => {
+                self.pending_null = Some(self.deopt(&s));
+            }
             Inst::NullCheck(x, s) | Inst::ZeroCheck(x, s) => {
                 let fail = self.deopt(&s);
                 match self.loc[x as usize] {
@@ -67,10 +70,12 @@ impl Gen<'_> {
                 let ra = self.reg(arr, R::Rax);
                 if let Loc::Const(c) = self.loc[idx as usize].clone() {
                     // The index as an unsigned 32-bit immediate: length <= index fails.
+                    self.fault_site();
                     self.a.alu_mi(false, Alu::Cmp, mem(ra, 16), c as i32);
                     self.a.jcc(Cond::Be, fail);
                 } else {
                     let ri = self.reg(idx, R::R11);
+                    self.fault_site();
                     self.a.alu_rm(false, Alu::Cmp, ri, mem(ra, 16));
                     self.a.jcc(Cond::Ae, fail);
                 }
