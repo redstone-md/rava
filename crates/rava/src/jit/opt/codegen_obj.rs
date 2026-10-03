@@ -224,6 +224,15 @@ impl Gen<'_> {
         self.a.store8(at, R::Rdx);
     }
 
+    /// The memory at `addr`: an absolute operand in low memory, else through `scratch`.
+    fn absolute(&mut self, addr: usize, scratch: R) -> M {
+        if crate::low::is_low(addr) {
+            return crate::jit::asm::abs32(addr);
+        }
+        self.a.mov_ri(scratch, addr as i64);
+        mem(scratch, 0)
+    }
+
     /// Class `k` as an immediate when it is in low memory (`crate::low`), else loaded into rdx.
     fn class_operand(&mut self, k: &'static Klass) -> Option<i32> {
         let addr = k as *const Klass as usize;
@@ -470,12 +479,12 @@ impl Gen<'_> {
     fn profile_call(&mut self, s: &State, receiver: Option<V>, cold: bool) {
         let cell = crate::jit::profile::cell(s.method, s.bci as usize) as *const IcCell as i64;
         let calls = if receiver.is_some() { runtime::REPROFILE_CALLS } else { runtime::HOT_COLD_CALLS };
-        let left: &'static std::sync::atomic::AtomicU32 = Box::leak(Box::new(std::sync::atomic::AtomicU32::new(calls)));
+        let left: &'static std::sync::atomic::AtomicU32 = crate::low::leak(std::sync::atomic::AtomicU32::new(calls));
         let (done, out) = (self.a.new_label(), self.a.new_label());
-        self.a.mov_ri(R::Rax, left as *const _ as i64);
-        self.a.alu_mi(false, Alu::Cmp, mem(R::Rax, 0), 0);
+        let at = self.absolute(left as *const _ as usize, R::Rax);
+        self.a.alu_mi(false, Alu::Cmp, at, 0);
         self.a.jcc(Cond::E, done);
-        self.a.alu_mi(false, Alu::Sub, mem(R::Rax, 0), 1);
+        self.a.alu_mi(false, Alu::Sub, at, 1);
         match receiver {
             Some(receiver) => {
                 self.load(R::Rcx, receiver);
@@ -526,16 +535,19 @@ impl Gen<'_> {
         self.a.load(true, R::Rdi, mem(R::Rcx, 0));
         // A site known megamorphic goes straight to the itable scan.
         let megamorphic = m.holder.is_interface() && crate::jit::profile::megamorphic(s.method, s.bci as usize);
+        // The cell is in low memory, addressed absolutely (else through rax): the cached pair is
+        // inline, so a hit is one compare and a load.
+        let field = |this: &mut Self, off: i32| this.absolute((cell + off as i64) as usize, R::Rax);
         if !megamorphic {
-            // rax holds the cell: the cached pair is inline, so a hit is one compare and a load.
-            self.a.mov_ri(R::Rax, cell);
-            self.a.alu_rm(true, Alu::Cmp, R::Rdi, mem(R::Rax, IcCell::klass_offset()));
+            let m_klass = field(self, IcCell::klass_offset());
+            self.a.alu_rm(true, Alu::Cmp, R::Rdi, m_klass);
             self.a.jcc(Cond::E, hit);
         }
         if m.holder.is_interface() {
             let learn = self.a.new_label();
             if !megamorphic {
-                self.a.alu_mi(false, Alu::Cmp, mem(R::Rax, IcCell::misses_offset()), runtime::IC_MAX_UPDATES as i32);
+                let m_misses = field(self, IcCell::misses_offset());
+                self.a.alu_mi(false, Alu::Cmp, m_misses, runtime::IC_MAX_UPDATES as i32);
                 self.a.jcc(Cond::B, learn);
             }
             // Megamorphic: the class's last itable hit, else a scan of its itable in place
@@ -580,7 +592,8 @@ impl Gen<'_> {
         self.a.call_abs(runtime::no_target as *const () as usize);
         self.a.jmp(fail);
         self.a.bind(hit);
-        self.a.load(true, R::Rdx, mem(R::Rax, IcCell::target_offset()));
+        let m_target = field(self, IcCell::target_offset());
+        self.a.load(true, R::Rdx, m_target);
         self.a.bind(done);
     }
 }

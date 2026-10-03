@@ -191,8 +191,9 @@ impl IcCell {
         std::mem::offset_of!(IcCell, target) as i32
     }
 
+    /// A cell in low memory (`crate::low`): optimized code addresses it absolutely.
     pub fn new() -> &'static IcCell {
-        Box::leak(Box::new(IcCell {
+        crate::low::leak(IcCell {
             klass: Default::default(),
             target: Default::default(),
             misses: std::sync::atomic::AtomicU32::new(0),
@@ -200,7 +201,7 @@ impl IcCell {
             more: Default::default(),
             counts: Default::default(),
             others: Default::default(),
-        }))
+        })
     }
 }
 
