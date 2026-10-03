@@ -188,6 +188,9 @@ impl Builder {
             _ => None,
         };
         self.carry_caches(only);
+        let bci = self.g.blocks[block as usize].bci;
+        let freq = if bci >= 0 { self.sc.frequency(bci as usize) } else { self.g.blocks[self.cur as usize].freq };
+        self.g.blocks[block as usize].freq = freq;
         self.cur = block;
         self.g.blocks[block as usize].order = self.seq;
         self.seq += 1;
