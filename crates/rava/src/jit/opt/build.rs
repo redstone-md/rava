@@ -202,10 +202,25 @@ impl Builder {
             let ready = &self.sc.ready;
             let i = (0..ready.len()).min_by_key(|&i| self.g.blocks[ready[i] as usize].bci).unwrap();
             let block = self.sc.ready.swap_remove(i);
-            let (locals, stack, mut nonnull) = self.sc.entry[&block].clone();
+            let (mut locals, mut stack, mut nonnull) = self.sc.entry[&block].clone();
             // Facts need every forward edge in: one still to come may bring a path without them.
-            if self.sc.fwd.get(&block).is_some_and(|&(expected, arrived)| arrived < expected) {
+            let waiting = self.sc.fwd.get(&block).is_some_and(|&(expected, arrived)| arrived < expected);
+            if waiting {
                 nonnull.clear();
+            } else if !self.g.blocks[block as usize].loop_header {
+                // The merge is complete: a phi of this block all of whose inputs are one value is
+                // that value (trivial-phi removal while building, as in Braun et al.'s SSA
+                // construction), so what is built here sees it, constants included. Only this
+                // block's own phis: one flowing in from elsewhere (a loop header's, its back edge
+                // not built yet) may still gain inputs.
+                if let Some(own) = self.sc.phis.get(&block) {
+                    let own: Vec<V> = own.iter().flatten().copied().collect();
+                    for v in locals.iter_mut().chain(stack.iter_mut()).flatten() {
+                        if own.contains(v) {
+                            *v = self.trivial_phi(*v);
+                        }
+                    }
+                }
             }
             self.start_block(block);
             self.sc.locals = locals;
@@ -239,7 +254,12 @@ impl Builder {
         while pc < sc.code.len() {
             let len = insn_len(sc.code, pc);
             if sc.an.depth[pc].is_some() && live[pc] {
-                let succ = successors(sc.code, pc, len);
+                let mut succ = successors(sc.code, pc, len);
+                // A switch makes one edge per distinct target (`build_ops::switch`).
+                if matches!(sc.code[pc], 0xaa | 0xab) {
+                    succ.sort_unstable();
+                    succ.dedup();
+                }
                 let ends_block = succ.len() != 1 || succ[0] != pc + len || sc.blocks.contains_key(&(pc + len));
                 if ends_block {
                     for s in succ.into_iter().filter(|&s| !prunes(&pruned, sc.code, pc, s)) {
@@ -414,6 +434,101 @@ impl Builder {
         let held = sc.lock.is_some() && !sc.m.is_static();
         let locals = sc.locals.iter().enumerate().map(|(i, &v)| v.filter(|_| sc.live.live(sc.bci, i) || held && i == 0)).collect();
         Rc::new(State { method: sc.m, bci: sc.bci as u32, locals, stack: sc.stack.clone(), caller: sc.caller.clone(), frame: sc.frame })
+    }
+
+    /// The single value phi `v` merges, if all its inputs are one value; else `v`.
+    fn trivial_phi(&self, v: V) -> V {
+        let Inst::Phi(inputs) = self.g.inst(v) else { return v };
+        let mut only = None;
+        for &x in inputs {
+            let x = self.g.resolve(x);
+            if x == v || only == Some(x) {
+                continue;
+            }
+            if only.is_some() {
+                return v;
+            }
+            only = Some(x);
+        }
+        only.unwrap_or(v)
+    }
+
+    /// A forward edge from the current block to `to` that will never be taken after all (a
+    /// branch decided while building): `to` no longer waits for it, so its merge is complete
+    /// once the other edges are in.
+    pub fn retire_edge(&mut self, to: B) {
+        let back = self.sc.entered && self.sc.bci >= self.g.blocks[to as usize].bci as usize;
+        if !back {
+            self.retire_forward(to);
+        }
+    }
+
+    /// One counted forward edge into `to` will not come. A block that thereby loses every edge
+    /// before any reached it is dead, and so are the forward edges it would have made (a
+    /// constant test skipping a whole `if (x == null) { ... }` takes the edges out of its body
+    /// too, so the join after it is complete with the one edge that does arrive).
+    fn retire_forward(&mut self, to: B) {
+        let Some(f) = self.sc.fwd.get_mut(&to) else { return };
+        f.0 = f.0.saturating_sub(1);
+        if f.0 > 0 || f.1 > 0 || self.g.blocks[to as usize].loop_header || self.sc.entry.contains_key(&to) {
+            return;
+        }
+        // The dead block's last instruction and the edges `make_blocks` counted from it.
+        let mut pc = self.g.blocks[to as usize].bci as usize;
+        let code = self.sc.code;
+        loop {
+            let len = insn_len(code, pc);
+            let succ = successors(code, pc, len);
+            if succ.len() != 1 || succ[0] != pc + len || self.sc.blocks.contains_key(&(pc + len)) || pc + len >= code.len() {
+                let mut succ: Vec<usize> = succ.into_iter().filter(|&s| s > pc && !prunes(&self.sc.pruned, code, pc, s)).collect();
+                if matches!(code[pc], 0xaa | 0xab) {
+                    succ.sort_unstable();
+                    succ.dedup();
+                }
+                for s in succ {
+                    if let Some(&t) = self.sc.blocks.get(&s) {
+                        self.retire_forward(t);
+                    }
+                }
+                return;
+            }
+            pc += len;
+        }
+    }
+
+    /// The constant `v` always is: a constant, or a phi of this scope whose block can gain no
+    /// more inputs (not a loop header, every forward edge in) and whose inputs all fold to that
+    /// constant. A merge only one of whose edges survived (the others decided while building)
+    /// keeps a one-input phi until `phis::simplify`; folding through it here lets decisions
+    /// made while building, such as which method a constant method handle names, see the
+    /// constant.
+    pub fn folded_constant(&self, v: V) -> Option<i64> {
+        self.folded_constant_within(v, 6)
+    }
+
+    fn folded_constant_within(&self, v: V, depth: u32) -> Option<i64> {
+        let v = self.g.resolve(v);
+        if let Some(c) = self.g.constant(v) {
+            return Some(c);
+        }
+        let Inst::Phi(inputs) = self.g.inst(v) else { return None };
+        if depth == 0 || inputs.is_empty() {
+            return None;
+        }
+        let (&block, _) = self.sc.phis.iter().find(|(_, ps)| ps.contains(&Some(v)))?;
+        let complete = !self.g.blocks[block as usize].loop_header && self.sc.fwd.get(&block).map_or(true, |&(expected, arrived)| arrived >= expected);
+        if !complete {
+            return None;
+        }
+        let mut folded = None;
+        for &x in inputs {
+            let c = self.folded_constant_within(x, depth - 1)?;
+            if folded.is_some_and(|f| f != c) {
+                return None;
+            }
+            folded = Some(c);
+        }
+        folded
     }
 
     pub fn konst(&mut self, ty: Ty, bits: i64) -> V {

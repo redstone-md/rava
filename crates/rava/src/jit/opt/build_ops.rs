@@ -355,7 +355,16 @@ impl Builder {
         };
         let (then, other) = (self.block_at(target), self.block_at(next));
         if let Some(taken) = self.known_branch(cmp, ty, a, b) {
-            let to = if taken { then } else { other };
+            let (to, dead) = if taken { (then, other) } else { (other, then) };
+            // Only an edge `make_blocks` counted is retired: not one the profile pruned
+            // (`Some(true)`: the jump never taken; `Some(false)`: the fall-through never taken).
+            let counted = match self.sc.pruned.get(&pc) {
+                Some(&jump_pruned) => jump_pruned != taken,
+                None => true,
+            };
+            if dead != to && counted {
+                self.retire_edge(dead);
+            }
             self.edge(to);
             self.g.blocks[self.cur as usize].term = Term::Goto(to);
             return;

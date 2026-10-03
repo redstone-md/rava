@@ -28,6 +28,10 @@ const MAX_LEAF_SLOTS: usize = 48;
 /// optimizing tier).
 const MAX_DEPTH: usize = 9;
 const MAX_DEPTH_OPT: usize = 15;
+/// C2's `MaxForceInlineLevel`: in the optimizing tier `@ForceInline` methods (method-handle and
+/// var-handle plumbing, which is only fast once folded into its caller) are not held to
+/// `MAX_DEPTH_OPT`.
+const MAX_FORCED_DEPTH_OPT: usize = 100;
 /// `@ForceInline` bodies above this size are still left as calls.
 const MAX_FORCED_SIZE: usize = 400;
 
@@ -114,7 +118,7 @@ pub(super) fn refusal(target: &'static Method, chain: &Chain, tier: u8, spent: u
         return "cold call site";
     }
     let Some(info) = target.code else { return "no bytecode" };
-    if chain.len() > if tier >= 3 { MAX_DEPTH_OPT } else { MAX_DEPTH } {
+    if chain.len() > max_depth(target, tier >= 3) {
         return "too deep";
     }
     if recursive(target, None, chain, (tier >= 3) as usize) {
@@ -162,7 +166,7 @@ fn recursive(t: &'static Method, first: Option<i64>, chain: &Chain, allowed: usi
 /// the interpreter, so inlined bodies may have exception handlers.
 fn framed_ok(t: &'static Method, first: Option<i64>, chain: &Chain, hot: bool, opt: bool) -> bool {
     let Some(info) = t.code else { return false };
-    let depth = if opt { MAX_DEPTH_OPT } else { MAX_DEPTH };
+    let depth = max_depth(t, opt);
     // The optimizing tier inlines synchronized methods with their monitor (`opt::inline`).
     let monitor_ok = !t.is_synchronized() || opt && !(t.is_static() && t.holder.mirror().is_null());
     if chain.len() > depth || recursive(t, first, chain, opt as usize) || !monitor_ok || (!opt && !info.handlers.is_empty()) {
@@ -183,6 +187,16 @@ fn framed_ok(t: &'static Method, first: Option<i64>, chain: &Chain, hot: bool, o
         pc += insn_len(info.code, pc);
     }
     true
+}
+
+/// How deeply `t` may be inlined: C2's `MaxInlineLevel`, or `MaxForceInlineLevel` for an
+/// `@ForceInline` method in the optimizing tier (C1's single limit in the baseline tier).
+fn max_depth(t: &'static Method, opt: bool) -> usize {
+    match opt {
+        true if t.has_annotation("Ljdk/internal/vm/annotation/ForceInline;") => MAX_FORCED_DEPTH_OPT,
+        true => MAX_DEPTH_OPT,
+        false => MAX_DEPTH,
+    }
 }
 
 /// Scratch slots a leaf body needs.

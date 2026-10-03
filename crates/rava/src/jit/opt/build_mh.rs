@@ -57,7 +57,7 @@ impl Builder {
     /// first argument.
     fn invoke_basic(&mut self, sig: &'static MethodSig) -> bool {
         let (mut args, pre, s) = self.pop_args(sig.params.len() + 1);
-        if let Some(h) = self.g.constant(args[0]).map(|h| fold::through_counting(h as usize)).filter(|&h| h != 0) {
+        if let Some(h) = self.folded_constant(args[0]).map(|h| fold::through_counting(h as usize)).filter(|&h| h != 0) {
             if let Some(target) = fold::handle_target(h) {
                 args[0] = self.konst(Ty::A, h as i64);
                 return self.emit_call(vec![(target, Guard::None)], Callee::Direct(target), args, s, sig.ret);
@@ -80,7 +80,7 @@ impl Builder {
         let Inst::Phi(inputs) = self.g.inst(self.g.resolve(v)) else { return Vec::new() };
         let mut out: Vec<(i64, &'static Method)> = Vec::new();
         for &x in inputs {
-            let Some(c) = self.g.constant(self.g.resolve(x)).filter(|&c| c != 0) else { return Vec::new() };
+            let Some(c) = self.folded_constant(x).filter(|&c| c != 0) else { return Vec::new() };
             let Some(t) = fold::handle_target(fold::through_counting(c as usize)) else { return Vec::new() };
             if !out.iter().any(|&(o, _)| o == c) {
                 out.push((c, t));
@@ -155,7 +155,7 @@ impl Builder {
         if !is_static {
             self.null_check(args[0], pre.clone());
         }
-        if let Some(target) = self.g.constant(mn).and_then(|c| fold::member_target(c as usize)) {
+        if let Some(target) = self.folded_constant(mn).and_then(|c| fold::member_target(c as usize)) {
             if is_static {
                 self.init_check(target.holder, &pre);
             }
