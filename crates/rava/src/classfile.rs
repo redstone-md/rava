@@ -32,6 +32,9 @@ pub enum Cp {
     Package(u16),
 }
 
+// Pools hold millions of entries on a large application.
+const _: () = assert!(std::mem::size_of::<Cp>() == 16);
+
 /// An attribute body the runtime may read later, as a range of the class bytes.
 #[derive(Clone, Copy, Debug)]
 pub struct Attr {

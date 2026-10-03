@@ -37,28 +37,87 @@ impl Hasher for FxHasher {
 
 pub type FxBuild = BuildHasherDefault<FxHasher>;
 
+/// A pointer to the symbol's text, stored as its byte length (a `u32`) and then the bytes:
+/// one word per name in every pool entry, field and method that holds one.
 #[derive(Clone, Copy)]
-pub struct Symbol(&'static str);
+pub struct Symbol(&'static u32);
+
+/// Symbol text is bump-allocated from chunks of this size (a longer text gets its own).
+const CHUNK: usize = 256 << 10;
+
+/// One shard of the intern table: the symbols, hashed by text, and the shard's text arena.
+#[derive(Default)]
+struct Shard {
+    set: HashSet<ByText, BuildHasherDefault<FxHasher>>,
+    arena: (usize, usize),
+}
+
+/// A symbol hashed and compared by its text, for the intern table.
+#[derive(Clone, Copy)]
+struct ByText(Symbol);
+
+impl Hash for ByText {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.0.as_str().hash(state)
+    }
+}
+
+impl PartialEq for ByText {
+    fn eq(&self, other: &ByText) -> bool {
+        self.0.as_str() == other.0.as_str()
+    }
+}
+
+impl Eq for ByText {}
+
+impl std::borrow::Borrow<str> for ByText {
+    fn borrow(&self) -> &str {
+        self.0.as_str()
+    }
+}
+
+impl Shard {
+    /// A new symbol with `text`, its length and bytes copied into the arena.
+    fn store(&mut self, text: &str) -> Symbol {
+        let size = (4 + text.len()).next_multiple_of(4);
+        let at = if size > CHUNK / 8 {
+            Box::leak(vec![0u32; size / 4].into_boxed_slice()).as_mut_ptr() as usize
+        } else {
+            if self.arena.0 + size > self.arena.1 {
+                let chunk = Box::leak(vec![0u32; CHUNK / 4].into_boxed_slice()).as_mut_ptr() as usize;
+                self.arena = (chunk, chunk + CHUNK);
+            }
+            self.arena.0 += size;
+            self.arena.0 - size
+        };
+        // SAFETY: `size` unused, 4-aligned bytes of leaked memory, written once and never freed.
+        unsafe {
+            *(at as *mut u32) = text.len() as u32;
+            std::ptr::copy_nonoverlapping(text.as_ptr(), (at + 4) as *mut u8, text.len());
+            Symbol(&*(at as *const u32))
+        }
+    }
+}
 
 impl Symbol {
     pub fn intern(text: &str) -> Symbol {
         const SHARDS: usize = 32;
-        type Shard = Mutex<HashSet<&'static str, BuildHasherDefault<FxHasher>>>;
-        static TABLE: OnceLock<Vec<Shard>> = OnceLock::new();
-        let shards = TABLE.get_or_init(|| (0..SHARDS).map(|_| Mutex::new(HashSet::default())).collect());
+        static TABLE: OnceLock<Vec<Mutex<Shard>>> = OnceLock::new();
+        let shards = TABLE.get_or_init(|| (0..SHARDS).map(|_| Mutex::new(Shard::default())).collect());
         let mut h = FxHasher::default();
         h.write(text.as_bytes());
-        let mut table = shards[h.finish() as usize % SHARDS].lock().unwrap();
-        if let Some(&existing) = table.get(text) {
-            return Symbol(existing);
+        let mut shard = shards[h.finish() as usize % SHARDS].lock().unwrap();
+        if let Some(existing) = shard.set.get(text) {
+            return existing.0;
         }
-        let leaked: &'static str = Box::leak(text.to_owned().into_boxed_str());
-        table.insert(leaked);
-        Symbol(leaked)
+        let sym = shard.store(text);
+        shard.set.insert(ByText(sym));
+        sym
     }
 
     pub fn as_str(self) -> &'static str {
-        self.0
+        // SAFETY: the length is followed by that many bytes of UTF-8, copied from a `str`.
+        unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts((self.0 as *const u32).add(1) as *const u8, *self.0 as usize)) }
     }
 }
 
@@ -72,31 +131,31 @@ impl Eq for Symbol {}
 
 impl Hash for Symbol {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        (self.0.as_ptr() as usize).hash(state)
+        (self.0 as *const u32 as usize).hash(state)
     }
 }
 
 impl PartialEq<str> for Symbol {
     fn eq(&self, other: &str) -> bool {
-        self.0 == other
+        self.as_str() == other
     }
 }
 
 impl PartialEq<&str> for Symbol {
     fn eq(&self, other: &&str) -> bool {
-        self.0 == *other
+        self.as_str() == *other
     }
 }
 
 impl fmt::Debug for Symbol {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt::Debug::fmt(self.0, f)
+        fmt::Debug::fmt(self.as_str(), f)
     }
 }
 
 impl fmt::Display for Symbol {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.0)
+        f.write_str(self.as_str())
     }
 }
 
