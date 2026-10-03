@@ -34,6 +34,14 @@ pub(super) fn major_receiver(m: &'static Method, bci: usize) -> Option<&'static 
     cell.major().map(|k| unsafe { &*(k as *const Klass) })
 }
 
+/// The recorded receiver classes that each took a large share of the calls counted at `m`'s
+/// call at `bci`, most frequent first (`IcCell::frequent`).
+pub(super) fn frequent_receivers(m: &'static Method, bci: usize) -> Vec<&'static Klass> {
+    let Some(cell) = sites().lock().unwrap().get(&(m as *const Method as usize, bci as u32)).copied() else { return Vec::new() };
+    // SAFETY: cached classes are immortal.
+    cell.frequent().into_iter().map(|k| unsafe { &*(k as *const Klass) }).collect()
+}
+
 /// Whether `m`'s call at `bci` has seen more receiver classes than its profile keeps.
 pub(crate) fn megamorphic(m: &'static Method, bci: usize) -> bool {
     sites().lock().unwrap().get(&(m as *const Method as usize, bci as u32)).is_some_and(|cell| cell.receivers().is_none())
@@ -58,7 +66,10 @@ pub(crate) fn note_receiver(m: &'static Method, bci: usize, k: &'static Klass) {
 pub(crate) fn describe(m: &'static Method, bci: usize) -> String {
     let Some(cell) = sites().lock().unwrap().get(&(m as *const Method as usize, bci as u32)).copied() else { return "no profile".into() };
     match cell.receivers() {
-        None => "megamorphic".into(),
+        None => {
+            let (a, b, o) = cell.shares();
+            format!("megamorphic {a}/{b}/{o}")
+        }
         Some(v) => format!("{} receivers", v.len()),
     }
 }
