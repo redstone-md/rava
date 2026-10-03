@@ -245,15 +245,15 @@ impl Emitter {
         self.a.load(true, R::Rcx, self.stk(args));
         self.a.test_rr(true, R::Rcx, R::Rcx);
         self.a.jcc(Cond::E, slow);
-        self.a.load(true, R::Rax, mem(R::Rcx, indy::mh_form() as i32));
-        self.a.load(true, R::Rax, mem(R::Rax, indy::lf_vmentry() as i32));
+        super::emit_obj::load_typed_to(&mut self.a, R::Rax, BasicType::Reference, mem(R::Rcx, indy::mh_form() as i32));
+        super::emit_obj::load_typed_to(&mut self.a, R::Rax, BasicType::Reference, mem(R::Rax, indy::lf_vmentry() as i32));
         self.member_target_rdx();
         self.call_rdx(pc, args, sig.ret);
     }
 
     /// rdx := the Method* of the MemberName in rax.
     fn member_target_rdx(&mut self) {
-        self.a.load(true, R::Rax, mem(R::Rax, mh::mn_method() as i32));
+        super::emit_obj::load_typed_to(&mut self.a, R::Rax, BasicType::Reference, mem(R::Rax, mh::mn_method() as i32));
         self.a.load(true, R::Rdx, mem(R::Rax, mh::rmn_vmtarget() as i32));
     }
 

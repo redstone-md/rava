@@ -21,7 +21,7 @@ pub const ARRAY_LENGTH_OFFSET: u32 = 16;
 pub const ARRAY_BASE_OFFSET: u32 = 24;
 
 /// Whether heap references are stored in 32 bits.
-pub const COMPRESSED: bool = false;
+pub const COMPRESSED: bool = true;
 /// A compressed reference is the address shifted right by this.
 pub const NARROW_SHIFT: u32 = 3;
 /// Bytes of a reference stored in the heap.
