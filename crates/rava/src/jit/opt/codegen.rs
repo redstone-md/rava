@@ -151,7 +151,10 @@ pub(super) fn generate(g: &Graph, al: &Allocation, m: &'static Method, frame_slo
     gen.frame_bytes = spill_bytes + if monitor.is_some() { 16 } else { 0 } + align;
     let overflow = gen.a.new_label();
     gen.prologue(frame_slots, overflow);
-    for (i, &b) in al.order.iter().enumerate() {
+    // Blocks that only deoptimize are not laid out: branches into them go straight to the
+    // deoptimization stub, so the path that stays in compiled code falls through.
+    let order: Vec<B> = al.order.iter().copied().filter(|&b| !cold_exit(g, b)).collect();
+    for (i, &b) in order.iter().enumerate() {
         gen.a.bind(gen.labels[b as usize]);
         let mut insts = g.blocks[b as usize].insts.clone();
         if leaf && b == 0 {
@@ -165,7 +168,7 @@ pub(super) fn generate(g: &Graph, al: &Allocation, m: &'static Method, frame_slo
                 moves::mov(&mut gen.a, h, al.loc[v as usize]);
             }
         }
-        gen.term(b, al.order.get(i + 1).copied());
+        gen.term(b, order.get(i + 1).copied());
     }
     let stubs = gen.a.new_label();
     gen.a.bind(stubs);
@@ -407,6 +410,15 @@ impl Gen<'_> {
     }
 
     /// The deoptimization stub of `s` (shared by every guard with that state).
+    /// The deoptimization stub an edge into `to` can jump to, if `to` only deoptimizes.
+    pub(super) fn cold_target(&mut self, to: B) -> Option<Label> {
+        if !cold_exit(self.g, to) {
+            return None;
+        }
+        let Term::Deopt(s) = self.g.blocks[to as usize].term.clone() else { unreachable!() };
+        Some(self.deopt(&s))
+    }
+
     pub fn deopt(&mut self, s: &Rc<State>) -> Label {
         if let Some(&l) = self.deopts.get(&Rc::as_ptr(s)) {
             return l;
@@ -477,6 +489,9 @@ impl Gen<'_> {
 
     /// Leaves `from` for `to`: phi moves, a poll on back-edges, then the jump.
     fn edge(&mut self, from: B, to: B, fallthrough: bool) {
+        if let Some(l) = self.cold_target(to) {
+            return self.a.jmp(l);
+        }
         if self.polls_on(from, to) {
             self.poll();
         }
@@ -488,6 +503,13 @@ impl Gen<'_> {
         }
     }
 
+}
+
+/// Whether block `b` does nothing but deoptimize (no instructions, no phis): edges into it
+/// target the deoptimization stub directly.
+fn cold_exit(g: &Graph, b: B) -> bool {
+    let blk = &g.blocks[b as usize];
+    b != 0 && blk.insts.is_empty() && matches!(blk.term, Term::Deopt(_))
 }
 
 /// The scopes of a state, innermost first.
