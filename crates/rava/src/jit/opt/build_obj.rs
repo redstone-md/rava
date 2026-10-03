@@ -126,7 +126,7 @@ impl Builder {
         if op != 0xb8 {
             self.null_check(args[0], pre.clone());
         }
-        if self.allocate_instance(m, &args, &pre, &s) || self.fold_class_query(m, &args) {
+        if self.allocate_instance(m, &args, &pre, &s) || self.fold_class_query(m, &args) || self.floor_pow2(m, &args) {
             return Some(true);
         }
         if let (0xb6 | 0xb8, Some(k)) = (op, crate::jit::intrinsics::bound_intrinsic(m)) {
@@ -148,6 +148,38 @@ impl Builder {
             return Some(true);
         }
         Some(self.call_or_inline(pc, op, m, callee, args, s, pre))
+    }
+
+    /// `Math.floorMod` and `Math.floorDiv` by a constant positive power of two `2^k` are
+    /// `x & (2^k - 1)` and `x >> k` in two's complement, with no division and no sign fix-up
+    /// branch (which mispredicts on hashed operands).
+    fn floor_pow2(&mut self, m: &'static Method, args: &[V]) -> bool {
+        if m.holder.name != "java/lang/Math" || args.len() != 2 {
+            return false;
+        }
+        let (x, y) = (args[0], args[1]);
+        let Some(c) = self.g.constant(y).filter(|&c| c > 0 && c & (c - 1) == 0) else { return false };
+        let (xt, rt) = match m.desc.as_str() {
+            "(II)I" => (Ty::I, Ty::I),
+            "(JI)I" if m.name == "floorMod" => (Ty::J, Ty::I),
+            "(JI)J" if m.name == "floorDiv" => (Ty::J, Ty::J),
+            "(JJ)J" => (Ty::J, Ty::J),
+            _ => return false,
+        };
+        let r = match m.name.as_str() {
+            "floorMod" => {
+                let mask = self.konst(xt, c - 1);
+                let r = self.add(Inst::Bin(BinOp::And, x, mask), xt);
+                if rt == xt { r } else { self.add(Inst::Convert(0x88, r), Ty::I) }
+            }
+            "floorDiv" => {
+                let k = self.konst(Ty::I, c.trailing_zeros() as i64);
+                self.add(Inst::Bin(BinOp::Shr, x, k), xt)
+            }
+            _ => return false,
+        };
+        self.push(r);
+        true
     }
 
     /// `Class` queries on a constant class (as `Enum.getDeclaringClass` asks of an enum
