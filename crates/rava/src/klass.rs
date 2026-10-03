@@ -171,34 +171,10 @@ pub(crate) struct KlassParts {
 /// The `itable_hit` of a class no scan has hit yet: no interface is null.
 static NO_ITABLE_HIT: [usize; 2] = [0, 0];
 
-/// Classes live in the low 2 GiB of the address space where the system allows it (`MAP_32BIT`),
-/// so generated code compares and stores class pointers as 32-bit immediates (`cmp r, imm32`)
-/// instead of loading 64-bit constants into a register first, like HotSpot's compressed class
-/// space. Elsewhere they are ordinary leaked boxes.
+/// Classes live in low memory (`crate::low`): generated code compares and stores class pointers
+/// as 32-bit immediates.
 pub(crate) fn leak(k: Klass) -> &'static Klass {
-    use std::sync::Mutex;
-    const CHUNK: usize = 4 << 20;
-    static ARENA: Mutex<(usize, usize)> = Mutex::new((0, 0));
-    let (size, align) = (std::mem::size_of::<Klass>(), std::mem::align_of::<Klass>());
-    let mut arena = ARENA.lock().unwrap();
-    let mut at = arena.0.next_multiple_of(align);
-    if arena.0 == 0 || at + size > arena.1 {
-        // SAFETY: a fresh anonymous mapping.
-        let p = unsafe {
-            libc::mmap(std::ptr::null_mut(), CHUNK, libc::PROT_READ | libc::PROT_WRITE, libc::MAP_PRIVATE | libc::MAP_ANONYMOUS | libc::MAP_32BIT, -1, 0)
-        };
-        if p == libc::MAP_FAILED {
-            return Box::leak(Box::new(k));
-        }
-        *arena = (p as usize, p as usize + CHUNK);
-        at = arena.0;
-    }
-    arena.0 = at + size;
-    // SAFETY: an aligned, unused slot of the arena, never freed.
-    unsafe {
-        std::ptr::write(at as *mut Klass, k);
-        &*(at as *const Klass)
-    }
+    crate::low::leak(k)
 }
 
 impl Klass {

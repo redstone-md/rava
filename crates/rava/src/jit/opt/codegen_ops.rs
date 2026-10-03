@@ -46,8 +46,12 @@ impl Gen<'_> {
             Inst::Select(cmp, cty, a, b, t, f) => self.select(v, cmp, cty, a, b, t, f),
             Inst::FlagCheck(addr, s) => {
                 let fail = self.deopt(&s);
-                self.a.mov_ri(R::Rax, addr as i64);
-                self.a.cmp8_mi(mem(R::Rax, 0), 0);
+                if crate::low::is_low(addr) {
+                    self.a.cmp8_mi(crate::jit::asm::abs32(addr), 0);
+                } else {
+                    self.a.mov_ri(R::Rax, addr as i64);
+                    self.a.cmp8_mi(mem(R::Rax, 0), 0);
+                }
                 self.a.jcc(Cond::Ne, fail);
             }
             Inst::NullCheck(_, s) if self.implicit.contains(&v) => {
