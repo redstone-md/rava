@@ -48,8 +48,9 @@ pub struct Method {
     /// The VM supplies the body (`NativeRegistry::add_stub`).
     stub: bool,
     /// Some loaded class overrides this method (class hierarchy analysis): compiled code that
-    /// inlined it without a receiver check tests this byte and deoptimizes once it is set.
-    overridden: std::sync::atomic::AtomicBool,
+    /// inlined it without a receiver check tests this byte (in low memory, `crate::low`) and
+    /// deoptimizes once it is set.
+    overridden: &'static std::sync::atomic::AtomicBool,
 }
 
 impl Method {
@@ -70,7 +71,7 @@ impl Method {
             backedges: AtomicU32::new(0),
             entry: AtomicUsize::new(if native { crate::jit::native_entry() } else { crate::jit::interpreter_entry() }),
             stub,
-            overridden: std::sync::atomic::AtomicBool::new(false),
+            overridden: crate::low::leak(std::sync::atomic::AtomicBool::new(false)),
             compiled: std::sync::atomic::AtomicPtr::new(std::ptr::null_mut()),
             baseline: std::sync::atomic::AtomicPtr::new(std::ptr::null_mut()),
             recompiles: AtomicU32::new(0),
@@ -105,7 +106,7 @@ impl Method {
 
     /// Address of the overridden flag (one byte, non-zero once overridden) for generated code.
     pub(crate) fn overridden_flag(&self) -> usize {
-        &self.overridden as *const std::sync::atomic::AtomicBool as usize
+        self.overridden as *const std::sync::atomic::AtomicBool as usize
     }
 
     /// Runs native code: declared `native`, or a JDK method whose body the VM supplies.

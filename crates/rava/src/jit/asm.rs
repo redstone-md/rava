@@ -29,6 +29,13 @@ pub fn mem(base: R, disp: i32) -> M {
     M { base, index: None, disp, rip: None }
 }
 
+/// `[addr]`, an absolute address in the low 2 GiB (`crate::low`): a SIB byte with neither base
+/// nor index (rbp as base and rsp as index mark it).
+pub fn abs32(addr: usize) -> M {
+    debug_assert!(crate::low::is_low(addr));
+    M { base: R::Rbp, index: Some((R::Rsp, 1)), disp: addr as i32, rip: None }
+}
+
 pub fn mem_idx(base: R, index: R, scale: u8, disp: i32) -> M {
     M { base, index: Some((index, scale)), disp, rip: None }
 }
@@ -175,6 +182,13 @@ impl Asm {
             self.b(lo(reg) << 3 | 5);
             self.fixups.push((self.pos(), l));
             self.d32(0);
+            return;
+        }
+        if let (R::Rbp, Some((R::Rsp, _))) = (m.base, m.index) {
+            // mod 00, r/m 100, SIB 00 100 101: disp32 alone.
+            self.b(lo(reg) << 3 | 4);
+            self.b(0x25);
+            self.d32(m.disp);
             return;
         }
         let base = m.base as u8;
