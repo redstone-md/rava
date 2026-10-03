@@ -199,6 +199,23 @@ impl Builder {
                     }
                     return Some(true);
                 }
+                // An object whose class is known exactly (an allocation, a cast to a final class)
+                // passes or fails as that class: a cast to a supertype needs no check (null
+                // passes too), and a non-null one's instanceof is a constant.
+                if let Some(c) = self.exact_class(v) {
+                    let is = c.is_subtype_of(k);
+                    match (op, self.nullness(v)) {
+                        (0xc0, _) if is => {
+                            self.push(v);
+                            return Some(true);
+                        }
+                        (0xc1, Some(false)) => {
+                            self.push_const(Ty::I, is as i64);
+                            return Some(true);
+                        }
+                        _ => {}
+                    }
+                }
                 let r = if op == 0xc0 { self.add(Inst::CheckCast(v, k, s), Ty::A) } else { self.add(Inst::InstanceOf(v, k), Ty::I) };
                 self.push(r);
             }
