@@ -494,7 +494,8 @@ mod tests {
         assert_eq!(hex(|a| a.idiv(false, R::Rcx)), "99 f7 f9");
         assert_eq!(hex(|a| a.cvtt_f2i(true, true, R::Rax, X(1))), "f2 48 0f 2c c1");
         assert_eq!(hex(|a| a.call_m(mem(R::Rdx, 16))), "ff 52 10");
-        assert_eq!(hex(|a| a.round_sd(X(0), X(1), 1)), "66 0f 3a 0b c1 01");
+        // xorps first: roundsd writes only the low half of its destination.
+        assert_eq!(hex(|a| a.round_sd(X(0), X(1), 1)), "0f 57 c0 66 0f 3a 0b c1 01");
         assert_eq!(hex(|a| a.shift_ri(false, Shift::Shl, R::R9, 3)), "41 c1 e1 03");
         assert_eq!(hex(|a| a.imul_wide(true, R::Rcx)), "48 f7 e9");
         assert_eq!(hex(|a| a.shift_ri(true, Shift::Shr, R::Rsi, 32)), "48 c1 ee 20");
