@@ -72,9 +72,11 @@ register allocation, receiver-profile inlining, CHA, loop-invariant code motion 
 deoptimization back to the interpreter.
 
 **Raw pointers everywhere.** A reference is an address and a field is a load at a fixed
-offset. The heap does not move objects: size-class pages, bump allocation inline in compiled
-code, a generational mark-sweep with parallel marking and conservative stack scanning. Natives,
-the interpreter and compiled code share objects without handles or stack maps.
+offset (references inside objects are compressed to 32 bits, as HotSpot's). The heap never
+moves what a stack, a native or the VM holds: size-class pages, bump allocation inline in
+compiled code, a generational mark-sweep with parallel marking and conservative stack
+scanning that moves survivors reached only through the heap into packed pages. Natives, the
+interpreter and compiled code share objects without handles or stack maps.
 
 <br clear="all">
 
