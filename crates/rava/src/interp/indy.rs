@@ -70,7 +70,7 @@ fn linkage_from(t: &mut Thread, mn: Oop, appendix_box: Oop) -> JResult<Linkage> 
 pub(super) fn invokedynamic(t: &mut Thread, f: &mut Frame) -> JResult<()> {
     let k = f.method.holder;
     let cf = k.cf.as_ref().unwrap();
-    let Cp::InvokeDynamic { bsm, nat } = cf.pool[f.u2(f.pc + 1) as usize] else {
+    let Cp::InvokeDynamic { bsm, nat } = cf.pool.at(f.u2(f.pc + 1) as usize) else {
         return Err(throw_new(t, "java/lang/IncompatibleClassChangeError", "not an InvokeDynamic constant"));
     };
     let (name, desc) = cf.name_and_type(nat).unwrap();

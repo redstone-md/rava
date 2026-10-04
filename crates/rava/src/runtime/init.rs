@@ -82,7 +82,7 @@ fn run_initializers(t: &mut Thread, k: &'static Klass) -> JResult<()> {
 fn assign_constant_values(t: &mut Thread, k: &'static Klass) -> JResult<()> {
     let cf = k.cf.as_ref().unwrap();
     for f in k.fields.iter().filter(|f| f.is_static() && f.constant_value != 0) {
-        let v = match cf.pool[f.constant_value as usize] {
+        let v = match cf.pool.at(f.constant_value as usize) {
             Cp::Int(i) => i as i64 as u64,
             Cp::Float(x) => x.to_bits() as u64,
             Cp::Long(l) => l as u64,

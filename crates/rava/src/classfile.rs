@@ -35,9 +35,6 @@ pub enum Cp {
 // Pools hold millions of entries on a large application.
 const _: () = assert!(std::mem::size_of::<Cp>() == 16);
 
-/// `Cp::Utf8::at` of a constant whose bytes are its symbol's text (no NUL, surrogate or
-/// supplementary character, where modified UTF-8 differs).
-const TEXT: u32 = u32::MAX;
 
 /// An attribute body the runtime may read later, as a range of the class bytes.
 #[derive(Clone, Copy, Debug)]
@@ -85,7 +82,7 @@ pub struct MethodInfo {
 pub struct ClassFile {
     pub bytes: &'static [u8],
     pub major: u16,
-    pub pool: Vec<Cp>,
+    pub pool: crate::cpool::Pool,
     pub access: u16,
     pub name: Symbol,
     pub super_name: Option<Symbol>,
@@ -185,7 +182,7 @@ impl ClassFile {
 
     pub fn utf8(&self, index: u16) -> Result<Symbol> {
         match self.pool.get(index as usize) {
-            Some(Cp::Utf8 { sym, .. }) => Ok(*sym),
+            Some(Cp::Utf8 { sym, .. }) => Ok(sym),
             _ => Err(ParseError("expected Utf8 constant")),
         }
     }
@@ -194,8 +191,8 @@ impl ClassFile {
     pub fn utf8_bytes(&self, index: u16) -> Option<&'static [u8]> {
         match self.pool.get(index as usize) {
             // The symbol's text is the same bytes (`compact` drops the copy).
-            Some(Cp::Utf8 { sym, at: TEXT, .. }) => Some(sym.as_str().as_bytes()),
-            Some(Cp::Utf8 { at, len, .. }) => self.bytes.get(*at as usize..*at as usize + *len as usize),
+            Some(Cp::Utf8 { sym, at: crate::cpool::TEXT, .. }) => Some(sym.as_str().as_bytes()),
+            Some(Cp::Utf8 { at, len, .. }) => self.bytes.get(at as usize..at as usize + len as usize),
             _ => None,
         }
     }
@@ -223,14 +220,8 @@ impl ClassFile {
             out.extend_from_slice(&old[at as usize..(at + len) as usize]);
             new
         };
-        for cp in self.pool.iter_mut() {
-            if let Cp::Utf8 { sym, at, len } = cp {
-                *at = if sym.as_str().len() == *len as usize && sym.as_str().as_bytes() == &old[*at as usize..*at as usize + *len as usize] {
-                    TEXT
-                } else {
-                    keep(*at, *len as u32, &mut out)
-                };
-            }
+        for (at, len) in self.pool.raw_utf8_mut() {
+            *at = keep(*at, len as u32, &mut out);
         }
         let attrs = self.attrs.iter_mut().chain(self.fields.iter_mut().flat_map(|f| f.attrs.iter_mut())).chain(self.methods.iter_mut().flat_map(|m| m.attrs.iter_mut()));
         for a in attrs {
@@ -258,14 +249,14 @@ impl ClassFile {
 
     pub fn class_name(&self, index: u16) -> Option<Symbol> {
         match self.pool.get(index as usize) {
-            Some(Cp::Class(name)) => self.utf8(*name).ok(),
+            Some(Cp::Class(name)) => self.utf8(name).ok(),
             _ => None,
         }
     }
 
     pub fn name_and_type(&self, index: u16) -> Option<(Symbol, Symbol)> {
         match self.pool.get(index as usize) {
-            Some(Cp::NameAndType { name, desc }) => Some((self.utf8(*name).ok()?, self.utf8(*desc).ok()?)),
+            Some(Cp::NameAndType { name, desc }) => Some((self.utf8(name).ok()?, self.utf8(desc).ok()?)),
             _ => None,
         }
     }
@@ -273,7 +264,7 @@ impl ClassFile {
     /// `(owner class, name, descriptor)` of a Field/Method/InterfaceMethod reference.
     pub fn member_ref(&self, index: u16) -> Option<(Symbol, Symbol, Symbol)> {
         let (class, nat) = match self.pool.get(index as usize)? {
-            Cp::Field { class, nat } | Cp::Method { class, nat } | Cp::IMethod { class, nat } => (*class, *nat),
+            Cp::Field { class, nat } | Cp::Method { class, nat } | Cp::IMethod { class, nat } => (class, nat),
             _ => return None,
         };
         let (name, desc) = self.name_and_type(nat)?;
@@ -404,10 +395,10 @@ pub fn annotation_constants(body: &[u8]) -> Vec<(u16, u16, u8, u16)> {
     out
 }
 
-fn parse_pool(r: &mut Reader) -> Result<Vec<Cp>> {
+fn parse_pool(r: &mut Reader) -> Result<crate::cpool::Pool> {
     let count = r.u2()? as usize;
-    let mut pool = Vec::with_capacity(count);
-    pool.push(Cp::Empty);
+    let mut pool: Vec<(Cp, bool)> = Vec::with_capacity(count);
+    pool.push((Cp::Empty, true));
     while pool.len() < count {
         let tag = r.u1()?;
         let entry = match tag {
@@ -415,13 +406,14 @@ fn parse_pool(r: &mut Reader) -> Result<Vec<Cp>> {
                 let len = r.u2()?;
                 let at = r.pos as u32;
                 let raw = r.take(len as usize)?;
-                let sym = if raw.iter().all(|&b| b != 0 && b < 0x80) {
-                    // SAFETY: non-NUL TEXT is valid UTF-8 and identical in modified UTF-8.
-                    Symbol::intern(unsafe { std::str::from_utf8_unchecked(raw) })
+                if raw.iter().all(|&b| b != 0 && b < 0x80) {
+                    // SAFETY: non-NUL ASCII is valid UTF-8 and identical in modified UTF-8.
+                    pool.push((Cp::Utf8 { sym: Symbol::intern(unsafe { std::str::from_utf8_unchecked(raw) }), at, len }, true));
                 } else {
-                    Symbol::intern(&modified_utf8_to_string(raw))
-                };
-                Cp::Utf8 { sym, at, len }
+                    let sym = Symbol::intern(&modified_utf8_to_string(raw));
+                    pool.push((Cp::Utf8 { sym, at, len }, sym.as_str().as_bytes() == raw));
+                }
+                continue;
             }
             3 => Cp::Int(r.u4()? as i32),
             4 => Cp::Float(f32::from_bits(r.u4()?)),
@@ -441,12 +433,12 @@ fn parse_pool(r: &mut Reader) -> Result<Vec<Cp>> {
             20 => Cp::Package(r.u2()?),
             _ => return Err(ParseError("unknown constant tag")),
         };
-        pool.push(entry);
+        pool.push((entry, true));
         if matches!(tag, 5 | 6) {
-            pool.push(Cp::Empty);
+            pool.push((Cp::Empty, true));
         }
     }
-    Ok(pool)
+    Ok(crate::cpool::Pool::new(&pool))
 }
 
 #[cfg(test)]
@@ -464,6 +456,6 @@ mod tests {
         let get = cf.methods.iter().find(|m| m.name == "get" && m.desc == "(Ljava/lang/Object;)Ljava/lang/Object;").unwrap();
         assert!(get.code.as_ref().unwrap().code.len() > 5);
         let serial = cf.fields.iter().find(|f| f.name == "serialVersionUID").unwrap();
-        assert!(matches!(cf.pool[serial.constant_value as usize], Cp::Long(362498820763181265)));
+        assert!(matches!(cf.pool.at(serial.constant_value as usize), Cp::Long(362498820763181265)));
     }
 }

@@ -56,7 +56,7 @@ fn effect(cf: &ClassFile, code: &[u8], pc: usize) -> Option<(i32, i32)> {
         0x01..=0x08 | 0x0b..=0x0d | 0x10 | 0x11 => (0, 1),
         0x09 | 0x0a | 0x0e | 0x0f => (0, 2),
         0x12 | 0x13 => (0, match cf.pool.get(if op == 0x12 { code[pc + 1] as usize } else { u2() as usize })? {
-            Cp::Dynamic { nat, .. } => cf.name_and_type(*nat).map(|(_, d)| BasicType::from_desc(d.as_str().as_bytes()[0]).slots() as i32)?,
+            Cp::Dynamic { nat, .. } => cf.name_and_type(nat).map(|(_, d)| BasicType::from_desc(d.as_str().as_bytes()[0]).slots() as i32)?,
             _ => 1,
         }),
         0x14 => (0, 2),
@@ -108,7 +108,7 @@ fn effect(cf: &ClassFile, code: &[u8], pc: usize) -> Option<(i32, i32)> {
         }
         0xba => {
             let Cp::InvokeDynamic { nat, .. } = cf.pool.get(u2() as usize)? else { return None };
-            let sig = MethodSig::parse(cf.name_and_type(*nat)?.1);
+            let sig = MethodSig::parse(cf.name_and_type(nat)?.1);
             (sig.arg_slots as i32, sig.ret.slots() as i32)
         }
         0xbb => (0, 1),

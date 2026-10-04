@@ -334,7 +334,7 @@ pub(crate) unsafe fn write_field(o: Oop, offset: u32, ty: BasicType, v: u64) {
 pub(super) fn ldc(t: &mut Thread, f: &mut Frame, index: u16) -> JResult<()> {
     let k = f.holder();
     let cf = k.cf.as_ref().unwrap();
-    match cf.pool[index as usize] {
+    match cf.pool.at(index as usize) {
         Cp::Int(v) => f.push_i(v),
         Cp::Float(v) => f.push_f(v),
         Cp::Long(v) => f.push_l(v),

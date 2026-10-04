@@ -158,7 +158,7 @@ impl Klass {
         }
         let cf = self.cf.as_ref().unwrap();
         let (_, name, desc) = cf.member_ref(index).ok_or_else(|| bad_pool(self, index))?;
-        let class_index = match cf.pool[index as usize] {
+        let class_index = match cf.pool.at(index as usize) {
             Cp::Field { class, .. } => class,
             _ => return Err(bad_pool(self, index)),
         };
@@ -181,7 +181,7 @@ impl Klass {
         }
         let cf = self.cf.as_ref().unwrap();
         let (_, name, desc) = cf.member_ref(index).ok_or_else(|| bad_pool(self, index))?;
-        let class_index = match cf.pool[index as usize] {
+        let class_index = match cf.pool.at(index as usize) {
             Cp::Method { class, .. } | Cp::IMethod { class, .. } => class,
             _ => return Err(bad_pool(self, index)),
         };
@@ -212,7 +212,7 @@ impl Klass {
                 }
                 Resolved::Class(if name == cf.name { self } else { vm().find_loaded(self.loader(), name)? })
             }
-            &Cp::Field { class, .. } => {
+            Cp::Field { class, .. } => {
                 let Some(Resolved::Class(owner)) = self.peek_resolved(class) else { return None };
                 let (_, name, desc) = cf.member_ref(index)?;
                 let (holder, f) = find_field(owner, name, desc)?;
@@ -222,7 +222,7 @@ impl Klass {
                     Resolved::InstanceField { offset: f.offset, ty: f.ty, volatile: f.access & ACC_VOLATILE != 0 }
                 }
             }
-            &Cp::Method { class, .. } | &Cp::IMethod { class, .. } => {
+            Cp::Method { class, .. } | Cp::IMethod { class, .. } => {
                 let Some(Resolved::Class(owner)) = self.peek_resolved(class) else { return None };
                 let (_, name, desc) = cf.member_ref(index)?;
                 Resolved::Method(lookup_method(owner, name, desc)?)

@@ -242,7 +242,7 @@ fn is_leaf(m: &'static Method) -> bool {
 fn ldc_is_constant(m: &Method, code: &[u8], pc: usize) -> bool {
     let index = if code[pc] == 0x12 { code[pc + 1] as u16 } else { u16::from_be_bytes([code[pc + 1], code[pc + 2]]) };
     let Some(cf) = m.holder.cf.as_ref() else { return false };
-    match cf.pool[index as usize] {
+    match cf.pool.at(index as usize) {
         Cp::Int(_) | Cp::Float(_) | Cp::Long(_) | Cp::Double(_) => true,
         Cp::String(_) => matches!(m.holder.resolved[index as usize].get(), Some(Resolved::String(_))),
         _ => false,

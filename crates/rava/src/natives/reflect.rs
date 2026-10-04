@@ -190,7 +190,7 @@ fn cp_class(a: &[u64]) -> &'static Klass {
 }
 
 fn pool_entry(a: &[u64]) -> Cp {
-    cp_class(a).cf.as_ref().and_then(|cf| cf.pool.get(a[2] as usize).copied()).unwrap_or(Cp::Empty)
+    cp_class(a).cf.as_ref().and_then(|cf| cf.pool.get(a[2] as usize)).unwrap_or(Cp::Empty)
 }
 
 /// The `Method` behind a `java.lang.reflect.Method` or `Constructor`.

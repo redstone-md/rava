@@ -117,17 +117,17 @@ impl Emitter {
     fn ldc(&mut self, pc: usize, depth: u16) {
         let index = if self.code[pc] == 0x12 { self.code[pc + 1] as u16 } else { u16::from_be_bytes([self.code[pc + 1], self.code[pc + 2]]) };
         let d = depth as i32;
-        match self.cf.pool[index as usize] {
+        match self.cf.pool.at(index as usize) {
             crate::classfile::Cp::Int(v) => self.a.store_imm(self.stk(d), v),
             crate::classfile::Cp::Float(v) => self.const64(d, v.to_bits() as i64),
             crate::classfile::Cp::Long(v) => self.const64(d, v),
             crate::classfile::Cp::Double(v) => self.const64(d, v.to_bits() as i64),
             _ => match self.m.holder.resolved[index as usize].get() {
                 Some(Resolved::String(o)) | Some(Resolved::Constant(o)) if matches!(
-                    self.cf.pool[index as usize],
+                    self.cf.pool.at(index as usize),
                     crate::classfile::Cp::String(_) | crate::classfile::Cp::MethodType(_) | crate::classfile::Cp::MethodHandle { .. }
                 ) => self.const64(d, o as i64),
-                Some(Resolved::Class(k)) if matches!(self.cf.pool[index as usize], crate::classfile::Cp::Class(_)) && !k.mirror().is_null() => {
+                Some(Resolved::Class(k)) if matches!(self.cf.pool.at(index as usize), crate::classfile::Cp::Class(_)) && !k.mirror().is_null() => {
                     self.const64(d, k.mirror() as i64)
                 }
                 _ => self.defer_unresolved(pc, depth),

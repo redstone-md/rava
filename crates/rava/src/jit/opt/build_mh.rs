@@ -17,7 +17,7 @@ use crate::types::{BasicType, MethodSig};
 impl Builder {
     pub(super) fn invokedynamic(&mut self, pc: usize) -> Option<bool> {
         let index = u16::from_be_bytes([self.sc.code[pc + 1], self.sc.code[pc + 2]]);
-        let Cp::InvokeDynamic { nat, .. } = self.sc.cf.pool[index as usize] else { return None };
+        let Cp::InvokeDynamic { nat, .. } = self.sc.cf.pool.at(index as usize) else { return None };
         let (_, desc) = self.sc.cf.name_and_type(nat)?;
         self.linked_site(pc, indy::site_sig(desc), 0)
     }
