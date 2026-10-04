@@ -8,18 +8,6 @@ use crate::vm::vm;
 
 const RAW: &str = "jdk/internal/util/SystemProps$Raw";
 
-/// Platform properties in `SystemProps.Raw` index order (alphabetical by constant name).
-const PLATFORM_FIELDS: [&str; 39] = [
-    "display_country", "display_language", "display_script", "display_variant", "file_encoding",
-    "file_separator", "format_country", "format_language", "format_script", "format_variant",
-    "ftp_nonProxyHosts", "ftp_proxyHost", "ftp_proxyPort", "http_nonProxyHosts", "http_proxyHost",
-    "http_proxyPort", "https_proxyHost", "https_proxyPort", "java_io_tmpdir", "line_separator",
-    "os_arch", "os_name", "os_version", "path_separator", "socksNonProxyHosts", "socksProxyHost",
-    "socksProxyPort", "stderr_encoding", "stdout_encoding", "sun_arch_abi", "sun_arch_data_model",
-    "sun_cpu_endian", "sun_cpu_isalist", "sun_io_unicode_encoding", "sun_jnu_encoding",
-    "sun_os_patch_level", "user_dir", "user_home", "user_name",
-];
-
 pub(super) fn register(r: &mut NativeRegistry) {
     r.add(RAW, "platformProperties", "()[Ljava/lang/String;", platform_properties);
     r.add(RAW, "vmProperties", "()[Ljava/lang/String;", vm_properties);
@@ -30,8 +18,9 @@ fn platform_value(field: &str) -> Option<String> {
     Some(match field {
         "display_country" | "format_country" => Some(locale().country.clone()).filter(|c| !c.is_empty())?,
         "display_language" | "format_language" => locale().language.clone(),
-        "file_encoding" | "sun_jnu_encoding" => locale().codeset.clone(),
-        "stdout_encoding" | "stderr_encoding" => return None,
+        // `native_encoding` is JDK 25's name for `file_encoding`.
+        "file_encoding" | "native_encoding" | "sun_jnu_encoding" => locale().codeset.clone(),
+        "stdout_encoding" | "stderr_encoding" | "stdin_encoding" => return None,
         "file_separator" => "/".into(),
         "java_io_tmpdir" => "/tmp".into(),
         "line_separator" => "\n".into(),
@@ -97,8 +86,20 @@ fn os_release() -> String {
     }
 }
 
+/// The platform properties in the layout `SystemProps.Raw` declares: its `_<name>_NDX`
+/// constants place each one and `FIXED_LENGTH` sizes the array (both differ between JDKs).
 fn platform_properties(t: &mut Thread, _: &[u64]) -> JResult<u64> {
-    let values: Vec<Option<String>> = PLATFORM_FIELDS.iter().map(|f| platform_value(f)).collect();
+    let raw = crate::loader::load(RAW).expect("SystemProps.Raw");
+    let constant = |f: &crate::klass::FieldDesc| raw.statics[f.offset as usize].load(std::sync::atomic::Ordering::Relaxed) as i32;
+    let statics = || raw.fields.iter().filter(|f| f.is_static() && f.desc.as_str() == "I");
+    let len = statics().find(|f| f.name.as_str() == "FIXED_LENGTH").map_or(0, constant).max(0) as usize;
+    let mut values: Vec<Option<String>> = vec![None; len];
+    for f in statics() {
+        let Some(name) = f.name.as_str().strip_prefix('_').and_then(|n| n.strip_suffix("_NDX")) else { continue };
+        if let Some(slot) = values.get_mut(constant(f) as usize) {
+            *slot = platform_value(name);
+        }
+    }
     ret_ref(string_array(t, &values)?)
 }
 

@@ -137,10 +137,35 @@ fn print_help(t: &mut Thread, to_stderr: bool) -> JResult<()> {
     Ok(())
 }
 
+/// The kind of `main` `checkAndLoadMain` validated (`MAIN_NONSTATIC`, `MAIN_WITHOUT_ARGS`):
+/// `getMainType()` through JDK 24; JDK 25's launcher reads the `isStaticMain` and
+/// `noArgMain` statics instead.
+fn main_type(t: &mut Thread) -> JResult<i32> {
+    let helper = crate::loader::load(HELPER).expect("LauncherHelper");
+    if helper.declared_method(Symbol::intern("getMainType"), Symbol::intern("()I")).is_some() {
+        return Ok(call_static(t, HELPER, "getMainType", "()I", &[])? as i32);
+    }
+    let flag = |name: &str| {
+        helper
+            .fields
+            .iter()
+            .find(|f| f.is_static() && f.name.as_str() == name)
+            .is_some_and(|f| helper.statics[f.offset as usize].load(std::sync::atomic::Ordering::Acquire) != 0)
+    };
+    let mut kind = 0;
+    if !flag("isStaticMain") {
+        kind |= MAIN_NONSTATIC;
+    }
+    if flag("noArgMain") {
+        kind |= MAIN_WITHOUT_ARGS;
+    }
+    Ok(kind)
+}
+
 /// Invokes the `main` that `checkAndLoadMain` chose: static or instance, with or without `args`.
 fn run_main(t: &mut Thread, k: &'static Klass, args: &[String]) -> JResult<()> {
     rt::initialize(t, k)?;
-    let kind = call_static(t, HELPER, "getMainType", "()I", &[])? as i32;
+    let kind = main_type(t)?;
     let desc = if kind & MAIN_WITHOUT_ARGS != 0 { "()V" } else { "([Ljava/lang/String;)V" };
     let main = crate::link::lookup_method(k, Symbol::intern("main"), Symbol::intern(desc)).expect("main validated by LauncherHelper");
     let mut values = Vec::new();

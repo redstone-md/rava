@@ -102,12 +102,23 @@ fn define_class1(t: &mut Thread, a: &[u64]) -> JResult<u64> {
 
 vm_field!(protection_domain, "java/lang/Class", "protection_domain", "Ljava/security/ProtectionDomain;");
 
+/// Records a class's protection domain (and in `Class.protectionDomain`, which JDK 24+ reads).
+///
+/// # Safety
+/// `mirror` is a live `java.lang.Class`.
+unsafe fn set_protection_domain(mirror: Oop, pd: Oop) {
+    obj::write_ref(mirror, protection_domain(), pd);
+    if let Some(off) = crate::runtime::mirror_protection_domain_offset() {
+        obj::write_ref(mirror, off, pd);
+    }
+}
+
 /// The mirror of `k`, just defined with protection domain `pd` (`Class.getProtectionDomain0`).
 fn defined(t: &mut Thread, k: &'static Klass, pd: Oop) -> JResult<u64> {
     let mirror = rt::mirror_of(t, k)?;
     if !pd.is_null() {
         // SAFETY: a live mirror; the injected field holds a reference.
-        unsafe { obj::write_ref(mirror, protection_domain(), pd) };
+        unsafe { set_protection_domain(mirror, pd) };
     }
     ret_ref(mirror)
 }
@@ -151,7 +162,7 @@ fn define_class0(t: &mut Thread, a: &[u64]) -> JResult<u64> {
     unsafe {
         obj::write_ref(mirror, class_data(), data);
         if !(a[6] as Oop).is_null() {
-            obj::write_ref(mirror, protection_domain(), a[6] as Oop);
+            set_protection_domain(mirror, a[6] as Oop);
         }
     }
     if initialize {

@@ -75,6 +75,8 @@ pub(super) fn register(r: &mut NativeRegistry) {
     r.add("jdk/internal/misc/CDS", "isSharingEnabled0", "()Z", |_, _| ret_bool(false));
     r.add("jdk/internal/misc/CDS", "initializeFromArchive", "(Ljava/lang/Class;)V", |_, _| ret_void());
     r.add("jdk/internal/misc/CDS", "getRandomSeedForDumping", "()J", |_, _| ret_long(0));
+    // JDK 25: no archive is configured (no CDS flags set).
+    r.add("jdk/internal/misc/CDS", "getCDSConfigStatus", "()I", |_, _| ret_int(0));
     super::throwable::register(r);
 }
 

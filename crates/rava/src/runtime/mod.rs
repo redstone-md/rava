@@ -11,6 +11,7 @@ pub use constants::{bootstrap_specifier, method_type, mirror_for_desc, resolve_c
 pub use init::initialize;
 pub use mirror::{klass_of_mirror, mirror_of, primitive_by_name, primitive_mirror, primitive_mirrors, primitive_type_of_mirror};
 pub(crate) use mirror::klass_offset as mirror_klass_offset;
+pub(crate) use mirror::protection_domain_offset as mirror_protection_domain_offset;
 pub use strings::{intern, intern_modified_utf8 as intern_literal, intern_str, java_string_to_rust, new_string, new_string_utf16, string_units};
 
 use crate::heap::{obj, Oop};
@@ -30,6 +31,15 @@ pub(crate) fn field_offset(cache: &OnceLock<u32>, class: &str, name: &str, desc:
             .unwrap_or_else(|| panic!("VM field {class}.{name}:{desc}"));
         f.offset
     })
+}
+
+/// The offset of an instance field only some JDKs declare (`u32::MAX` when absent).
+pub(crate) fn optional_field_offset(cache: &OnceLock<u32>, class: &str, name: &str, desc: &str) -> Option<u32> {
+    let off = *cache.get_or_init(|| {
+        let k = crate::loader::load(class).unwrap_or_else(|e| panic!("VM class {class}: {e:?}"));
+        crate::link::find_field(k, Symbol::intern(name), Symbol::intern(desc)).map_or(u32::MAX, |(_, f)| f.offset)
+    });
+    (off != u32::MAX).then_some(off)
 }
 
 /// Declares a cached accessor for a VM-known instance field offset.

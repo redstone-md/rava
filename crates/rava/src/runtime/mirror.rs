@@ -15,6 +15,28 @@ vm_field!(primitive_offset, "java/lang/Class", "primitive_type", "I");
 vm_field!(loader_offset, "java/lang/Class", "classLoader", "Ljava/lang/ClassLoader;");
 vm_field!(component_offset, "java/lang/Class", "componentType", "Ljava/lang/Class;");
 
+/// Fields JDK 24+ declares for state it used to ask the VM for natively (`getModifiers`,
+/// `isPrimitive`, `getProtectionDomain`); the VM fills them in when it creates a mirror.
+fn class_field(cell: &'static std::sync::OnceLock<u32>, name: &str, desc: &str) -> Option<u32> {
+    super::optional_field_offset(cell, "java/lang/Class", name, desc)
+}
+
+fn modifiers_offset() -> Option<u32> {
+    static CELL: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
+    class_field(&CELL, "modifiers", "C")
+}
+
+fn is_primitive_offset() -> Option<u32> {
+    static CELL: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
+    class_field(&CELL, "primitive", "Z")
+}
+
+/// `Class.protectionDomain` where the JDK declares it.
+pub(crate) fn protection_domain_offset() -> Option<u32> {
+    static CELL: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
+    class_field(&CELL, "protectionDomain", "Ljava/security/ProtectionDomain;")
+}
+
 pub fn mirror_of(t: &mut Thread, k: &'static Klass) -> JResult<Oop> {
     let existing = k.mirror();
     if !existing.is_null() {
@@ -33,6 +55,9 @@ pub fn mirror_of(t: &mut Thread, k: &'static Klass) -> JResult<Oop> {
         obj::write::<u64>(m, klass_offset(), k as *const Klass as u64);
         obj::write_ref(m, loader_offset(), k.loader());
         obj::write_ref(m, component_offset(), component);
+        if let Some(off) = modifiers_offset() {
+            obj::write::<u16>(m, off, crate::natives::class_modifiers(Some(k)) as u16);
+        }
     }
     crate::natives::set_mirror_module(m, k);
     match k.mirror.compare_exchange(std::ptr::null_mut(), m, Ordering::AcqRel, Ordering::Acquire) {
@@ -89,7 +114,15 @@ pub fn primitive_mirror(t: &mut Thread, ty: BasicType) -> JResult<Oop> {
     initialize(t, class_class)?;
     let m = alloc_instance(t, class_class)?;
     // SAFETY: fresh Class instance.
-    unsafe { obj::write::<i32>(m, primitive_offset(), ty as i32 + 1) };
+    unsafe {
+        obj::write::<i32>(m, primitive_offset(), ty as i32 + 1);
+        if let Some(off) = is_primitive_offset() {
+            obj::write::<u8>(m, off, 1);
+        }
+        if let Some(off) = modifiers_offset() {
+            obj::write::<u16>(m, off, crate::natives::class_modifiers(None) as u16);
+        }
+    }
     crate::natives::set_primitive_mirror_module(m);
     let mut table = TABLE.lock().unwrap();
     if table[ty as usize] == 0 {
