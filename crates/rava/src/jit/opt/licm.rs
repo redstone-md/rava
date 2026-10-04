@@ -95,7 +95,7 @@ pub fn hoist(g: &mut Graph) {
 
 /// For each block (by rpo position), the values non-null at its end: checked by a null check in
 /// it or a dominator, allocated there, or the receiver.
-fn nonnull_by_block(g: &Graph, dom: &Dom) -> Vec<HashSet<V>> {
+pub(super) fn nonnull_by_block(g: &Graph, dom: &Dom) -> Vec<HashSet<V>> {
     let mut out: Vec<HashSet<V>> = vec![HashSet::new(); dom.rpo.len()];
     for (i, &b) in dom.rpo.iter().enumerate() {
         let mut set = if i == 0 || dom.idom[i] == usize::MAX { HashSet::new() } else { out[dom.idom[i]].clone() };
@@ -105,6 +105,10 @@ fn nonnull_by_block(g: &Graph, dom: &Dom) -> Vec<HashSet<V>> {
         for &v in &g.blocks[b as usize].insts {
             match g.inst(v) {
                 Inst::NullCheck(x, _) => {
+                    set.insert(g.resolve(*x));
+                }
+                // A null-check predicate (`predicate_null_checks`).
+                Inst::Guard(Cmp::Ne, Ty::A, x, null, _) if g.constant(g.resolve(*null)) == Some(0) => {
                     set.insert(g.resolve(*x));
                 }
                 Inst::New(..) | Inst::NewArray(..) | Inst::NewMulti(..) => {
