@@ -24,10 +24,10 @@ impl Gen<'_> {
     pub(super) fn memory_inst(&mut self, v: V) {
         match self.g.inst(v).clone() {
             Inst::LoadField(o, off, bt @ (BasicType::Float | BasicType::Double)) => {
-                let ro = self.reg(o, R::Rax);
+                let at = self.field(o, off as i32);
                 let r = self.xout(v);
                 self.fault_site();
-                self.a.fload(bt == BasicType::Double, r, mem(ro, off as i32));
+                self.a.fload(bt == BasicType::Double, r, at);
                 self.xput(v, r);
             }
             Inst::StoreField(o, off, bt @ (BasicType::Float | BasicType::Double), x) => {
@@ -50,10 +50,14 @@ impl Gen<'_> {
                 self.a.fstore(bt == BasicType::Double, at, a);
             }
             Inst::LoadField(o, off, bt) => {
-                let ro = self.reg(o, R::Rax);
+                let at = self.field(o, off as i32);
                 let r = self.out(v);
                 self.fault_site();
-                load_typed_to(&mut self.a, r, bt, mem(ro, off as i32));
+                if self.narrow.contains(&v) {
+                    self.a.load(false, r, at);
+                } else {
+                    load_typed_to(&mut self.a, r, bt, at);
+                }
                 self.put(v, r);
             }
             Inst::StoreField(o, off, bt, x) => {
@@ -78,16 +82,20 @@ impl Gen<'_> {
                 self.a.store(true, at, R::Rdx);
             }
             Inst::ArrayLength(x) => {
-                let ra = self.reg(x, R::Rax);
+                let at = self.field(x, crate::heap::ARRAY_LENGTH_OFFSET as i32);
                 let r = self.out(v);
                 self.fault_site();
-                self.a.load_sx(4, r, mem(ra, crate::heap::ARRAY_LENGTH_OFFSET as i32));
+                self.a.load_sx(4, r, at);
                 self.put(v, r);
             }
             Inst::LoadIndexed(arr, idx, bt) => {
                 let at = self.element(arr, idx, bt);
                 let r = self.out(v);
-                load_typed_to(&mut self.a, r, bt, at);
+                if self.narrow.contains(&v) {
+                    self.a.load(false, r, at);
+                } else {
+                    load_typed_to(&mut self.a, r, bt, at);
+                }
                 self.put(v, r);
             }
             Inst::StoreIndexed(arr, idx, bt, x) => self.store_indexed(v, arr, idx, bt, x),
@@ -181,6 +189,17 @@ impl Gen<'_> {
     }
 
     /// The address of element `idx` of `arr` (a constant index folded into the displacement).
+    /// The field at `off` of object `o`, through its compressed reference if it is kept
+    /// compressed (`codegen::narrow_refs`).
+    fn field(&mut self, o: V, off: i32) -> M {
+        let ro = self.reg(o, R::Rax);
+        if self.narrow.contains(&self.g.resolve(o)) {
+            crate::jit::asm::mem_narrow(ro, off)
+        } else {
+            mem(ro, off)
+        }
+    }
+
     fn element(&mut self, arr: V, idx: V, bt: BasicType) -> M {
         let ra = self.reg(arr, R::Rax);
         if let Loc::Const(c) = self.loc[idx as usize] {
