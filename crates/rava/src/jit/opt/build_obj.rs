@@ -140,6 +140,11 @@ impl Builder {
                     return Some(true);
                 }
             }
+            if let crate::jit::intrinsics::Intrinsic::Leaf(l) = k {
+                for &i in l.array_args() {
+                    self.null_check(args[i], pre.clone());
+                }
+            }
             let s = matches!(k, crate::jit::intrinsics::Intrinsic::GetClass | crate::jit::intrinsics::Intrinsic::ArrayCopy).then_some(pre);
             let v = self.add(Inst::Intrinsic(k, args, s), if ret == BasicType::Void { Ty::I } else { Ty::of(ret) });
             if ret != BasicType::Void {
