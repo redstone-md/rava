@@ -503,7 +503,7 @@ mod tests {
         assert_eq!(hex(|a| a.push(R::Rbx)), "53");
         assert_eq!(hex(|a| a.cmov(true, Cond::L, R::Rax, R::Rcx)), "48 0f 4c c1");
         assert_eq!(hex(|a| a.load(true, R::Rbp, mem(R::R13, 8))), "49 8b 6d 08");
-        assert_eq!(hex(|a| a.round_sd(X(9), X(2), 2)), "66 44 0f 3a 0b ca 02");
+        assert_eq!(hex(|a| a.round_sd(X(9), X(2), 2)), "45 0f 57 c9 66 44 0f 3a 0b ca 02");
         assert_eq!(hex(|a| a.mov_xx(X(10), X(3))), "44 0f 28 d3");
         assert_eq!(hex(|a| a.fxor(true, X(2), X(1))), "66 0f 57 d1");
         assert_eq!(hex(|a| a.fstore(true, mem(R::Rsp, 16), X(12))), "f2 44 0f 11 64 24 10");
