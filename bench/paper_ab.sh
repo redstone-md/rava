@@ -22,6 +22,7 @@
 #             resident memory (MiB) at Done, milestone offsets;
 #   logs/     the server log of every run (gzip).
 set -euo pipefail
+trap '' PIPE
 ROUNDS=3
 BASE=${PAPER_BASE:-/tmp/claude-0/paper-base}
 OUT=""
@@ -109,7 +110,9 @@ run_one() { # label round
     hwm=$(awk '/^VmHWM/{printf "%.0f", $2/1024}' /proc/$pid/status)
     rss=$(awk '/^VmRSS/{printf "%.0f", $2/1024}' /proc/$pid/status)
   fi
-  echo stop >&3
+  # A server that died already has no reader on the FIFO: the write fails (EPIPE, as SIGPIPE
+  # is ignored below) and the run is recorded as FAILED instead of ending the whole A/B.
+  echo stop >&3 2>/dev/null || true
   exec 3>&-
   for _ in $(seq 1 240); do kill -0 $pid 2>/dev/null || break; sleep 0.25; done
   kill -9 $pid 2>/dev/null || true
