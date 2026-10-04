@@ -92,6 +92,7 @@ impl Vm {
         if let Some(vm) = VM.get() {
             return Ok(vm);
         }
+        crate::jdk::init(&options.java_home);
         let image = JImage::open_java_home(&options.java_home)?;
         let heap = Heap::new(options.heap_reserve, options.max_heap.min(options.heap_reserve));
         let _ = VM.set(Vm {

@@ -7,6 +7,7 @@ pub mod cpool;
 pub mod gc;
 pub mod heap;
 pub mod interp;
+pub mod jdk;
 pub mod jit;
 pub mod jimage;
 pub mod klass;
