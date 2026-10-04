@@ -18,26 +18,35 @@ pub struct M {
     pub disp: i32,
     /// RIP-relative to this label instead (`base`, `index` and `disp` unused).
     pub rip: Option<Label>,
+    /// `[index * scale + disp]` without a base (`base` unused).
+    pub nobase: bool,
 }
 
 /// `[rip + label]`: data placed in the code, such as a constant.
 pub fn rip(label: Label) -> M {
-    M { base: R::Rax, index: None, disp: 0, rip: Some(label) }
+    M { base: R::Rax, index: None, disp: 0, rip: Some(label), nobase: false }
 }
 
 pub fn mem(base: R, disp: i32) -> M {
-    M { base, index: None, disp, rip: None }
+    M { base, index: None, disp, rip: None, nobase: false }
 }
 
 /// `[addr]`, an absolute address in the low 2 GiB (`crate::low`): a SIB byte with neither base
 /// nor index (rbp as base and rsp as index mark it).
 pub fn abs32(addr: usize) -> M {
     debug_assert!(crate::low::is_low(addr));
-    M { base: R::Rbp, index: Some((R::Rsp, 1)), disp: addr as i32, rip: None }
+    M { base: R::Rbp, index: Some((R::Rsp, 1)), disp: addr as i32, rip: None, nobase: false }
+}
+
+/// `[narrow * 8 + disp]`: a field of the object whose compressed reference (the heap's base is
+/// 0) is in `narrow`, decoded by the address itself.
+pub fn mem_narrow(narrow: R, disp: i32) -> M {
+    debug_assert!(narrow != R::Rsp);
+    M { base: R::Rbp, index: Some((narrow, 8)), disp, rip: None, nobase: true }
 }
 
 pub fn mem_idx(base: R, index: R, scale: u8, disp: i32) -> M {
-    M { base, index: Some((index, scale)), disp, rip: None }
+    M { base, index: Some((index, scale)), disp, rip: None, nobase: false }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -198,6 +207,15 @@ impl Asm {
             self.b(lo(reg) << 3 | 5);
             self.fixups.push((self.pos(), l));
             self.d32(0);
+            return;
+        }
+        if m.nobase {
+            // mod 00, r/m 100, SIB base 101: index * scale + disp32.
+            let (idx, scale) = m.index.expect("an index");
+            let ss = match scale { 1 => 0, 2 => 1, 4 => 2, _ => 3 };
+            self.b(lo(reg) << 3 | 4);
+            self.b(ss << 6 | lo(idx as u8) << 3 | 5);
+            self.d32(m.disp);
             return;
         }
         if let (R::Rbp, Some((R::Rsp, _))) = (m.base, m.index) {

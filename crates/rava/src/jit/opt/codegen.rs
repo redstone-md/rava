@@ -108,6 +108,8 @@ pub(super) struct Gen<'a> {
     /// Null checks left to the access right after them (`implicit_null_checks`), the
     /// deoptimization stub of the one being emitted, and the faulting instructions with theirs.
     pub(super) implicit: std::collections::HashSet<V>,
+    /// References kept compressed in their register (`narrow_refs`).
+    pub(super) narrow: std::collections::HashSet<V>,
     pub(super) pending_null: Option<Label>,
     /// Loop headers whose test back edges repeat (`rotations`), with their successor in the loop.
     rotations: HashMap<B, B>,
@@ -169,6 +171,68 @@ fn implicit_null_checks(g: &Graph, loc: &[Loc]) -> std::collections::HashSet<V> 
     out
 }
 
+/// Compressed references kept compressed in their register (C2 decodes them in the address of
+/// their use): a reference loaded from the heap whose every use follows it in its block as the
+/// object of a field load or array length, or a null check of it (a compressed null is 0),
+/// with no call, allocation or deoptimization state in between (no collection can see the
+/// register, no state reads it).
+fn narrow_refs(g: &Graph, al: &Allocation) -> std::collections::HashSet<V> {
+    use crate::types::BasicType::Reference;
+    let mut out = std::collections::HashSet::new();
+    if !crate::heap::COMPRESSED {
+        return out;
+    }
+    // Uses of every value outside instructions (terminators, phi inputs): never narrow.
+    let mut escapes = vec![false; g.values.len()];
+    for b in g.blocks.iter().filter(|b| !matches!(b.term, Term::None)) {
+        for u in b.term.inputs() {
+            escapes[g.resolve(u) as usize] = true;
+        }
+        for &v in &b.insts {
+            if let Inst::Phi(ins) = g.inst(v) {
+                ins.iter().for_each(|&u| escapes[g.resolve(u) as usize] = true);
+            }
+        }
+    }
+    let mut users: Vec<Vec<(B, usize)>> = vec![Vec::new(); g.values.len()];
+    for (bi, b) in g.blocks.iter().enumerate().filter(|(_, b)| !matches!(b.term, Term::None)) {
+        for (i, &v) in b.insts.iter().enumerate() {
+            if g.resolve(v) != v || matches!(g.inst(v), Inst::Phi(_)) {
+                continue;
+            }
+            for u in g.inst(v).inputs() {
+                users[g.resolve(u) as usize].push((bi as B, i));
+            }
+        }
+    }
+    for (bi, b) in g.blocks.iter().enumerate().filter(|(_, b)| !matches!(b.term, Term::None)) {
+        for (i, &v) in b.insts.iter().enumerate() {
+            if !matches!(g.inst(v), Inst::LoadField(_, _, Reference) | Inst::LoadIndexed(_, _, Reference)) || g.resolve(v) != v || escapes[v as usize] {
+                continue;
+            }
+            if !matches!(al.loc[v as usize], Loc::Reg(_)) || al.home[v as usize].is_some() || users[v as usize].is_empty() {
+                continue;
+            }
+            let Some(last) = users[v as usize].iter().map(|&(ub, ui)| (ub == bi as B).then_some(ui)).try_fold(0, |m, u| u.map(|u| m.max(u))) else { continue };
+            let base_use = |w: V| match g.inst(w) {
+                Inst::LoadField(o, ..) | Inst::ArrayLength(o) | Inst::NullCheck(o, _) => g.resolve(*o) == v,
+                _ => false,
+            };
+            let quiet = |w: V| {
+                let inst = g.inst(w);
+                inst.state().is_none() && !matches!(inst, Inst::Call(..) | Inst::Intrinsic(..) | Inst::Monitor(..) | Inst::Phi(_))
+            };
+            let window = &b.insts[i + 1..=last];
+            let uses_ok = users[v as usize].iter().all(|&(_, ui)| base_use(b.insts[ui]));
+            let quiet_ok = window.iter().all(|&w| quiet(w) || matches!(g.inst(w), Inst::NullCheck(o, _) if g.resolve(*o) == v));
+            if uses_ok && quiet_ok {
+                out.insert(v);
+            }
+        }
+    }
+    out
+}
+
 /// Emits `g` for `m`, whose frame (inlined frames included) takes `frame_slots` value-stack slots;
 /// a synchronized method holds `monitor` while it runs. Returns the code and the size of its
 /// main part (without the out-of-line stubs after it, as C2 sizes code for inlining).
@@ -209,6 +273,7 @@ pub(super) fn generate(g: &Graph, al: &Allocation, m: &'static Method, frame_slo
         unbarriered: super::barrier::unbarriered(g),
         short_loops: super::polls::short_loops(g),
         implicit: implicit_null_checks(g, &al.loc),
+        narrow: narrow_refs(g, al),
         pending_null: None,
         rotations: rotations(g),
         faults: Vec::new(),
