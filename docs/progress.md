@@ -1104,9 +1104,18 @@ Also in this round:
 - **Call sites** (`opt/codegen.rs`): the prologue no longer writes the call-site slot that every
   call site overwrites anyway (`anchor` writes it where a frame is published without a call).
 
-Known issue: with `RAVA_OPT=all` (every method straight to the optimizing tier, a test mode)
-`StackOverflowSem` aborts about once in twelve runs: the native stack overflows before the value
-stack's limit. The default mode passed 20 of 20.
+**Deep recursion** (`runtime/mod.rs`, `boot.rs`). With `RAVA_OPT=all` a recursion to
+StackOverflowError aborted up to a third of the runs, the native stack exhausted. Two causes:
+constructing the error overflowed the reserved zone and started another construction, nested
+until the native stack ran out (a nested overflow now gets the error without its constructor,
+as HotSpot throws a preallocated one); and `StackOverflowError` first initialized at a stack's
+end could fail there and stay erroneous, each later throw building a `NoClassDefFoundError`
+recursively (the VM's own errors are now initialized at boot, as HotSpot does after
+`initPhase1`). Calls into Java from the VM also check a native stack reserve. 60 of 60 runs pass.
+
+**Short counted loops** (`unroll.rs`): a loop counting by 1 between constants at most 8 apart,
+of one body block without calls or allocations, is unrolled completely (the tree's distance
+loop over 7 parameters). Tree search: 2994 → ~2800 ns.
 
 A/B (`efe49b55` against java, Paper 1.21.1-133, fresh world, 2 rounds, same host and hour):
 
