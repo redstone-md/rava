@@ -264,6 +264,10 @@ impl Heap {
             space.live_after_gc = live;
             // Committed memory beyond what the next period allocates goes back to the kernel.
             space.release_surplus(self.young_budget(live) + self.young_budget(live) / 8);
+            // So does the malloc heap's free memory: compiler threads free most of what they
+            // allocate, in arenas glibc keeps (~1 ms; -15 MiB on a modded server's start).
+            // SAFETY: a plain libc call.
+            unsafe { libc::malloc_trim(0) };
             let allocated = space.allocated_since_gc + self.small_allocated.load(std::sync::atomic::Ordering::Relaxed);
             space.allocated_since_gc = 0;
             self.small_allocated.store(0, std::sync::atomic::Ordering::Relaxed);
