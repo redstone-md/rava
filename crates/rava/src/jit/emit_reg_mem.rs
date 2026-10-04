@@ -97,6 +97,17 @@ impl Emitter {
         }
     }
 
+    /// Branches to the slow path (re-executing `pc`, which throws) if `r` is null, unless the
+    /// value is known not to be.
+    fn null_check(&mut self, pc: usize, depth: u16, spill: Vec<(Loc, i32)>, nonnull: bool, r: R) {
+        if nonnull {
+            return;
+        }
+        let slow = self.slow_path_spilling(pc, depth, spill);
+        self.a.test_rr(true, r, r);
+        self.a.jcc(Cond::E, slow);
+    }
+
     fn field_reg(&mut self, pc: usize, depth: u16, op: u8) -> bool {
         let index = self.cp_index(pc);
         let resolved = self.m.holder.resolved[index as usize].get();
@@ -122,9 +133,7 @@ impl Emitter {
                 let spill = self.lazy_flush();
                 let o = self.pop();
                 let ro = self.read(o, R::Rax);
-                let slow = self.slow_path_spilling(pc, depth, spill);
-                self.a.test_rr(true, ro, ro);
-                self.a.jcc(Cond::E, slow);
+                self.null_check(pc, depth, spill, o.nonnull, ro);
                 let d = self.alloc(&[]);
                 load_typed_to(&mut self.a, d, ty, mem(ro, offset as i32));
                 self.push_w(ty.slots() == 2, Loc::Reg(d));
@@ -135,9 +144,7 @@ impl Emitter {
                 let o = self.pop();
                 let ro = self.read(o, R::Rax);
                 let mut rv = self.read(v, R::Rdx);
-                let slow = self.slow_path_spilling(pc, depth, spill);
-                self.a.test_rr(true, ro, ro);
-                self.a.jcc(Cond::E, slow);
+                self.null_check(pc, depth, spill, o.nonnull, ro);
                 if ty == BasicType::Boolean && rv != R::Rdx {
                     self.a.mov_rr(true, R::Rdx, rv);
                     rv = R::Rdx;

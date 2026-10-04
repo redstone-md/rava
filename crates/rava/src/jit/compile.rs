@@ -55,6 +55,11 @@ pub(super) struct Emitter {
     /// Constant operand-stack values at the current call site, captured before the stack is
     /// written back (they become constant locals of an inlined callee).
     pub site_consts: Vec<Option<i64>>,
+    /// Operand-stack values at the current call site known not to be null.
+    pub site_nonnull: Vec<bool>,
+    /// Local 0 of the body being emitted is `this` throughout (an instance method that never
+    /// writes it); inlined bodies are entered with a receiver checked non-null.
+    pub this_nonnull: bool,
     /// Locals of this body known to hold a constant: for the whole body (`lconst_base`: parameters
     /// it never writes) and at the current point (`lconst`: also constants stored in this block).
     pub lconst_base: Vec<Option<i64>>,
@@ -111,6 +116,8 @@ fn compile_timed(m: &'static Method, tier: u8) -> Option<CompiledMethod> {
         vis_scopes: Vec::new(),
         dump_map: env_once!("RAVA_JIT_DUMP").filter(|f| m.to_string().contains(f.to_str().unwrap_or(""))).map(|_| Vec::new()),
         site_consts: Vec::new(),
+        site_nonnull: Vec::new(),
+        this_nonnull: !m.is_static() && super::fold::unwritten_locals(m).first() == Some(&true),
         lconst_base: vec![None; info.max_locals as usize],
         lconst: vec![None; info.max_locals as usize],
         inl: None,

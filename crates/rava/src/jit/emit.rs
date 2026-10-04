@@ -21,12 +21,16 @@ impl Emitter {
         }
         if matches!(self.code[pc], 0xb6..=0xba) {
             self.site_consts = self.vs.iter().map(|s| if let super::vstack::Loc::Imm(v) = s.loc { Some(v) } else { None }).collect();
+            self.site_nonnull = self.vs.iter().map(|s| s.nonnull).collect();
         }
         self.flush_to_mem();
         self.emit_memory(pc, depth)?;
         let next = pc + super::analysis::insn_len(self.code, pc);
         let after = self.an.depth.get(next).copied().flatten().unwrap_or(depth);
         self.vs_reset(after);
+        if self.code[pc] == 0xbb {
+            self.set_nonnull();
+        }
         Some(())
     }
 

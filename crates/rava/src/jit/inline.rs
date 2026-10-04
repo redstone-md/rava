@@ -55,6 +55,7 @@ pub(super) struct Body {
     pub slow: Vec<super::compile::SlowPath>,
     pub lconst_base: Vec<Option<i64>>,
     pub lconst: Vec<Option<i64>>,
+    pub this_nonnull: bool,
 }
 
 /// The checks before an inlined body; any failure takes the ordinary call sequence.
@@ -90,13 +91,16 @@ impl Emitter {
         // At entry every constant argument is known, written later or not.
         let lconst = (0..info.max_locals as usize).map(|i| consts.get(i).copied().flatten()).collect();
         let known_receiver = consts.first().copied().flatten().is_some_and(|v| v != 0);
+        let nonnull = known_receiver || self.site_nonnull.get(args as usize) == Some(&true);
         match entry {
             Entry::Static(holder) => self.init_check(holder, restart),
-            Entry::Receiver if known_receiver => {}
+            Entry::Receiver if nonnull => {}
             Entry::Receiver | Entry::Vtable(_) | Entry::Klass(_) => {
                 self.a.load(true, R::Rcx, self.stk(args));
-                self.a.test_rr(true, R::Rcx, R::Rcx);
-                self.a.jcc(super::asm::Cond::E, restart);
+                if !nonnull {
+                    self.a.test_rr(true, R::Rcx, R::Rcx);
+                    self.a.jcc(super::asm::Cond::E, restart);
+                }
             }
         }
         if let Entry::Klass(k) = entry {
@@ -152,6 +156,7 @@ impl Emitter {
             slow: Vec::new(),
             lconst_base,
             lconst,
+            this_nonnull: !callee.is_static() && unwritten.first() == Some(&true),
         };
         self.inlined_bytes += info.code.len();
         let caller = self.swap_body(body);
@@ -209,6 +214,7 @@ impl Emitter {
             slow: replace(&mut self.slow, b.slow),
             lconst_base: replace(&mut self.lconst_base, b.lconst_base),
             lconst: replace(&mut self.lconst, b.lconst),
+            this_nonnull: replace(&mut self.this_nonnull, b.this_nonnull),
         }
     }
 
