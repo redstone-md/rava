@@ -17,7 +17,7 @@ const NET: &str = "sun/nio/ch/Net";
 const UNAVAILABLE: i32 = -2;
 const INTERRUPTED: i32 = -3;
 
-fn fd(fdo: u64) -> i32 {
+pub(super) fn fd(fdo: u64) -> i32 {
     // SAFETY: a live java.io.FileDescriptor.
     unsafe { obj::read::<i32>(fdo as Oop, fd_int()) }
 }
@@ -69,6 +69,20 @@ fn check(t: &mut Thread, r: i32, what: &str) -> JResult<i32> {
         Err(io_error(t, what))
     } else {
         Ok(r)
+    }
+}
+
+/// A read or write's result as `IOStatus`: bytes, -1 at the end of a read, `UNAVAILABLE`,
+/// `INTERRUPTED`, or `i64::MIN` for an error (errno set).
+pub(super) fn io_status(n: isize, read: bool) -> i64 {
+    match n {
+        0 if read => -1,
+        n if n >= 0 => n as i64,
+        _ => match errno() {
+            libc::EAGAIN => UNAVAILABLE as i64,
+            libc::EINTR => INTERRUPTED as i64,
+            _ => i64::MIN,
+        },
     }
 }
 
@@ -201,17 +215,6 @@ fn accept(t: &mut Thread, a: &[u64]) -> JResult<u64> {
 
 /// Reads/writes on sockets and datagram sockets, with IOStatus results.
 fn register_dispatch(r: &mut NativeRegistry) {
-    fn status(n: isize, read: bool) -> i64 {
-        match n {
-            0 if read => -1,
-            n if n >= 0 => n as i64,
-            _ => match errno() {
-                libc::EAGAIN => UNAVAILABLE as i64,
-                libc::EINTR => INTERRUPTED as i64,
-                _ => i64::MIN,
-            },
-        }
-    }
     fn finish(t: &mut Thread, v: i64) -> JResult<u64> {
         if v == i64::MIN {
             let msg = super::io::errno_text();
@@ -222,19 +225,19 @@ fn register_dispatch(r: &mut NativeRegistry) {
     for c in ["sun/nio/ch/SocketDispatcher", "sun/nio/ch/DatagramDispatcher"] {
         r.add(c, "read0", "(Ljava/io/FileDescriptor;JI)I", |t, a| {
             let n = crate::gc::safepoint::blocking(t, || unsafe { libc::read(fd(a[0]), a[1] as *mut libc::c_void, a[3] as u32 as usize) });
-            finish(t, status(n, true) as i32 as i64)
+            finish(t, io_status(n, true) as i32 as i64)
         });
         r.add(c, "readv0", "(Ljava/io/FileDescriptor;JI)J", |t, a| {
             let n = crate::gc::safepoint::blocking(t, || unsafe { libc::readv(fd(a[0]), a[1] as *const libc::iovec, a[3] as i32) });
-            finish(t, status(n, true))
+            finish(t, io_status(n, true))
         });
         r.add(c, "write0", "(Ljava/io/FileDescriptor;JI)I", |t, a| {
             let n = unsafe { libc::write(fd(a[0]), a[1] as *const libc::c_void, a[3] as u32 as usize) };
-            finish(t, status(n, false) as i32 as i64)
+            finish(t, io_status(n, false) as i32 as i64)
         });
         r.add(c, "writev0", "(Ljava/io/FileDescriptor;JI)J", |t, a| {
             let n = unsafe { libc::writev(fd(a[0]), a[1] as *const libc::iovec, a[3] as i32) };
-            finish(t, status(n, false))
+            finish(t, io_status(n, false))
         });
     }
     r.add("sun/nio/ch/UnixDispatcher", "init", "()V", |_, _| ret_void());
