@@ -902,3 +902,44 @@ its dying second operand's register (the noise lerps' `a + t * (b - a)`, accumul
 What remains in the hot code is mostly memory: the samples on class and null compares sit
 right after the loads of object headers they test (cache misses on objects that are larger
 here, 16-byte headers and 8-byte references against HotSpot's 12 and 4).
+
+## 2026-10-04 — ahead on time, CPU and memory
+
+A/B (`bench/paper_ab.sh -n 5`, means; the script now records peak and current RSS at `Done`):
+`1fd9e0a` reaches `Done` in 25.92 s against java's 27.89 s (-7.1%), uses 39.5 s of user CPU
+against 65.6 s (-40%) and peaks at 1070 MiB resident against 1154 MiB (-7.3%). At `9bda932` the
+same start peaked at ~2.1 GiB.
+
+**Object model:**
+
+- compressed references: fields and `Object[]` elements hold the address >> 3 in 32 bits (the
+  heap is reserved at 4 GiB, below the 32 GiB they reach); registers, frames, statics and
+  natives keep full pointers (`heap::obj::{read_ref, write_ref, load_elem, store_elem}`, the
+  compilers' `load_typed_to`/`encode_ref`, Unsafe split on a null base);
+- a 32-bit class word (classes are in low memory); the 4 bytes after it hold an array's length
+  (elements from 16) or an instance's first small fields; size classes every 8 bytes to 256.
+
+Live data per object went from ~58 to ~40 bytes, and the smaller objects made the start faster.
+
+**Collector:**
+
+- young and full collections move what the trace reaches through the heap or a static out of
+  allocation pages into old pages packed by the collector (`gc/evacuate.rs`); what another root
+  holds stays in place, as do locked and large objects and compiled code's constants
+  (`recent::embed`). Compiler threads read the heap under the collection lock. Allocation pages
+  no longer turn into pages of short holes compiled code cannot bump through (they held ~300 MB
+  of free cells it could not use);
+- statics are precise roots whose slots follow moves;
+- a young generation of a third of the live data (at least 128 MB); free large-object memory
+  past 32 MB and surplus empty pages go back to the kernel; prefault 16 MB ahead.
+
+**Metadata:** deoptimization descriptors LEB128-encoded and shared (were ~60 MB of vectors),
+pool resolution caches one word per entry (were 32 bytes), symbols one pointer to arena text,
+pool entries 16 bytes; classes defined from bytes keep only what the runtime reads later.
+
+**Fixed on the way:** the main thread never ran `Thread.exit()` when `main` returned, so NIO's
+per-thread temporary direct buffers (Paperclip reads whole jars through them, ~60 MB) were never
+freed.
+
+**Measured and dropped:** 64 KB pages (-40 MB, slower), runs of 64 bytes (-100 MB, 2 s slower:
+a refill per short hole), releasing surplus pages after every collection (2-4 ms a pause).
