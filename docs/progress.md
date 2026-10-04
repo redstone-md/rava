@@ -1018,3 +1018,8 @@ with the tree in cache:
 
 Tree search microbenchmark: 1347 → 592 ns per search with the tree in cache (java 1071), 3089 →
 1258 ns on a 56k-node tree (java 2440).
+
+A/B on the pack after these changes (`eb57764` against java, 3 rounds, means): wall to `Done`
+44.9 s against 51.0 s (-12%), user+sys CPU 89.1 s against 143.7 s (-38%), peak RSS 1798 MiB
+against 2039 MiB (-12%). The server's `Done` clock: 25.1 s against 23.1 s (was 25.7 against
+22.9).
