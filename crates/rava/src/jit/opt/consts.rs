@@ -3,7 +3,8 @@
 //! rematerialized with a 10-byte `movabs` at each use; inside an innermost loop, its uses read a
 //! copy made once in the preheader instead, which the allocator keeps in a register (as C2 keeps
 //! a hoisted constant). The biome lookup's hashing loop loaded its two multipliers six times an
-//! iteration.
+//! iteration. Copies are per constant value: inlining makes a `Const` per use (eight of one
+//! gradient table in a noise loop), and one copy each would take eight registers and spill.
 
 use super::dom::Dom;
 use super::ir::*;
@@ -24,6 +25,7 @@ pub fn hoist(g: &mut Graph) {
         }
         let wide = |g: &Graph, v: V| matches!(g.ty(v), Ty::I | Ty::J | Ty::A) && g.constant(v).is_some_and(|c| i32::try_from(c).is_err());
         let mut copies: HashMap<V, V> = HashMap::new();
+        let mut by_value: HashMap<(Ty, i64), V> = HashMap::new();
         let body: Vec<usize> = (0..g.blocks.len()).filter(|&b| l.body[b]).collect();
         for &b in &body {
             for i in 0..g.blocks[b].insts.len() {
@@ -34,7 +36,7 @@ pub fn hoist(g: &mut Graph) {
                 for x in g.inst(v).inputs() {
                     let x = g.resolve(x);
                     if wide(g, x) && !copies.contains_key(&x) {
-                        let c = g.add(pre, Inst::Copy(x), g.ty(x));
+                        let c = copy_of(g, pre, x, &mut by_value);
                         copies.insert(x, c);
                     }
                 }
@@ -42,7 +44,7 @@ pub fn hoist(g: &mut Graph) {
             for x in g.blocks[b].term.inputs() {
                 let x = g.resolve(x);
                 if wide(g, x) && !copies.contains_key(&x) {
-                    let c = g.add(pre, Inst::Copy(x), g.ty(x));
+                    let c = copy_of(g, pre, x, &mut by_value);
                     copies.insert(x, c);
                 }
             }
@@ -68,4 +70,15 @@ pub fn hoist(g: &mut Graph) {
             g.blocks[b].term.map_inputs(swap);
         }
     }
+}
+
+/// The preheader's copy of constant `x`, one per (type, value).
+fn copy_of(g: &mut Graph, pre: B, x: V, by_value: &mut HashMap<(Ty, i64), V>) -> V {
+    let key = (g.ty(x), g.constant(x).expect("a constant"));
+    if let Some(&c) = by_value.get(&key) {
+        return c;
+    }
+    let c = g.add(pre, Inst::Copy(x), g.ty(x));
+    by_value.insert(key, c);
+    c
 }
