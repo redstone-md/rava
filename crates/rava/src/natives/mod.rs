@@ -28,6 +28,7 @@ pub(crate) mod thread;
 pub(crate) mod unsafe_mem;
 mod unixfs;
 mod unixfs_ext;
+mod watch;
 mod zip;
 mod throwable;
 
@@ -70,6 +71,7 @@ impl NativeRegistry {
         array::register(&mut r);
         unixfs::register(&mut r);
         unixfs_ext::register(&mut r);
+        watch::register(&mut r);
         zip::register(&mut r);
         nio_ch::register(&mut r);
         process::register(&mut r);
