@@ -36,6 +36,7 @@ mod profile;
 pub mod queue;
 mod stubs;
 mod tier;
+mod trampoline;
 mod vstack;
 mod runtime;
 pub mod stats;

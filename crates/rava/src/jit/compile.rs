@@ -59,6 +59,8 @@ pub(super) struct Emitter {
     /// The virtual operand stack and the registers pinned to locals (`vstack.rs`).
     pub vs: Vec<Slot>,
     pub lregs: Vec<Option<R>>,
+    /// Slow-path trampolines used so far (`trampoline.rs`).
+    pub tramps: Vec<(super::trampoline::Key, Label)>,
 }
 
 /// Compiles `m` at `tier` (1, or 2 for hot methods: larger inlining budget).
@@ -109,6 +111,7 @@ fn compile_timed(m: &'static Method, tier: u8) -> Option<CompiledMethod> {
         inl: None,
         vs: Vec::new(),
         lregs: Vec::new(),
+        tramps: Vec::new(),
     };
     if env_once!("RAVA_NO_LOCAL_REGS").is_none() {
         e.lregs = plan_local_regs(e.code, info.max_locals as usize, &e.an);
@@ -125,6 +128,7 @@ fn compile_timed(m: &'static Method, tier: u8) -> Option<CompiledMethod> {
     let leaders = e.emit_entry_stubs(leaders, frame_slots);
     e.emit_slow_paths();
     e.emit_poll_stubs();
+    e.emit_trampolines();
     e.emit_exception_dispatch();
     e.emit_epilogue(overflow);
     let code = e.a.finish();
@@ -244,16 +248,7 @@ impl Emitter {
         if let (true, Some(ctx)) = (self.in_leaf(), self.inl) {
             return self.a.jmp(ctx.restart);
         }
-        self.set_bci(bci);
-        self.a.mov_rr(true, R::Rdi, R::R12);
-        self.a.mov_ri(R::Rsi, self.m as *const Method as i64);
-        self.a.lea(R::Rdx, self.local(0));
-        self.link_scopes();
-        self.a.mov_ri(R::Rcx, (bci as i64) | (depth as i64) << 32);
-        self.a.call_abs(helper);
-        self.unlink_scopes();
-        self.a.test_rr(true, R::Rax, R::Rax);
-        self.a.jcc(Cond::Ne, self.exc);
+        self.call_trampoline(bci, depth, helper);
     }
 
     /// Polls for a stop-the-world request (method entry and loop back-edges): frames are fully in

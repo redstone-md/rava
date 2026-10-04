@@ -10,7 +10,7 @@ use crate::thread::{header, Thread};
 pub extern "sysv64" fn interp_one(t: *mut Thread, m: *const Method, locals: *mut u64, bci_depth: u64) -> u64 {
     // SAFETY: called by compiled code of `m` with its own thread and frame.
     let (t, m) = unsafe { (&mut *t, &*m) };
-    let (bci, depth) = ((bci_depth & 0xffff_ffff) as usize, (bci_depth >> 32) as usize);
+    let (bci, depth) = ((bci_depth & 0xffff) as usize, (bci_depth >> 16 & 0xffff) as usize);
     if let Some(stats) = super::stats::get() {
         stats.deferred(m, bci);
     }
