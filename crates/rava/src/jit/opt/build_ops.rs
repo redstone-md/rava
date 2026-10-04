@@ -373,16 +373,21 @@ impl Builder {
         let (then, other) = (self.block_at(target), self.block_at(next));
         if let Some(taken) = self.known_branch(cmp, ty, a, b) {
             let (to, dead) = if taken { (then, other) } else { (other, then) };
-            // Only an edge `make_blocks` counted is retired: not one the profile pruned
-            // (`Some(true)`: the jump never taken; `Some(false)`: the fall-through never taken).
-            let counted = match self.sc.pruned.get(&pc) {
-                Some(&jump_pruned) => jump_pruned != taken,
-                None => true,
-            };
-            if dead != to && counted {
+            // `make_blocks` counted only the edges the profile did not prune (`Some(true)`: the
+            // jump never taken; `Some(false)`: the fall-through never taken). The dead edge is
+            // retired if it was counted; a pruned taken edge (the profile came from another
+            // context than this constant) leaves for the interpreter like any pruned path.
+            let jump_pruned = self.sc.pruned.get(&pc).copied();
+            let counted = |jump: bool| jump_pruned.map_or(true, |p| p != jump);
+            if dead != to && counted(!taken) {
                 self.retire_edge(dead);
             }
-            self.edge(to);
+            let to = if counted(taken) {
+                self.edge(to);
+                to
+            } else {
+                self.untaken(if taken { target } else { next })
+            };
             self.g.blocks[self.cur as usize].term = Term::Goto(to);
             return;
         }
