@@ -41,6 +41,16 @@ fn trusts_instance_finals(holder: &'static Klass) -> bool {
     n.starts_with("java/lang/invoke/") || n.starts_with("sun/invoke/") || holder.is_hidden() || holder.super_klass.is_some_and(|s| s.name == "java/lang/Record")
 }
 
+/// A folded value `v` of type `ty`, about to become a constant of compiled code. A young object
+/// may move at the next young collection unless a root holds it then; noted as a new root
+/// (`gc::recent`), the collection keeps it in place, old from then on.
+fn embedded(v: i64, ty: BasicType) -> i64 {
+    if ty == BasicType::Reference {
+        crate::gc::recent::note(v as crate::heap::Oop);
+    }
+    v
+}
+
 /// Reads a value of type `ty` at `addr` in operand-slot encoding: a heap object's field or
 /// element (`heap`, where references may be compressed) or a static slot.
 ///
@@ -62,6 +72,7 @@ unsafe fn read_slot(addr: usize, ty: BasicType, heap: bool) -> i64 {
 
 /// `getfield index` on the constant object `o`, if the field is constant.
 pub(super) fn instance_field(m: &'static Method, index: u16, o: usize) -> Option<i64> {
+    let _heap = crate::gc::safepoint::heap_access();
     let (holder, f) = field_decl(m, index)?;
     if o == 0 || f.is_static() {
         return None;
@@ -69,11 +80,12 @@ pub(super) fn instance_field(m: &'static Method, index: u16, o: usize) -> Option
     let final_trusted = f.access & ACC_FINAL != 0 && trusts_instance_finals(holder);
     // SAFETY: `o` is a live instance of (a subclass of) `holder` by verification.
     let v = unsafe { read_slot(o + f.offset as usize, f.ty, true) };
-    (final_trusted || (v != 0 && is_stable(holder, f))).then_some(v)
+    (final_trusted || (v != 0 && is_stable(holder, f))).then(|| embedded(v, f.ty))
 }
 
 /// `getstatic index`, if the field is constant.
 pub(super) fn static_field(m: &'static Method, index: u16) -> Option<i64> {
+    let _heap = crate::gc::safepoint::heap_access();
     let (holder, f) = field_decl(m, index)?;
     if !f.is_static() || holder.init.state() != InitState::Initialized || holder.name == "java/lang/System" {
         return None;
@@ -81,7 +93,7 @@ pub(super) fn static_field(m: &'static Method, index: u16) -> Option<i64> {
     let slot = &holder.statics[f.offset as usize] as *const _ as usize;
     // SAFETY: a static slot of an initialized class.
     let v = unsafe { read_slot(slot, f.ty, false) };
-    (f.access & ACC_FINAL != 0 || (v != 0 && is_stable(holder, f))).then_some(v)
+    (f.access & ACC_FINAL != 0 || (v != 0 && is_stable(holder, f))).then(|| embedded(v, f.ty))
 }
 
 /// The array dimensions of field reference `index` whose elements are constant once set: those
@@ -95,6 +107,7 @@ pub(super) fn stable_dims(m: &'static Method, index: u16) -> u8 {
 /// Element `i` of the constant array `a` of a stable dimension, when within bounds and set
 /// (non-default), in operand-slot encoding.
 pub(super) fn stable_element(a: usize, i: i64, ty: BasicType) -> Option<i64> {
+    let _heap = crate::gc::safepoint::heap_access();
     if a == 0 {
         return None;
     }
@@ -106,7 +119,7 @@ pub(super) fn stable_element(a: usize, i: i64, ty: BasicType) -> Option<i64> {
     }
     // SAFETY: an element within bounds.
     let v = unsafe { read_slot(obj::array_data::<u8>(o) as usize + i as usize * ty.size() as usize, ty, true) };
-    (v != 0).then_some(v)
+    (v != 0).then(|| embedded(v, ty))
 }
 
 /// The class of the constant object `o`.
@@ -117,6 +130,12 @@ pub(super) fn class_of(o: usize) -> &'static Klass {
 
 /// The method a constant `MemberName` names.
 pub(super) fn member_target(mn: usize) -> Option<&'static Method> {
+    let _heap = crate::gc::safepoint::heap_access();
+    member_target_unguarded(mn)
+}
+
+/// `member_target`, the caller holding `heap_access`.
+fn member_target_unguarded(mn: usize) -> Option<&'static Method> {
     if mn == 0 {
         return None;
     }
@@ -138,6 +157,7 @@ crate::runtime::vm_field!(counting_target, "java/lang/invoke/MethodHandleImpl$Co
 /// `@DontInline` form until it switches to one that just delegates; the count is a profiling
 /// heuristic with no other effect, so code compiled while it still counts calls the target.
 pub(super) fn through_counting(mut h: usize) -> usize {
+    let _heap = crate::gc::safepoint::heap_access();
     for _ in 0..8 {
         if h == 0 || class_of(h).name.as_str() != "java/lang/invoke/MethodHandleImpl$CountingWrapper" {
             break;
@@ -145,11 +165,12 @@ pub(super) fn through_counting(mut h: usize) -> usize {
         // SAFETY: a live CountingWrapper; `target` is a final field.
         h = unsafe { obj::read_ref(h as crate::heap::Oop, counting_target()) } as usize;
     }
-    h
+    embedded(h as i64, BasicType::Reference) as usize
 }
 
 /// The method `invokeBasic` on the constant handle `h` enters: `h.form.vmentry`'s target.
 pub(super) fn handle_target(h: usize) -> Option<&'static Method> {
+    let _heap = crate::gc::safepoint::heap_access();
     if h == 0 {
         return None;
     }
@@ -160,7 +181,7 @@ pub(super) fn handle_target(h: usize) -> Option<&'static Method> {
             return None;
         }
         let entry = obj::read_ref(form, crate::interp::indy::lf_vmentry());
-        member_target(entry as usize)
+        member_target_unguarded(entry as usize)
     }
 }
 

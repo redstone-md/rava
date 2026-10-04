@@ -11,6 +11,7 @@
 //! A full collection clears every mark first; it runs once the old generation has doubled.
 
 pub mod cards;
+mod evacuate;
 mod histo;
 mod large;
 mod mark;
@@ -348,7 +349,7 @@ const LARGE_FREE_KEEP: usize = 32 << 20;
 /// whole. Returns live bytes.
 fn sweep(space: &mut Space) -> usize {
     let mut live = 0;
-    for list in space.partial.iter_mut() {
+    for list in space.partial.iter_mut().chain(space.old_partial.iter_mut()) {
         list.clear();
     }
     for index in 0..space.pages.len() {
@@ -369,8 +370,12 @@ fn sweep(space: &mut Space) -> usize {
         // Allocation reuses pages up to nine tenths full (holes too short for a run are passed
         // over, `MIN_RUN`). Reusing only pages at most half full left the free cells of fuller
         // ones idle while fresh pages were faulted in: 0.1 GiB more peak RSS at the same speed.
-        if live_cells * 10 <= meta.cells() * 9 {
-            let class = meta.class as usize;
+        let class = meta.class as usize;
+        if meta.old {
+            if live_cells < meta.cells() {
+                space.old_partial[class].push(index);
+            }
+        } else if live_cells * 10 <= meta.cells() * 9 {
             space.partial[class].push(index);
         }
     }

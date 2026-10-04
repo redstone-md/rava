@@ -3,7 +3,9 @@
 //! atomically, and workers share packets of objects still to scan.
 //!
 //! A young collection keeps the marks of old objects (those that survived a collection): the
-//! trace stops at them, and the old objects on dirty cards are scanned as extra roots.
+//! trace stops at them, and the old objects on dirty cards are scanned as extra roots. It also
+//! moves the young objects it reaches through the heap into old pages (`evacuate.rs`); what a
+//! root references stays in place.
 
 use super::safepoint;
 use super::space::{PageMeta, Space};
@@ -18,8 +20,12 @@ const PACKET: usize = 128;
 const PREFETCH: usize = 8;
 
 /// State shared by the marking workers.
-struct Shared<'a> {
-    space: &'a Space,
+pub(super) struct Shared<'a> {
+    pub(super) space: &'a Space,
+    /// Moves young objects reached through the heap (a young collection), taking old runs
+    /// through `promote` (the space, mutated only under that lock: pages no marker reads).
+    pub(super) evacuate: bool,
+    pub(super) promote: Mutex<*mut Space>,
     /// Packets of marked objects not yet scanned.
     pool: Mutex<Vec<Vec<usize>>>,
     /// Packets in the pool (read without the lock).
@@ -27,7 +33,7 @@ struct Shared<'a> {
     /// Workers out of work.
     idle: AtomicUsize,
     workers: usize,
-    marked: AtomicUsize,
+    pub(super) marked: AtomicUsize,
 }
 
 // The space is only read while the world is stopped; mark bits change atomically.
@@ -36,7 +42,7 @@ unsafe impl Sync for Shared<'_> {}
 impl Shared<'_> {
     /// Sets the mark of the object at exactly `start` (a known object start); true if it was
     /// not marked yet (the caller then scans it).
-    fn mark_start(&self, start: usize) -> bool {
+    pub(super) fn mark_start(&self, start: usize) -> bool {
         let space = self.space;
         let first = if let Some(index) = space.page_index(start) {
             let Some(meta) = space.pages[index].as_ref() else { return false };
@@ -69,7 +75,7 @@ impl Shared<'_> {
     }
 
     /// Scans objects, starting with `stack`, until no worker has any left.
-    fn work(&self, mut stack: Vec<usize>) {
+    fn work(&self, mut stack: Vec<usize>, runs: &mut super::evacuate::Runs) {
         let mut scanned = 0;
         // Objects pass through a small FIFO between the stack and the scan, their first line
         // prefetched on the way in, so the scan rarely waits on a miss.
@@ -90,7 +96,7 @@ impl Shared<'_> {
                 let o = ring[head];
                 (head, len) = ((head + 1) % PREFETCH, len - 1);
                 scanned += 1;
-                self.scan(o as Oop, &mut stack);
+                self.scan(o as Oop, &mut stack, runs);
                 // Share surplus while others may be waiting for work.
                 if stack.len() >= 2 * PACKET && self.pooled.load(Ordering::Relaxed) == 0 && self.idle.load(Ordering::Relaxed) > 0 {
                     self.give(stack.split_off(stack.len() - PACKET));
@@ -116,7 +122,10 @@ impl Shared<'_> {
         }
     }
 
-    fn scan(&self, o: Oop, stack: &mut Vec<usize>) {
+    fn scan(&self, o: Oop, stack: &mut Vec<usize>, runs: &mut super::evacuate::Runs) {
+        if self.evacuate {
+            return ref_slots(o, |slot| self.update(slot, stack, runs));
+        }
         refs(o, |r| {
             if self.mark_start(r) {
                 stack.push(r);
@@ -128,23 +137,30 @@ impl Shared<'_> {
 /// Calls `f` with each non-null reference field or element of the live object `o`.
 #[inline]
 fn refs(o: Oop, mut f: impl FnMut(usize)) {
-    let mut reference = |r: usize| {
+    ref_slots(o, |slot| {
+        // SAFETY: a reference field or element of a live object.
+        let r = unsafe { obj::load_ref_at(slot) } as usize;
         if r != 0 {
             f(r);
         }
-    };
+    });
+}
+
+/// Calls `f` with the address of each reference field or element of the live object `o`.
+#[inline]
+fn ref_slots(o: Oop, mut f: impl FnMut(usize)) {
     // SAFETY: a marked, live object.
     let k: &'static Klass = unsafe { obj::klass(o) };
     match k.kind {
         KlassKind::Instance => {
             for &off in k.ref_offsets.iter() {
-                reference(unsafe { obj::read_ref(o, off) } as usize);
+                f(o as usize + off as usize);
             }
         }
         KlassKind::ObjArray { .. } => {
             let len = unsafe { obj::read::<i32>(o, ARRAY_LENGTH_OFFSET) } as usize;
             for i in 0..len {
-                reference(unsafe { obj::load_elem(o, i) } as usize);
+                f(obj::elem_addr(o, i));
             }
         }
         KlassKind::TypeArray { .. } => {}
@@ -244,9 +260,9 @@ impl Shared<'_> {
         }
     }
 
-    /// Collects the references of the old object at `start` for a dirty card at `card`, without
-    /// marking: an object array only in the card's elements, anything else whole and once
-    /// (`last` is the last one scanned whole).
+    /// Collects the reference slots of the old object at `start` for a dirty card at `card`,
+    /// without marking: an object array only in the card's elements, anything else whole and
+    /// once (`last` is the last one scanned whole).
     fn scan_old(&self, start: usize, card: usize, last: &mut usize, out: &mut Vec<usize>) {
         use super::cards::CARD_SIZE;
         // SAFETY: a live old object.
@@ -257,23 +273,17 @@ impl Shared<'_> {
             let size = crate::heap::REF_SIZE as usize;
             let from = card.max(base).saturating_sub(base).div_ceil(size);
             let to = ((card + CARD_SIZE).saturating_sub(base) / size).min(len);
-            for i in from..to {
-                // SAFETY: an element of the array.
-                let r = unsafe { obj::load_elem(start as Oop, i) } as usize;
-                if r != 0 {
-                    out.push(r);
-                }
-            }
+            out.extend((from..to).map(|i| obj::elem_addr(start as Oop, i)));
             return;
         }
         if start != *last {
             *last = start;
-            refs(start as Oop, |r| out.push(r));
+            ref_slots(start as Oop, |slot| out.push(slot));
         }
     }
 
-    /// Collects the references of the old objects on the dirty cards of `[from, to)` (whole
-    /// pages), once each, and cleans the cards. Most dirty cards lie on pages allocated since
+    /// Collects the reference slots of the old objects on the dirty cards of `[from, to)`
+    /// (whole pages), once each, and cleans the cards. Most dirty cards lie on pages allocated since
     /// the last collection (initializing stores), with no mark set: those are only cleaned.
     /// Elsewhere, only the marked cells of each card are visited, a mark word at a time.
     fn page_cards(&self, from: usize, to: usize, out: &mut Vec<usize>) {
@@ -354,8 +364,12 @@ fn workers() -> usize {
 /// marked objects.
 pub(super) fn mark(space: &mut Space, young: bool) -> usize {
     let workers = workers();
+    let promote: *mut Space = space;
     let shared = Shared {
-        space,
+        // SAFETY: markers read the space while `promote` takes old runs (`evacuate.rs`).
+        space: unsafe { &*promote },
+        evacuate: young && super::evacuate::enabled(),
+        promote: Mutex::new(promote),
         pool: Mutex::new(Vec::new()),
         pooled: AtomicUsize::new(0),
         idle: AtomicUsize::new(0),
@@ -371,22 +385,31 @@ pub(super) fn mark(space: &mut Space, young: bool) -> usize {
     let (next_card, next) = (AtomicUsize::new(0), AtomicUsize::new(cards));
     let barrier = std::sync::Barrier::new(workers);
     // Each worker takes root tasks until none is left, then traces from what it found.
+    // Evacuating, every root is marked (kept in place) before anything moves.
     let worker = || {
         let mut found = Vec::with_capacity(4 * PACKET);
+        let mut runs = super::evacuate::Runs::default();
+        let mut slots = Vec::new();
         if cards > 0 {
-            let mut refs = Vec::new();
             while let Some(task) = tasks[..cards].get(next_card.fetch_add(1, Ordering::Relaxed)) {
-                shared.run(task, &classes, &noted, &mut refs);
+                shared.run(task, &classes, &noted, &mut slots);
             }
             barrier.wait();
-            refs.into_iter().for_each(|r| shared.precise(r, &mut found));
+            if !shared.evacuate {
+                // SAFETY: reference slots of live old objects.
+                slots.drain(..).for_each(|s| shared.precise(unsafe { obj::load_ref_at(s) } as usize, &mut found));
+            }
         }
         loop {
             let i = next.fetch_add(1, Ordering::Relaxed);
             let Some(task) = tasks.get(i) else { break };
             shared.run(task, &classes, &noted, &mut found);
         }
-        shared.work(found);
+        if shared.evacuate {
+            barrier.wait();
+            slots.into_iter().for_each(|s| shared.update(s, &mut found, &mut runs));
+        }
+        shared.work(found, &mut runs);
     };
     std::thread::scope(|s| {
         for _ in 1..workers {

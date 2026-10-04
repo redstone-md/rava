@@ -58,6 +58,9 @@ pub struct PageMeta {
     pub zeroed: bool,
     /// Owned by a thread's allocation cache.
     pub owned: bool,
+    /// Holds objects a young collection moved out of allocation pages (`mark.rs`): only
+    /// collections allocate here, so allocation pages hold young objects and few old ones.
+    pub old: bool,
 }
 
 impl PageMeta {
@@ -110,8 +113,12 @@ impl PageMeta {
     /// costs compiled code a trip through the runtime, and reused pages are full of one- and
     /// two-cell holes. They stay free for a later pass, once their neighbours have died too.
     fn next_free_run(&mut self) -> Option<(usize, usize)> {
+        self.next_free_run_of((MIN_RUN / self.cell_size as usize).max(1))
+    }
+
+    /// The next run of at least `min` free cells at or after the cursor, marked allocated.
+    fn next_free_run_of(&mut self, min: usize) -> Option<(usize, usize)> {
         let cells = self.cells();
-        let min = (MIN_RUN / self.cell_size as usize).max(1);
         let (first, end) = loop {
             let Some(first) = self.find_bit(self.cursor, cells, false) else {
                 self.cursor = cells;
@@ -199,8 +206,10 @@ pub struct Space {
     pub pages: Vec<Option<PageMeta>>,
     /// Released pages, ready for any size class.
     pub empty: Vec<usize>,
-    /// Pages with free cells, per class.
+    /// Allocation pages with free cells, per class.
     pub partial: [Vec<usize>; CLASSES],
+    /// Old pages with free cells, per class, for objects collections move.
+    pub old_partial: [Vec<usize>; CLASSES],
     pub large: BTreeMap<usize, Large>,
     pub large_area: LargeArea,
     /// Bytes handed to allocation caches or large objects since the last collection.
@@ -243,6 +252,7 @@ impl Space {
             pages: (0..(pages_end - base) / PAGE_SIZE).map(|_| None).collect(),
             empty: Vec::new(),
             partial: std::array::from_fn(|_| Vec::new()),
+            old_partial: std::array::from_fn(|_| Vec::new()),
             large: BTreeMap::new(),
             large_area: LargeArea::new(pages_end, base + reserve),
             allocated_since_gc: 0,
@@ -274,13 +284,37 @@ impl Space {
                 return Some((p, start, end, stop));
             }
         }
-        let p = self.take_page(class)?;
+        let p = self.take_page(class, false)?;
         let (start, end, stop) = self.next_run(p).expect("a fresh or empty page has free cells");
         Some((p, start, end, stop))
     }
 
-    /// An empty or fresh page of size class `class`, owned by the caller from now on.
-    fn take_page(&mut self, class: usize) -> Option<usize> {
+    /// A run of free cells of class `class` in an old page, for objects a collection moves:
+    /// `(page, start, end)`. Its cells are not cleared (each is overwritten whole) and stay free
+    /// unless marked. Any hole serves: the collector, not compiled code, fills it.
+    pub fn old_run(&mut self, class: usize) -> Option<(usize, usize, usize)> {
+        loop {
+            let p = match self.old_partial[class].last() {
+                Some(&p) => p,
+                None => {
+                    let p = self.take_page(class, true)?;
+                    self.old_partial[class].push(p);
+                    p
+                }
+            };
+            let page = self.page_addr(p);
+            let meta = self.pages[p].as_mut().expect("old page");
+            if let Some((first, end)) = meta.next_free_run_of(1) {
+                let cell = meta.cell_size as usize;
+                return Some((p, page + first * cell, page + end * cell));
+            }
+            self.old_partial[class].pop();
+        }
+    }
+
+    /// An empty or fresh page of size class `class`, owned by the caller from now on (an old
+    /// page, for `old_run`, if `old`).
+    fn take_page(&mut self, class: usize, old: bool) -> Option<usize> {
         let cell = CLASS_SIZES[class] as usize;
         // A recycled page keeps its memory committed (cheaper to clear than to fault in again)
         // and is cleared chunk by chunk as it is allocated; a fresh one is zero already.
@@ -303,7 +337,8 @@ impl Space {
             marks: vec![0u64; cells.div_ceil(64)].into_boxed_slice(),
             cursor: 0,
             zeroed,
-            owned: true,
+            owned: !old,
+            old,
         });
         Some(index)
     }
@@ -361,6 +396,7 @@ mod tests {
             cursor: 0,
             zeroed: false,
             owned: true,
+            old: false,
         };
         assert_eq!(meta.next_free_run(), Some((2, 5)));
         assert_eq!(meta.next_free_run(), Some((6, 64)));
@@ -381,6 +417,7 @@ mod tests {
                 cursor: 0,
                 zeroed: true,
                 owned: false,
+                old: false,
             };
             for offset in (0..PAGE_SIZE).step_by(8) {
                 assert_eq!(meta.cell_of(offset), offset / size as usize, "size {size} offset {offset}");

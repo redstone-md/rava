@@ -115,6 +115,17 @@ pub mod obj {
         crate::gc::cards::dirty(at);
     }
 
+    /// Stores reference `value` at `at` without the write barrier (the collector, rewriting a
+    /// reference to a moved object).
+    #[inline(always)]
+    pub unsafe fn store_ref_raw(at: usize, value: Oop) {
+        if COMPRESSED {
+            std::ptr::write(at as *mut u32, encode(value) as u32);
+        } else {
+            std::ptr::write(at as *mut Oop, value);
+        }
+    }
+
     /// Reference field at `offset`.
     #[inline(always)]
     pub unsafe fn read_ref(obj: Oop, offset: u32) -> Oop {
