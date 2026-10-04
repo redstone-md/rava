@@ -44,7 +44,10 @@ pub(super) fn register(r: &mut NativeRegistry) {
     });
     r.add(C, "getClassAccessFlagsRaw0", "()I", |_, a| ret_int(klass(a[0]).map_or(0x0411, |k| k.access as i32)));
     r.add(C, "getClassFileVersion0", "()I", |_, a| ret_int(klass(a[0]).and_then(|k| k.cf.as_ref()).map_or(65, |cf| cf.major as i32)));
-    r.add(C, "getProtectionDomain0", "()Ljava/security/ProtectionDomain;", |_, _| ret_ref(std::ptr::null_mut()));
+    r.add(C, "getProtectionDomain0", "()Ljava/security/ProtectionDomain;", |_, a| {
+        // SAFETY: the receiver, a live mirror.
+        ret_ref(unsafe { obj::read_ref(a[0] as Oop, super::classloader::protection_domain()) })
+    });
     r.add(C, "getSigners", "()[Ljava/lang/Object;", |_, _| ret_ref(std::ptr::null_mut()));
     r.add(C, "setSigners", "([Ljava/lang/Object;)V", |_, _| Ok(0));
     r.add(C, "getDeclaringClass0", "()Ljava/lang/Class;", |t, a| inner_class_info(t, a[0], InnerQuery::DeclaringClass));

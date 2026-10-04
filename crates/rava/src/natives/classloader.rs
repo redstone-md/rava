@@ -40,7 +40,7 @@ pub(super) fn register(r: &mut NativeRegistry) {
             };
             let owned = bytes.to_vec();
             let k = define_from_bytes(t, loader, owned, if name.is_null() { None } else { Some(internal_name(name)) })?;
-            ret_ref(rt::mirror_of(t, k)?)
+            defined(t, k, a[5] as Oop)
         },
     );
     r.add(CL, "findBootstrapClass", "(Ljava/lang/String;)Ljava/lang/Class;", |t, a| {
@@ -97,7 +97,19 @@ fn define_class1(t: &mut Thread, a: &[u64]) -> JResult<u64> {
     }
     let owned = data[off as usize..(off + len) as usize].to_vec();
     let k = define_from_bytes(t, loader, owned, if name.is_null() { None } else { Some(internal_name(name)) })?;
-    ret_ref(rt::mirror_of(t, k)?)
+    defined(t, k, a[5] as Oop)
+}
+
+vm_field!(protection_domain, "java/lang/Class", "protection_domain", "Ljava/security/ProtectionDomain;");
+
+/// The mirror of `k`, just defined with protection domain `pd` (`Class.getProtectionDomain0`).
+fn defined(t: &mut Thread, k: &'static Klass, pd: Oop) -> JResult<u64> {
+    let mirror = rt::mirror_of(t, k)?;
+    if !pd.is_null() {
+        // SAFETY: a live mirror; the injected field holds a reference.
+        unsafe { obj::write_ref(mirror, protection_domain(), pd) };
+    }
+    ret_ref(mirror)
 }
 
 /// Parses and defines `bytes` for `loader`, with Java's errors for bad or duplicate classes.
@@ -136,7 +148,12 @@ fn define_class0(t: &mut Thread, a: &[u64]) -> JResult<u64> {
     };
     let mirror = rt::mirror_of(t, k)?;
     // SAFETY: live Class mirror.
-    unsafe { obj::write_ref(mirror, class_data(), data) };
+    unsafe {
+        obj::write_ref(mirror, class_data(), data);
+        if !(a[6] as Oop).is_null() {
+            obj::write_ref(mirror, protection_domain(), a[6] as Oop);
+        }
+    }
     if initialize {
         rt::initialize(t, k)?;
     }
