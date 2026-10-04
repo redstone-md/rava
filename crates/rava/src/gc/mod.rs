@@ -17,6 +17,7 @@ mod evacuate;
 mod histo;
 mod large;
 mod mark;
+mod pool;
 mod prefault;
 pub(crate) mod recent;
 pub mod safepoint;

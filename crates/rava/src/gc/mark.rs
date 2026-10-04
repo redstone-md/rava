@@ -422,11 +422,6 @@ pub(super) fn mark(space: &mut Space, young: bool) -> usize {
         shared.work(found, &mut runs);
         shared.finish_runs(&runs);
     };
-    std::thread::scope(|s| {
-        for _ in 1..workers {
-            s.spawn(worker);
-        }
-        worker();
-    });
+    super::pool::run(workers - 1, &worker);
     shared.marked.into_inner()
 }
