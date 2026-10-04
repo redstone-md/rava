@@ -68,7 +68,7 @@ pub(super) fn register(r: &mut NativeRegistry) {
     r.add("java/lang/StringUTF16", "isBigEndian", "()Z", |_, _| ret_bool(cfg!(target_endian = "big")));
     r.add("java/lang/String", "intern", "()Ljava/lang/String;", |t, a| ret_ref(rt::intern(t, a[0] as Oop)?));
     r.add("java/lang/Runtime", "availableProcessors", "()I", |_, _| {
-        ret_int(std::thread::available_parallelism().map_or(1, |n| n.get()) as i32)
+        ret_int(crate::processors() as i32)
     });
     r.add("jdk/internal/misc/CDS", "isDumpingClassList0", "()Z", |_, _| ret_bool(false));
     r.add("jdk/internal/misc/CDS", "isDumpingArchive0", "()Z", |_, _| ret_bool(false));

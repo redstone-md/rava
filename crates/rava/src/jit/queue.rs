@@ -32,7 +32,7 @@ fn queue() -> &'static Queue {
     static Q: OnceLock<Queue> = OnceLock::new();
     Q.get_or_init(|| {
         let workers = std::env::var("RAVA_COMPILER_THREADS").ok().and_then(|v| v.parse().ok()).unwrap_or_else(|| {
-            let cores = std::thread::available_parallelism().map_or(1, |n| n.get());
+            let cores = crate::processors();
             (cores / 2).clamp(1, 3)
         });
         for i in 0..workers {
