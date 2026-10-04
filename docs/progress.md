@@ -1123,3 +1123,44 @@ A/B (`efe49b55` against java, Paper 1.21.1-133, fresh world, 2 rounds, same host
 |---|---|---|---|---|---|---|
 | 4 | 22.8-23.4 s | 25.3-26.2 s | 37-38 s | 62-63 s | 939-944 MiB | 1140-1197 MiB |
 | 12 (`-XX:ActiveProcessorCount=12`) | 12.9-14.1 s | 20.9-21.3 s | 37-40 s | 69-71 s | 1021-1029 MiB | 1244-1260 MiB |
+
+## 2026-10-04 (cont.) — All The Mods 10
+
+The metric is now a heavy modded server: All The Mods 10 8.2 (NeoForge 21.1.251, 464 mods),
+its own `user_jvm_args.txt` (`-Xms4G -Xmx8G`, G1 options, `AlwaysPreTouch`) for both VMs, a
+fresh world each run (`bench/paper_ab.sh -b <atm10 base>`, the base set up by the pack's
+`startserver.sh` installer and one first start).
+
+Getting it to start took compatibility fixes, each generic and matched to HotSpot:
+
+- `Class.getNestMembers0` was missing and `getDeclaredClasses0` returned nothing
+  (`NestSem`).
+- `Unsafe.staticFieldBase` is the class mirror and `staticFieldOffset` relative to it, as in
+  HotSpot: mods read `MethodHandles.Lookup.IMPL_LOOKUP` by passing the `Class` object as the
+  base. Unsafe reference accesses tell a static slot from a heap field by address
+  (`UnsafeStaticSem`).
+- java.lang.invoke's core classes are initialized at boot (HotSpot's
+  `initialize_jsr292_core_classes`): reflective field access before the first lambda threw
+  `InternalError`.
+- Only the JDK's own native libraries count as built in; loading another one (Truffle's
+  `libtruffleattach`, netty's epoll transport) throws `UnsatisfiedLinkError` at load time, so
+  their users take their fallbacks, instead of failing at the first native call. (There is no
+  JNI for third-party libraries yet.)
+- `HotSpotDiagnosticMXBean.getVMOption` works: the command line's `-XX:` options and a few
+  defaults (`FlagSem`).
+
+With these, rava's log has no error Java's has not (Java's first start also reports config
+files it creates).
+
+A/B (`28cdc636` against java, 4 cores, 2 rounds):
+
+| | rava | java |
+|---|---|---|
+| wall to `Done` | 150.9-158.8 s | 153.4-161.5 s |
+| CPU (user+sys) | 253-265 s | 371-377 s |
+| peak RSS | 6298-6373 MiB | 7731-7805 MiB |
+
+Milestones from the first log line (one run each): mods constructed at 64 s (java 76 s), the
+server starting at 132 s (java 133 s), `Done` at 159 s (java 157 s). The data loading between
+construction and the server's start (recipes, KubeJS scripts, tags, unification) takes rava
+68 s against java's 57 s: the next target.
