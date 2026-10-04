@@ -11,6 +11,9 @@ pub struct Analysis {
     pub depth: Vec<Option<u16>>,
     /// Instruction starts that begin a basic block.
     pub leader: Vec<bool>,
+    /// Block starts code can enter from outside the method body: exception handlers and the
+    /// targets of backward branches (on-stack replacement).
+    pub entry: Vec<bool>,
 }
 
 /// Length in bytes of the instruction at `pc`.
@@ -208,11 +211,13 @@ pub fn analyze(m: &Method) -> Option<Analysis> {
     let n = code.len();
     let mut depth: Vec<Option<u16>> = vec![None; n];
     let mut leader = vec![false; n];
+    let mut entry = vec![false; n];
     let mut work: Vec<(usize, u16)> = vec![(0, 0)];
     leader[0] = true;
     for h in &code_info.handlers {
         work.push((h.handler as usize, 1));
         leader[h.handler as usize] = true;
+        entry[h.handler as usize] = true;
     }
     while let Some((pc, d)) = work.pop() {
         if pc >= n {
@@ -234,6 +239,9 @@ pub fn analyze(m: &Method) -> Option<Analysis> {
         for &s in &succ {
             if branches {
                 *leader.get_mut(s)? = true;
+                if s <= pc {
+                    entry[s] = true;
+                }
             }
             work.push((s, after as u16));
         }
@@ -241,5 +249,5 @@ pub fn analyze(m: &Method) -> Option<Analysis> {
             leader[pc + len] = true;
         }
     }
-    Some(Analysis { depth, leader })
+    Some(Analysis { depth, leader, entry })
 }

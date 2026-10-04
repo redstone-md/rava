@@ -158,8 +158,8 @@ fn compile_timed(m: &'static Method, tier: u8) -> Option<CompiledMethod> {
 }
 
 impl Emitter {
-    /// Emits the current body; block starts are collected into `leaders` (the method's own
-    /// body, for OSR and handler entry).
+    /// Emits the current body; the method's own body collects its entry blocks
+    /// (`Analysis::entry`: OSR and handler targets) into `leaders`.
     pub(super) fn emit_body(&mut self, mut leaders: Option<&mut Vec<u32>>) -> Option<()> {
         // The entry state (constant arguments) holds at bci 0 unless a branch comes back there.
         let reentered = super::analysis::targets_start(self.m);
@@ -178,7 +178,7 @@ impl Emitter {
                 if pc != 0 || reentered {
                     self.lconst.clone_from(&self.lconst_base);
                 }
-                if let Some(l) = leaders.as_deref_mut() {
+                if let Some(l) = leaders.as_deref_mut().filter(|_| self.an.entry[pc]) {
                     l.push(pc as u32);
                 }
             }
@@ -361,7 +361,7 @@ impl Emitter {
         }
     }
 
-    /// Entry points for OSR and exception handlers at each block: claim the whole compiled
+    /// Entry points for OSR and exception handlers at their blocks: claim the whole compiled
     /// frame (an interpreted frame is smaller than one with inlined frames), load the local
     /// registers, then continue at the block. Returns (bci, stub label) pairs.
     fn emit_entry_stubs(&mut self, leaders: Vec<u32>, frame_slots: i32) -> Vec<(u32, Label)> {
