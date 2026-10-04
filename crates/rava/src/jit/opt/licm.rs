@@ -9,6 +9,12 @@
 //!   loop makes no call, takes no monitor, has no fence or volatile read, and stores to no field
 //!   at that offset.
 //!
+//! A null check inside the loop of a value defined outside it, in a block that runs on every
+//! iteration, is predicated first (C2 peels such loops for the same effect): it becomes one
+//! `Inst::Guard` in the preheader that deoptimizes to the loop's entry state, so the value is
+//! known non-null there and its field loads can leave the loop. A failing guard counts as a trap
+//! at the header, so the recompilation keeps the check in the loop.
+//!
 //! The climate tree's distance loop reloaded `node.parameterSpace` every iteration.
 
 use super::dom::Dom;
@@ -53,7 +59,9 @@ pub fn hoist(g: &mut Graph) {
                 }
             }
         }
-        let known = &nonnull[index[pre as usize]];
+        let mut known = nonnull[index[pre as usize]].clone();
+        predicate_null_checks(g, &dom, &index, l, pre, &block_of, &mut known);
+        let known = &known;
         let order: Vec<B> = dom.rpo.iter().copied().filter(|&b| l.body[b as usize]).collect();
         let mut moved = Vec::new();
         for b in order {
@@ -108,4 +116,43 @@ fn nonnull_by_block(g: &Graph, dom: &Dom) -> Vec<HashSet<V>> {
         out[i] = set;
     }
     out
+}
+
+/// Moves the null checks of loop-invariant values that run on every iteration of `l` to its
+/// preheader `pre` as guards (adding the values to `known`).
+fn predicate_null_checks(g: &mut Graph, dom: &Dom, index: &[usize], l: &super::dom::Loop, pre: B, block_of: &[usize], known: &mut HashSet<V>) {
+    let h = l.header as usize;
+    let Some(entry_state) = g.loop_entry.get(&l.header).cloned() else { return };
+    // Blocks that run on every iteration dominate every back edge's source.
+    let latches: Vec<usize> = g.blocks[h].preds.iter().filter(|&&p| l.body[p as usize]).map(|&p| index[p as usize]).collect();
+    if latches.iter().any(|&i| i == usize::MAX) {
+        return;
+    }
+    let invariant = |x: V| block_of.get(x as usize).map_or(true, |&b| b == usize::MAX || !l.body[b]);
+    let mut checks = Vec::new();
+    for b in (0..g.blocks.len()).filter(|&b| l.body[b] && index[b] != usize::MAX) {
+        if !latches.iter().all(|&i| dom.dominates(index[b], i)) {
+            continue;
+        }
+        for &v in &g.blocks[b].insts {
+            if let Inst::NullCheck(x, _) = g.inst(v) {
+                let x = g.resolve(*x);
+                if invariant(x) && !known.contains(&x) {
+                    checks.push((b, v, x));
+                }
+            }
+        }
+    }
+    if checks.is_empty() {
+        return;
+    }
+    let entry = g.blocks[h].preds.iter().position(|&p| p == pre).expect("the preheader enters the header");
+    let Some(ps) = super::rce::entry_state_at(g, &entry_state, h, entry) else { return };
+    let null = g.add(0, Inst::Const(0), Ty::A);
+    for (b, v, x) in checks {
+        if known.insert(x) {
+            g.add(pre, Inst::Guard(Cmp::Ne, Ty::A, x, null, ps.clone()), Ty::I);
+        }
+        g.blocks[b].insts.retain(|&i| i != v);
+    }
 }
