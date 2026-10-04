@@ -28,12 +28,14 @@ pub(super) fn enabled() -> bool {
     *ON.get_or_init(|| std::env::var("RAVA_GC_MOVE").map_or(true, |v| v != "0") && std::env::var_os("RAVA_GC_VERIFY").is_none())
 }
 
-/// A marker's runs of old cells, per size class: `(next, end)`.
-pub(super) struct Runs([(usize, usize); CLASSES]);
+/// A marker's runs of old cells, per size class: `(start, next, end)`. The copies in
+/// `start..next` are marked when the run is done (`Shared::finish_run`): one atomic update per
+/// mark word rather than per copy, which markers sharing a page fought over.
+pub(super) struct Runs([(usize, usize, usize); CLASSES]);
 
 impl Default for Runs {
     fn default() -> Self {
-        Runs([(0, 0); CLASSES])
+        Runs([(0, 0, 0); CLASSES])
     }
 }
 
@@ -131,30 +133,48 @@ impl Shared<'_> {
         let class = class_of(size);
         let cell = CLASS_SIZES[class] as usize;
         let run = &mut runs.0[class];
-        if run.0 + cell > run.1 {
+        if run.1 + cell > run.2 {
+            self.finish_run(*run);
             let promote = self.promote.lock().unwrap();
             let space: *mut super::space::Space = *promote;
             // SAFETY: the space's page lists and fresh pages change only under this lock; the
             // markers read no page `old_run` hands out or mutates the free cells of.
             let (_, start, end) = unsafe { (*space).old_run(class) }?;
-            *run = (start, end);
+            *run = (start, start, end);
         }
-        let n = run.0;
-        run.0 += cell;
+        let n = run.1;
+        run.1 += cell;
         // SAFETY: a free old cell of at least `size` bytes, owned by this marker; the source is
         // a live object only this marker copies (its mark word holds BUSY).
         unsafe {
             std::ptr::copy_nonoverlapping(t as *const u8, n as *mut u8, size);
             obj::mark(n as Oop).store(m, Ordering::Relaxed);
         }
-        let space = self.space;
-        let index = space.page_index(n).expect("old run in the page area");
-        let meta = space.pages[index].as_ref().expect("old page");
-        let c = meta.cell_of(n - space.page_addr(index));
-        // SAFETY: as in `forward`.
-        let word = unsafe { &*(meta.marks.as_ptr().add(c / 64) as *const AtomicU64) };
-        word.fetch_or(1 << (c % 64), Ordering::Relaxed);
-        self.marked.fetch_add(1, Ordering::Relaxed);
         Some(n)
+    }
+
+    /// Marks the copies of a run, `start..next` (cells of one page).
+    pub(super) fn finish_run(&self, (start, next, _): (usize, usize, usize)) {
+        if next == start {
+            return;
+        }
+        let space = self.space;
+        let index = space.page_index(start).expect("old run in the page area");
+        let meta = space.pages[index].as_ref().expect("old page");
+        let page = space.page_addr(index);
+        let (first, end) = (meta.cell_of(start - page), meta.cell_of(next - page));
+        let mut c = first;
+        while c < end {
+            let n = (end - c).min(64 - c % 64);
+            // SAFETY: as in `forward`.
+            let word = unsafe { &*(meta.marks.as_ptr().add(c / 64) as *const AtomicU64) };
+            word.fetch_or((u64::MAX >> (64 - n)) << (c % 64), Ordering::Relaxed);
+            c += n;
+        }
+    }
+
+    /// Marks the copies of every run of `runs`.
+    pub(super) fn finish_runs(&self, runs: &Runs) {
+        runs.0.iter().for_each(|&r| self.finish_run(r));
     }
 }
