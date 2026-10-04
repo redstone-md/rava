@@ -263,12 +263,18 @@ impl Heap {
             phases[1] = (before_sweep - before_mark).as_secs_f64() * 1e3;
             phases[2] = before_sweep.elapsed().as_secs_f64() * 1e3;
             space.live_after_gc = live;
-            // Committed memory beyond what the next period allocates goes back to the kernel.
-            space.release_surplus(self.young_budget(live) + self.young_budget(live) / 8);
-            // So does the malloc heap's free memory: compiler threads free most of what they
-            // allocate, in arenas glibc keeps (~1 ms; -15 MiB on a modded server's start).
-            // SAFETY: a plain libc call.
-            unsafe { libc::malloc_trim(0) };
+            if full {
+                // Committed memory beyond what the next period allocates goes back to the
+                // kernel. Only after a full collection (as G1 shrinks only then): pages
+                // released after a young one were faulted back in, zeroed, by the allocation
+                // that followed (~640 MiB over a Paper start), and each release costs a TLB
+                // shootdown on every core inside the pause.
+                space.release_surplus(self.young_budget(live) + self.young_budget(live) / 8);
+                // So does the malloc heap's free memory: compiler threads free most of what
+                // they allocate, in arenas glibc keeps (~1 ms; -15 MiB on a modded server).
+                // SAFETY: a plain libc call.
+                unsafe { libc::malloc_trim(0) };
+            }
             let allocated = space.allocated_since_gc + self.small_allocated.load(std::sync::atomic::Ordering::Relaxed);
             space.allocated_since_gc = 0;
             self.small_allocated.store(0, std::sync::atomic::Ordering::Relaxed);
