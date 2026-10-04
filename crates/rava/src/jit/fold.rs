@@ -8,8 +8,8 @@
 //! - **Method handles**: a constant handle's `form.vmentry` and a constant `MemberName`'s target.
 //!   A handle may later get an equivalent form (customization), so the old target stays correct.
 //!
-//! Objects never move and folded values are reachable from the constant they were read from,
-//! which is itself reachable (a class's statics, a linked call site or a literal).
+//! Folded references become roots for good (`gc::recent::embed`), so they never move, and the
+//! heap is read under the collection lock (a compiler thread is not stopped by collections).
 
 use crate::classfile::Cp;
 use crate::heap::obj;

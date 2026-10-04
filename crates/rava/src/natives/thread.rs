@@ -45,7 +45,8 @@ pub(crate) fn is_interrupted(jt: Oop, clear: bool) -> bool {
     if jt.is_null() {
         return false;
     }
-    // SAFETY: a live java.lang.Thread (objects never move); the field is a volatile boolean.
+    // SAFETY: a live java.lang.Thread (held by the caller's stack, so it stays put); the field
+    // is a volatile boolean.
     let field = unsafe { &*((jt as usize + interrupted_offset() as usize) as *const std::sync::atomic::AtomicBool) };
     field.load(std::sync::atomic::Ordering::SeqCst) && (!clear || field.swap(false, std::sync::atomic::Ordering::SeqCst))
 }

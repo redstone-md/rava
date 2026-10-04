@@ -12,7 +12,8 @@
 //! statics and native code hold full pointers; `obj::read_ref`/`write_ref`/`load_elem`/
 //! `store_elem` convert.
 //!
-//! Memory comes from the collector (`gc`), which never moves objects.
+//! Memory comes from the collector (`gc`), which never moves an object a root (a stack, a
+//! native, the VM) holds.
 
 use crate::klass::Klass;
 use std::sync::atomic::AtomicU64;

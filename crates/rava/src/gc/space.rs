@@ -1,6 +1,7 @@
 //! Heap memory: 256 KiB pages of equal-size cells (segregated size classes) for small objects
 //! in the lower three quarters of the reservation, and blocks of the large-object area
-//! (`large.rs`) above them. Nothing moves.
+//! (`large.rs`) above them. Allocation pages take new objects; old pages only the objects
+//! collections move (`evacuate.rs`).
 //!
 //! Each page keeps two bitmaps: `alloc` (cells handed out since the page was last swept, or that
 //! survived it) and `marks` (reached by the current collection). A cell holds an object iff its

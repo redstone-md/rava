@@ -1,9 +1,11 @@
-//! Non-moving, generational mark-sweep collector (design: `docs/core/README.md`).
+//! Generational mark-sweep collector, mostly copying (design: `docs/README.md`).
 //!
 //! Allocation bumps through per-thread runs of free cells (one owned page per size class); a
 //! collection stops the world at safepoints, marks from conservative stack roots and precise VM
-//! roots, and sweeps by copying mark bitmaps into allocation bitmaps (`space.rs`). Objects never
-//! move, so raw references held anywhere stay valid.
+//! roots, and sweeps by copying mark bitmaps into allocation bitmaps (`space.rs`). What a root
+//! holds never moves, so raw references in stacks, natives and the VM stay valid; objects of
+//! allocation pages reached only through the heap or a static are moved into packed old pages
+//! (`evacuate.rs`).
 //!
 //! Generations use sticky mark bits: objects that survived a collection keep their mark and are
 //! old. A young collection traces only from roots and from old objects on cards the write
