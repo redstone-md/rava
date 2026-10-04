@@ -50,6 +50,7 @@ extern "C" fn handler(sig: libc::c_int, info: *mut libc::siginfo_t, ctx: *mut li
                 return;
             }
         }
+        report(*rip as usize, (*info).si_addr() as usize);
         let previous = PREVIOUS.get();
         match previous.map(|p| p.sa_sigaction) {
             Some(h) if h != libc::SIG_DFL && h != libc::SIG_IGN => {
@@ -69,4 +70,35 @@ extern "C" fn handler(sig: libc::c_int, info: *mut libc::siginfo_t, ctx: *mut li
             }
         }
     }
+}
+
+/// Writes the faulting instruction and address to stderr (async-signal-safe: no allocation).
+fn report(pc: usize, addr: usize) {
+    let mut buf = [0u8; 80];
+    let mut n = 0;
+    let mut put = |bytes: &[u8]| {
+        for &b in bytes {
+            if n < buf.len() {
+                buf[n] = b;
+                n += 1;
+            }
+        }
+    };
+    let hex = |v: usize| {
+        let mut h = [0u8; 18];
+        h[0] = b'0';
+        h[1] = b'x';
+        for i in 0..16 {
+            let d = (v >> (60 - 4 * i)) & 15;
+            h[2 + i] = if d < 10 { b'0' + d as u8 } else { b'a' + d as u8 - 10 };
+        }
+        h
+    };
+    put(b"rava: SIGSEGV at pc ");
+    put(&hex(pc));
+    put(b" address ");
+    put(&hex(addr));
+    put(b"\n");
+    // SAFETY: write(2) of a stack buffer.
+    unsafe { libc::write(2, buf.as_ptr() as *const libc::c_void, n) };
 }
