@@ -12,8 +12,11 @@ use crate::heap::{obj, Oop};
 use crate::thread::Thread;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::Mutex;
 use std::time::Duration;
+
+mod monitor;
+use monitor::Monitor;
 
 const STATE_MASK: u64 = 0b11;
 const UNLOCKED: u64 = 0;
@@ -38,46 +41,10 @@ pub static BLOCKED_ENTERS: AtomicU64 = AtomicU64::new(0);
 
 const SHARDS: usize = 64;
 
-/// A monitor's owner and wait set. Waiters take consecutive tickets; `notify` releases the
-/// oldest ticket still waiting and `notifyAll` every ticket issued so far, so a notification
-/// always goes to a thread that was waiting when it was sent.
-#[derive(Default)]
-struct State {
-    owner: u64,
-    count: u32,
-    /// The next ticket to hand out, and every ticket below `released` may leave.
-    next_ticket: u64,
-    released: u64,
-    /// Tickets whose waiter left on its own (timeout, interrupt) before being released.
-    abandoned: Vec<u64>,
-}
-
-impl State {
-    /// Releases the oldest waiting ticket; false if nobody waits.
-    fn release_one(&mut self) -> bool {
-        while self.released < self.next_ticket {
-            let t = self.released;
-            self.released += 1;
-            match self.abandoned.iter().position(|&a| a == t) {
-                Some(i) => {
-                    self.abandoned.swap_remove(i);
-                }
-                None => return true,
-            }
-        }
-        false
-    }
-}
-
-#[derive(Default)]
-struct Monitor {
-    state: Mutex<State>,
-    entry: Condvar,
-    waiting: Condvar,
-}
-
+/// Monitors by object address. They are never removed (an address reused by a new object
+/// reuses an idle monitor), which also makes a thread's cache of this map always valid.
 struct Table {
-    shards: Vec<Mutex<HashMap<usize, Arc<Monitor>>>>,
+    shards: Vec<Mutex<HashMap<usize, &'static Monitor>>>,
 }
 
 fn table() -> &'static Table {
@@ -85,10 +52,29 @@ fn table() -> &'static Table {
     T.get_or_init(|| Table { shards: (0..SHARDS).map(|_| Mutex::new(HashMap::new())).collect() })
 }
 
-fn monitor_of(o: Oop) -> Arc<Monitor> {
+/// Direct-mapped per-thread cache in front of the table.
+const CACHE: usize = 64;
+thread_local!(static CACHED: std::cell::Cell<[(usize, usize); CACHE]> = const { std::cell::Cell::new([(0, 0); CACHE]) });
+
+fn monitor_of(o: Oop) -> &'static Monitor {
     let key = o as usize;
+    let slot = (key >> 4) % CACHE;
+    let hit = CACHED.with(|c| {
+        let e = c.get()[slot];
+        // SAFETY: cached entries are leaked monitors of the table.
+        (e.0 == key).then(|| unsafe { &*(e.1 as *const Monitor) })
+    });
+    if let Some(m) = hit {
+        return m;
+    }
     let shard = &table().shards[(key >> 4) % SHARDS];
-    shard.lock().unwrap().entry(key).or_default().clone()
+    let m: &'static Monitor = shard.lock().unwrap_or_else(|e| e.into_inner()).entry(key).or_insert_with(|| Box::leak(Box::default()));
+    CACHED.with(|c| {
+        let mut a = c.get();
+        a[slot] = (key, m as *const Monitor as usize);
+        c.set(a);
+    });
+    m
 }
 
 /// A process-unique id for the calling OS thread.
@@ -154,12 +140,7 @@ fn inflate_owned(o: Oop) {
         return;
     }
     INFLATIONS.fetch_add(1, Ordering::Relaxed);
-    let mon = monitor_of(o);
-    {
-        let mut s = mon.state.lock().unwrap();
-        s.owner = m >> OWNER_SHIFT;
-        s.count = ((m & COUNT_MASK) >> COUNT_SHIFT) as u32 + 1;
-    }
+    monitor_of(o).adopt(m >> OWNER_SHIFT, ((m & COUNT_MASK) >> COUNT_SHIFT) as u32 + 1);
     // Only the owner changes a thin mark (others only read it), so a plain store suffices; the
     // hash may have been set concurrently, so keep the latest hash bits.
     loop {
@@ -170,47 +151,8 @@ fn inflate_owned(o: Oop) {
     }
 }
 
-/// Times an inflated enter spin-checks the owner before parking. A contended monitor is usually
-/// held only briefly, so a short spin often claims it without the cost of a park/unpark; past
-/// this the owner is holding the monitor long enough that blocking is cheaper than spinning.
-const ENTER_SPINS: u32 = 40;
-
 fn enter_inflated(t: &Thread, o: Oop, me: u64) {
-    let m = monitor_of(o);
-    {
-        let mut s = m.state.lock().unwrap();
-        if s.owner == 0 || s.owner == me {
-            s.owner = me;
-            s.count += 1;
-            return;
-        }
-    }
-    // Adaptive spin before parking: retry the claim a bounded number of times, pausing each
-    // round. This turns briefly held monitors into a spin rather than an expensive condition-
-    // variable wait, which matters when many threads share a few hot monitors. The claim uses
-    // `try_lock`, so a spinner never blocks the owner from taking the lock to release.
-    for _ in 0..ENTER_SPINS {
-        std::hint::spin_loop();
-        if let Ok(mut s) = m.state.try_lock() {
-            if s.owner == 0 || s.owner == me {
-                s.owner = me;
-                s.count += 1;
-                return;
-            }
-        }
-    }
-    // Blocked on another owner: wait in the native state so a collection can proceed. The
-    // monitor is claimed, and the Rust lock released, before leaving it: a thread stopped at a
-    // safepoint must never hold a lock a running thread could be waiting for.
-    BLOCKED_ENTERS.fetch_add(1, Ordering::Relaxed);
-    crate::gc::safepoint::blocking(t, || {
-        let mut s = m.state.lock().unwrap();
-        while s.owner != 0 && s.owner != me {
-            s = m.entry.wait(s).unwrap();
-        }
-        s.owner = me;
-        s.count += 1;
-    });
+    monitor_of(o).enter(t, me);
 }
 
 /// Releases one level of ownership. Returns false if the caller does not own the monitor.
@@ -233,33 +175,19 @@ pub fn exit(o: Oop) -> bool {
 }
 
 fn exit_inflated(o: Oop) -> bool {
-    let m = monitor_of(o);
-    let mut s = m.state.lock().unwrap();
-    if s.owner != thread_token() || s.count == 0 {
-        return false;
-    }
-    s.count -= 1;
-    if s.count == 0 {
-        s.owner = 0;
-        m.entry.notify_one();
-    }
-    true
+    monitor_of(o).exit(thread_token())
 }
 
 pub fn holds_lock(o: Oop) -> bool {
     let m = mark(o).load(Ordering::Relaxed);
     match m & STATE_MASK {
         THIN => m >> OWNER_SHIFT == thread_token(),
-        INFLATED => monitor_of(o).state.lock().unwrap().owner == thread_token(),
+        INFLATED => monitor_of(o).owned_by(thread_token()),
         _ => false,
     }
 }
 
-#[derive(Debug, PartialEq, Eq)]
-pub enum WaitError {
-    NotOwner,
-    Interrupted,
-}
+pub use monitor::WaitError;
 
 /// `Object.wait(millis)`; 0 waits until notified. The thread is blocked outside Java meanwhile.
 /// `interrupted` reads (and on true, clears) the thread's interrupt status; an interrupt before
@@ -274,62 +202,15 @@ pub fn wait(t: &Thread, o: Oop, millis: i64, interrupted: &dyn Fn() -> bool) -> 
     inflate_owned(o);
     let rec = t.gc_record;
     rec.inspect(|r| r.waiting_on.store(o as usize, Ordering::SeqCst));
-    let r = crate::gc::safepoint::blocking(t, || wait_blocking(o, millis, interrupted));
+    let me = thread_token();
+    let r = crate::gc::safepoint::blocking(t, || monitor_of(o).wait(me, millis, interrupted));
     rec.inspect(|r| r.waiting_on.store(0, Ordering::SeqCst));
     r
 }
 
 /// Wakes the waiters on `o`'s monitor so an interrupted one can notice (`Thread.interrupt`).
 pub fn wake_waiters(o: usize) {
-    let m = monitor_of(o as Oop);
-    let _s = m.state.lock().unwrap();
-    m.waiting.notify_all();
-}
-
-fn wait_blocking(o: Oop, millis: i64, interrupted: &dyn Fn() -> bool) -> Result<(), WaitError> {
-    let me = thread_token();
-    let m = monitor_of(o);
-    let mut s = m.state.lock().unwrap();
-    if s.owner != me {
-        return Err(WaitError::NotOwner);
-    }
-    let count = std::mem::replace(&mut s.count, 0);
-    s.owner = 0;
-    let ticket = s.next_ticket;
-    s.next_ticket += 1;
-    m.entry.notify_one();
-    let deadline = (millis > 0).then(|| std::time::Instant::now() + Duration::from_millis(millis as u64));
-    let mut was_interrupted = false;
-    while ticket >= s.released {
-        if interrupted() {
-            was_interrupted = true;
-            break;
-        }
-        match deadline {
-            None => s = m.waiting.wait(s).unwrap(),
-            Some(d) => {
-                let now = std::time::Instant::now();
-                if now >= d {
-                    break;
-                }
-                s = m.waiting.wait_timeout(s, d - now).unwrap().0;
-            }
-        }
-    }
-    if ticket >= s.released {
-        // Left without a notification: a later notify must go to another waiter.
-        s.abandoned.push(ticket);
-    }
-    while s.owner != 0 {
-        s = m.entry.wait(s).unwrap();
-    }
-    s.owner = me;
-    s.count = count;
-    if was_interrupted {
-        Err(WaitError::Interrupted)
-    } else {
-        Ok(())
-    }
+    monitor_of(o as Oop).wake_waiters();
 }
 
 pub fn notify(o: Oop, all: bool) -> Result<(), WaitError> {
@@ -341,24 +222,7 @@ pub fn notify(o: Oop, all: bool) -> Result<(), WaitError> {
     if word & STATE_MASK == UNLOCKED {
         return Err(WaitError::NotOwner);
     }
-    let m = monitor_of(o);
-    let mut s = m.state.lock().unwrap();
-    if s.owner != thread_token() {
-        return Err(WaitError::NotOwner);
-    }
-    let woke = if all {
-        s.abandoned.clear();
-        let woke = s.released < s.next_ticket;
-        s.released = s.next_ticket;
-        woke
-    } else {
-        s.release_one()
-    };
-    if woke {
-        // Waiters share the condition variable and each checks its own ticket.
-        m.waiting.notify_all();
-    }
-    Ok(())
+    monitor_of(o).notify(thread_token(), all)
 }
 
 #[cfg(test)]
@@ -382,7 +246,7 @@ mod tests {
     #[test]
     fn notify_releases_the_oldest_ticket_still_waiting() {
         // Tickets 0, 1 and 2 wait; 1 timed out.
-        let mut s = State { next_ticket: 3, abandoned: vec![1], ..State::default() };
+        let mut s = monitor::Tickets { next: 3, abandoned: vec![1], ..Default::default() };
         assert!(s.release_one());
         assert_eq!(s.released, 1);
         assert!(s.release_one());
@@ -405,7 +269,7 @@ mod tests {
         let t = Thread::new();
         loop {
             enter(&t, o);
-            let waiting = monitor_of(o).state.lock().unwrap().next_ticket;
+            let waiting = monitor_of(o).waiters();
             if waiting == 1 {
                 notify(o, false).unwrap();
                 exit(o);
