@@ -971,3 +971,8 @@ code cache is ~68 MB there). Per-method and per-site overhead dominated, not the
 
 Boot time and CPU are unchanged on Paper (41 s CPU either way); the pack's CPU fell 95.6 → ~91 s.
 HashMap.putVal: 9338 → 4352 bytes for 300 bytes of bytecode.
+
+A/B on the 42-mod NeoForge pack (`bench/paper_ab.sh -n 3 -b <pack>`, `ed26678` against java,
+means): wall to `Done` 45.8 s against 51.1 s (-10%), user+sys CPU 91.1 s against 146.1 s (-38%),
+peak RSS 1800 MiB against 1918 MiB (-6%; java ranged 1823-2058). The server's own `Done` clock
+is still behind, 25.7 s against 22.9 s: world generation runs hotter code in C2.
