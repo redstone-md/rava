@@ -2,3 +2,4 @@
 **/target/
 bench/results/
 /logs/
+/dist/out/

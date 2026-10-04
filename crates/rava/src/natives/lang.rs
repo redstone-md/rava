@@ -70,6 +70,13 @@ pub(super) fn register(r: &mut NativeRegistry) {
     r.add("java/lang/Runtime", "availableProcessors", "()I", |_, _| {
         ret_int(crate::processors() as i32)
     });
+    // `System.console()`: which standard streams are terminals (bits: in, out, err).
+    r.add("java/io/Console", "ttyStatus", "()I", |_, _| {
+        // SAFETY: isatty only inspects the descriptors.
+        let tty = |fd| unsafe { libc::isatty(fd) == 1 } as i32;
+        ret_int(tty(0) | tty(1) << 1 | tty(2) << 2)
+    });
+    r.add("java/io/Console", "encoding", "()Ljava/lang/String;", |_, _| super::ret_ref(std::ptr::null_mut()));
     r.add("jdk/internal/misc/CDS", "isDumpingClassList0", "()Z", |_, _| ret_bool(false));
     r.add("jdk/internal/misc/CDS", "isDumpingArchive0", "()Z", |_, _| ret_bool(false));
     r.add("jdk/internal/misc/CDS", "isSharingEnabled0", "()Z", |_, _| ret_bool(false));

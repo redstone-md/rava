@@ -6,8 +6,8 @@
 
 **A Java Virtual Machine written from scratch in Rust.**
 
-Runs the JDK's own class library, compiles hot code to x86-64 in two tiers, and takes the
-`java` command line unchanged.
+Self-contained: ships with the Java class library it runs, compiles hot code to x86-64 in two
+tiers, and takes the `java` command line unchanged.
 
 <br>
 
@@ -48,7 +48,12 @@ options; `@argfiles`; `JAVA_TOOL_OPTIONS`, `JDK_JAVA_OPTIONS` and `_JAVA_OPTIONS
 error messages and exit codes are java's. JVM TI agents (`-javaagent`, `-agentlib`) are not
 supported.
 
-rava needs a JDK 21 for its class library: `JAVA_HOME`, or the JDK whose `java` is on `PATH`.
+**Nothing else to install.** `dist/make.sh` builds a distribution laid out as a Java runtime:
+`bin/rava` and, beside it, the class library (`lib/modules`, the OpenJDK platform classes as
+bytecode), the data files library code reads (`lib/tzdb.dat`, `lib/security`, `conf/`) and
+their licences (`legal/`). rava implements every native method itself; no JDK, JRE or HotSpot
+is needed on the machine. A development build (`target/release/rava`, no `lib/` beside it)
+borrows a JDK 21 or 25 class library from `JAVA_HOME` or the `java` on `PATH`.
 
 <br>
 
