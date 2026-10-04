@@ -1,11 +1,11 @@
-//! Marking: conservative roots (thread stacks, value stacks, statics), precise VM roots, and a
-//! precise trace of the heap by class layout. The trace runs on every core: mark bits are set
-//! atomically, and workers share packets of objects still to scan.
+//! Marking: conservative roots (thread stacks, value stacks), precise VM roots and statics, and
+//! a precise trace of the heap by class layout. The trace runs on every core: mark bits are set
+//! atomically, and workers share packets of objects still to scan. Objects in allocation pages
+//! that the trace reaches through the heap or a static move into old pages (`evacuate.rs`);
+//! what another root references stays in place.
 //!
 //! A young collection keeps the marks of old objects (those that survived a collection): the
-//! trace stops at them, and the old objects on dirty cards are scanned as extra roots. It also
-//! moves the young objects it reaches through the heap into old pages (`evacuate.rs`); what a
-//! root references stays in place.
+//! trace stops at them, and the old objects on dirty cards are scanned as extra roots.
 
 use super::safepoint;
 use super::space::{PageMeta, Space};
@@ -202,7 +202,20 @@ impl Shared<'_> {
         }
     }
 
-    fn run(&self, task: &Task, classes: &[&'static Klass], noted: &[usize], out: &mut Vec<usize>) {
+    /// Runs a root task: what it finds is marked and queued on `out` (a card task queues the
+    /// reference slots of old objects instead); reference statics are marked too, or, when
+    /// evacuating, their slots queued on `statics` to follow moves.
+    fn run(&self, task: &Task, classes: &[&'static Klass], noted: &[usize], out: &mut Vec<usize>, statics: &mut Vec<usize>) {
+        let mut static_slots = |from: usize, to: usize, out: &mut Vec<usize>| {
+            crate::vm::vm().class_statics(&classes[from..to], &mut |slot| {
+                if self.evacuate {
+                    statics.push(slot);
+                } else {
+                    // SAFETY: a static slot holds a full-width reference.
+                    self.precise(unsafe { *(slot as *const usize) }, out);
+                }
+            });
+        };
         match *task {
             Task::Thread(rec) => {
                 // SAFETY: the thread is stopped; its record and Thread outlive the collection.
@@ -229,16 +242,12 @@ impl Shared<'_> {
                 }
             }
             Task::Classes(from, to) => {
-                let (mut refs, mut words) = (Vec::new(), Vec::new());
-                crate::vm::vm().class_roots(&classes[from..to], &mut |o| refs.push(o as usize), &mut |w| words.push(w));
+                let mut refs = Vec::new();
+                crate::vm::vm().class_roots(&classes[from..to], &mut |o| refs.push(o as usize));
                 refs.into_iter().for_each(|r| self.precise(r, out));
-                words.into_iter().for_each(|w| self.maybe(w, out));
+                static_slots(from, to, out);
             }
-            Task::Statics(from, to) => {
-                let mut words = Vec::new();
-                crate::vm::vm().class_statics(&classes[from..to], &mut |w| words.push(w));
-                words.into_iter().for_each(|w| self.maybe(w, out));
-            }
+            Task::Statics(from, to) => static_slots(from, to, out),
             Task::Noted => noted.iter().for_each(|&r| self.precise(r, out)),
             Task::Other(young) => {
                 let mut refs = Vec::new();
@@ -326,8 +335,8 @@ impl Shared<'_> {
 }
 
 /// The root tasks of a collection: (young) the card table in chunks, which come first, then
-/// threads, classes in chunks and other roots. A young collection scans only the statics of
-/// the first `old` classes, plus the noted roots.
+/// the noted and embedded roots, threads, classes in chunks and other roots. A young collection
+/// scans only the statics of the first `old` classes.
 fn tasks(space: &Space, classes: usize, old: usize, young: bool) -> Vec<Task> {
     const CLASS_CHUNK: usize = 512;
     let old = if young { old.min(classes) } else { 0 };
@@ -341,8 +350,8 @@ fn tasks(space: &Space, classes: usize, old: usize, young: bool) -> Vec<Task> {
         if area.fresh > area.base {
             tasks.push(Task::LargeCards(area.base, area.fresh));
         }
-        tasks.push(Task::Noted);
     }
+    tasks.push(Task::Noted);
     tasks.extend(safepoint::all_threads().into_iter().map(Task::Thread));
     tasks.extend(chunks(0, old).map(|(a, b)| Task::Statics(a, b)));
     tasks.extend(chunks(old, classes).map(|(a, b)| Task::Classes(a, b)));
@@ -368,7 +377,7 @@ pub(super) fn mark(space: &mut Space, young: bool) -> usize {
     let shared = Shared {
         // SAFETY: markers read the space while `promote` takes old runs (`evacuate.rs`).
         space: unsafe { &*promote },
-        evacuate: young && super::evacuate::enabled(),
+        evacuate: super::evacuate::enabled(),
         promote: Mutex::new(promote),
         pool: Mutex::new(Vec::new()),
         pooled: AtomicUsize::new(0),
@@ -389,10 +398,10 @@ pub(super) fn mark(space: &mut Space, young: bool) -> usize {
     let worker = || {
         let mut found = Vec::with_capacity(4 * PACKET);
         let mut runs = super::evacuate::Runs::default();
-        let mut slots = Vec::new();
+        let (mut slots, mut statics) = (Vec::new(), Vec::new());
         if cards > 0 {
             while let Some(task) = tasks[..cards].get(next_card.fetch_add(1, Ordering::Relaxed)) {
-                shared.run(task, &classes, &noted, &mut slots);
+                shared.run(task, &classes, &noted, &mut slots, &mut statics);
             }
             barrier.wait();
             if !shared.evacuate {
@@ -403,11 +412,12 @@ pub(super) fn mark(space: &mut Space, young: bool) -> usize {
         loop {
             let i = next.fetch_add(1, Ordering::Relaxed);
             let Some(task) = tasks.get(i) else { break };
-            shared.run(task, &classes, &noted, &mut found);
+            shared.run(task, &classes, &noted, &mut found, &mut statics);
         }
         if shared.evacuate {
             barrier.wait();
             slots.into_iter().for_each(|s| shared.update(s, &mut found, &mut runs));
+            statics.into_iter().for_each(|s| shared.update_static(s, &mut found, &mut runs));
         }
         shared.work(found, &mut runs);
     };

@@ -41,12 +41,12 @@ fn trusts_instance_finals(holder: &'static Klass) -> bool {
     n.starts_with("java/lang/invoke/") || n.starts_with("sun/invoke/") || holder.is_hidden() || holder.super_klass.is_some_and(|s| s.name == "java/lang/Record")
 }
 
-/// A folded value `v` of type `ty`, about to become a constant of compiled code. A young object
-/// may move at the next young collection unless a root holds it then; noted as a new root
-/// (`gc::recent`), the collection keeps it in place, old from then on.
+/// A folded value `v` of type `ty`, about to become a constant of compiled code: a collection
+/// may move objects only the heap references, so a reference is made a root for good
+/// (`gc::recent::embed`).
 fn embedded(v: i64, ty: BasicType) -> i64 {
     if ty == BasicType::Reference {
-        crate::gc::recent::note(v as crate::heap::Oop);
+        crate::gc::recent::embed(v as crate::heap::Oop);
     }
     v
 }
