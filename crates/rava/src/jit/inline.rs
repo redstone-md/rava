@@ -12,7 +12,7 @@
 //! caller's dispatch, whose bci is the call site.
 
 use super::analysis::{analyze, Analysis};
-use super::asm::{mem, Label, R};
+use super::asm::{mem, Asm, Label, R};
 use super::compile::Emitter;
 use super::inline_plan::{leaf_slots, Kind};
 use super::vstack::Slot;
@@ -182,23 +182,12 @@ impl Emitter {
     /// first (before anything that may walk the stack: a call, a deferred instruction, an
     /// allocation that may throw). Their headers already hold method and bci.
     pub(super) fn link_scopes(&mut self) {
-        if self.vis_scopes.is_empty() {
-            return;
-        }
-        self.a.load(true, R::Rcx, mem(R::R12, offsets::TOP));
-        for i in 0..self.vis_scopes.len() {
-            let hdr = self.vis_scopes[i];
-            self.a.store(true, mem(R::R13, 8 * (hdr + header::CALLER as i32)), R::Rcx);
-            self.a.lea(R::Rcx, mem(R::R13, 8 * (hdr + header::METHOD as i32)));
-        }
-        self.a.store(true, mem(R::R12, offsets::TOP), R::Rcx);
+        link_scopes(&mut self.a, &self.vis_scopes);
     }
 
     /// Undoes `link_scopes` (preserves rax).
     pub(super) fn unlink_scopes(&mut self) {
-        let Some(&outer) = self.vis_scopes.first() else { return };
-        self.a.load(true, R::Rcx, mem(R::R13, 8 * (outer + header::CALLER as i32)));
-        self.a.store(true, mem(R::R12, offsets::TOP), R::Rcx);
+        unlink_scopes(&mut self.a, &self.vis_scopes);
     }
 
     pub(super) fn swap_body(&mut self, b: Body) -> Body {
@@ -241,4 +230,24 @@ impl Emitter {
             }
         }
     }
+}
+
+/// `Emitter::link_scopes` for the frame headers `scopes` (clobbers rcx).
+pub(super) fn link_scopes(a: &mut Asm, scopes: &[i32]) {
+    if scopes.is_empty() {
+        return;
+    }
+    a.load(true, R::Rcx, mem(R::R12, offsets::TOP));
+    for &hdr in scopes {
+        a.store(true, mem(R::R13, 8 * (hdr + header::CALLER as i32)), R::Rcx);
+        a.lea(R::Rcx, mem(R::R13, 8 * (hdr + header::METHOD as i32)));
+    }
+    a.store(true, mem(R::R12, offsets::TOP), R::Rcx);
+}
+
+/// Undoes `link_scopes` (preserves rax).
+pub(super) fn unlink_scopes(a: &mut Asm, scopes: &[i32]) {
+    let Some(&outer) = scopes.first() else { return };
+    a.load(true, R::Rcx, mem(R::R13, 8 * (outer + header::CALLER as i32)));
+    a.store(true, mem(R::R12, offsets::TOP), R::Rcx);
 }

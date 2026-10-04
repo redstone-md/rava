@@ -446,6 +446,12 @@ impl Asm {
     pub fn jmp_r(&mut self, r: R) {
         self.op_rr(false, &[0xFF], 4, r as u8);
     }
+    /// `call rel32` to a label in this code.
+    pub fn call_label(&mut self, l: Label) {
+        self.b(0xE8);
+        self.fixups.push((self.pos(), l));
+        self.d32(0);
+    }
     /// Calls an absolute address through `rax`.
     pub fn call_abs(&mut self, addr: usize) {
         self.mov_ri(R::Rax, addr as i64);
