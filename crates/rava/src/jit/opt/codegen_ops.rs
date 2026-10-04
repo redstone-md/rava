@@ -91,6 +91,25 @@ impl Gen<'_> {
                 self.a.jcc(super::codegen::invert(super::codegen::cond(cmp)), fail);
             }
             Inst::RangeGuard(arr, init, limit, s) => {
+                let consts = (self.g.constant(init), self.g.constant(limit));
+                if let (Some(i), Some(n)) = consts {
+                    // A counted loop over constant bounds (`for (i = 0; i < 7; i++)`): whether
+                    // it runs and whether `init >= 0` are known here.
+                    if i as i32 >= n as i32 {
+                        return;
+                    }
+                    let fail = self.deopt(&s);
+                    if (i as i32) < 0 {
+                        self.a.jmp(fail);
+                        return;
+                    }
+                    let ra = self.reg(arr, R::Rax);
+                    self.a.test_rr(true, ra, ra);
+                    self.a.jcc(Cond::E, fail);
+                    self.a.alu_mi(false, Alu::Cmp, mem(ra, crate::heap::ARRAY_LENGTH_OFFSET as i32), n as i32);
+                    self.a.jcc(Cond::L, fail);
+                    return;
+                }
                 let (fail, ok) = (self.deopt(&s), self.a.new_label());
                 let ri = self.reg(init, R::Rax);
                 self.alu_val(false, Alu::Cmp, ri, limit);
