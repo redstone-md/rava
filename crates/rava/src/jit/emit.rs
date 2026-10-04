@@ -73,8 +73,13 @@ impl Emitter {
         let cell = (self.tier == 1).then(|| super::profile::branch_cell(self.m, pc));
         let count = |e: &mut Self, taken: usize| {
             if let Some(cell) = cell {
-                e.a.mov_ri(R::Rax, &cell.counts[taken] as *const _ as i64);
-                e.a.alu_mi(false, Alu::Add, mem(R::Rax, 0), 1);
+                let at = &cell.counts[taken] as *const _ as usize;
+                if crate::low::is_low(at) {
+                    e.a.alu_mi(false, Alu::Add, super::asm::abs32(at), 1);
+                } else {
+                    e.a.mov_ri(R::Rax, at as i64);
+                    e.a.alu_mi(false, Alu::Add, mem(R::Rax, 0), 1);
+                }
             }
         };
         if target <= pc || cell.is_some() {
@@ -258,7 +263,7 @@ impl Emitter {
 
 /// Operand slot `i` of a stack starting at frame slot `base` (for use while `self.a` is borrowed).
 pub(super) fn self_stk(base: i32, i: i32) -> M {
-    mem(R::R13, 8 * (base + i))
+    super::compile::slot(base + i)
 }
 
 pub(super) fn rel(pc: usize, off: i32) -> usize {
