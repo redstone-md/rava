@@ -107,7 +107,11 @@ impl Shared<'_> {
                 continue;
             }
             // Out of work: done once every worker is, unless a packet shows up meanwhile.
+            // Spins briefly, then yields the core (HotSpot's task terminator): a pure spin took
+            // CPU time from the workers that still had work whenever the markers outnumbered
+            // the free cores (or shared a core with them, as SMT siblings do).
             self.idle.fetch_add(1, Ordering::AcqRel);
+            let mut spins = 0u32;
             loop {
                 if self.pooled.load(Ordering::Acquire) > 0 {
                     self.idle.fetch_sub(1, Ordering::AcqRel);
@@ -117,7 +121,12 @@ impl Shared<'_> {
                     self.marked.fetch_add(scanned, Ordering::Relaxed);
                     return;
                 }
-                std::hint::spin_loop();
+                spins += 1;
+                if spins < IDLE_SPINS {
+                    std::hint::spin_loop();
+                } else {
+                    std::thread::yield_now();
+                }
             }
         }
     }
@@ -168,6 +177,9 @@ fn ref_slots(o: Oop, mut f: impl FnMut(usize)) {
 }
 
 /// A unit of root marking, taken by whichever worker is free.
+/// Idle checks a marker spins through before it starts yielding its core.
+const IDLE_SPINS: u32 = 1 << 10;
+
 enum Task {
     /// A thread's stacks (conservatively) and its precise references.
     Thread(&'static safepoint::Record),
