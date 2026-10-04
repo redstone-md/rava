@@ -37,6 +37,7 @@ mod regalloc;
 mod scratch;
 mod select;
 mod split;
+mod unroll;
 
 use super::{code_cache, CompiledMethod};
 use crate::method::Method;
@@ -136,6 +137,8 @@ fn compile_timed(m: &'static Method) -> Option<CompiledMethod> {
     licm::hoist(&mut g);
     rce::eliminate(&mut g);
     guards::hoist(&mut g);
+    g.merge_chains();
+    unroll::unroll(&mut g);
     consts::hoist(&mut g);
     g.prune_unreachable();
     dce::eliminate(&mut g);
