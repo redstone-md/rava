@@ -121,7 +121,7 @@ impl Emitter {
             self.a.mov_rr(true, R::Rdi, R::R12);
             self.a.mov_ri(R::Rsi, self.m as *const Method as i64);
             self.a.mov_ri(R::Rdx, target as i64);
-            self.a.mov_rr(true, R::Rcx, R::R13);
+            self.a.lea(R::Rcx, super::compile::slot(0));
             self.a.call_abs(tier_up_osr as *const () as usize);
             self.a.test_rr(true, R::Rax, R::Rax);
             self.a.jcc(Cond::E, cont);

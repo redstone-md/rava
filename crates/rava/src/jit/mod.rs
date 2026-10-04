@@ -273,7 +273,7 @@ fn osr_trampoline() -> usize {
         // method's and releases it when the method returns.
         a.store_imm(asm::mem(R::Rsp, 0), 0);
         a.mov_rr(true, R::R12, R::Rdi);
-        a.mov_rr(true, R::R13, R::Rsi);
+        a.lea(R::R13, asm::mem(R::Rsi, compile::FRAME_BIAS));
         a.jmp_r(R::Rdx);
         code_cache::install(&a.finish())
     })

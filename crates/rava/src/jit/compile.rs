@@ -116,6 +116,10 @@ fn compile_timed(m: &'static Method, tier: u8) -> Option<CompiledMethod> {
     if env_once!("RAVA_NO_LOCAL_REGS").is_none() {
         e.lregs = plan_local_regs(e.code, info.max_locals as usize, &e.an);
     }
+    if e.dump_map.is_none() {
+        // Short branches; the dump map records raw positions, which relaxation would move.
+        e.a.enable_peephole();
+    }
     let overflow = e.a.new_label();
     let frame_patch = e.prologue(overflow);
     let mut leaders = Vec::new();
@@ -124,16 +128,17 @@ fn compile_timed(m: &'static Method, tier: u8) -> Option<CompiledMethod> {
         return None;
     }
     let frame_slots = e.extent;
-    e.a.patch_i32(frame_patch, 8 * frame_slots);
+    e.a.patch_i32(frame_patch, 8 * frame_slots - FRAME_BIAS);
     let leaders = e.emit_entry_stubs(leaders, frame_slots);
     e.emit_slow_paths();
     e.emit_poll_stubs();
     e.emit_trampolines();
     e.emit_exception_dispatch();
     e.emit_epilogue(overflow);
-    let code = e.a.finish();
+    let (bcis, stubs): (Vec<u32>, Vec<Label>) = leaders.into_iter().unzip();
+    let (code, _, offs) = e.a.finish_labels(e.epilogue, &stubs);
     let entry = code_cache::install(&code);
-    let blocks = leaders.into_iter().map(|(bci, off)| (bci, entry + off as usize)).collect();
+    let blocks = bcis.into_iter().zip(offs).map(|(bci, off)| (bci, entry + off as usize)).collect();
     super::code_cache::perf_map(entry, code.len(), &format!("{m} [b{tier}]"));
     if let Some(filter) = env_once!("RAVA_JIT_DUMP") {
         // Raw code for `objdump -D -b binary -mi386:x86-64 --adjust-vma=<entry>`.
@@ -195,16 +200,16 @@ impl Emitter {
     }
 
     pub fn local(&self, n: usize) -> M {
-        mem(R::R13, 8 * (self.local_base + n as i32))
+        slot(self.local_base + n as i32)
     }
 
     /// Operand-stack slot `i` (0 = bottom).
     pub fn stk(&self, i: i32) -> M {
-        mem(R::R13, 8 * (self.stack_base + i))
+        slot(self.stack_base + i)
     }
 
     pub fn hdr(&self, field: usize) -> M {
-        mem(R::R13, 8 * (self.local_base + self.max_locals + field as i32))
+        slot(self.local_base + self.max_locals + field as i32)
     }
 
     /// Records `bci` as the frame's current instruction (before calls and slow paths).
@@ -281,11 +286,11 @@ impl Emitter {
         let a = &mut self.a;
         save_registers(a);
         a.mov_rr(true, R::R12, R::Rdi);
-        a.mov_rr(true, R::R13, R::Rsi);
+        a.lea(R::R13, mem(R::Rsi, FRAME_BIAS));
         let frame_patch = a.lea_patchable(R::Rax, R::R13);
         a.alu_rm(true, super::asm::Alu::Cmp, R::Rax, mem(R::R12, offsets::LIMIT));
         a.jcc(Cond::A, overflow);
-        let h = |f: usize| mem(R::R13, 8 * (self.max_locals + f as i32));
+        let h = |f: usize| slot(self.max_locals + f as i32);
         a.store(true, h(header::METHOD), R::Rdx);
         a.store_imm(h(header::BCI), 0);
         a.load(true, R::Rcx, mem(R::R12, offsets::TOP));
@@ -358,12 +363,14 @@ impl Emitter {
 
     /// Entry points for OSR and exception handlers at each block: claim the whole compiled
     /// frame (an interpreted frame is smaller than one with inlined frames), load the local
-    /// registers, then continue at the block. Returns (bci, code offset) pairs.
-    fn emit_entry_stubs(&mut self, leaders: Vec<u32>, frame_slots: i32) -> Vec<(u32, u32)> {
+    /// registers, then continue at the block. Returns (bci, stub label) pairs.
+    fn emit_entry_stubs(&mut self, leaders: Vec<u32>, frame_slots: i32) -> Vec<(u32, Label)> {
         let mut out = Vec::with_capacity(leaders.len());
         for bci in leaders {
-            out.push((bci, self.a.pos()));
-            self.a.lea(R::Rax, mem(R::R13, 8 * frame_slots));
+            let l = self.a.new_label();
+            self.a.bind(l);
+            out.push((bci, l));
+            self.a.lea(R::Rax, slot(frame_slots));
             self.a.store(true, mem(R::R12, offsets::SP), R::Rax);
             self.load_local_regs();
             self.a.jmp(self.labels[bci as usize]);
@@ -387,7 +394,7 @@ impl Emitter {
         let unwind = self.a.new_label();
         self.a.bind(self.exc);
         self.a.mov_rr(true, R::Rdi, R::R12);
-        self.a.mov_rr(true, R::Rsi, R::R13);
+        self.a.lea(R::Rsi, slot(0));
         self.a.call_abs(runtime::handle_exception as *const () as usize);
         self.a.test_rr(true, R::Rax, R::Rax);
         self.a.jcc(Cond::E, unwind);
@@ -404,7 +411,7 @@ impl Emitter {
             // Every exit (return or exception) releases it.
             self.exit_method_monitor();
         }
-        let h = |f: usize| mem(R::R13, 8 * (self.max_locals + f as i32));
+        let h = |f: usize| slot(self.max_locals + f as i32);
         self.a.load(true, R::Rcx, h(header::CALLER));
         self.a.store(true, mem(R::R12, offsets::TOP), R::Rcx);
         self.a.load(true, R::Rcx, h(header::SAVED_SP));
@@ -423,6 +430,15 @@ impl Emitter {
         self.a.alu_rr(false, super::asm::Alu::Xor, R::Rax, R::Rax);
         self.a.jmp(restore);
     }
+}
+
+/// r13 points this many bytes past the frame base, so that the first 32 slots (locals, header
+/// and the operand stack of most methods) are reached with 8-bit displacements.
+pub(super) const FRAME_BIAS: i32 = 128;
+
+/// Frame slot `n` of baseline code.
+pub(super) fn slot(n: i32) -> M {
+    mem(R::R13, 8 * n - FRAME_BIAS)
 }
 
 /// Callee-saved registers compiled code uses (thread, frame, pinned locals), saved in this

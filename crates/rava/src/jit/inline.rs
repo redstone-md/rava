@@ -13,7 +13,7 @@
 
 use super::analysis::{analyze, Analysis};
 use super::asm::{mem, Asm, Label, R};
-use super::compile::Emitter;
+use super::compile::{slot, Emitter};
 use super::inline_plan::{leaf_slots, Kind};
 use super::vstack::Slot;
 use crate::classfile::ClassFile;
@@ -118,7 +118,7 @@ impl Emitter {
                 self.extent = self.extent.max(base + leaf_slots(callee));
                 for i in 0..callee.param_slots() as i32 {
                     self.a.load(true, R::Rax, self.stk(args + i));
-                    self.a.store(true, mem(R::R13, 8 * (base + i)), R::Rax);
+                    self.a.store(true, slot(base + i), R::Rax);
                 }
                 (base, None)
             }
@@ -126,8 +126,8 @@ impl Emitter {
                 let hdr = result + info.max_locals as i32;
                 if !callee.is_hidden_frame() {
                     self.a.mov_ri(R::Rax, callee as *const Method as i64);
-                    self.a.store(true, mem(R::R13, 8 * (hdr + header::METHOD as i32)), R::Rax);
-                    self.a.store_imm(mem(R::R13, 8 * (hdr + header::BCI as i32)), 0);
+                    self.a.store(true, slot(hdr + header::METHOD as i32), R::Rax);
+                    self.a.store_imm(slot(hdr + header::BCI as i32), 0);
                 }
                 (result, Some(hdr))
             }
@@ -218,7 +218,7 @@ impl Emitter {
         match self.inl {
             Some(ctx) => {
                 if value {
-                    self.a.store(true, mem(R::R13, 8 * ctx.result), R::Rax);
+                    self.a.store(true, slot(ctx.result), R::Rax);
                 }
                 self.a.jmp(ctx.done);
             }
@@ -239,8 +239,8 @@ pub(super) fn link_scopes(a: &mut Asm, scopes: &[i32]) {
     }
     a.load(true, R::Rcx, mem(R::R12, offsets::TOP));
     for &hdr in scopes {
-        a.store(true, mem(R::R13, 8 * (hdr + header::CALLER as i32)), R::Rcx);
-        a.lea(R::Rcx, mem(R::R13, 8 * (hdr + header::METHOD as i32)));
+        a.store(true, slot(hdr + header::CALLER as i32), R::Rcx);
+        a.lea(R::Rcx, slot(hdr + header::METHOD as i32));
     }
     a.store(true, mem(R::R12, offsets::TOP), R::Rcx);
 }
@@ -248,6 +248,6 @@ pub(super) fn link_scopes(a: &mut Asm, scopes: &[i32]) {
 /// Undoes `link_scopes` (preserves rax).
 pub(super) fn unlink_scopes(a: &mut Asm, scopes: &[i32]) {
     let Some(&outer) = scopes.first() else { return };
-    a.load(true, R::Rcx, mem(R::R13, 8 * (outer + header::CALLER as i32)));
+    a.load(true, R::Rcx, slot(outer + header::CALLER as i32));
     a.store(true, mem(R::R12, offsets::TOP), R::Rcx);
 }
