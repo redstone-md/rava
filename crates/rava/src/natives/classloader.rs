@@ -72,7 +72,24 @@ pub(super) fn register(r: &mut NativeRegistry) {
         "jdk/internal/loader/NativeLibraries",
         "load",
         "(Ljdk/internal/loader/NativeLibraries$NativeLibraryImpl;Ljava/lang/String;ZZ)Z",
-        |_, _| ret_bool(true),
+        |_, a| {
+            // The VM supplies the natives itself. JDK 25 checks the library got a handle: an
+            // opaque non-zero one, and the JNI version JNI_OnLoad would have reported (1.8).
+            let lib = crate::jdk::library();
+            let impl_class = "jdk/internal/loader/NativeLibraries$NativeLibraryImpl";
+            static HANDLE: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
+            static VERSION: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
+            // SAFETY: a live NativeLibraryImpl; offsets from its layout.
+            unsafe {
+                if let Some(off) = lib.optional_field(&HANDLE, impl_class, "handle", "J") {
+                    obj::write::<i64>(a[0] as Oop, off, 1);
+                }
+                if let Some(off) = lib.optional_field(&VERSION, impl_class, "jniVersion", "I") {
+                    obj::write::<i32>(a[0] as Oop, off, 0x0001_0008);
+                }
+            }
+            ret_bool(true)
+        },
     );
     r.add("jdk/internal/loader/NativeLibraries", "unload", "(Ljava/lang/String;ZJ)V", |_, _| ret_void());
     r.add(

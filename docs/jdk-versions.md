@@ -6,8 +6,8 @@ library's contract with the VM; the VM itself does not change between releases.
 
 | Release | Status |
 |---|---|
-| 21 (LTS) | tested: semantics 90/94 (the four red probes are helpful NPE texts), Paper, NeoForge |
-| 25 (LTS) | tested: semantics 90/94 |
+| 21 (LTS) | tested: semantics (all but the four red-by-design probes, helpful NPE texts), Paper, NeoForge |
+| 25 (LTS) | tested: semantics as on 21, Paper |
 | 22-24 | runs through the same paths (the protocols below switch at their releases), untested |
 | < 21 | refused at launch |
 
@@ -34,6 +34,8 @@ library's contract with the VM; the VM itself does not change between releases.
 | `SystemProps.Raw` | 39 platform properties | 40 (`native_encoding`, `stdin_encoding`); both laid out by the class's own `_*_NDX` constants (`natives/props.rs`) |
 | launcher `main` kind | `LauncherHelper.getMainType()` | statics `isStaticMain`, `noArgMain` (`launcher/mod.rs`) |
 | stack walking | `StackFrameInfo.memberName` initialized by the VM; batches by end index | `ClassFrameInfo.classOrMemberName` + `flags`, `expandStackFrameInfo`; batches by frame count (`natives/stackwalk.rs`) |
+| native libraries | `NativeLibraries.load` returns true | also expects `NativeLibraryImpl.handle` set (an opaque non-zero one; the VM supplies the natives) |
+| `FileKey.init` | instance, sets `st_dev`/`st_ino` | static, fills a `long[2]` |
 | natives added | | `CDS.getCDSConfigStatus`, `PhantomReference.clear0`, `Thread.sleepNanos0`, `UnixFileDispatcherImpl.available0` |
 
 ## Adding a release

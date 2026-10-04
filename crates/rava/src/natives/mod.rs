@@ -19,6 +19,7 @@ mod process;
 pub(crate) mod mh;
 mod module;
 mod net;
+mod netif;
 pub(crate) mod props;
 mod reflect;
 mod records;
@@ -83,6 +84,7 @@ impl NativeRegistry {
         jfr::register(&mut r);
         stackwalk::register(&mut r);
         net::register(&mut r);
+        netif::register(&mut r);
         misc::register(&mut r);
         digest::register(&mut r);
         r
