@@ -116,10 +116,14 @@ fn patch_existing_mirrors(_t: &mut Thread) {
     }
 }
 
-/// Modules recorded by the registry (collector roots).
+/// Modules recorded by the registry, and the loaders it is keyed by (collector roots: a key is
+/// an address, so its loader must never move).
 pub(crate) fn roots(f: &mut dyn FnMut(Oop)) {
     let reg = registry().lock().unwrap();
-    reg.packages.values().for_each(|&m| f(m as Oop));
+    reg.packages.iter().for_each(|(&(loader, _), &m)| {
+        f(loader as Oop);
+        f(m as Oop);
+    });
     f(reg.boot_unnamed as Oop);
     f(reg.java_base as Oop);
 }
