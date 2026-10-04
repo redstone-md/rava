@@ -54,6 +54,21 @@ pub(super) fn register(r: &mut NativeRegistry) {
         let k = cp_class(a).resolve_class(t, a[2] as u16).map_err(|e| rt::link_error(t, e))?;
         ret_ref(rt::mirror_of(t, k)?)
     });
+    r.add(CP, "getMethodAt0", "(Ljava/lang/Object;I)Ljava/lang/reflect/Member;", |t, a| pool_method(t, a, true));
+    r.add(CP, "getMethodAtIfLoaded0", "(Ljava/lang/Object;I)Ljava/lang/reflect/Member;", |t, a| pool_method(t, a, false));
+    r.add(CP, "getMemberRefInfoAt0", "(Ljava/lang/Object;I)[Ljava/lang/String;", |t, a| {
+        let k = cp_class(a);
+        let Some((class, name, desc)) = k.cf.as_ref().and_then(|cf| cf.member_ref(a[2] as u16)) else {
+            return Err(throw_new(t, "java/lang/IllegalArgumentException", "Wrong type at constant pool index"));
+        };
+        let string = crate::vm::vm().wk.string.get().copied().expect("String");
+        let out = super::reflect_class::new_object_array(t, string, 3)?;
+        for (i, s) in [class, name, desc].into_iter().enumerate() {
+            let o = rt::intern_str(t, s.as_str())?;
+            super::reflect_class::store(out, i, o);
+        }
+        ret_ref(out)
+    });
     r.add(CP, "getTagAt0", "(Ljava/lang/Object;I)B", |_, a| {
         let tag = match pool_entry(a) {
             Cp::Utf8 { .. } => 1, Cp::Int(_) => 3, Cp::Float(_) => 4, Cp::Long(_) => 5, Cp::Double(_) => 6,
@@ -146,6 +161,28 @@ fn class_context(t: &mut Thread, _: &[u64]) -> JResult<u64> {
 fn is_reflection_frame(k: &Klass) -> bool {
     let n = k.name.as_str();
     n == "java/lang/reflect/Method" || n.starts_with("jdk/internal/reflect/") || n.starts_with("java/lang/invoke/LambdaForm$")
+}
+
+/// `ConstantPool.getMethodAt0` (`resolve`) or `getMethodAtIfLoaded0`: the `Method` or
+/// `Constructor` a method reference names, resolved as an invocation would.
+fn pool_method(t: &mut Thread, a: &[u64], resolve: bool) -> JResult<u64> {
+    let k = cp_class(a);
+    let index = a[2] as u16;
+    if !matches!(pool_entry(a), Cp::Method { .. } | Cp::IMethod { .. }) {
+        return Err(throw_new(t, "java/lang/IllegalArgumentException", "Wrong type at constant pool index"));
+    }
+    let m = if resolve {
+        k.resolve_method(t, index).map_err(|e| rt::link_error(t, e))?
+    } else {
+        match k.peek_resolved(index) {
+            Some(crate::link::Resolved::Method(m)) => m,
+            _ => return ret_ref(std::ptr::null_mut()),
+        }
+    };
+    let holder = m.holder;
+    let slot = holder.methods().iter().position(|x| std::ptr::eq(x, m)).expect("a method of its holder");
+    let mirror = rt::mirror_of(t, holder)?;
+    ret_ref(super::reflect_class::executable_object(t, mirror as u64, holder, slot, m.name == "<init>")?)
 }
 
 fn cp_class(a: &[u64]) -> &'static Klass {
