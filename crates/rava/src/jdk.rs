@@ -2,7 +2,8 @@
 //! model) is the same for every Java release; what differs between releases is the contract
 //! between the VM and the class library it runs: native methods added, removed or re-signed,
 //! fields the VM fills in, launcher and stack-walking protocols. Every such difference is
-//! decided here, once, from the class library that was found, and the rest of the VM asks this
+//! decided here, once, from the class library that was found (by what the library itself
+//! declares where that is observable, else by its release), and the rest of the VM asks this
 //! layer instead of probing classes itself. Native methods of different releases coexist in
 //! the registry (keyed by class, name and descriptor); the ones a release added say so where
 //! they are registered. `docs/jdk-versions.md` lists the releases and their differences.
@@ -51,9 +52,12 @@ pub fn detect(java_home: &Path) -> Library {
 impl Library {
     /// StackWalker frames are `ClassFrameInfo`/`StackFrameInfo` objects naming their class or
     /// `ResolvedMethodName` in `classOrMemberName`, expanded on demand (JDK 22); before, a
-    /// `StackFrameInfo` held a `MemberName` the VM initialized.
+    /// `StackFrameInfo` held a `MemberName` the VM initialized. Decided by the library's own
+    /// classes rather than its release number, so a build that backported the change (or
+    /// whose `release` file is missing or wrong) still gets the protocol it implements.
     pub fn class_frame_info(self) -> bool {
-        self.feature >= 22
+        static HAS: OnceLock<bool> = OnceLock::new();
+        *HAS.get_or_init(|| crate::loader::load("java/lang/ClassFrameInfo").is_ok())
     }
 
     /// The offset of an instance field the class library may or may not declare (fields the
