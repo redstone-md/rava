@@ -72,6 +72,12 @@ pub fn boot(t: &mut Thread) -> JResult<()> {
     ] {
         rt::initialize(t, class(c))?;
     }
+    // java.lang.invoke's core, as HotSpot's initialize_jsr292_core_classes before phase 2:
+    // MethodHandleNatives marks java.lang.invoke ready, which core reflection's field accessors
+    // require (else a program's first Field.get before any lambda throws InternalError).
+    for c in ["java/lang/invoke/MethodHandle", "java/lang/invoke/ResolvedMethodName", "java/lang/invoke/MemberName", "java/lang/invoke/MethodHandleNatives"] {
+        rt::initialize(t, class(c))?;
+    }
     let status = call_static(t, "java/lang/System", "initPhase2", "(ZZ)I", &[1, 1])? as i32;
     if status != 0 {
         panic!("System.initPhase2 failed with status {status}");
