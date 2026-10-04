@@ -215,3 +215,8 @@ fn report(started: Instant, vm: &Vm) {
         );
     }
 }
+
+/// A size as the command line writes one (`512m`, `4G`).
+pub(crate) fn parse_vm_size(s: &str) -> Option<usize> {
+    settings::parse_size(s)
+}

@@ -229,8 +229,10 @@ impl CommandLine {
                 // -1 (HotSpot's default) leaves the count to the system.
                 let n = arg["-XX:ActiveProcessorCount=".len()..].parse::<i64>().map_err(|_| LaunchError::Vm(format!("Improperly specified VM option '{}'", &arg[4..])))?;
                 crate::set_active_processors(n.max(0) as usize);
+                crate::note_vm_option(&arg[4..]);
             }
-            _ if arg.starts_with("--illegal-access=") || arg.starts_with("-verbose:") || arg.starts_with("-splash:") || arg.starts_with("-XX:") => {}
+            _ if arg.starts_with("-XX:") => crate::note_vm_option(&arg[4..]),
+            _ if arg.starts_with("--illegal-access=") || arg.starts_with("-verbose:") || arg.starts_with("-splash:") => {}
             _ if arg.starts_with("-javaagent:") || arg.starts_with("-agentlib:") || arg.starts_with("-agentpath:") || arg.starts_with("-Xrun") => {
                 return Err(LaunchError::Vm(format!("rava does not support JVM TI agents: {arg}")));
             }
