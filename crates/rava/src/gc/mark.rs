@@ -33,7 +33,7 @@ pub(super) struct Shared<'a> {
     /// Workers out of work.
     idle: AtomicUsize,
     workers: usize,
-    pub(super) marked: AtomicUsize,
+    marked: AtomicUsize,
 }
 
 // The space is only read while the world is stopped; mark bits change atomically.
@@ -420,6 +420,7 @@ pub(super) fn mark(space: &mut Space, young: bool) -> usize {
             statics.into_iter().for_each(|s| shared.update_static(s, &mut found, &mut runs));
         }
         shared.work(found, &mut runs);
+        shared.finish_runs(&runs);
     };
     std::thread::scope(|s| {
         for _ in 1..workers {
