@@ -353,16 +353,23 @@ pub(crate) fn card_mark_checked(a: &mut Asm, m: M) {
     a.bind(skip);
 }
 
-/// Unsafe access to a reference at `base + offset`: `heap` emits it for a heap object, `slot` for
-/// a null base (a static slot's absolute address, full width). With uncompressed references the
-/// two are the same code and only `heap` is emitted.
-pub(crate) fn unsafe_ref(a: &mut Asm, base: R, heap: impl FnOnce(&mut Asm), slot: impl FnOnce(&mut Asm)) {
+/// Unsafe access to a reference at `m`: `heap` emits it for an address in the heap (a field or
+/// element), `slot` for one outside it (a static slot, full width: a null base with an absolute
+/// address, or the class mirror with an offset from it, as HotSpot's static field bases are).
+/// With uncompressed references the two are the same code and only `heap` is emitted.
+pub(crate) fn unsafe_ref(a: &mut Asm, m: M, heap: impl FnOnce(&mut Asm), slot: impl FnOnce(&mut Asm)) {
+    use crate::thread::offsets;
     if !crate::heap::COMPRESSED {
         return heap(a);
     }
     let (absolute, done) = (a.new_label(), a.new_label());
-    a.test_rr(true, base, base);
-    a.jcc(Cond::E, absolute);
+    // rsi is borrowed for the address (pop keeps the flags), so no register is needed free.
+    a.push(R::Rsi);
+    a.lea(R::Rsi, m);
+    a.alu_rm(true, Alu::Sub, R::Rsi, mem(R::R12, offsets::HEAP_BASE));
+    a.alu_rm(true, Alu::Cmp, R::Rsi, mem(R::R12, offsets::HEAP_SPAN));
+    a.pop(R::Rsi);
+    a.jcc(Cond::Ae, absolute);
     heap(a);
     a.jmp(done);
     a.bind(absolute);
@@ -370,23 +377,23 @@ pub(crate) fn unsafe_ref(a: &mut Asm, base: R, heap: impl FnOnce(&mut Asm), slot
     a.bind(done);
 }
 
-/// An Unsafe load of type `ty` at `m` (base `base`, null for an absolute address) into `dst`.
-pub(crate) fn unsafe_load(a: &mut Asm, dst: R, ty: BasicType, base: R, m: M) {
+/// An Unsafe load of type `ty` at `m` into `dst`.
+pub(crate) fn unsafe_load(a: &mut Asm, dst: R, ty: BasicType, m: M) {
     if ty != BasicType::Reference {
         return load_static_to(a, dst, ty, m);
     }
-    unsafe_ref(a, base, |a| load_typed_to(a, dst, ty, m), |a| load_static_to(a, dst, ty, m));
+    unsafe_ref(a, m, |a| load_typed_to(a, dst, ty, m), |a| load_static_to(a, dst, ty, m));
 }
 
-/// An Unsafe store of `src` (slot encoding) of type `ty` at `m` (base `base`, null for an
-/// absolute address), with the write barrier of a reference. `m` must not use r11; clobbers r11.
-pub(crate) fn unsafe_store(a: &mut Asm, src: R, ty: BasicType, base: R, m: M) {
+/// An Unsafe store of `src` (slot encoding) of type `ty` at `m`, with the write barrier of a
+/// reference. `m` must not use r11; clobbers r11.
+pub(crate) fn unsafe_store(a: &mut Asm, src: R, ty: BasicType, m: M) {
     if ty != BasicType::Reference {
         return store_raw(a, src, ty, m);
     }
     unsafe_ref(
         a,
-        base,
+        m,
         |a| {
             let enc = encode_ref(a, src, R::R11);
             store_raw(a, enc, ty, m);
@@ -396,16 +403,16 @@ pub(crate) fn unsafe_store(a: &mut Asm, src: R, ty: BasicType, base: R, m: M) {
     card_mark_checked(a, m);
 }
 
-/// An Unsafe compare-and-set of type `ty` at `m` (base `base`, null for an absolute address):
+/// An Unsafe compare-and-set of type `ty` at `m`:
 /// expected value in rax, new one in r11 (both clobbered); leaves the flags (ZF: done) and, for
 /// a reference, marks the card.
-pub(crate) fn unsafe_cas(a: &mut Asm, ty: BasicType, base: R, m: M) {
+pub(crate) fn unsafe_cas(a: &mut Asm, ty: BasicType, m: M) {
     if ty != BasicType::Reference {
         return a.lock_cmpxchg_w(ty != BasicType::Int, m, R::R11);
     }
     unsafe_ref(
         a,
-        base,
+        m,
         |a| {
             encode_ref(a, R::Rax, R::Rax);
             encode_ref(a, R::R11, R::R11);

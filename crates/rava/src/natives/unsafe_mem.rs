@@ -44,12 +44,13 @@ macro_rules! typed {
 }
 
 /// Compare-and-exchange of a reference (`a`: this, base, offset, expected, new): the witness.
-/// A null base names a static slot (full width); otherwise a heap field or element, compressed
-/// when heap references are.
+/// An address outside the heap names a static slot (full width: a null base and an absolute
+/// address, or the class mirror and an offset from it); one inside, a heap field or element,
+/// compressed when heap references are.
 fn cas_reference(a: &[u64]) -> u64 {
     let at = addr(a[1], a[2]) as usize;
     crate::gc::cards::dirty(at);
-    if a[1] != 0 && crate::heap::COMPRESSED {
+    if crate::gc::cards::in_heap(at) && crate::heap::COMPRESSED {
         // SAFETY: an aligned reference field or element (Unsafe's contract).
         let cell = unsafe { &*(at as *const AtomicI32) };
         let (expected, new) = (crate::heap::encode(a[4] as Oop) as i32, crate::heap::encode(a[5] as Oop) as i32);
@@ -67,17 +68,19 @@ pub(super) fn register(r: &mut NativeRegistry) {
     typed!(r, "Long", "J", i64, |v: i64| v as u64, |s: u64| s as i64);
     for (get, put) in [("getReference", "putReference"), ("getReferenceVolatile", "putReferenceVolatile")] {
         r.add(U, get, "(Ljava/lang/Object;J)Ljava/lang/Object;", |_, a| {
-            // SAFETY: Unsafe's contract: a reference field or element, or (null base) a static slot.
-            Ok(unsafe { if a[1] == 0 { std::ptr::read_volatile(a[2] as *const u64) } else { crate::heap::obj::load_ref_at(addr(a[1], a[2]) as usize) as u64 } })
+            // SAFETY: Unsafe's contract: a reference field or element, or (outside the heap) a
+            // static slot.
+            let at = addr(a[1], a[2]) as usize;
+            Ok(unsafe { if !crate::gc::cards::in_heap(at) { std::ptr::read_volatile(at as *const u64) } else { crate::heap::obj::load_ref_at(at) as u64 } })
         });
         r.add(U, put, "(Ljava/lang/Object;JLjava/lang/Object;)V", |_, a| {
             // SAFETY: as above.
+            let at = addr(a[1], a[2]) as usize;
             unsafe {
-                if a[1] == 0 {
-                    std::ptr::write_volatile(a[2] as *mut u64, a[4]);
-                    crate::gc::cards::dirty(a[2] as usize);
+                if !crate::gc::cards::in_heap(at) {
+                    std::ptr::write_volatile(at as *mut u64, a[4]);
                 } else {
-                    crate::heap::obj::store_ref_at(addr(a[1], a[2]) as usize, a[4] as Oop);
+                    crate::heap::obj::store_ref_at(at, a[4] as Oop);
                 }
             }
             fence(Ordering::SeqCst);
@@ -135,11 +138,19 @@ pub(super) fn register(r: &mut NativeRegistry) {
         }
         ret_long(f.offset as i64)
     });
-    r.add(U, "staticFieldOffset0", "(Ljava/lang/reflect/Field;)J", |_, a| {
+    // As in HotSpot, a static field's base is its class's mirror and its offset is relative to
+    // it: code that passes the Class object itself as the base (a common way to read
+    // `MethodHandles.Lookup.IMPL_LOOKUP`) then reaches the field too. Mirrors never move (the
+    // class holds them, and what the VM holds stays in place), so the offset stays valid.
+    r.add(U, "staticFieldOffset0", "(Ljava/lang/reflect/Field;)J", |t, a| {
         let (k, i) = super::reflect::field_of(a[1] as Oop);
-        ret_long(static_slot_address(k, i) as i64)
+        let mirror = rt::mirror_of(t, k)?;
+        ret_long((static_slot_address(k, i) as i64).wrapping_sub(mirror as i64))
     });
-    r.add(U, "staticFieldBase0", "(Ljava/lang/reflect/Field;)Ljava/lang/Object;", |_, _| ret_ref(std::ptr::null_mut()));
+    r.add(U, "staticFieldBase0", "(Ljava/lang/reflect/Field;)Ljava/lang/Object;", |t, a| {
+        let (k, _) = super::reflect::field_of(a[1] as Oop);
+        ret_ref(rt::mirror_of(t, k)?)
+    });
     r.add(U, "shouldBeInitialized0", "(Ljava/lang/Class;)Z", |_, a| {
         ret_bool(rt::klass_of_mirror(a[1] as Oop).is_some_and(|k| k.init.state() != crate::klass::InitState::Initialized))
     });

@@ -48,6 +48,12 @@ pub fn layout() -> (usize, usize, usize, usize) {
 
 /// Marks the card of `addr` when it lies in the heap.
 #[inline]
+/// Whether `addr` lies in the heap's reservation (else, for Unsafe, a static slot or native
+/// memory).
+pub fn in_heap(addr: usize) -> bool {
+    TABLE.get().is_some_and(|t| addr.wrapping_sub(t.base) < t.span)
+}
+
 pub fn dirty(addr: usize) {
     let Some(t) = TABLE.get() else { return };
     let off = addr.wrapping_sub(t.base);
