@@ -159,7 +159,8 @@ fn compile_timed(m: &'static Method) -> Option<CompiledMethod> {
     }
     if env_once!("RAVA_JIT_DUMP").is_some_and(|f| m.to_string().contains(f.to_str().unwrap_or(""))) {
         let file = format!("/tmp/rava-opt-{entry:x}.bin");
-        let _ = std::fs::write(&file, &code);
+        // SAFETY: the code just installed (calls resolved).
+        let _ = std::fs::write(&file, unsafe { std::slice::from_raw_parts(entry as *const u8, code.len()) });
         eprintln!("[opt-dump] {m} -> {file}");
     }
     Some(CompiledMethod { entry, unresolved_deferrals: Default::default(), size: main, blocks: Vec::new(), frame_slots: extent as usize, tier: 2, deopts: Default::default() })

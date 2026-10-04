@@ -157,7 +157,8 @@ fn compile_timed(m: &'static Method, tier: u8) -> Option<CompiledMethod> {
         let name = m.to_string();
         if name.contains(filter.to_str().unwrap_or("")) {
             let file = format!("/tmp/rava-jit-{:x}.bin", entry);
-            let _ = std::fs::write(&file, &code);
+            // SAFETY: the code just installed (calls resolved).
+            let _ = std::fs::write(&file, unsafe { std::slice::from_raw_parts(entry as *const u8, code.len()) });
             let map: String = e.dump_map.iter().flatten().map(|(off, m, bci)| format!("{off:x} {m}@{bci}\n")).collect();
             let _ = std::fs::write(format!("{file}.map"), map);
             eprintln!("[jit-dump] {name} -> {file} (entry {entry:#x})");

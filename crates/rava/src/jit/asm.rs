@@ -71,6 +71,22 @@ pub struct Asm {
     /// The position labels were last bound at, and those labels.
     bound_at: u32,
     bound: Vec<u32>,
+    /// Relative calls to absolute addresses: (displacement position, target), resolved when the
+    /// code is installed (`code_cache::install`).
+    relocs: Vec<(u32, usize)>,
+}
+
+/// Finished machine code and the call displacements its installation resolves.
+pub struct Code {
+    pub bytes: Vec<u8>,
+    pub relocs: Vec<(u32, usize)>,
+}
+
+impl std::ops::Deref for Code {
+    type Target = [u8];
+    fn deref(&self) -> &[u8] {
+        &self.bytes
+    }
 }
 
 mod relax;
@@ -124,23 +140,23 @@ impl Asm {
     }
 
     /// `finish`, with the final position of label `l` (bound).
-    pub fn finish_at(mut self, l: Label) -> (Vec<u8>, u32) {
+    pub fn finish_at(mut self, l: Label) -> (Code, u32) {
         self.resolve();
         let at = self.labels[l.0 as usize].expect("bound label");
-        (self.buf, at)
+        (Code { bytes: self.buf, relocs: self.relocs }, at)
     }
 
     /// `finish_at`, also with the final positions of `more` (bound labels).
-    pub fn finish_labels(mut self, l: Label, more: &[Label]) -> (Vec<u8>, u32, Vec<u32>) {
+    pub fn finish_labels(mut self, l: Label, more: &[Label]) -> (Code, u32, Vec<u32>) {
         self.resolve();
         let pos = |l: &Label| self.labels[l.0 as usize].expect("bound label");
         let (at, rest) = (pos(&l), more.iter().map(pos).collect());
-        (self.buf, at, rest)
+        (Code { bytes: self.buf, relocs: self.relocs }, at, rest)
     }
 
-    pub fn finish(mut self) -> Vec<u8> {
+    pub fn finish(mut self) -> Code {
         self.resolve();
-        self.buf
+        Code { bytes: self.buf, relocs: self.relocs }
     }
 
     fn resolve(&mut self) {
@@ -452,10 +468,17 @@ impl Asm {
         self.fixups.push((self.pos(), l));
         self.d32(0);
     }
-    /// Calls an absolute address through `rax`.
+    /// Calls an absolute address: `call rel32` when the code cache is within reach of it
+    /// (resolved at installation), else through `rax`.
     pub fn call_abs(&mut self, addr: usize) {
-        self.mov_ri(R::Rax, addr as i64);
-        self.call_r(R::Rax);
+        if super::code_cache::near() {
+            self.b(0xE8);
+            self.relocs.push((self.pos(), addr));
+            self.d32(0);
+        } else {
+            self.mov_ri(R::Rax, addr as i64);
+            self.call_r(R::Rax);
+        }
     }
     pub fn push(&mut self, r: R) {
         self.rex(false, 0, 0, r as u8, false);
