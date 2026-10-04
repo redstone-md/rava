@@ -123,9 +123,10 @@ fn branches() -> &'static Mutex<HashMap<(usize, u32), &'static BranchCell>> {
     BRANCHES.get_or_init(Default::default)
 }
 
-/// The counters of `m`'s branch at `bci`, created on first use.
+/// The counters of `m`'s branch at `bci`, created on first use (in low memory: compiled code
+/// increments them through 32-bit absolute addresses).
 pub(super) fn branch_cell(m: &'static Method, bci: usize) -> &'static BranchCell {
-    branches().lock().unwrap().entry((m as *const Method as usize, bci as u32)).or_insert_with(|| Box::leak(Box::default()))
+    branches().lock().unwrap().entry((m as *const Method as usize, bci as u32)).or_insert_with(|| crate::low::leak(BranchCell::default()))
 }
 
 /// (taken, not taken) counts of `m`'s branch at `bci`, if baseline code profiled it.
