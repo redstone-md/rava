@@ -55,6 +55,23 @@ pub fn boot(t: &mut Thread) -> JResult<()> {
         rt::initialize(t, class(c))?;
     }
     call_static(t, "java/lang/System", "initPhase1", "()V", &[])?;
+    // The errors the VM itself throws are initialized now, as HotSpot does after phase 1: one
+    // first initialized where it is thrown (at a stack's end, for StackOverflowError) could fail
+    // there and be erroneous for good, each later throw of it becoming another error to build.
+    for c in [
+        "java/lang/OutOfMemoryError",
+        "java/lang/NullPointerException",
+        "java/lang/ClassCastException",
+        "java/lang/ArrayStoreException",
+        "java/lang/ArithmeticException",
+        "java/lang/StackOverflowError",
+        "java/lang/IllegalMonitorStateException",
+        "java/lang/IllegalArgumentException",
+        "java/lang/NoClassDefFoundError",
+        "java/lang/ExceptionInInitializerError",
+    ] {
+        rt::initialize(t, class(c))?;
+    }
     let status = call_static(t, "java/lang/System", "initPhase2", "(ZZ)I", &[1, 1])? as i32;
     if status != 0 {
         panic!("System.initPhase2 failed with status {status}");
