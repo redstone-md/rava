@@ -4,11 +4,13 @@
 //! - the permit is an atomic flag, and `unpark` takes the lock and wakes only when the owner is
 //!   actually blocked (a futex wake is a system call, and an inter-processor interrupt under
 //!   virtualization);
-//! - `park` first spins briefly for the permit. Producer/consumer hand-offs (an executor's
-//!   queue, a future's completion) are usually answered within microseconds, much sooner than a
-//!   sleep and wake-up round trip. The spin adapts like HotSpot's monitor spinning: it doubles
-//!   after a park the permit reached while spinning and halves after one that had to block, so
-//!   threads that wait long burn almost nothing.
+//! - an untimed `park` first spins briefly for the permit. Producer/consumer hand-offs (an
+//!   executor's queue, a future's completion) are usually answered within microseconds, much
+//!   sooner than a sleep and wake-up round trip. The spin adapts like HotSpot's monitor
+//!   spinning: it doubles after a park the permit reached while spinning and halves after one
+//!   that had to block, so threads that wait long burn almost nothing. A timed park does not
+//!   spin: short timeouts are polling loops (an event loop waiting for tasks), which wake up on
+//!   their own and would turn every wait into a busy one.
 
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering::{Relaxed, SeqCst}};
 use std::sync::{Condvar, Mutex};
@@ -47,6 +49,11 @@ impl Parker {
     /// Waits for the permit (consuming it), until `deadline` or while `interrupted` is false.
     pub fn park(&self, deadline: Option<Instant>, interrupted: &dyn Fn() -> bool) {
         if self.permit.swap(false, SeqCst) {
+            return;
+        }
+        if deadline.is_some() {
+            self.block(deadline, &|| self.permit.load(SeqCst) || interrupted());
+            self.permit.store(false, SeqCst);
             return;
         }
         let budget = self.spin.load(Relaxed);
