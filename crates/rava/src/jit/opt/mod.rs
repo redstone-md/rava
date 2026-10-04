@@ -23,6 +23,7 @@ mod freq;
 mod inline;
 mod ir;
 mod consts;
+mod dce;
 mod guards;
 mod licm;
 mod rce;
@@ -137,6 +138,7 @@ fn compile_timed(m: &'static Method) -> Option<CompiledMethod> {
     guards::hoist(&mut g);
     consts::hoist(&mut g);
     g.prune_unreachable();
+    dce::eliminate(&mut g);
     if env_once!("RAVA_OPT_SPLIT").map_or(true, |v| v != "0") {
         split::split(&mut g);
     }
