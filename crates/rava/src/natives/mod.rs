@@ -34,7 +34,7 @@ mod zip;
 mod throwable;
 
 pub(crate) use jfr::{register_on_init as jfr_register_on_init, roots as jfr_roots};
-pub(crate) use lang::{identity_hash, HASH_MASK, HASH_SHIFT};
+pub(crate) use lang::{class_modifiers, identity_hash, HASH_MASK, HASH_SHIFT};
 pub(crate) use module::{roots as module_roots, set_mirror_module, set_primitive_mirror_module};
 pub use props::string_array;
 pub use throwable::{backtrace_of, describe as describe_throwable};

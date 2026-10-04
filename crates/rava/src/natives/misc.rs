@@ -53,11 +53,9 @@ pub(super) fn register(r: &mut NativeRegistry) {
     });
     r.add("java/lang/ref/Reference", "refersTo0", "(Ljava/lang/Object;)Z", refers_to);
     r.add("java/lang/ref/PhantomReference", "refersTo0", "(Ljava/lang/Object;)Z", refers_to);
-    r.add("java/lang/ref/Reference", "clear0", "()V", |_, a| {
-        // SAFETY: live Reference.
-        unsafe { crate::heap::obj::write_ref(a[0] as Oop, referent_offset(), std::ptr::null_mut()) };
-        ret_void()
-    });
+    r.add("java/lang/ref/Reference", "clear0", "()V", clear_referent);
+    // JDK 25 declares its own for phantom references.
+    r.add("java/lang/ref/PhantomReference", "clear0", "()V", clear_referent);
     r.add("java/lang/ref/Finalizer", "isFinalizationEnabled", "()Z", |_, _| ret_bool(false));
     r.add("java/lang/Runtime", "maxMemory", "()J", |_, _| ret_long(vm().heap.max_bytes() as i64));
     r.add("java/lang/Runtime", "totalMemory", "()J", |_, _| ret_long(vm().heap.used_bytes().max(64 << 20) as i64));
@@ -189,3 +187,9 @@ fn system_time_zone() -> String {
     std::fs::read_to_string("/etc/timezone").map(|s| s.trim().to_string()).ok().filter(|s| !s.is_empty()).unwrap_or_else(|| "UTC".into())
 }
 
+
+fn clear_referent(_: &mut Thread, a: &[u64]) -> JResult<u64> {
+    // SAFETY: live Reference.
+    unsafe { crate::heap::obj::write_ref(a[0] as Oop, referent_offset(), std::ptr::null_mut()) };
+    ret_void()
+}
