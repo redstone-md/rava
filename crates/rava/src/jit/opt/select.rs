@@ -6,16 +6,25 @@
 //! Shapes: a diamond (`if` to two arms that both go to the merge) or a triangle (one arm, the
 //! other edge straight to the merge), where each arm has a single predecessor and at most
 //! `MAX_ARM` instructions that cannot trap or touch memory, and every value merged is an int,
-//! long or reference (an SSE value has no conditional move here).
+//! long or reference (an SSE value has no conditional move here). Converted shapes fold into
+//! their branch block and the pass repeats, so nested conditionals (`a > 0 ? a * a : b > 0 ?
+//! b * b : 0`) convert from the inside out.
 
 use super::ir::*;
 
 const MAX_ARM: usize = 3;
 
 pub fn convert(g: &mut Graph) {
-    for b in 0..g.blocks.len() as B {
-        if let Some(shape) = shape(g, b) {
-            rewrite(g, b, shape);
+    loop {
+        let mut changed = false;
+        for b in 0..g.blocks.len() as B {
+            if let Some(shape) = shape(g, b) {
+                rewrite(g, b, shape);
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
         }
     }
     fold_branches(g);
@@ -104,15 +113,13 @@ fn shape(g: &Graph, b: B) -> Option<Shape> {
         _ => return None,
     };
     let mb = &g.blocks[merge as usize];
-    let mut preds = mb.preds.clone();
-    preds.sort_unstable();
-    let mut want = vec![on_true, on_false];
-    want.sort_unstable();
-    if preds != want || mb.loop_header {
+    let (Some(it), Some(if_)) = (mb.preds.iter().position(|&p| p == on_true), mb.preds.iter().position(|&p| p == on_false)) else { return None };
+    if mb.loop_header || mb.preds.iter().filter(|&&p| p == on_true || p == on_false).count() != 2 {
         return None;
     }
-    // Every merged value must fit a general register.
-    if super::regalloc::phis(g, merge).any(|p| !matches!(g.ty(p), Ty::I | Ty::J | Ty::A)) {
+    // Every value selected must fit a general register.
+    let differs = |p: V| matches!(g.inst(p), Inst::Phi(i) if g.resolve(i[it]) != g.resolve(i[if_]));
+    if super::regalloc::phis(g, merge).any(|p| differs(p) && !matches!(g.ty(p), Ty::I | Ty::J | Ty::A)) {
         return None;
     }
     Some(Shape { cmp, ty, a: g.resolve(a), b: g.resolve(y), arms, merge, on_true, on_false })
@@ -129,6 +136,7 @@ fn cheap(g: &Graph, x: B) -> bool {
             Inst::Neg(_) => matches!(g.ty(v), Ty::I | Ty::J),
             Inst::Convert(op, _) => matches!(op, 0x85 | 0x88 | 0x91 | 0x92 | 0x93),
             Inst::Intrinsic(k, _, None) => k.is_pure() && matches!(g.ty(v), Ty::I | Ty::J),
+            Inst::Select(..) => matches!(g.ty(v), Ty::I | Ty::J | Ty::A),
             _ => false,
         };
         if !matches!(g.inst(v), Inst::Const(_)) {
@@ -146,9 +154,28 @@ fn rewrite(g: &mut Graph, b: B, s: Shape) {
         g.blocks[x as usize].term = Term::None;
         g.blocks[x as usize].preds.clear();
     }
-    let preds = g.blocks[s.merge as usize].preds.clone();
+    let mut preds = g.blocks[s.merge as usize].preds.clone();
     let (it, if_) = (preds.iter().position(|&p| p == s.on_true).unwrap(), preds.iter().position(|&p| p == s.on_false).unwrap());
     let phis: Vec<V> = super::regalloc::phis(g, s.merge).collect();
+    if preds.len() > 2 {
+        // The merge has other entries: the two paths become one edge from `b`, carrying a
+        // select per value that differs between them (every phi loses an input, aliased ones
+        // included).
+        let all: Vec<V> = g.blocks[s.merge as usize].insts.iter().copied().filter(|&v| matches!(g.values[v as usize].inst, Inst::Phi(_))).collect();
+        for p in all {
+            let Inst::Phi(mut inputs) = g.values[p as usize].inst.clone() else { unreachable!() };
+            let (t, f) = (g.resolve(inputs[it]), g.resolve(inputs[if_]));
+            let live = phis.contains(&p);
+            inputs[it] = if t == f || !live { t } else { g.add(b, Inst::Select(s.cmp, s.ty, s.a, s.b, t, f), g.ty(p)) };
+            inputs.remove(if_);
+            g.values[p as usize].inst = Inst::Phi(inputs);
+        }
+        preds[it] = b;
+        preds.remove(if_);
+        g.blocks[s.merge as usize].preds = preds;
+        g.blocks[b as usize].term = Term::Goto(s.merge);
+        return;
+    }
     for p in phis {
         let Inst::Phi(inputs) = g.inst(p).clone() else { unreachable!() };
         let (t, f) = (g.resolve(inputs[it]), g.resolve(inputs[if_]));
@@ -159,4 +186,26 @@ fn rewrite(g: &mut Graph, b: B, s: Shape) {
     g.blocks[s.merge as usize].insts.retain(|v| !aliased.contains(v));
     g.blocks[s.merge as usize].preds = vec![b];
     g.blocks[b as usize].term = Term::Goto(s.merge);
+    absorb(g, b, s.merge);
+}
+
+/// Folds the merge `m`, now entered only from `b`, into `b`: an enclosing branch then sees one
+/// straight-line arm.
+fn absorb(g: &mut Graph, b: B, m: B) {
+    let mb = &g.blocks[m as usize];
+    if m == b || mb.loop_header || mb.preds[..] != [b] || matches!(mb.term, Term::None) {
+        return;
+    }
+    let insts = std::mem::take(&mut g.blocks[m as usize].insts);
+    let term = std::mem::replace(&mut g.blocks[m as usize].term, Term::None);
+    g.blocks[m as usize].preds.clear();
+    for s in term.successors() {
+        for p in &mut g.blocks[s as usize].preds {
+            if *p == m {
+                *p = b;
+            }
+        }
+    }
+    g.blocks[b as usize].insts.extend(insts);
+    g.blocks[b as usize].term = term;
 }
