@@ -1,0 +1,141 @@
+//! Evacuation in a young collection: a young object the trace reaches through the heap (an old
+//! object's dirty card, or another object already moved or kept) is copied into an old page and
+//! the reference rewritten; its cell is freed by the sweep. Objects a root references are marked
+//! in place first (`mark.rs`), so stacks, statics and the VM's own references never see a move;
+//! so are locked objects (inflated monitors are found by address) and large ones.
+//!
+//! Allocation pages thus keep few survivors, and are reused whole by the next allocations
+//! instead of turning into pages of scattered short holes, while survivors are packed densely.
+//!
+//! A moved object's mark word holds its new address tagged `FORWARDED` (lock state 3, which
+//! locking never uses); a marker copying it holds it at `BUSY` meanwhile, and others wait.
+
+use super::mark::Shared;
+use super::space::{class_of, CLASSES, CLASS_SIZES};
+use crate::heap::{obj, Oop};
+use crate::klass::KlassKind;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+const FORWARDED: u64 = 3;
+const BUSY: u64 = FORWARDED;
+
+/// Whether young collections move objects (`RAVA_GC_MOVE=0` keeps them in place; so does
+/// `RAVA_GC_VERIFY`, whose check compares marks of objects in place).
+pub(super) fn enabled() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("RAVA_GC_MOVE").map_or(true, |v| v != "0") && std::env::var_os("RAVA_GC_VERIFY").is_none())
+}
+
+/// A marker's runs of old cells, per size class: `(next, end)`.
+pub(super) struct Runs([(usize, usize); CLASSES]);
+
+impl Default for Runs {
+    fn default() -> Self {
+        Runs([(0, 0); CLASSES])
+    }
+}
+
+/// Bytes of the live object `o`.
+fn size_of(o: Oop) -> usize {
+    // SAFETY: a live object's class and, for an array, its length.
+    unsafe {
+        let k = obj::klass(o);
+        match k.kind {
+            KlassKind::Instance => k.instance_size() as usize,
+            _ => crate::heap::array_bytes(k.elem_size(), obj::array_length(o)),
+        }
+    }
+}
+
+impl Shared<'_> {
+    /// Rewrites the reference at `slot` to where its object is after this collection (moving
+    /// it if young), queuing what must be scanned.
+    pub(super) fn update(&self, slot: usize, stack: &mut Vec<usize>, runs: &mut Runs) {
+        // SAFETY: a reference field or element of a live object.
+        let t = unsafe { obj::load_ref_at(slot) } as usize;
+        if t == 0 {
+            return;
+        }
+        let n = self.forward(t, stack, runs);
+        if n != t {
+            // SAFETY: as above; the object moved, the slot follows (no card: the object it
+            // now references is old).
+            unsafe { obj::store_ref_raw(slot, n as Oop) };
+        }
+    }
+
+    /// Where the object at `t` is after this collection: itself if old, kept in place (large,
+    /// locked, or marked from a root) or out of old cells; else a copy in an old page.
+    fn forward(&self, t: usize, stack: &mut Vec<usize>, runs: &mut Runs) -> usize {
+        let space = self.space;
+        let keep = |stack: &mut Vec<usize>| {
+            if self.mark_start(t) {
+                stack.push(t);
+            }
+            t
+        };
+        let Some(index) = space.page_index(t) else { return keep(stack) };
+        let Some(meta) = space.pages[index].as_ref() else { return t };
+        let cell = meta.cell_of(t - space.page_addr(index));
+        // SAFETY: the mark words are only accessed atomically during marking.
+        let word = unsafe { &*(meta.marks.as_ptr().add(cell / 64) as *const AtomicU64) };
+        if word.load(Ordering::Relaxed) & (1 << (cell % 64)) != 0 {
+            return t;
+        }
+        // SAFETY: a live young object.
+        let mark = unsafe { obj::mark(t as Oop) };
+        loop {
+            let m = mark.load(Ordering::Acquire);
+            match m & 3 {
+                FORWARDED if m == BUSY => std::hint::spin_loop(),
+                FORWARDED => return (m & !3) as usize,
+                0 => {
+                    if mark.compare_exchange(m, BUSY, Ordering::AcqRel, Ordering::Relaxed).is_err() {
+                        continue;
+                    }
+                    let Some(n) = self.copy(t, m, runs) else {
+                        mark.store(m, Ordering::Release);
+                        return keep(stack);
+                    };
+                    mark.store(n as u64 | FORWARDED, Ordering::Release);
+                    stack.push(n);
+                    return n;
+                }
+                _ => return keep(stack),
+            }
+        }
+    }
+
+    /// Copies the object at `t` (mark word `m`) into an old cell, marked; None without one.
+    fn copy(&self, t: usize, m: u64, runs: &mut Runs) -> Option<usize> {
+        let size = size_of(t as Oop);
+        let class = class_of(size);
+        let cell = CLASS_SIZES[class] as usize;
+        let run = &mut runs.0[class];
+        if run.0 + cell > run.1 {
+            let promote = self.promote.lock().unwrap();
+            let space: *mut super::space::Space = *promote;
+            // SAFETY: the space's page lists and fresh pages change only under this lock; the
+            // markers read no page `old_run` hands out or mutates the free cells of.
+            let (_, start, end) = unsafe { (*space).old_run(class) }?;
+            *run = (start, end);
+        }
+        let n = run.0;
+        run.0 += cell;
+        // SAFETY: a free old cell of at least `size` bytes, owned by this marker; the source is
+        // a live object only this marker copies (its mark word holds BUSY).
+        unsafe {
+            std::ptr::copy_nonoverlapping(t as *const u8, n as *mut u8, size);
+            obj::mark(n as Oop).store(m, Ordering::Relaxed);
+        }
+        let space = self.space;
+        let index = space.page_index(n).expect("old run in the page area");
+        let meta = space.pages[index].as_ref().expect("old page");
+        let c = meta.cell_of(n - space.page_addr(index));
+        // SAFETY: as in `forward`.
+        let word = unsafe { &*(meta.marks.as_ptr().add(c / 64) as *const AtomicU64) };
+        word.fetch_or(1 << (c % 64), Ordering::Relaxed);
+        self.marked.fetch_add(1, Ordering::Relaxed);
+        Some(n)
+    }
+}

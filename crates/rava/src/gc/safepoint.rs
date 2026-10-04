@@ -55,8 +55,21 @@ fn current_stack_top() -> usize {
     }
 }
 
+thread_local!(static ATTACHED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) });
+
+/// Excludes collections while held, on a thread that is not a Java thread (a compiler reading
+/// the heap: a young collection moves objects, `evacuate.rs`); None on a Java thread, which no
+/// collection runs past anyway (it stops only at polls, never inside the caller).
+pub fn heap_access() -> Option<std::sync::MutexGuard<'static, ()>> {
+    if ATTACHED.with(|a| a.get()) {
+        return None;
+    }
+    Some(registry().collecting.lock().unwrap_or_else(|e| e.into_inner()))
+}
+
 /// Registers `t` (at its final address) as a Java thread of this OS thread.
 pub fn attach(t: &mut Thread) {
+    ATTACHED.with(|a| a.set(true));
     let rec: &'static Record = Box::leak(Box::new(Record {
         thread: AtomicPtr::new(t),
         stack_top: current_stack_top(),
@@ -75,6 +88,7 @@ pub fn attach(t: &mut Thread) {
 }
 
 pub fn detach(t: &mut Thread) {
+    ATTACHED.with(|a| a.set(false));
     if let Some(rec) = t.gc_record.take() {
         enter_native(rec);
         registry().threads.lock().unwrap().retain(|r| !std::ptr::eq(*r, rec));
