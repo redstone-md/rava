@@ -63,6 +63,9 @@ pub struct CompiledMethod {
     pub frame_slots: usize,
     /// 1 for the first compilation, 2 once recompiled hot (`tier.rs`).
     pub tier: u8,
+    /// Code of the optimizing tier (else the baseline compiler's, which frames can always
+    /// fall back to: `Method::baseline`).
+    pub optimized: bool,
     /// Times optimized code left through deoptimization (`opt/deopt.rs`).
     pub deopts: std::sync::atomic::AtomicU32,
 }
