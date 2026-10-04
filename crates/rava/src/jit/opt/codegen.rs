@@ -324,8 +324,8 @@ impl Gen<'_> {
         // The frame is linked to its caller (every caller publishes its innermost header as
         // `Thread::top` before a call), but `top` and `sp` are only published here once the
         // method calls out (`link`, `anchor`); see the module comment.
+        // The BCI slot is written by whatever publishes the frame (`link`, `anchor`).
         a.store(true, h(header::METHOD), R::Rdx);
-        a.store_imm(h(header::BCI), 0);
         a.load(true, R::Rcx, mem(R::R12, offsets::TOP));
         a.store(true, h(header::CALLER), R::Rcx);
         self.poll();
@@ -533,6 +533,8 @@ impl Gen<'_> {
     /// Publishes this frame as the innermost one (`Thread::top` and `sp`) for a runtime call
     /// without a state (polls, monitors, deoptimization). Clobbers rax.
     pub fn anchor(&mut self) {
+        // No call site to name: the method's entry.
+        self.a.store_imm(self.hdr(header::BCI), 0);
         self.a.lea(R::Rax, self.hdr(header::METHOD));
         self.a.store(true, mem(R::R12, offsets::TOP), R::Rax);
         self.publish_sp();
