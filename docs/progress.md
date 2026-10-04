@@ -976,3 +976,45 @@ A/B on the 42-mod NeoForge pack (`bench/paper_ab.sh -n 3 -b <pack>`, `ed26678` a
 means): wall to `Done` 45.8 s against 51.1 s (-10%), user+sys CPU 91.1 s against 146.1 s (-38%),
 peak RSS 1800 MiB against 1918 MiB (-6%; java ranged 1823-2058). The server's own `Done` clock
 is still behind, 25.7 s against 22.9 s: world generation runs hotter code in C2.
+
+## 2026-10-04 (cont.) — threads: hand-offs, monitors, and what bounds world generation
+
+**What a JVM can and cannot do for a server's threads.** It cannot run one thread's code on
+several cores: the Java memory model and the order of side effects forbid it, and no safe
+transformation of arbitrary code does it. What it can do is make the threads the application
+already has cost less: cheap hand-offs between them, monitors that do not serialize on the VM,
+no VM work on their critical path.
+
+**Where world generation stands.** On this 4-CPU host, during the 42-mod pack's spawn
+preparation java keeps 1.4 CPUs busy on average and its three `Worker-Main` threads 0.75 of
+them; rava keeps 2.0 busy. The chunk pipeline is bound by its dependencies and by the speed of
+the code on its critical path, not by cores.
+
+**Hand-offs (`parker.rs`).** `LockSupport.park` blocked at once and `unpark` always issued a
+futex wake (a system call and, in a VM, an inter-processor interrupt). The permit is now an
+atomic, an untimed park spins for it within an adaptive 1-20 µs budget, and unpark wakes only a
+blocked owner. Timed parks do not spin: short timeouts are polling loops, and spinning in them
+kept Paper's server thread busy for 7 s of CPU. Ping-pong through park/unpark: 36 → 0.4 µs a
+round trip (java 38); a CompletableFuture hop between two executors: 19 → 1.2 µs (java 21).
+
+**Monitors (`sync/monitor.rs`).** An inflated monitor took a sharded map lookup, an Arc clone and
+a mutex on every enter and exit, and woke the entry condition on every exit. The owner is now an
+atomic claimed by CAS, contenders spin adaptively (0.5-20 µs) before blocking, an exit wakes an
+entrant only if one is blocked, waiters spin for their notification with the lock free, and each
+thread caches monitor lookups. Four threads on one monitor: 1650 → ~350 ns an operation;
+wait/notify ping-pong: 37 → 1.9 µs (java 40), with 140x less system time.
+
+**The critical path's code.** The climate R-tree search (`Climate$RTree`, here biolith's
+`searchTreeGet`) was 18% of world generation. Two optimizer gaps made it slower than C2 even
+with the tree in cache:
+
+- `licm.rs` hoisted field loads only of objects known non-null at the preheader; the node's
+  first null check was inside the loop. Loop-invariant null checks that run on every iteration
+  are now predicated into one guard before the loop (deoptimizing to the loop's entry state), so
+  `node.parameterSpace` and its bounds check leave the loop.
+- `select.rs` did not convert nested conditionals (`a > 0 ? a * a : b > 0 ? b * b : 0` merges
+  three paths into one block). A diamond into a wider merge now folds into one edge with a
+  select per differing value, repeatedly, so both branches become conditional moves.
+
+Tree search microbenchmark: 1347 → 592 ns per search with the tree in cache (java 1071), 3089 →
+1258 ns on a 56k-node tree (java 2440).
