@@ -31,6 +31,7 @@ mod liveness;
 mod locals;
 mod moves;
 mod nullcheck;
+pub(crate) mod osr;
 mod operands;
 mod phis;
 mod regalloc;
@@ -106,7 +107,7 @@ pub fn compile(m: &'static Method) -> Option<CompiledMethod> {
     let started = std::time::Instant::now();
     // A failure in the compiler abandons this compilation, not the compiler thread; the method
     // keeps running at the lower tier (HotSpot's compilation bailout).
-    let cm = std::panic::catch_unwind(|| compile_timed(m)).unwrap_or_else(|_| {
+    let cm = std::panic::catch_unwind(|| compile_timed(m, None)).unwrap_or_else(|_| {
         eprintln!("[opt] compilation of {m} failed; it stays at the lower tier");
         None
     });
@@ -116,16 +117,30 @@ pub fn compile(m: &'static Method) -> Option<CompiledMethod> {
     cm
 }
 
-fn compile_timed(m: &'static Method) -> Option<CompiledMethod> {
+/// Compiles `m` entered at the loop header `bci` from a running frame (`osr.rs`); its entry
+/// is the bridge baseline code jumps to.
+fn compile_osr(m: &'static Method, bci: u32) -> Option<CompiledMethod> {
+    std::panic::catch_unwind(|| compile_timed(m, Some(bci))).unwrap_or_else(|_| {
+        eprintln!("[opt] compilation of {m} at bci {bci} failed; the loop stays at the lower tier");
+        None
+    })
+}
+
+fn compile_timed(m: &'static Method, osr: Option<u32>) -> Option<CompiledMethod> {
     let log = env_once!("RAVA_OPT_LOG").is_some();
     let monitor = match (m.is_synchronized(), m.is_static()) {
         (false, _) => None,
+        _ if osr.is_some() => return None,
         (true, false) => Some(codegen::Monitor::Receiver),
         (true, true) => Some(codegen::Monitor::Mirror(Some(m.holder.mirror()).filter(|o| !o.is_null())? as usize)),
     };
-    let Some((mut g, extent)) = build::build(m) else {
+    let built = match osr {
+        None => build::build(m),
+        Some(bci) => osr::local_types(m, bci as usize).and_then(|types| build::build_osr(m, bci as usize, &types)),
+    };
+    let Some((mut g, extent)) = built else {
         if log {
-            eprintln!("[opt] refused {m}");
+            eprintln!("[opt] refused {m}{}", osr.map_or(String::new(), |b| format!(" at bci {b}")));
         }
         return None;
     };
@@ -155,14 +170,15 @@ fn compile_timed(m: &'static Method) -> Option<CompiledMethod> {
         let locs: Vec<String> = al.loc.iter().enumerate().filter(|(_, l)| !matches!(l, regalloc::Loc::None | regalloc::Loc::Const(_))).map(|(v, l)| format!("v{v}={l:?}")).collect();
         eprintln!("[opt-alloc] {}", locs.join(" "));
     }
-    let (code, main, faults) = codegen::generate(&g, &al, m, extent, monitor);
+    let (code, main, faults) = codegen::generate(&g, &al, m, extent, monitor, osr);
     let entry = code_cache::install(&code);
     if !faults.is_empty() {
         super::fault::register(faults.into_iter().map(|(at, to)| (entry + at, entry + to)));
     }
-    code_cache::perf_map(entry, code.len(), &format!("{m} [opt]"));
+    let tag = osr.map_or(String::new(), |b| format!(" at bci {b}"));
+    code_cache::perf_map(entry, code.len(), &format!("{m} [opt{}]", if osr.is_some() { " osr" } else { "" }));
     if log {
-        eprintln!("[opt] {m}: {} values, {} blocks, {} spill slots -> {} bytes ({main} main)", g.values.len(), al.order.len(), al.spill_slots, code.len());
+        eprintln!("[opt] {m}{tag}: {} values, {} blocks, {} spill slots -> {} bytes ({main} main)", g.values.len(), al.order.len(), al.spill_slots, code.len());
     }
     if env_once!("RAVA_JIT_DUMP").is_some_and(|f| m.to_string().contains(f.to_str().unwrap_or(""))) {
         let file = format!("/tmp/rava-opt-{entry:x}.bin");

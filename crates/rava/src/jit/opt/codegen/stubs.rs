@@ -127,7 +127,7 @@ impl Gen<'_> {
             }
         }
         let frames = scopes.iter().map(|sc| crate::jit::opt::deopt::Frame { method: sc.method, frame: sc.frame, bci: sc.bci, depth: sc.stack.len() as u32 }).collect();
-        crate::jit::opt::deopt::Desc { frames, slots, remats }
+        crate::jit::opt::deopt::Desc { frames, slots, remats, osr: self.osr }
     }
 
     /// Saves the allocatable registers where the runtime reads the state's values from, then

@@ -33,6 +33,8 @@ pub struct Method {
     /// The latest baseline-compiled code (with block entry points), which frames already
     /// running it keep using after optimized code is installed.
     baseline: std::sync::atomic::AtomicPtr<crate::jit::CompiledMethod>,
+    /// Optimized versions entered from a running loop (`jit/opt/osr.rs`), newest first.
+    osr: std::sync::atomic::AtomicPtr<crate::jit::OsrCode>,
     pub(crate) recompiles: AtomicU32,
     /// Recompilations of optimized code after deoptimizations (`jit/opt`).
     pub(crate) deopt_recompiles: AtomicU32,
@@ -74,6 +76,7 @@ impl Method {
             overridden: crate::low::leak(std::sync::atomic::AtomicBool::new(false)),
             compiled: std::sync::atomic::AtomicPtr::new(std::ptr::null_mut()),
             baseline: std::sync::atomic::AtomicPtr::new(std::ptr::null_mut()),
+            osr: std::sync::atomic::AtomicPtr::new(std::ptr::null_mut()),
             recompiles: AtomicU32::new(0),
             deopt_recompiles: AtomicU32::new(0),
             reprofiles: AtomicU32::new(0),
@@ -132,6 +135,25 @@ impl Method {
     pub(crate) fn baseline(&self) -> Option<&'static crate::jit::CompiledMethod> {
         // SAFETY: published compiled methods are leaked and never freed.
         unsafe { self.baseline.load(Ordering::Acquire).as_ref() }
+    }
+
+    /// The newest on-stack-replacement version.
+    pub(crate) fn osr_head(&self) -> Option<&'static crate::jit::OsrCode> {
+        // SAFETY: published versions are leaked and never freed.
+        unsafe { self.osr.load(Ordering::Acquire).as_ref() }
+    }
+
+    /// Publishes `c` as the newest on-stack-replacement version.
+    pub(crate) fn push_osr(&self, c: crate::jit::OsrCode) -> &'static crate::jit::OsrCode {
+        let c = Box::leak(Box::new(c));
+        loop {
+            let head = self.osr.load(Ordering::Acquire);
+            // SAFETY: as in `osr_head`.
+            c.set_next(unsafe { head.as_ref() });
+            if self.osr.compare_exchange(head, c, Ordering::AcqRel, Ordering::Acquire).is_ok() {
+                return c;
+            }
+        }
     }
 
     /// Publishes new machine code for this method.

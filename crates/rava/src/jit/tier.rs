@@ -66,17 +66,19 @@ pub(super) fn compile_tier2(m: &'static Method) {
 pub extern "sysv64" fn tier_up_osr(t: *mut Thread, m: *const Method, bci: u64, locals: *mut u64) -> usize {
     tier_up(m);
     // SAFETY: the current thread and a live method.
-    let (t, m) = unsafe { (&*t, &*m) };
-    let Some(cm) = m.compiled().filter(|c| c.tier >= 2) else {
-        // Ask again after another threshold's worth of back-edges.
-        m.backedges.store(0, Ordering::Relaxed);
-        return 0;
-    };
+    let (t, m): (_, &'static Method) = unsafe { (&*t, &*m) };
     let room = (t.stack_limit() as usize).saturating_sub(locals as usize) / 8;
-    if cm.frame_slots > room {
-        return 0;
+    // Baseline tier-2 code has block entries; optimized code is entered through a version
+    // compiled for this loop (`opt/osr.rs`), requested now while the method's own tier-2
+    // compilation may still be under way.
+    let block = m.compiled().filter(|c| c.tier >= 2 && c.frame_slots <= room).and_then(|cm| cm.address_of(bci as u32));
+    if let Some(address) = super::opt::osr::entry(m, bci as u32, room).or(block) {
+        return address;
     }
-    cm.address_of(bci as u32).unwrap_or(0)
+    super::opt::osr::request(m, bci as u32);
+    // Ask again after another threshold's worth of back-edges.
+    m.backedges.store(0, Ordering::Relaxed);
+    0
 }
 
 impl Emitter {

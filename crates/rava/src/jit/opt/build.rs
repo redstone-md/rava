@@ -31,7 +31,9 @@ pub(super) struct Scope {
     npreds: HashMap<B, usize>,
     /// Of those, the forward ones (not a loop's back edge), and how many have been built.
     fwd: HashMap<B, (usize, usize)>,
-    /// The edge into bci 0 has been made (later edges are the scope's own).
+    /// Where the scope is entered: bci 0, or a loop header for an OSR version (`osr.rs`).
+    start: usize,
+    /// The edge into `start` has been made (later edges are the scope's own).
     entered: bool,
     /// For each loop header: the locals no instruction of the loop writes (when the loop is
     /// entered by one forward edge only), which keep their entry value instead of a phi.
@@ -78,6 +80,7 @@ impl Scope {
             blocks: HashMap::new(),
             npreds: HashMap::new(),
             fwd: HashMap::new(),
+            start: 0,
             entered: false,
             invariant: HashMap::new(),
             entry: HashMap::new(),
@@ -155,8 +158,7 @@ pub(super) struct Builder {
 
 /// Builds the graph of `m`; `None` if some instruction is not supported. Returns the frame size.
 pub(super) fn build(m: &'static Method) -> Option<(Graph, i32)> {
-    let sc = Scope::new(m, None, 0)?;
-    let mut b = Builder { g: Graph::default(), extent: sc.frame_end(), sc, cur: 0, spent: 0, chain: vec![(m, None)], seq: 0, speculate: m.deopt_recompiles.load(std::sync::atomic::Ordering::Relaxed) < super::SPECULATIVE_RECOMPILES, nonnull: Vec::new(), stable: HashMap::new(), numbered: HashMap::new(), loads: HashMap::new(), exact: Vec::new(), complete_phis: Default::default(), unprofiled_call: false, cold_call: false, bounds: Vec::new(), exits: HashMap::new() };
+    let mut b = Builder::new(Scope::new(m, None, 0)?);
     // The entry block reads the parameters, then enters bci 0 like any other edge.
     let start = b.g.new_block(-1);
     b.start_block(start);
@@ -178,7 +180,45 @@ pub(super) fn build(m: &'static Method) -> Option<(Graph, i32)> {
     Some((b.g, b.extent))
 }
 
+/// Builds the version of `m` entered at the loop header `bci` from a running frame: the locals
+/// live there (of the kinds `types` gives) are read from their frame slots as parameters, and
+/// only what the header reaches is built. `None` if a live local has no single kind or the
+/// operand stack is not empty there.
+pub(super) fn build_osr(m: &'static Method, bci: usize, types: &[Option<Ty>]) -> Option<(Graph, i32)> {
+    let mut sc = Scope::new(m, None, 0)?;
+    if sc.an.depth.get(bci).copied().flatten() != Some(0) || !sc.an.leader[bci] {
+        return None;
+    }
+    sc.start = bci;
+    let mut b = Builder::new(sc);
+    let start = b.g.new_block(-1);
+    b.start_block(start);
+    for (slot, &ty) in types.iter().enumerate() {
+        // The second half of a long or double is live with it.
+        let half = slot > 0 && types[slot - 1].is_some_and(Ty::wide);
+        if b.sc.live.live(bci, slot) && !half {
+            b.sc.locals[slot] = Some(b.g.add(start, Inst::Param(slot as u16), ty?));
+        }
+    }
+    // The receiver, unless the method stores into local 0.
+    if let (false, Some(this)) = (m.is_static(), b.sc.locals[0]) {
+        if !super::locals::written(b.sc.code, 0, b.sc.code.len(), 1)[0] {
+            b.nonnull.push(this);
+            b.g.receiver = Some(this);
+        }
+    }
+    b.enter_scope();
+    b.build_scope()?;
+    Some((b.g, b.extent))
+}
+
 impl Builder {
+    fn new(sc: Scope) -> Builder {
+        let m = sc.m;
+        let speculate = m.deopt_recompiles.load(std::sync::atomic::Ordering::Relaxed) < super::SPECULATIVE_RECOMPILES;
+        Builder { g: Graph::default(), extent: sc.frame_end(), sc, cur: 0, spent: 0, chain: vec![(m, None)], seq: 0, speculate, nonnull: Vec::new(), stable: HashMap::new(), numbered: HashMap::new(), loads: HashMap::new(), exact: Vec::new(), complete_phis: Default::default(), unprofiled_call: false, cold_call: false, bounds: Vec::new(), exits: HashMap::new() }
+    }
+
     /// Makes `block` the current one, next in code order, with the caches of its single
     /// predecessor (`build_cache.rs`).
     pub fn start_block(&mut self, block: B) {
@@ -196,11 +236,11 @@ impl Builder {
         self.seq += 1;
     }
 
-    /// Creates the scope's blocks and enters its bci 0 from the current block, whose state
-    /// (`sc.locals`) holds the arguments.
+    /// Creates the scope's blocks and enters its start (bci 0) from the current block, whose
+    /// state (`sc.locals`) holds the arguments.
     pub fn enter_scope(&mut self) {
         self.make_blocks();
-        self.goto(0);
+        self.goto(self.sc.start);
         self.sc.entered = true;
     }
 
@@ -262,9 +302,9 @@ impl Builder {
         let sc = &mut self.sc;
         // Every edge (source instruction start and end, target) for the loops' extents.
         let mut edges: Vec<(usize, usize, usize)> = Vec::new();
-        // Predecessors: the entry edge into bci 0, block ends, and fall-through into leaders.
-        *sc.npreds.entry(sc.blocks[&0]).or_default() += 1;
-        sc.fwd.entry(sc.blocks[&0]).or_default().0 += 1;
+        // Predecessors: the entry edge into the start, block ends, and fall-through into leaders.
+        *sc.npreds.entry(sc.blocks[&sc.start]).or_default() += 1;
+        sc.fwd.entry(sc.blocks[&sc.start]).or_default().0 += 1;
         let mut pc = 0;
         while pc < sc.code.len() {
             let len = insn_len(sc.code, pc);
@@ -310,7 +350,8 @@ impl Builder {
                 }
                 end = grown;
             }
-            if edges.iter().any(|&(pc, _, t)| pc < h && t > h && t < end) {
+            // So does an OSR entry inside the loop: its back edges then arrive before its entry.
+            if edges.iter().any(|&(pc, _, t)| pc < h && t > h && t < end) || (h < sc.start && sc.start < end) {
                 continue;
             }
             let written = super::locals::written(sc.code, h, end, max_locals);
@@ -335,7 +376,7 @@ impl Builder {
             pc += len;
         }
         let mut live = vec![false; code.len()];
-        let mut work = vec![0];
+        let mut work = vec![self.sc.start];
         while let Some(pc) = work.pop() {
             if pc >= code.len() || live[pc] {
                 continue;
@@ -438,7 +479,10 @@ impl Builder {
         let entry: Vec<Option<V>> = slots.iter().enumerate().map(|(i, &s)| if keep(i) { s } else { phis[i] }).collect();
         let (l, s) = entry.split_at(self.sc.locals.len());
         // The first edge's facts; later forward edges narrow them to what holds on every path.
-        self.sc.entry.insert(to, (l.to_vec(), s.to_vec(), self.nonnull.clone()));
+        // A loop header first reached by a back edge (an outer loop of an OSR version's) keeps
+        // none: later back edges narrow nothing.
+        let facts = if back { Vec::new() } else { self.nonnull.clone() };
+        self.sc.entry.insert(to, (l.to_vec(), s.to_vec(), facts));
         self.sc.phis.insert(to, phis);
     }
 
