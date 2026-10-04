@@ -54,7 +54,7 @@ pub fn resolve_constant(t: &mut Thread, k: &'static Klass, index: u16) -> JResul
         return Ok(o as Oop);
     }
     let cf = k.cf.as_ref().unwrap();
-    let o = match cf.pool[index as usize] {
+    let o = match cf.pool.at(index as usize) {
         Cp::Int(v) => box_value(t, BasicType::Int, v as i64 as u64)?,
         Cp::Float(v) => box_value(t, BasicType::Float, v.to_bits() as u64)?,
         Cp::Long(v) => box_value(t, BasicType::Long, v as u64)?,
@@ -88,7 +88,7 @@ fn bad(t: &mut Thread) -> crate::thread::Throw {
 fn method_handle(t: &mut Thread, k: &'static Klass, kind: u8, member: u16) -> JResult<Oop> {
     let cf = k.cf.as_ref().unwrap();
     let (_, name, desc) = cf.member_ref(member).ok_or_else(|| bad(t))?;
-    let class_index = match cf.pool[member as usize] {
+    let class_index = match cf.pool.at(member as usize) {
         Cp::Field { class, .. } | Cp::Method { class, .. } | Cp::IMethod { class, .. } => class,
         _ => return Err(bad(t)),
     };

@@ -246,7 +246,7 @@ impl Builder {
 
     fn ldc(&mut self, pc: usize) -> Option<()> {
         let index = if self.sc.code[pc] == 0x12 { self.sc.code[pc + 1] as u16 } else { self.u2(pc) };
-        let (ty, bits) = match self.sc.cf.pool[index as usize] {
+        let (ty, bits) = match self.sc.cf.pool.at(index as usize) {
             Cp::Int(v) => (Ty::I, v as i64),
             Cp::Float(v) => (Ty::F, v.to_bits() as i64),
             Cp::Long(v) => (Ty::J, v),

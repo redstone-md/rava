@@ -115,6 +115,17 @@ impl Symbol {
         sym
     }
 
+    /// The symbol's address (for packed storage, `cpool.rs`).
+    pub fn to_raw(self) -> usize {
+        self.0 as *const u32 as usize
+    }
+
+    /// # Safety
+    /// `raw` must come from `to_raw`.
+    pub unsafe fn from_raw(raw: usize) -> Symbol {
+        Symbol(&*(raw as *const u32))
+    }
+
     pub fn as_str(self) -> &'static str {
         // SAFETY: the length is followed by that many bytes of UTF-8, copied from a `str`.
         unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts((self.0 as *const u32).add(1) as *const u8, *self.0 as usize)) }

@@ -194,7 +194,7 @@ impl Emitter {
 
     pub(super) fn invokedynamic(&mut self, pc: usize, depth: u16) {
         let index = u16::from_be_bytes([self.code[pc + 1], self.code[pc + 2]]);
-        let Cp::InvokeDynamic { nat, .. } = self.cf.pool[index as usize] else { return self.defer(pc, depth) };
+        let Cp::InvokeDynamic { nat, .. } = self.cf.pool.at(index as usize) else { return self.defer(pc, depth) };
         let (_, desc) = self.cf.name_and_type(nat).unwrap();
         self.linked_site(pc, depth, indy::site_sig(desc), 0);
     }

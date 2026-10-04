@@ -95,7 +95,7 @@ impl Emitter {
 
     fn ldc_reg(&mut self, pc: usize) -> bool {
         let index = if self.code[pc] == 0x12 { self.code[pc + 1] as u16 } else { self.cp_index(pc) };
-        let (v, wide) = match self.cf.pool[index as usize] {
+        let (v, wide) = match self.cf.pool.at(index as usize) {
             Cp::Int(v) => (v as i64, false),
             Cp::Float(v) => (v.to_bits() as i64, false),
             Cp::Long(v) => (v, true),
