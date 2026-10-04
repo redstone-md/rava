@@ -25,6 +25,11 @@ pub(super) struct Scope {
     /// Conditional branches with a direction left to the interpreter (true: the jump), decided
     /// once per scope as its blocks are made, since profiles change while it compiles.
     pub pruned: HashMap<usize, bool>,
+    /// Conditional branches of an OSR version first-tier code never executed (C2's
+    /// `Reason_unreached`): the code after the loop the version is entered at, which has no
+    /// profile yet. They leave for the interpreter, so that code is compiled once it has run
+    /// (and got its own OSR version if it loops) instead of now without profiles.
+    unreached: std::collections::HashSet<usize>,
     /// The block starting at each leader.
     blocks: HashMap<usize, B>,
     /// Predecessor edges each block will get (from the bytecode).
@@ -77,6 +82,7 @@ impl Scope {
             an,
             throws: crate::jit::analysis::throw_paths(info.code),
             pruned: HashMap::new(),
+            unreached: Default::default(),
             blocks: HashMap::new(),
             npreds: HashMap::new(),
             fwd: HashMap::new(),
@@ -369,7 +375,9 @@ impl Builder {
             let len = insn_len(code, pc);
             if self.sc.an.depth[pc].is_some() && matches!(code[pc], 0x99..=0xa6 | 0xc6 | 0xc7) {
                 let target = (pc as i64 + crate::jit::analysis::i2(code, pc + 1) as i64) as usize;
-                if let Some(taken) = self.never_taken(pc, target, pc + len) {
+                if self.sc.start != 0 && crate::jit::profile::branch_counts(self.sc.m, pc) == Some((0, 0)) && self.speculates(self.sc.m, pc) {
+                    self.sc.unreached.insert(pc);
+                } else if let Some(taken) = self.never_taken(pc, target, pc + len) {
                     pruned.insert(pc, taken);
                 }
             }
@@ -382,7 +390,7 @@ impl Builder {
                 continue;
             }
             live[pc] = true;
-            if self.sc.throws[pc] && self.sc.blocks.contains_key(&pc) && self.speculates(self.sc.m, pc) {
+            if self.sc.throws[pc] && self.sc.blocks.contains_key(&pc) && self.speculates(self.sc.m, pc) || self.sc.unreached.contains(&pc) {
                 continue;
             }
             let len = insn_len(code, pc);
@@ -406,6 +414,10 @@ impl Builder {
         }
         loop {
             self.sc.bci = pc;
+            if self.sc.unreached.contains(&pc) {
+                self.deopt();
+                return Some(());
+            }
             let len = insn_len(self.sc.code, pc);
             match self.build_insn(pc) {
                 Some(true) => {}
