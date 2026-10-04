@@ -122,17 +122,17 @@ impl Vm {
     }
 
     /// The statics of `classes` (the only class roots that change after being set).
-    pub(crate) fn class_statics(&self, classes: &[&'static Klass], conservative: &mut dyn FnMut(usize)) {
+    /// The address of each reference-typed static slot of `classes` (full-width references).
+    pub(crate) fn class_statics(&self, classes: &[&'static Klass], slot: &mut dyn FnMut(usize)) {
         for &k in classes {
-            for slot in k.statics.iter() {
-                conservative(slot.load(std::sync::atomic::Ordering::Relaxed) as usize);
+            for f in k.fields.iter().filter(|f| f.is_static() && f.ty.is_ref()) {
+                slot(&k.statics[f.offset as usize] as *const _ as usize);
             }
         }
     }
 
-    /// The roots held by `classes`: mirrors, loaders, statics and resolved constants.
-    pub(crate) fn class_roots(&self, classes: &[&'static Klass], precise: &mut dyn FnMut(Oop), conservative: &mut dyn FnMut(usize)) {
-        self.class_statics(classes, conservative);
+    /// The roots held by `classes` besides statics: mirrors, loaders and resolved constants.
+    pub(crate) fn class_roots(&self, classes: &[&'static Klass], precise: &mut dyn FnMut(Oop)) {
         for &k in classes {
             precise(k.mirror());
             precise(k.loader());

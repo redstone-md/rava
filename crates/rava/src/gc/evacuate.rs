@@ -1,8 +1,10 @@
-//! Evacuation in a young collection: a young object the trace reaches through the heap (an old
-//! object's dirty card, or another object already moved or kept) is copied into an old page and
-//! the reference rewritten; its cell is freed by the sweep. Objects a root references are marked
-//! in place first (`mark.rs`), so stacks, statics and the VM's own references never see a move;
-//! so are locked objects (inflated monitors are found by address) and large ones.
+//! Evacuation: an object of an allocation page that the trace reaches through the heap (an old
+//! object's dirty card, another object already moved or kept) or a static is copied into an old
+//! page and the reference rewritten; its cell is freed by the sweep. Objects another root
+//! references are marked in place first (`mark.rs`), so stacks, the VM's own references and
+//! compiled code's constants (`recent::embed`) never see a move; so are locked objects
+//! (inflated monitors are found by address) and large ones. A full collection also moves what
+//! earlier collections kept in place, once no root holds it.
 //!
 //! Allocation pages thus keep few survivors, and are reused whole by the next allocations
 //! instead of turning into pages of scattered short holes, while survivors are packed densely.
@@ -64,6 +66,19 @@ impl Shared<'_> {
         }
     }
 
+    /// `update` for a static slot (a full-width reference; no card).
+    pub(super) fn update_static(&self, slot: usize, stack: &mut Vec<usize>, runs: &mut Runs) {
+        // SAFETY: a reference static's slot.
+        let cell = unsafe { &*(slot as *const AtomicU64) };
+        let t = cell.load(Ordering::Relaxed) as usize;
+        if t != 0 {
+            let n = self.forward(t, stack, runs);
+            if n != t {
+                cell.store(n as u64, Ordering::Relaxed);
+            }
+        }
+    }
+
     /// Where the object at `t` is after this collection: itself if old, kept in place (large,
     /// locked, or marked from a root) or out of old cells; else a copy in an old page.
     fn forward(&self, t: usize, stack: &mut Vec<usize>, runs: &mut Runs) -> usize {
@@ -81,6 +96,10 @@ impl Shared<'_> {
         let word = unsafe { &*(meta.marks.as_ptr().add(cell / 64) as *const AtomicU64) };
         if word.load(Ordering::Relaxed) & (1 << (cell % 64)) != 0 {
             return t;
+        }
+        // Objects in old pages stay (only a full collection reaches unmarked ones there).
+        if meta.old {
+            return keep(stack);
         }
         // SAFETY: a live young object.
         let mark = unsafe { obj::mark(t as Oop) };

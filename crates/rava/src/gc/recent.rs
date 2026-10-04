@@ -15,6 +15,19 @@ static NOTED: Mutex<Vec<usize>> = Mutex::new(Vec::new());
 /// Classes defined (in `all_classes` order) when the last collection ran.
 static CLASSES_SEEN: AtomicUsize = AtomicUsize::new(0);
 
+/// Objects compiled code holds as constants: roots of every collection, so they never move.
+static EMBEDDED: Mutex<Vec<usize>> = Mutex::new(Vec::new());
+
+/// Records `o` as a constant of compiled code (kept in place for good).
+pub(crate) fn embed(o: Oop) {
+    if !o.is_null() {
+        let mut e = EMBEDDED.lock().unwrap();
+        if !e.contains(&(o as usize)) {
+            e.push(o as usize);
+        }
+    }
+}
+
 /// Records `o`, just stored into a write-once VM root.
 pub(crate) fn note(o: Oop) {
     if !o.is_null() {
@@ -22,9 +35,10 @@ pub(crate) fn note(o: Oop) {
     }
 }
 
-/// What a collection must still scan: the noted objects and the number of classes whose
+/// What a collection must still scan: the noted and embedded objects and the number of classes whose
 /// write-once roots are already old. Starts the next period with `classes` defined.
 pub(super) fn take(classes: usize) -> (Vec<usize>, usize) {
-    let noted = std::mem::take(&mut *NOTED.lock().unwrap());
+    let mut noted = std::mem::take(&mut *NOTED.lock().unwrap());
+    noted.extend(EMBEDDED.lock().unwrap().iter());
     (noted, CLASSES_SEEN.swap(classes, Ordering::Relaxed))
 }
