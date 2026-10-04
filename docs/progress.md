@@ -943,3 +943,31 @@ freed.
 
 **Measured and dropped:** 64 KB pages (-40 MB, slower), runs of 64 bytes (-100 MB, 2 s slower:
 a refill per short hole), releasing surplus pages after every collection (2-4 ms a pause).
+
+## 2026-10-04 (cont.) — baseline code nearly halved
+
+The 42-mod pack compiled 80 MB of baseline code (26k methods, ~3.1 KB each; HotSpot's whole
+code cache is ~68 MB there). Per-method and per-site overhead dominated, not the templates:
+
+- **Shared slow paths:** a deferral site (re-execute in the interpreter) was ~60 bytes; it is
+  `mov ecx, bci | depth << 16; call T` with one trampoline per method and inlining context
+  (`jit/trampoline.rs`).
+- **Shared frame code:** the prologue (link the frame, stack check, poll, invocation counter;
+  ~150 bytes), epilogue and exception dispatch (~70) are process-wide stubs
+  (`jit/frame_stubs.rs`), parameterized by `max_locals | frame_slots << 16` in ecx.
+- **Denser encodings:** branches relaxed to 2 bytes where in reach; r13 biased 128 bytes into
+  the frame so 32 slots take 8-bit displacements; branch-profile counters in low memory (one
+  `add [abs32], 1`); the code cache reserved just below rava's text so runtime calls are
+  `call rel32` (resolved at install) instead of `movabs` + `call rax`.
+- **Less code:** entry stubs only at handlers and loop headers (every block had one); no null
+  check on `this` (local 0 of an instance method that never writes it, inlined bodies included),
+  new objects and their `dup`s; field and array templates write the operand stack back only on
+  their slow path.
+
+| | Paper b1 | pack b1 | pack code total |
+|---|---|---|---|
+| before | 45.5 MB | 80.5 MB | 107 MB |
+| after | 25.2 MB | 44.7 MB | 68 MB |
+
+Boot time and CPU are unchanged on Paper (41 s CPU either way); the pack's CPU fell 95.6 → ~91 s.
+HashMap.putVal: 9338 → 4352 bytes for 300 bytes of bytecode.
