@@ -260,6 +260,8 @@ impl Heap {
             phases[1] = (before_sweep - before_mark).as_secs_f64() * 1e3;
             phases[2] = before_sweep.elapsed().as_secs_f64() * 1e3;
             space.live_after_gc = live;
+            // Committed memory beyond what the next period allocates goes back to the kernel.
+            space.release_surplus(self.young_budget(live) + self.young_budget(live) / 8);
             let allocated = space.allocated_since_gc + self.small_allocated.load(std::sync::atomic::Ordering::Relaxed);
             space.allocated_since_gc = 0;
             self.small_allocated.store(0, std::sync::atomic::Ordering::Relaxed);
@@ -352,6 +354,7 @@ fn sweep(space: &mut Space) -> usize {
     for list in space.partial.iter_mut().chain(space.old_partial.iter_mut()) {
         list.clear();
     }
+    space.partial_free = 0;
     for index in 0..space.pages.len() {
         let page = space.page_addr(index);
         let Some(meta) = space.pages[index].as_mut() else { continue };
@@ -377,6 +380,7 @@ fn sweep(space: &mut Space) -> usize {
             }
         } else if live_cells * 10 <= meta.cells() * 9 {
             space.partial[class].push(index);
+            space.partial_free += (meta.cells() - live_cells) * meta.cell_size as usize;
         }
     }
     let dead: Vec<usize> = space.large.iter().filter(|(_, l)| !l.marked).map(|(&a, _)| a).collect();

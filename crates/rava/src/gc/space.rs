@@ -206,6 +206,10 @@ pub struct Space {
     pub pages: Vec<Option<PageMeta>>,
     /// Released pages, ready for any size class.
     pub empty: Vec<usize>,
+    /// Empty pages given back to the kernel (zero when touched again), taken after `empty`.
+    pub released: Vec<usize>,
+    /// Free bytes of the allocation pages in `partial` (as the last sweep left them).
+    pub partial_free: usize,
     /// Allocation pages with free cells, per class.
     pub partial: [Vec<usize>; CLASSES],
     /// Old pages with free cells, per class, for objects collections move.
@@ -251,6 +255,8 @@ impl Space {
             fresh: base,
             pages: (0..(pages_end - base) / PAGE_SIZE).map(|_| None).collect(),
             empty: Vec::new(),
+            released: Vec::new(),
+            partial_free: 0,
             partial: std::array::from_fn(|_| Vec::new()),
             old_partial: std::array::from_fn(|_| Vec::new()),
             large: BTreeMap::new(),
@@ -320,6 +326,7 @@ impl Space {
         // and is cleared chunk by chunk as it is allocated; a fresh one is zero already.
         let (addr, zeroed) = match self.empty.pop() {
             Some(a) => (a, false),
+            None if !self.released.is_empty() => (self.released.pop().unwrap(), true),
             None if self.fresh + PAGE_SIZE <= self.end => {
                 self.fresh += PAGE_SIZE;
                 super::prefault::advanced(super::prefault::Region::Small, self.fresh);
@@ -341,6 +348,17 @@ impl Space {
             old,
         });
         Some(index)
+    }
+
+    /// Gives empty pages back to the kernel while the free space of allocation pages and the
+    /// committed empty pages exceeds `keep` bytes (what the next allocations need).
+    pub fn release_surplus(&mut self, keep: usize) {
+        while self.partial_free + self.empty.len() * PAGE_SIZE > keep {
+            let Some(page) = self.empty.pop() else { break };
+            // SAFETY: an empty page of the reservation; nothing references it.
+            unsafe { libc::madvise(page as *mut libc::c_void, PAGE_SIZE, libc::MADV_DONTNEED) };
+            self.released.push(page);
+        }
     }
 
     /// The next run of free cells of owned page `index` (`next_run_in`).
