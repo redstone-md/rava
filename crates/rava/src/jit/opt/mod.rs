@@ -136,6 +136,7 @@ fn compile_timed(m: &'static Method) -> Option<CompiledMethod> {
     rce::eliminate(&mut g);
     guards::hoist(&mut g);
     consts::hoist(&mut g);
+    g.prune_unreachable();
     if env_once!("RAVA_OPT_SPLIT").map_or(true, |v| v != "0") {
         split::split(&mut g);
     }

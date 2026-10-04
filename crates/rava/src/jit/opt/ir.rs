@@ -346,6 +346,27 @@ pub struct Graph {
 }
 
 impl Graph {
+    /// Drops the blocks no path from the entry reaches that end the method (deoptimization
+    /// exits whose test became a guard before the loop): their states would keep values live
+    /// to their positions in the code order, for nothing. Blocks with successors stay (their
+    /// successors' phis count them).
+    pub fn prune_unreachable(&mut self) {
+        let mut seen = vec![false; self.blocks.len()];
+        let mut stack = vec![0 as B];
+        while let Some(b) = stack.pop() {
+            if std::mem::replace(&mut seen[b as usize], true) {
+                continue;
+            }
+            stack.extend(self.blocks[b as usize].term.successors());
+        }
+        for (b, blk) in self.blocks.iter_mut().enumerate() {
+            if !seen[b] && !matches!(blk.term, Term::None) && blk.term.successors().is_empty() {
+                blk.term = Term::None;
+                blk.insts.clear();
+            }
+        }
+    }
+
     pub fn new_block(&mut self, bci: i32) -> B {
         self.blocks.push(Block { insts: Vec::new(), term: Term::None, preds: Vec::new(), bci, loop_header: false, order: u32::MAX, freq: 0.0 });
         self.blocks.len() as B - 1
