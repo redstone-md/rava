@@ -367,6 +367,33 @@ impl Graph {
         }
     }
 
+    /// Merges each block that only its one predecessor jumps to into that predecessor, so
+    /// straight-line code is one block (a null check and the loads after it, an inlined body
+    /// and its caller's continuation): code generation then sees what follows an instruction.
+    pub fn merge_chains(&mut self) {
+        for b in 0..self.blocks.len() {
+            while let Term::Goto(m) = self.blocks[b].term {
+                let mb = &self.blocks[m as usize];
+                let real_phi = mb.insts.iter().any(|&v| matches!(self.inst(v), Inst::Phi(_)) && self.resolve(v) == v);
+                if m as usize == b || mb.loop_header || mb.preds[..] != [b as B] || matches!(mb.term, Term::None) || real_phi || self.loop_entry.contains_key(&m) {
+                    break;
+                }
+                let insts: Vec<V> = std::mem::take(&mut self.blocks[m as usize].insts).into_iter().filter(|&v| !matches!(self.inst(v), Inst::Phi(_))).collect();
+                let term = std::mem::replace(&mut self.blocks[m as usize].term, Term::None);
+                self.blocks[m as usize].preds.clear();
+                for s in term.successors() {
+                    for p in &mut self.blocks[s as usize].preds {
+                        if *p == m {
+                            *p = b as B;
+                        }
+                    }
+                }
+                self.blocks[b].insts.extend(insts);
+                self.blocks[b].term = term;
+            }
+        }
+    }
+
     pub fn new_block(&mut self, bci: i32) -> B {
         self.blocks.push(Block { insts: Vec::new(), term: Term::None, preds: Vec::new(), bci, loop_header: false, order: u32::MAX, freq: 0.0 });
         self.blocks.len() as B - 1
