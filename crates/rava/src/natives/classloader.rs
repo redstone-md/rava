@@ -13,6 +13,14 @@ use crate::vm::vm;
 
 const CL: &str = "java/lang/ClassLoader";
 
+/// The native libraries of the JDK (21 and 25), whose natives the VM implements.
+const JDK_LIBRARIES: &[&str] = &[
+    "atk-wrapper", "attach", "awt", "awt_headless", "awt_xawt", "dt_socket", "extnet", "fontmanager", "freetype", "instrument", "j2gss",
+    "j2pcsc", "j2pkcs11", "jaas", "java", "javajpeg", "jawt", "jdwp", "jimage", "jli", "jsig", "jsound", "jsvml", "lcms", "le",
+    "management", "management_agent", "management_ext", "mlib_image", "net", "nio", "prefs", "rmi", "saproc", "sctp", "simdsort",
+    "splashscreen", "syslookup", "verify", "zip",
+];
+
 pub(super) fn register(r: &mut NativeRegistry) {
     r.add(CL, "registerNatives", "()V", |_, _| ret_void());
     r.add(
@@ -65,14 +73,25 @@ pub(super) fn register(r: &mut NativeRegistry) {
         ret_ref(std::ptr::null_mut())
     });
     r.add("jdk/internal/loader/NativeLibraries", "findBuiltinLib", "(Ljava/lang/String;)Ljava/lang/String;", |_, a| {
-        // Every JDK library's natives are built into the VM.
-        ret_ref(a[0] as Oop)
+        // The JDK's own libraries are built into the VM (rava implements their natives). Any
+        // other library is not: loading it fails with UnsatisfiedLinkError, as on a JVM that
+        // cannot load it, so libraries with a pure-Java fallback take it at load time.
+        let name: String = rt::java_string_to_rust(a[0] as Oop);
+        let base = name.strip_prefix("lib").and_then(|n| n.strip_suffix(".so")).unwrap_or(&name);
+        if JDK_LIBRARIES.contains(&base) {
+            return ret_ref(a[0] as Oop);
+        }
+        ret_ref(std::ptr::null_mut())
     });
     r.add(
         "jdk/internal/loader/NativeLibraries",
         "load",
         "(Ljdk/internal/loader/NativeLibraries$NativeLibraryImpl;Ljava/lang/String;ZZ)Z",
         |_, a| {
+            // A library other than the JDK's (not built in): no JNI here, so it does not load.
+            if a[2] == 0 {
+                return ret_bool(false);
+            }
             // The VM supplies the natives itself. JDK 25 checks the library got a handle: an
             // opaque non-zero one, and the JNI version JNI_OnLoad would have reported (1.8).
             let lib = crate::jdk::library();
