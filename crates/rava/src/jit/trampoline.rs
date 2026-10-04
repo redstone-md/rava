@@ -44,7 +44,7 @@ impl Emitter {
             a.bind(l);
             a.mov_rr(true, R::Rdi, R::R12);
             a.mov_ri(R::Rsi, k.m as i64);
-            a.lea(R::Rdx, super::asm::mem(R::R13, 8 * k.local_base));
+            a.lea(R::Rdx, super::compile::slot(k.local_base));
             if !k.scopes.is_empty() {
                 a.mov_rr(false, R::Rax, R::Rcx);
                 link_scopes(a, &k.scopes);
