@@ -197,7 +197,7 @@ impl Heap {
     /// How much may be allocated between collections that leave `live` bytes (the young
     /// generation's size): half the live data, within the maximum heap size.
     fn young_budget(&self, live: usize) -> usize {
-        (live / 2).min(self.max_heap.saturating_sub(live)).max(self.min_trigger)
+        (live / 3).min(self.max_heap.saturating_sub(live)).max(self.min_trigger)
     }
 
     /// A full collection is due once the old generation has doubled since the last one (or

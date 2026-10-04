@@ -350,10 +350,16 @@ impl Space {
         Some(index)
     }
 
-    /// Gives empty pages back to the kernel while the free space of allocation pages and the
-    /// committed empty pages exceeds `keep` bytes (what the next allocations need).
+    /// Gives empty pages back to the kernel once the free space of allocation pages and the
+    /// committed empty pages exceeds `keep` bytes (what the next allocations need) by more than
+    /// `RELEASE_SLACK` twice over, down to that slack: releasing a little after every collection
+    /// only made the next allocations fault it in again.
     pub fn release_surplus(&mut self, keep: usize) {
-        while self.partial_free + self.empty.len() * PAGE_SIZE > keep {
+        const RELEASE_SLACK: usize = 32 << 20;
+        if self.partial_free + self.empty.len() * PAGE_SIZE <= keep + 2 * RELEASE_SLACK {
+            return;
+        }
+        while self.partial_free + self.empty.len() * PAGE_SIZE > keep + RELEASE_SLACK {
             let Some(page) = self.empty.pop() else { break };
             // SAFETY: an empty page of the reservation; nothing references it.
             unsafe { libc::madvise(page as *mut libc::c_void, PAGE_SIZE, libc::MADV_DONTNEED) };
