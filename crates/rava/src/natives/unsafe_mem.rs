@@ -173,8 +173,7 @@ pub(super) fn register(r: &mut NativeRegistry) {
     r.add(U, "getLoadAverage0", "([DI)I", |_, _| ret_int(-1));
     r.add(U, "unpark", "(Ljava/lang/Object;)V", |_, a| {
         if let Some(rec) = super::thread::record_of(a[1] as Oop) {
-            *rec.permit.lock().unwrap() = true;
-            rec.unparked.notify_one();
+            rec.parker.unpark();
         }
         ret_void()
     });
@@ -195,22 +194,7 @@ pub(super) fn register(r: &mut NativeRegistry) {
             }
             _ => return ret_void(),
         };
-        crate::gc::safepoint::blocking(t, || {
-            let mut permit = rec.permit.lock().unwrap();
-            while !*permit && !super::thread::is_interrupted(jt, false) {
-                match deadline {
-                    None => permit = rec.unparked.wait(permit).unwrap(),
-                    Some(d) => {
-                        let now = std::time::Instant::now();
-                        if now >= d {
-                            break;
-                        }
-                        permit = rec.unparked.wait_timeout(permit, d - now).unwrap().0;
-                    }
-                }
-            }
-            *permit = false;
-        });
+        crate::gc::safepoint::blocking(t, || rec.parker.park(deadline, &|| super::thread::is_interrupted(jt, false)));
         ret_void()
     });
 }

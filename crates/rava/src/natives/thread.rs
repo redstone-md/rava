@@ -76,8 +76,7 @@ pub(super) fn register(r: &mut NativeRegistry) {
     r.add(T, "interrupt0", "()V", |_, a| {
         // The Java caller has set `interrupted`; wake whatever the target is blocked in.
         if let Some(rec) = record_of(a[0] as Oop) {
-            *rec.permit.lock().unwrap() = true;
-            rec.unparked.notify_all();
+            rec.parker.unpark();
             let o = rec.waiting_on.load(std::sync::atomic::Ordering::SeqCst);
             if o != 0 {
                 sync::wake_waiters(o);
@@ -123,19 +122,7 @@ fn sleep0(t: &mut Thread, a: &[u64]) -> JResult<u64> {
             crate::gc::safepoint::blocking(t, || std::thread::sleep(deadline - std::time::Instant::now()));
             false
         }
-        Some(rec) => crate::gc::safepoint::blocking(t, || {
-            let mut permit = rec.permit.lock().unwrap();
-            loop {
-                if is_interrupted(jt, true) {
-                    return true;
-                }
-                let now = std::time::Instant::now();
-                if now >= deadline {
-                    return false;
-                }
-                permit = rec.unparked.wait_timeout(permit, deadline - now).unwrap().0;
-            }
-        }),
+        Some(rec) => crate::gc::safepoint::blocking(t, || rec.parker.sleep(deadline, &|| is_interrupted(jt, true))),
     };
     if interrupted {
         return Err(throw_new(t, "java/lang/InterruptedException", "sleep interrupted"));
