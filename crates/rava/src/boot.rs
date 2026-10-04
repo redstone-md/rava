@@ -99,6 +99,11 @@ fn set_unsafe_constants(t: &mut Thread) -> JResult<()> {
 /// Ends the VM as the launcher's `DestroyJavaVM` does: waits for the non-daemon threads, then
 /// runs the shutdown sequence (the shutdown hooks).
 pub fn destroy(t: &mut Thread) -> JResult<()> {
+    // The main thread ends as the launcher's `DetachCurrentThread` ends it.
+    let main = t.java_thread;
+    if !main.is_null() {
+        crate::natives::thread::terminate(t, main);
+    }
     crate::natives::thread::await_non_daemon(t);
     call_static(t, "java/lang/Shutdown", "shutdown", "()V", &[])?;
     Ok(())
