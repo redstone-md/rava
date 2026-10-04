@@ -1062,3 +1062,55 @@ A/B (`4a9c03b2` against java, Paper 1.21.1-133, fresh world, 2 rounds each):
 
 The same start runs from the self-contained distribution (`dist/make.sh`) with an empty
 environment: no `JAVA_HOME`, no `java` on `PATH` (`Done` 21.9 s).
+
+## 2026-10-04 (cont.) — the stronghold search: opt-tier code against C2's
+
+Before `Preparing start region`, one `Worker-Main` thread computes the stronghold rings
+(128 biome searches of 57×57 points each); on both VMs it is the critical path of that phase, and
+a faster machine does not shorten it. A harness running the same searches on the real classes
+(`MultiNoiseBiomeSource.getNoiseBiome`) put rava ~7% behind C2: the noise was already faster
+(NormalNoise and ShiftNoise samples 14.9k against C2's 17.0k in PerlinNoise), the climate
+R-tree search 1.4-1.6x slower. C2's code for `Climate$RTree$SubTree.search`, disassembled from
+`-XX:CompileCommand=print` bytes, showed the differences; each fix below is generic:
+
+- **Predicates of enclosing loops** (`guards.rs`). An inner loop's null and bounds predicates
+  sat in its preheader, so they ran on every iteration of the outer loop, and the type check of
+  the invariant `DistanceMetric` receiver stayed in the loop because its class word was loaded
+  there. Guards whose inputs the enclosing loop does not change, in blocks it always runs, move
+  to its preheader with its entry state; a branch on the class word of an invariant non-null
+  object becomes a guard that loads it there. Override checks (CHA flags) stay in the loop.
+- **Constant counted-loop predicates** (`codegen_ops.rs`): `for (i = 0; i < 7; i++)` no longer
+  tests `0 < 7` and `0 >= 0` at run time.
+- **Unreachable exits** (`ir.rs`). A branch turned into a guard left its deoptimizing side
+  without predecessors, but in the code order its state kept values live to its position: the
+  inner loop's accumulator was stretched across a call, spilled, and summed through memory.
+  Such blocks are dropped before allocation.
+- **Compressed references used in place** (`codegen.rs`, `asm.rs`). Every loaded reference was
+  decoded with a shift before its fields were read. One whose uses all follow it in its block as
+  the object of a field load or array length (or its null check), with no call, allocation or
+  state in between, now stays compressed and is addressed as `[narrow*8 + offset]`, as C2 does.
+  Straight-line block chains are merged first so that a null check and its loads share a block.
+- **Dead code** (`dce.rs`): values nothing reads are no longer computed.
+
+Tree search harness: 3481 → 2994 ns per search (C2: 2200-2500). The phase's `Worker-Main` CPU
+in Paper: 5.50-5.75 → 5.32-5.47 s.
+
+Also in this round:
+
+- **`Math.sin/cos/tan/exp/log`** (`natives/math.rs`). Their bytecode ran fdlibm's Java port; as
+  HotSpot does with its own stubs, the VM supplies their bodies from the C library (within an
+  ulp, as `Math` allows; `StrictMath` keeps fdlibm), and the optimizing tier calls the same
+  functions directly, so results never depend on the tier. Probe: `MathSem`.
+- **Call sites** (`opt/codegen.rs`): the prologue no longer writes the call-site slot that every
+  call site overwrites anyway (`anchor` writes it where a frame is published without a call).
+
+Known issue: with `RAVA_OPT=all` (every method straight to the optimizing tier, a test mode)
+`StackOverflowSem` aborts about once in twelve runs: the native stack overflows before the value
+stack's limit. The default mode passed 20 of 20.
+
+A/B (`efe49b55` against java, Paper 1.21.1-133, fresh world, 2 rounds, same host and hour):
+
+| processors | rava `Done` | java `Done` | rava CPU | java CPU | rava peak RSS | java peak RSS |
+|---|---|---|---|---|---|---|
+| 4 | 22.8-23.4 s | 25.3-26.2 s | 37-38 s | 62-63 s | 939-944 MiB | 1140-1197 MiB |
+| 12 (`-XX:ActiveProcessorCount=12`) | 12.9-14.1 s | 20.9-21.3 s | 37-40 s | 69-71 s | 1021-1029 MiB | 1244-1260 MiB |
