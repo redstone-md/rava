@@ -2,9 +2,9 @@
 //!
 //! Uncontended locking is a compare-and-swap on the object's mark word (a *thin* lock: owner
 //! token and recursion count, next to the identity hash). A thin lock is *inflated* into a full
-//! monitor — owner, count, condition variables, found by the object's address (objects never
-//! move) — by its owner when it must wait, when recursion overflows, or when it was acquired
-//! after contention. Contenders on a thin lock back off until it is released or inflated.
+//! monitor — owner, count, condition variables, found by the object's address (the collector
+//! never moves an object whose mark word is locked or inflated) — by its owner when it must
+//! wait, when recursion overflows, or when it was acquired after contention. Contenders on a thin lock back off until it is released or inflated.
 //!
 //! Mark word: bits 0-1 lock state, 2-7 recursion count - 1, 8-38 identity hash, 40-63 owner.
 
