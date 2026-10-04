@@ -35,6 +35,10 @@ pub enum Cp {
 // Pools hold millions of entries on a large application.
 const _: () = assert!(std::mem::size_of::<Cp>() == 16);
 
+/// `Cp::Utf8::at` of a constant whose bytes are its symbol's text (no NUL, surrogate or
+/// supplementary character, where modified UTF-8 differs).
+const TEXT: u32 = u32::MAX;
+
 /// An attribute body the runtime may read later, as a range of the class bytes.
 #[derive(Clone, Copy, Debug)]
 pub struct Attr {
@@ -189,9 +193,67 @@ impl ClassFile {
     /// The raw modified-UTF-8 bytes of a Utf8 constant (for exact string literals).
     pub fn utf8_bytes(&self, index: u16) -> Option<&'static [u8]> {
         match self.pool.get(index as usize) {
+            // The symbol's text is the same bytes (`compact` drops the copy).
+            Some(Cp::Utf8 { sym, at: TEXT, .. }) => Some(sym.as_str().as_bytes()),
             Some(Cp::Utf8 { at, len, .. }) => self.bytes.get(*at as usize..*at as usize + *len as usize),
             _ => None,
         }
+    }
+
+    /// Parses class bytes the class file then owns: what the runtime reads later (bytecode, line
+    /// tables, attributes, non-TEXT constants) is copied into a buffer of its own and the rest
+    /// (the constant pool, stack maps, local variable tables) dropped with `bytes`, roughly
+    /// halving what a loaded class keeps.
+    pub fn parse_owned(bytes: Vec<u8>) -> Result<ClassFile> {
+        // SAFETY: `bytes` outlives this view: the parsed class file is moved to its own copy of
+        // everything it references before `bytes` is dropped.
+        let view: &'static [u8] = unsafe { std::slice::from_raw_parts(bytes.as_ptr(), bytes.len()) };
+        let mut cf = Self::parse(view)?;
+        cf.compact();
+        drop(bytes);
+        Ok(cf)
+    }
+
+    /// Moves every range of `bytes` the class file references into a new buffer.
+    fn compact(&mut self) {
+        let old = self.bytes;
+        let mut out: Vec<u8> = Vec::new();
+        let keep = |at: u32, len: u32, out: &mut Vec<u8>| {
+            let new = out.len() as u32;
+            out.extend_from_slice(&old[at as usize..(at + len) as usize]);
+            new
+        };
+        for cp in self.pool.iter_mut() {
+            if let Cp::Utf8 { sym, at, len } = cp {
+                *at = if sym.as_str().len() == *len as usize && sym.as_str().as_bytes() == &old[*at as usize..*at as usize + *len as usize] {
+                    TEXT
+                } else {
+                    keep(*at, *len as u32, &mut out)
+                };
+            }
+        }
+        let attrs = self.attrs.iter_mut().chain(self.fields.iter_mut().flat_map(|f| f.attrs.iter_mut())).chain(self.methods.iter_mut().flat_map(|m| m.attrs.iter_mut()));
+        for a in attrs {
+            a.at = keep(a.at, a.len, &mut out);
+        }
+        // Code: offsets for now, slices of the final buffer below.
+        let mut code_at = Vec::new();
+        for m in self.methods.iter_mut() {
+            if let Some(c) = m.code.as_mut() {
+                let at = c.code.as_ptr() as usize - old.as_ptr() as usize;
+                code_at.push(keep(at as u32, c.code.len() as u32, &mut out));
+                if let Some(l) = c.line_numbers.as_mut() {
+                    l.at = keep(l.at, l.len, &mut out);
+                }
+            }
+        }
+        let new: &'static [u8] = Box::leak(out.into_boxed_slice());
+        let mut code_at = code_at.into_iter();
+        for c in self.methods.iter_mut().filter_map(|m| m.code.as_mut()) {
+            let at = code_at.next().expect("a copy per method body") as usize;
+            c.code = &new[at..at + c.code.len()];
+        }
+        self.bytes = new;
     }
 
     pub fn class_name(&self, index: u16) -> Option<Symbol> {
@@ -354,7 +416,7 @@ fn parse_pool(r: &mut Reader) -> Result<Vec<Cp>> {
                 let at = r.pos as u32;
                 let raw = r.take(len as usize)?;
                 let sym = if raw.iter().all(|&b| b != 0 && b < 0x80) {
-                    // SAFETY: non-NUL ASCII is valid UTF-8 and identical in modified UTF-8.
+                    // SAFETY: non-NUL TEXT is valid UTF-8 and identical in modified UTF-8.
                     Symbol::intern(unsafe { std::str::from_utf8_unchecked(raw) })
                 } else {
                     Symbol::intern(&modified_utf8_to_string(raw))

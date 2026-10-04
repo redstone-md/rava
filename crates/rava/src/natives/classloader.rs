@@ -38,7 +38,7 @@ pub(super) fn register(r: &mut NativeRegistry) {
                 let base = obj::read::<i64>(buffer, buffer_address()) as usize;
                 std::slice::from_raw_parts((base + off as usize) as *const u8, len as usize)
             };
-            let owned: &'static [u8] = Box::leak(bytes.to_vec().into_boxed_slice());
+            let owned = bytes.to_vec();
             let k = define_from_bytes(t, loader, owned, if name.is_null() { None } else { Some(internal_name(name)) })?;
             ret_ref(rt::mirror_of(t, k)?)
         },
@@ -95,14 +95,14 @@ fn define_class1(t: &mut Thread, a: &[u64]) -> JResult<u64> {
     if off < 0 || len < 0 || off as usize + len as usize > data.len() {
         return Err(throw_new(t, "java/lang/ArrayIndexOutOfBoundsException", ""));
     }
-    let owned: &'static [u8] = Box::leak(data[off as usize..(off + len) as usize].to_vec().into_boxed_slice());
+    let owned = data[off as usize..(off + len) as usize].to_vec();
     let k = define_from_bytes(t, loader, owned, if name.is_null() { None } else { Some(internal_name(name)) })?;
     ret_ref(rt::mirror_of(t, k)?)
 }
 
 /// Parses and defines `bytes` for `loader`, with Java's errors for bad or duplicate classes.
-pub(crate) fn define_from_bytes(t: &mut Thread, loader: Oop, bytes: &'static [u8], expected: Option<String>) -> JResult<&'static Klass> {
-    let cf = ClassFile::parse(bytes).map_err(|e| throw_new(t, "java/lang/ClassFormatError", e.0))?;
+pub(crate) fn define_from_bytes(t: &mut Thread, loader: Oop, bytes: Vec<u8>, expected: Option<String>) -> JResult<&'static Klass> {
+    let cf = ClassFile::parse_owned(bytes).map_err(|e| throw_new(t, "java/lang/ClassFormatError", e.0))?;
     if let Some(n) = expected.filter(|n| cf.name != n.as_str()) {
         let msg = format!("{} (wrong name: {})", n, cf.name);
         return Err(throw_new(t, "java/lang/NoClassDefFoundError", &msg));
@@ -126,9 +126,9 @@ fn define_class0(t: &mut Thread, a: &[u64]) -> JResult<u64> {
     if off < 0 || len < 0 || off as usize + len as usize > src.len() {
         return Err(throw_new(t, "java/lang/ArrayIndexOutOfBoundsException", ""));
     }
-    let owned: &'static [u8] = Box::leak(src[off as usize..(off + len) as usize].to_vec().into_boxed_slice());
+    let owned = src[off as usize..(off + len) as usize].to_vec();
     let k = if flags & 2 != 0 {
-        let cf = ClassFile::parse(owned).map_err(|e| throw_new(t, "java/lang/ClassFormatError", e.0))?;
+        let cf = ClassFile::parse_owned(owned).map_err(|e| throw_new(t, "java/lang/ClassFormatError", e.0))?;
         let host = if flags & 1 != 0 { rt::klass_of_mirror(lookup).map(|l| l.nest_host(t)) } else { None };
         vm().define_hidden_class(t, cf, loader, host).map_err(|e| rt::link_error(t, e))?
     } else {
