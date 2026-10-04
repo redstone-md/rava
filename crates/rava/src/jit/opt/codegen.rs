@@ -101,6 +101,8 @@ pub(super) struct Gen<'a> {
     frame_slots: i32,
     /// The method compiled.
     pub root: &'static Method,
+    /// For a version entered from a running loop (`osr.rs`): the loop header's bci.
+    pub osr: Option<u32>,
     /// Reference stores that need no card mark (`barrier.rs`).
     pub unbarriered: Vec<bool>,
     /// Headers of short counted loops, whose back edges do not poll (`counted.rs`).
@@ -236,7 +238,7 @@ fn narrow_refs(g: &Graph, al: &Allocation) -> std::collections::HashSet<V> {
 /// Emits `g` for `m`, whose frame (inlined frames included) takes `frame_slots` value-stack slots;
 /// a synchronized method holds `monitor` while it runs. Returns the code and the size of its
 /// main part (without the out-of-line stubs after it, as C2 sizes code for inlining).
-pub(super) fn generate(g: &Graph, al: &Allocation, m: &'static Method, frame_slots: i32, monitor: Option<Monitor>) -> (crate::jit::asm::Code, usize, Vec<(usize, usize)>) {
+pub(super) fn generate(g: &Graph, al: &Allocation, m: &'static Method, frame_slots: i32, monitor: Option<Monitor>, osr: Option<u32>) -> (crate::jit::asm::Code, usize, Vec<(usize, usize)>) {
     let max_locals = m.code.expect("compiled method has code").max_locals as i32;
     let mut a = Asm::default();
     a.enable_peephole();
@@ -262,7 +264,7 @@ pub(super) fn generate(g: &Graph, al: &Allocation, m: &'static Method, frame_slo
         live_gprs: CALLER_SAVED.into_iter().chain(SCRATCH).filter(|r| al.loc.contains(&Loc::Reg(*r))).collect(),
         live_xmms: XMMS.into_iter().filter(|x| al.loc.contains(&Loc::Xmm(*x))).collect(),
         lock: None,
-        frameless: monitor.is_none() && super::polls::frameless(g),
+        frameless: monitor.is_none() && osr.is_none() && super::polls::frameless(g),
         base: R::R13,
         ret: m.sig.ret,
         saves: &al.saves,
@@ -279,6 +281,7 @@ pub(super) fn generate(g: &Graph, al: &Allocation, m: &'static Method, frame_slo
         faults: Vec::new(),
         frame_slots,
         root: m,
+        osr,
     };
     // Entry rsp is 8 mod 16: an odd number of pushes realigns it, spill slots come in pairs.
     // r12 holds the thread in all compiled code (Rust enters through `jit::enter_trampoline`).
@@ -293,6 +296,9 @@ pub(super) fn generate(g: &Graph, al: &Allocation, m: &'static Method, frame_slo
     let align = if gen.frameless { 0 } else if gen.saved.len() % 2 == 0 { 8 } else { 0 };
     gen.frame_bytes = spill_bytes + if monitor.is_some() { 16 } else { 0 } + align;
     let overflow = gen.a.new_label();
+    if osr.is_some() {
+        gen.osr_bridge();
+    }
     gen.prologue(frame_slots, overflow);
     // Blocks that only deoptimize are not laid out: branches into them go straight to the
     // deoptimization stub, so the path that stays in compiled code falls through.
@@ -391,8 +397,11 @@ impl Gen<'_> {
         // method calls out (`link`, `anchor`); see the module comment.
         // The BCI slot is written by whatever publishes the frame (`link`, `anchor`).
         a.store(true, h(header::METHOD), R::Rdx);
-        a.load(true, R::Rcx, mem(R::R12, offsets::TOP));
-        a.store(true, h(header::CALLER), R::Rcx);
+        // A version entered from a running loop continues a frame its caller already linked.
+        if self.osr.is_none() {
+            a.load(true, R::Rcx, mem(R::R12, offsets::TOP));
+            a.store(true, h(header::CALLER), R::Rcx);
+        }
         self.poll();
         if let Some((mon, at)) = self.lock {
             match mon {
@@ -402,6 +411,21 @@ impl Gen<'_> {
             self.a.store(true, mem(R::Rsp, at), R::Rcx);
             self.method_monitor(true);
         }
+    }
+
+    /// The start of a version entered from a running loop: first-tier code jumps here at the
+    /// loop's back edge with its frame current in memory (r13 its biased base) and its native
+    /// frame as at a call. The bridge calls the body below on that frame, then leaves the method
+    /// as first-tier code would (`frame_stubs::leave`) with the result in rax.
+    fn osr_bridge(&mut self) {
+        let body = self.a.new_label();
+        self.a.lea(R::Rsi, mem(R::R13, -crate::jit::compile::FRAME_BIAS));
+        self.a.mov_ri(R::Rdx, self.root as *const Method as i64);
+        self.a.call_label(body);
+        self.a.mov_ri(R::Rcx, self.max_locals as i64);
+        let float = matches!(self.ret, crate::types::BasicType::Float | crate::types::BasicType::Double);
+        self.a.jmp_abs(crate::jit::frame_stubs::leave(float));
+        self.a.bind(body);
     }
 
     /// Enters or exits the synchronized method's monitor in rcx: the thin-lock fast path, else

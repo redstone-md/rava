@@ -25,6 +25,8 @@ pub struct Desc {
     pub slots: Vec<(i32, Loc, bool)>,
     /// Objects whose allocation was removed (`escape.rs`), rebuilt here into their frame slots.
     pub remats: Vec<Remat>,
+    /// The loop header of a version entered from a running loop (`osr.rs`).
+    pub osr: Option<u32>,
 }
 
 /// A replaced allocation to rebuild on deoptimization: a fresh instance of `klass` with each
@@ -42,6 +44,7 @@ pub struct Remat {
 impl Desc {
     pub fn encode(&self) -> Vec<u8> {
         let mut w = Writer(Vec::with_capacity(16 + 3 * self.slots.len()));
+        w.u(self.osr.map_or(0, |b| b as u64 + 1));
         w.u(self.frames.len() as u64);
         for f in &self.frames {
             w.u(f.method as *const Method as u64);
@@ -75,6 +78,7 @@ impl Desc {
     /// `at` must be an encoding made by `encode`.
     pub unsafe fn decode(at: *const u8) -> Desc {
         let mut r = Reader(at);
+        let osr = r.u().checked_sub(1).map(|b| b as u32);
         let frames = (0..r.u())
             .map(|_| Frame { method: &*(r.u() as *const Method), frame: r.i() as i32, bci: r.u() as u32, depth: r.u() as u32 })
             .collect();
@@ -93,7 +97,7 @@ impl Desc {
                 Remat { klass, fields, slots }
             })
             .collect();
-        Desc { frames, slots, remats }
+        Desc { frames, slots, remats, osr }
     }
 }
 
@@ -272,7 +276,10 @@ pub extern "sysv64" fn deopt(t: *mut Thread, base: *mut u64, desc: *const u8, sa
     if let Some(s) = crate::jit::stats::get() {
         s.deopts.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
-    super::note_deopt(frames[n - 1].method);
+    match desc.osr {
+        Some(bci) => super::osr::note_deopt(frames[n - 1].method, bci),
+        None => super::note_deopt(frames[n - 1].method),
+    }
     let mut outcome: Result<u64, Throw> = match t.take_pending() {
         Some(e) => Err(e),
         None => Ok(0),

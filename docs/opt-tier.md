@@ -56,6 +56,7 @@ A C1-class compiler is enough for parity. Every mechanism below is a generic JVM
 | `dom.rs`, `nullcheck.rs` | Dominators and natural loops; dominated null checks dropped |
 | `codegen*.rs` | x86-64 emission in the baseline frame protocol; intrinsics; calls with inline caches |
 | `deopt.rs` | Deopt descriptors, the per-method common stub, resuming scopes innermost first |
+| `osr.rs` | On-stack replacement: versions compiled from a loop header (live locals read from the frame as parameters, kinds by verifier-style inference), entered from first-tier back edges through a bridge that calls the body on the running frame |
 
 Rules that keep it correct:
 
@@ -85,6 +86,11 @@ Rules that keep it correct:
   fields and methods) are resolved at compile time (`Klass::peek_resolved`, as HotSpot's ciEnv).
 - **Baseline code stays** (`Method::baseline`): exception dispatch and loop entry (OSR) of frames
   still running baseline code, and interpreted loops after a deoptimization, use it.
+- **OSR into optimized code** (`osr.rs`, HotSpot's OSR compilations): optimized code has no
+  block entries, so a hot first-tier loop asks for a version of its method built from the
+  loop's header. Only what the header reaches is built; loops around it become ordinary
+  cycles. Its deoptimizations count against that version (retired after 8, rebuilt up to 4
+  times); synchronized methods are not entered this way.
 - **Class hierarchy analysis**: `Method::mark_overridden` runs while an overriding class is
   linked, before any instance of it exists; code that inlined the method without a receiver
   check tests that flag and deoptimizes once it is set, then recompiles with a vtable guard.
@@ -103,4 +109,4 @@ with this tier), `RAVA_OPT_LOG`, `RAVA_OPT_IR=<method>` (IR and allocation), `RA
 1. SSE registers for float and double values (noise code moves them through GPRs today).
 2. Value numbering of pure instructions and field loads along dominating paths.
 3. Background compilation (compiles run on the thread that got hot today).
-4. On-stack replacement entries into optimized code.
+4. On-stack replacement from interpreted loops straight into optimized code.

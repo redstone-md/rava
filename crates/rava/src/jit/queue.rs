@@ -16,6 +16,9 @@ pub(super) enum Job {
     Recompile(&'static Method),
     /// Optimized code with call sites that were cold when compiled and now run.
     Reprofile(&'static Method),
+    /// A loop running first-tier code in a method with optimized code: compile a version
+    /// entered from it (`opt/osr.rs`).
+    Osr(&'static Method, &'static super::OsrCode),
 }
 
 struct Queue {
@@ -82,6 +85,7 @@ fn run(job: Job) {
         Job::TierUp(m) => super::tier::compile_tier2(m),
         Job::Recompile(m) => super::opt::recompile(m),
         Job::Reprofile(m) => super::opt::reprofile(m),
+        Job::Osr(m, c) => super::opt::osr::compile(m, c),
     }
     if let Some(start) = start {
         COMPILE_NS.fetch_add(start.elapsed().as_nanos() as u64, std::sync::atomic::Ordering::Relaxed);
