@@ -32,6 +32,7 @@ mod frame_stubs;
 mod inline;
 mod inline_plan;
 mod intrinsics;
+mod leaf;
 mod opt;
 pub(crate) use opt::osr::OsrCode;
 mod profile;

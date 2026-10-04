@@ -48,6 +48,8 @@ pub(super) enum Intrinsic {
     /// `Math.sin/cos/tan/exp/log`: the C library's function (`natives/math.rs`, by index),
     /// called directly on the double's bits.
     Libm(u8),
+    /// A string or array routine called directly (`leaf.rs`) on the call's arguments.
+    Leaf(super::leaf::Leaf),
 }
 
 impl Intrinsic {
@@ -59,7 +61,7 @@ impl Intrinsic {
     /// The baseline compiler emits it in place (else it calls the method, whose body computes
     /// the same result).
     pub(super) fn in_baseline(self) -> bool {
-        !matches!(self, Intrinsic::ArrayCopy | Intrinsic::Libm(_))
+        !matches!(self, Intrinsic::ArrayCopy | Intrinsic::Libm(_) | Intrinsic::Leaf(_))
     }
 
     /// Without side effects (usable inside inlined leaf bodies).
@@ -99,6 +101,9 @@ pub(super) fn bound_intrinsic(m: &Method) -> Option<Intrinsic> {
 
 pub(super) fn intrinsic(m: &Method) -> Option<Intrinsic> {
     let (holder, name, desc) = (m.holder.name.as_str(), m.name.as_str(), m.desc.as_str());
+    if let Some(l) = super::leaf::Leaf::of(holder, name, desc) {
+        return Some(Intrinsic::Leaf(l));
+    }
     match holder {
         "java/lang/Math" | "java/lang/StrictMath" if matches!(name, "min" | "max" | "abs") => {
             let ty = match desc {
@@ -187,7 +192,7 @@ impl Emitter {
     pub(super) fn try_intrinsic(&mut self, pc: usize, depth: u16, m: &'static Method, args: i32) -> bool {
         let Some(k) = bound_intrinsic(m).filter(|k| k.in_baseline()) else { return false };
         match k {
-            Intrinsic::ArrayCopy | Intrinsic::Libm(_) => unreachable!("not emitted by the baseline compiler"),
+            Intrinsic::ArrayCopy | Intrinsic::Libm(_) | Intrinsic::Leaf(_) => unreachable!("not emitted by the baseline compiler"),
             Intrinsic::BitCount(opcode, wide) => {
                 self.a.load(true, R::Rax, self.stk(args));
                 self.a.bit_count(opcode, wide, R::Rax, R::Rax);
