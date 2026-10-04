@@ -156,6 +156,7 @@ impl Emitter {
             return;
         }
         let entry = if op == 0xb8 { Entry::Static(m.holder) } else { Entry::Receiver };
+        let receiver_nonnull = op != 0xb8 && self.site_nonnull.get(args as usize) == Some(&true);
         let fast_alloc = self.allocate_instance(m, args, self.site_const(args + 1));
         let inlined = match bound_target(self.m, self.code, pc) {
             _ if fast_alloc.is_some() => fast_alloc,
@@ -177,8 +178,10 @@ impl Emitter {
             self.a.mov_ri(R::Rdx, m as *const Method as i64);
         } else {
             self.a.load(true, R::Rcx, self.stk(args));
-            self.a.test_rr(true, R::Rcx, R::Rcx);
-            self.a.jcc(Cond::E, slow);
+            if !receiver_nonnull {
+                self.a.test_rr(true, R::Rcx, R::Rcx);
+                self.a.jcc(Cond::E, slow);
+            }
             if op == 0xb7 {
                 let target = crate::interp::special_target(self.m.holder, m);
                 self.a.mov_ri(R::Rdx, target as *const Method as i64);

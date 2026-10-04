@@ -26,8 +26,8 @@ impl Emitter {
             0x10 => self.push(Loc::Imm(self.code[pc + 1] as i8 as i64)),
             0x11 => self.push(Loc::Imm(i2(self.code, pc + 1) as i64)),
             0x12..=0x14 => return Some(self.ldc_reg(pc)),
-            0x15..=0x19 => self.load_local(self.code[pc + 1] as usize, op == 0x16 || op == 0x18),
-            0x1a..=0x2d => self.load_local(((op - 0x1a) % 4) as usize, kind_wide((op - 0x1a) / 4)),
+            0x15..=0x19 => self.load_local_ref(self.code[pc + 1] as usize, op == 0x16 || op == 0x18),
+            0x1a..=0x2d => self.load_local_ref(((op - 0x1a) % 4) as usize, kind_wide((op - 0x1a) / 4)),
             0x36..=0x3a => self.store_local(self.code[pc + 1] as usize, op == 0x37 || op == 0x39),
             0x3b..=0x4e => self.store_local(((op - 0x3b) % 4) as usize, kind_wide((op - 0x3b) / 4)),
             0x84 => self.iinc_reg(self.code[pc + 1] as usize, self.code[pc + 2] as i8 as i32),
@@ -122,6 +122,14 @@ impl Emitter {
         self.push_w(wide, Loc::Reg(d));
     }
 
+    /// `load_local` that also knows when local 0 is `this`, which is never null.
+    fn load_local_ref(&mut self, n: usize, wide: bool) {
+        self.load_local(n, wide);
+        if n == 0 && self.this_nonnull {
+            self.set_nonnull();
+        }
+    }
+
     fn store_local(&mut self, n: usize, wide: bool) {
         let v = self.pop_w(wide);
         if let Some(c) = self.lconst.get_mut(n) {
@@ -194,6 +202,9 @@ impl Emitter {
             other => other,
         };
         self.push(loc);
+        if top.nonnull {
+            self.set_nonnull();
+        }
     }
 
     /// Pops `b` then `a` and returns an owned register holding `a` plus `b` as a source.

@@ -30,15 +30,18 @@ pub(super) enum Loc {
 pub(super) struct Slot {
     pub loc: Loc,
     pub synced: bool,
+    /// The value is a reference known not to be null (`this`, a new object).
+    pub nonnull: bool,
 }
 
-const MEM: Slot = Slot { loc: Loc::Mem, synced: true };
+const MEM: Slot = Slot { loc: Loc::Mem, synced: true, nonnull: false };
 
 /// A popped operand: its slot and the operand-stack index it occupied.
 #[derive(Clone, Copy, Debug)]
 pub(super) struct Opnd {
     pub loc: Loc,
     pub idx: i32,
+    pub nonnull: bool,
 }
 
 /// An operand usable directly by an instruction.
@@ -69,7 +72,14 @@ impl Emitter {
     }
 
     pub(super) fn push(&mut self, loc: Loc) {
-        self.vs.push(Slot { loc, synced: loc == Loc::Mem });
+        self.vs.push(Slot { loc, synced: loc == Loc::Mem, nonnull: false });
+    }
+
+    /// Marks the top of the operand stack as a reference that is not null.
+    pub(super) fn set_nonnull(&mut self) {
+        if let Some(s) = self.vs.last_mut() {
+            s.nonnull = true;
+        }
     }
 
     /// Pushes a long/double: the value slot and its unused second slot.
@@ -82,7 +92,7 @@ impl Emitter {
 
     pub(super) fn pop(&mut self) -> Opnd {
         let s = self.vs.pop().expect("operand stack underflow");
-        Opnd { loc: s.loc, idx: self.vs.len() as i32 }
+        Opnd { loc: s.loc, idx: self.vs.len() as i32, nonnull: s.nonnull }
     }
 
     pub(super) fn pop_w(&mut self, wide: bool) -> Opnd {
