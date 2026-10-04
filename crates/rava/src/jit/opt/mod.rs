@@ -140,6 +140,7 @@ fn compile_timed(m: &'static Method) -> Option<CompiledMethod> {
     if env_once!("RAVA_OPT_SPLIT").map_or(true, |v| v != "0") {
         split::split(&mut g);
     }
+    g.merge_chains();
     let dump = env_once!("RAVA_OPT_IR").is_some_and(|f| m.to_string().contains(f.to_str().unwrap_or("")));
     if dump {
         eprintln!("[opt-ir] {m}\n{}", g.dump());
