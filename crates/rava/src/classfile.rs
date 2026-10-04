@@ -154,11 +154,17 @@ impl ClassFile {
         cf.name = cf.class_name(r.u2()?).ok_or(ParseError("bad this_class"))?;
         let super_index = r.u2()?;
         cf.super_name = if super_index == 0 { None } else { Some(cf.class_name(super_index).ok_or(ParseError("bad super"))?) };
-        for _ in 0..r.u2()? {
+        // Every count is known up front: exact allocations (growth by doubling left a quarter of
+        // these vectors unused on average, for every class).
+        let n = r.u2()?;
+        cf.interfaces.reserve_exact(n as usize);
+        for _ in 0..n {
             let i = r.u2()?;
             cf.interfaces.push(cf.class_name(i).ok_or(ParseError("bad interface"))?);
         }
-        for _ in 0..r.u2()? {
+        let n = r.u2()?;
+        cf.fields.reserve_exact(n as usize);
+        for _ in 0..n {
             let (access, name, desc) = (r.u2()?, cf.utf8(r.u2()?)?, cf.utf8(r.u2()?)?);
             let attrs = cf.parse_attrs(&mut r)?;
             let constant_value = attrs
@@ -167,7 +173,9 @@ impl ClassFile {
                 .map_or(0, |a| u16::from_be_bytes([bytes[a.at as usize], bytes[a.at as usize + 1]]));
             cf.fields.push(FieldInfo { access, name, desc, constant_value, attrs });
         }
-        for _ in 0..r.u2()? {
+        let n = r.u2()?;
+        cf.methods.reserve_exact(n as usize);
+        for _ in 0..n {
             let (access, name, desc) = (r.u2()?, cf.utf8(r.u2()?)?, cf.utf8(r.u2()?)?);
             let mut attrs = cf.parse_attrs(&mut r)?;
             let code = match attrs.iter().position(|a| a.name == "Code") {
@@ -316,8 +324,9 @@ impl ClassFile {
         let max_locals = r.u2()?;
         let len = r.u4()? as usize;
         let code = r.take(len)?;
-        let mut handlers = Vec::new();
-        for _ in 0..r.u2()? {
+        let n = r.u2()?;
+        let mut handlers = Vec::with_capacity(n as usize);
+        for _ in 0..n {
             handlers.push(Handler { start: r.u2()?, end: r.u2()?, handler: r.u2()?, catch_type: r.u2()? });
         }
         let attrs = self.parse_attrs(&mut r)?;
