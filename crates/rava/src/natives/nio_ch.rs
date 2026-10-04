@@ -69,6 +69,21 @@ pub(super) fn register(r: &mut NativeRegistry) {
         }
         ret_void()
     });
+    // JDK 25: static, filling `finfo` with {st_dev, st_ino}.
+    r.add("sun/nio/ch/FileKey", "init", "(Ljava/io/FileDescriptor;[J)V", |t, a| {
+        let mut st: libc::stat = unsafe { std::mem::zeroed() };
+        if unsafe { libc::fstat(fd(a[0]), &mut st) } == -1 {
+            return Err(io_error(t, "fstat failed"));
+        }
+        let info = a[1] as Oop;
+        // SAFETY: a long[2] allocated by FileKey.create.
+        unsafe {
+            let base = info as *mut u8;
+            std::ptr::write_unaligned(base.add(crate::heap::ARRAY_BASE_OFFSET as usize) as *mut i64, st.st_dev as i64);
+            std::ptr::write_unaligned(base.add(crate::heap::ARRAY_BASE_OFFSET as usize + 8) as *mut i64, st.st_ino as i64);
+        }
+        ret_void()
+    });
     r.add(IOUTIL, "initIDs", "()V", |_, _| ret_void());
     r.add(IOUTIL, "fdVal", "(Ljava/io/FileDescriptor;)I", |_, a| ret_int(fd(a[0])));
     r.add(IOUTIL, "setfdVal", "(Ljava/io/FileDescriptor;I)V", |_, a| {

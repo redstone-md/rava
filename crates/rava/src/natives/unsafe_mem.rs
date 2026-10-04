@@ -170,6 +170,21 @@ pub(super) fn register(r: &mut NativeRegistry) {
         crate::gc::cards::dirty_range(addr(a[4], a[5]) as usize, a[7] as usize);
         ret_void()
     });
+    // Copies `bytes` (a multiple of `elemSize`: 2, 4 or 8) reversing each element's bytes.
+    r.add(U, "copySwapMemory0", "(Ljava/lang/Object;JLjava/lang/Object;JJJ)V", |_, a| {
+        let (src, dst, bytes, size) = (addr(a[1], a[2]), addr(a[4], a[5]), a[7] as usize, (a[9] as usize).max(1));
+        // SAFETY: the caller (Unsafe.copySwapMemory) checked both ranges and the element size.
+        unsafe {
+            let mut element = [0u8; 8];
+            for at in (0..bytes).step_by(size) {
+                std::ptr::copy_nonoverlapping(src.add(at), element.as_mut_ptr(), size);
+                element[..size].reverse();
+                std::ptr::copy_nonoverlapping(element.as_ptr(), dst.add(at), size);
+            }
+        }
+        crate::gc::cards::dirty_range(dst as usize, bytes);
+        ret_void()
+    });
     r.add(U, "getLoadAverage0", "([DI)I", |_, _| ret_int(-1));
     r.add(U, "unpark", "(Ljava/lang/Object;)V", |_, a| {
         if let Some(rec) = super::thread::record_of(a[1] as Oop) {

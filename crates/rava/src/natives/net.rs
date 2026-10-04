@@ -27,7 +27,7 @@ fn errno() -> i32 {
 }
 
 /// IPv4 address of a `java.net.InetAddress` (host byte order).
-fn ipv4_of(addr: Oop) -> u32 {
+pub(super) fn ipv4_of(addr: Oop) -> u32 {
     // SAFETY: a live Inet4Address and its holder.
     unsafe { obj::read::<i32>(obj::read_ref(addr, ia_holder()), holder_address()) as u32 }
 }
@@ -42,7 +42,7 @@ fn sockaddr(addr: Oop, port: u64) -> libc::sockaddr_in {
 }
 
 /// `new Inet4Address(host, bytes)`.
-fn inet4(t: &mut Thread, host: Option<&str>, ip: u32) -> JResult<Oop> {
+pub(super) fn inet4(t: &mut Thread, host: Option<&str>, ip: u32) -> JResult<Oop> {
     let bytes = rt::alloc_array(t, vm().primitive_array_class(BasicType::Byte).expect("[B"), 4)?;
     // SAFETY: fresh byte[4].
     unsafe { obj::array_slice::<u8>(bytes).copy_from_slice(&ip.to_be_bytes()) };
@@ -306,18 +306,6 @@ fn register_inet(r: &mut NativeRegistry) {
     });
     r.add(I4, "getHostByAddr", "([B)Ljava/lang/String;", |t, _| Err(throw_new(t, "java/net/UnknownHostException", "")));
     r.add(I4, "isReachable0", "([BI[BI)Z", |_, _| ret_bool(false));
-    r.add("java/net/NetworkInterface", "init", "()V", |_, _| ret_void());
-    r.add("java/net/NetworkInterface", "getAll", "()[Ljava/net/NetworkInterface;", |t, _| {
-        let ni = crate::loader::load("java/net/NetworkInterface").expect("NetworkInterface");
-        ret_ref(rt::alloc_array(t, vm().array_class_of(ni).expect("NetworkInterface[]"), 0)?)
-    });
-    for (name, desc) in [
-        ("getByName0", "(Ljava/lang/String;)Ljava/net/NetworkInterface;"),
-        ("getByIndex0", "(I)Ljava/net/NetworkInterface;"),
-        ("getByInetAddress0", "(Ljava/net/InetAddress;)Ljava/net/NetworkInterface;"),
-    ] {
-        r.add("java/net/NetworkInterface", name, desc, |_, _| ret_ref(std::ptr::null_mut()));
-    }
     r.add("java/net/NetworkInterface", "boundInetAddress0", "(Ljava/net/InetAddress;)Z", |_, _| ret_bool(true));
     // Linux-specific extended socket options are reported unsupported.
     for name in ["keepAliveOptionsSupported0", "quickAckSupported0", "incomingNapiIdSupported0"] {
