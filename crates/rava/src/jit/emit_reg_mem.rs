@@ -1,7 +1,7 @@
 //! Register templates for heap access: primitive and reference array loads, primitive array
-//! stores, `arraylength` and resolved field access. Instructions that can fail write the stack
-//! back first, so their slow path (the interpreter re-executing the instruction) sees a
-//! consistent frame.
+//! stores, `arraylength` and resolved field access. Instructions that can fail leave the stack
+//! in registers: their slow path writes it back before the interpreter re-executes the
+//! instruction (`lazy_flush`).
 
 use super::asm::{mem, mem_idx, Alu, Cond, R};
 use super::compile::Emitter;
@@ -21,10 +21,10 @@ impl Emitter {
             0x2e..=0x35 => self.array_load_reg(pc, depth, op),
             0x4f..=0x52 | 0x54..=0x56 => self.array_store_reg(pc, depth, op),
             0xbe => {
-                self.flush();
+                let spill = self.lazy_flush();
                 let arr = self.pop();
                 let ra = self.read(arr, R::Rax);
-                let slow = self.slow_path(pc, depth);
+                let slow = self.slow_path_spilling(pc, depth, spill);
                 self.a.test_rr(true, ra, ra);
                 self.a.jcc(Cond::E, slow);
                 let d = self.alloc(&[]);
@@ -38,12 +38,12 @@ impl Emitter {
     }
 
     /// Pops index and array into registers and jumps to the slow path on null or out of bounds.
-    fn checked_element(&mut self, pc: usize, depth: u16) -> (R, R) {
+    fn checked_element(&mut self, pc: usize, depth: u16, spill: Vec<(Loc, i32)>) -> (R, R) {
         let idx = self.pop();
         let arr = self.pop();
         let ra = self.read(arr, R::Rax);
         let ri = self.read(idx, R::Rcx);
-        let slow = self.slow_path(pc, depth);
+        let slow = self.slow_path_spilling(pc, depth, spill);
         self.a.test_rr(true, ra, ra);
         self.a.jcc(Cond::E, slow);
         self.a.alu_rm(false, Alu::Cmp, ri, mem(ra, LEN));
@@ -52,8 +52,8 @@ impl Emitter {
     }
 
     fn array_load_reg(&mut self, pc: usize, depth: u16, op: u8) {
-        self.flush();
-        let (ra, ri) = self.checked_element(pc, depth);
+        let spill = self.lazy_flush();
+        let (ra, ri) = self.checked_element(pc, depth, spill);
         // The destination may reuse the array or index register: the load reads both first.
         let d = self.alloc(&[]);
         let a = &mut self.a;
@@ -70,11 +70,11 @@ impl Emitter {
     }
 
     fn array_store_reg(&mut self, pc: usize, depth: u16, op: u8) {
-        self.flush();
+        let spill = self.lazy_flush();
         let wide = op == 0x50 || op == 0x52;
         let v = self.pop_w(wide);
         let mut rv = self.read(v, R::Rdx);
-        let (ra, ri) = self.checked_element(pc, depth);
+        let (ra, ri) = self.checked_element(pc, depth, spill);
         match op {
             0x4f | 0x51 => self.a.store(false, mem_idx(ra, ri, 4, BASE), rv),
             0x50 | 0x52 => self.a.store(true, mem_idx(ra, ri, 8, BASE), rv),
@@ -119,10 +119,10 @@ impl Emitter {
         }
         match (op, resolved) {
             (0xb4, Some(Resolved::InstanceField { offset, ty, .. })) => {
-                self.flush();
+                let spill = self.lazy_flush();
                 let o = self.pop();
                 let ro = self.read(o, R::Rax);
-                let slow = self.slow_path(pc, depth);
+                let slow = self.slow_path_spilling(pc, depth, spill);
                 self.a.test_rr(true, ro, ro);
                 self.a.jcc(Cond::E, slow);
                 let d = self.alloc(&[]);
@@ -130,12 +130,12 @@ impl Emitter {
                 self.push_w(ty.slots() == 2, Loc::Reg(d));
             }
             (0xb5, Some(Resolved::InstanceField { offset, ty, volatile })) => {
-                self.flush();
+                let spill = self.lazy_flush();
                 let v = self.pop_w(ty.slots() == 2);
                 let o = self.pop();
                 let ro = self.read(o, R::Rax);
                 let mut rv = self.read(v, R::Rdx);
-                let slow = self.slow_path(pc, depth);
+                let slow = self.slow_path_spilling(pc, depth, spill);
                 self.a.test_rr(true, ro, ro);
                 self.a.jcc(Cond::E, slow);
                 if ty == BasicType::Boolean && rv != R::Rdx {

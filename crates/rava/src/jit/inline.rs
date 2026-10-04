@@ -52,7 +52,7 @@ pub(super) struct Body {
     pub inl: Option<InlineCtx>,
     pub vs: Vec<Slot>,
     pub lregs: Vec<Option<R>>,
-    pub slow: Vec<(Label, usize, u16, Vec<(super::vstack::Loc, i32)>)>,
+    pub slow: Vec<super::compile::SlowPath>,
     pub lconst_base: Vec<Option<i64>>,
     pub lconst: Vec<Option<i64>>,
 }
