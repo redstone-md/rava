@@ -2,6 +2,7 @@
 //! beans, and the container metrics probe. Values come from the heap and from the kernel
 //! (`sysinfo`, `/proc`), as HotSpot's own implementations read them.
 
+use crate::heap::{obj, Oop};
 use super::{ret_bool, ret_int, ret_long, ret_ref, ret_void, NativeRegistry};
 use crate::runtime::{self as rt};
 use crate::thread::{JResult, Thread};
@@ -11,6 +12,7 @@ pub(super) fn register(r: &mut NativeRegistry) {
     register_vm(r);
     register_memory(r);
     register_os(r);
+    register_flags(r);
     // No container limits are applied, so the JDK falls back to the host's values.
     r.add("jdk/internal/platform/CgroupMetrics", "isUseContainerSupport", "()Z", |_, _| ret_bool(false));
     r.add("jdk/internal/platform/CgroupMetrics", "isContainerized0", "()Z", |_, _| ret_bool(false));
@@ -67,6 +69,101 @@ fn register_memory(r: &mut NativeRegistry) {
         let args: Vec<u64> = usage.iter().flat_map(|&v| [v as u64, 0]).collect();
         ret_ref(crate::boot::construct(t, "java/lang/management/MemoryUsage", "(JJJJ)V", &args)?)
     });
+}
+
+/// A VM flag's value as `com.sun.management.internal.Flag` holds it.
+enum FlagValue {
+    Bool(bool),
+    Long(i64),
+    Double(f64),
+    Str(String),
+}
+
+/// The VM's flags: a few defaults HotSpot reports for any VM, then the command line's `-XX:`
+/// options (later ones win), with `VMOption.Origin` names.
+fn vm_flags() -> Vec<(String, FlagValue, &'static str)> {
+    let mut flags: Vec<(String, FlagValue, &'static str)> = vec![
+        ("MaxHeapSize".into(), FlagValue::Long(vm().heap.max_bytes() as i64), "ERGONOMIC"),
+        ("UseCompressedOops".into(), FlagValue::Bool(crate::heap::COMPRESSED), "ERGONOMIC"),
+        ("DisableExplicitGC".into(), FlagValue::Bool(false), "DEFAULT"),
+        ("ActiveProcessorCount".into(), FlagValue::Long(-1), "DEFAULT"),
+    ];
+    for o in crate::vm_options() {
+        let (name, value) = if let Some(n) = o.strip_prefix('+') {
+            (n.to_string(), FlagValue::Bool(true))
+        } else if let Some(n) = o.strip_prefix('-') {
+            (n.to_string(), FlagValue::Bool(false))
+        } else if let Some((n, v)) = o.split_once('=') {
+            let value = match crate::launcher::parse_vm_size(v) {
+                Some(x) if v.chars().next().is_some_and(|c| c.is_ascii_digit()) => FlagValue::Long(x as i64),
+                _ => v.parse::<i64>().map(FlagValue::Long).or_else(|_| v.parse::<f64>().map(FlagValue::Double)).unwrap_or_else(|_| FlagValue::Str(v.to_string())),
+            };
+            (n.to_string(), value)
+        } else {
+            continue;
+        };
+        flags.retain(|f| f.0 != name);
+        flags.push((name, value, "VM_CREATION"));
+    }
+    flags
+}
+
+/// The value of static reference field `name` of `class` (initialized first).
+fn static_ref(t: &mut Thread, class: &str, name: &str, desc: &str) -> JResult<Oop> {
+    let k = crate::loader::load(class).map_err(|e| crate::runtime::fatal(&format!("cannot load {class}: {e:?}")))?;
+    rt::initialize(t, k)?;
+    let f = k.declared_field(crate::symbol::Symbol::intern(name), crate::symbol::Symbol::intern(desc)).ok_or_else(|| crate::runtime::fatal(&format!("{class}.{name}")))?;
+    Ok(k.statics[f.offset as usize].load(std::sync::atomic::Ordering::Acquire) as Oop)
+}
+
+fn register_flags(r: &mut NativeRegistry) {
+    const FLAG: &str = "com/sun/management/internal/Flag";
+    r.add(FLAG, "initialize", "()V", |_, _| ret_void());
+    r.add(FLAG, "getInternalFlagCount", "()I", |_, _| ret_int(vm_flags().len() as i32));
+    r.add(FLAG, "getAllFlagNames", "()[Ljava/lang/String;", |t, _| {
+        let names: Vec<Option<String>> = vm_flags().into_iter().map(|f| Some(f.0)).collect();
+        ret_ref(super::string_array(t, &names)?)
+    });
+    // getFlags(names, flags, count): a Flag for each named flag the VM has (all with null
+    // names), null for the others; returns how many it set.
+    r.add(FLAG, "getFlags", "([Ljava/lang/String;[Lcom/sun/management/internal/Flag;I)I", |t, a| {
+        let (names, out, count) = (a[0] as Oop, a[1] as Oop, a[2] as i32);
+        let flags = vm_flags();
+        let wanted: Vec<Option<String>> = if names.is_null() {
+            flags.iter().map(|f| Some(f.0.clone())).collect()
+        } else {
+            // SAFETY: a String[] argument.
+            (0..unsafe { obj::array_length(names) }).map(|i| {
+                let s = unsafe { obj::load_elem(names, i as usize) };
+                (!s.is_null()).then(|| rt::java_string_to_rust(s))
+            }).collect()
+        };
+        let mut set = 0;
+        for (i, name) in wanted.iter().enumerate().take(count.max(0) as usize) {
+            let Some((name, value, origin)) = name.as_ref().and_then(|n| flags.iter().find(|f| &f.0 == n)) else { continue };
+            let boxed = match value {
+                FlagValue::Bool(b) => crate::boot::construct(t, "java/lang/Boolean", "(Z)V", &[*b as u64])?,
+                FlagValue::Long(x) => crate::boot::construct(t, "java/lang/Long", "(J)V", &[*x as u64, 0])?,
+                FlagValue::Double(x) => crate::boot::construct(t, "java/lang/Double", "(D)V", &[x.to_bits(), 0])?,
+                FlagValue::Str(s) => rt::new_string(t, s)?,
+            };
+            let jname = rt::new_string(t, name)?;
+            let o = static_ref(t, "com/sun/management/VMOption$Origin", origin, "Lcom/sun/management/VMOption$Origin;")?;
+            let flag = crate::boot::construct(
+                t,
+                "com/sun/management/internal/Flag",
+                "(Ljava/lang/String;Ljava/lang/Object;ZZLcom/sun/management/VMOption$Origin;)V",
+                &[jname as u64, boxed as u64, 0, 1, o as u64],
+            )?;
+            // SAFETY: an element of the Flag[] argument.
+            unsafe { obj::store_elem(out, i, flag) };
+            set += 1;
+        }
+        ret_int(set)
+    });
+    for (name, desc) in [("setLongValue", "(Ljava/lang/String;J)V"), ("setDoubleValue", "(Ljava/lang/String;D)V"), ("setBooleanValue", "(Ljava/lang/String;Z)V"), ("setStringValue", "(Ljava/lang/String;Ljava/lang/String;)V")] {
+        r.add(FLAG, name, desc, |_, _| ret_void());
+    }
 }
 
 fn register_os(r: &mut NativeRegistry) {

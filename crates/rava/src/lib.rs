@@ -39,6 +39,18 @@ pub fn processors() -> usize {
     }
 }
 
+/// The `-XX:` options of the command line (without the prefix), in order: rava accepts them
+/// and reports them as the VM's flags (`HotSpotDiagnosticMXBean.getVMOption`).
+static VM_OPTIONS: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
+pub(crate) fn note_vm_option(option: &str) {
+    VM_OPTIONS.lock().unwrap().push(option.to_string());
+}
+
+pub(crate) fn vm_options() -> Vec<String> {
+    VM_OPTIONS.lock().unwrap().clone()
+}
+
 pub(crate) fn set_active_processors(n: usize) {
     ACTIVE_PROCESSORS.store(n, Relaxed);
 }
