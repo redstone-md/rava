@@ -52,7 +52,8 @@ pub(super) fn register(r: &mut NativeRegistry) {
     r.add(C, "setSigners", "([Ljava/lang/Object;)V", |_, _| Ok(0));
     r.add(C, "getDeclaringClass0", "()Ljava/lang/Class;", |t, a| inner_class_info(t, a[0], InnerQuery::DeclaringClass));
     r.add(C, "getSimpleBinaryName0", "()Ljava/lang/String;", |t, a| inner_class_info(t, a[0], InnerQuery::SimpleName));
-    r.add(C, "getDeclaredClasses0", "()[Ljava/lang/Class;", |t, _| ret_ref(class_array(t, &[])?));
+    r.add(C, "getDeclaredClasses0", "()[Ljava/lang/Class;", declared_classes);
+    r.add(C, "getNestMembers0", "()[Ljava/lang/Class;", nest_members);
     r.add(C, "getEnclosingMethod0", "()[Ljava/lang/Object;", enclosing_method);
     r.add(C, "getNestHost0", "()Ljava/lang/Class;", |t, a| match klass(a[0]) {
         Some(k) => {
@@ -243,6 +244,48 @@ fn inner_class_info(t: &mut Thread, mirror: u64, q: InnerQuery) -> JResult<u64> 
         InnerQuery::SimpleName if name != 0 => ret_ref(optional_string(t, cf.utf8(name).ok().map(|s| s.as_str()))?),
         _ => ret_ref(std::ptr::null_mut()),
     }
+}
+
+/// `Class.getDeclaredClasses0`: the member classes the InnerClasses attribute lists with this
+/// class as their outer class (HotSpot's `JVM_GetDeclaredClasses`).
+fn declared_classes(t: &mut Thread, a: &[u64]) -> JResult<u64> {
+    let Some(k) = klass(a[0]) else { return ret_ref(class_array(t, &[])?) };
+    let Some(cf) = k.cf.as_ref() else { return ret_ref(class_array(t, &[])?) };
+    let mut members = Vec::new();
+    if let Some(at) = cf.attr("InnerClasses") {
+        let b = cf.attr_bytes(at);
+        let n = u16::from_be_bytes([b[0], b[1]]) as usize;
+        for e in (0..n).map(|i| &b[2 + 8 * i..10 + 8 * i]) {
+            let (inner, outer) = (u16::from_be_bytes([e[0], e[1]]), u16::from_be_bytes([e[2], e[3]]));
+            if inner != 0 && outer != 0 && cf.class_name(outer) == Some(cf.name) {
+                members.push(k.resolve_class(t, inner).map_err(|e| rt::link_error(t, e))?);
+            }
+        }
+    }
+    ret_ref(class_array(t, &members)?)
+}
+
+/// `Class.getNestMembers0`: the nest host first, then the members its NestMembers attribute
+/// lists that resolve (HotSpot's `JVM_GetNestMembers`).
+fn nest_members(t: &mut Thread, a: &[u64]) -> JResult<u64> {
+    let Some(k) = klass(a[0]) else { return ret_ref(class_array(t, &[])?) };
+    let host = k.nest_host(t);
+    let mut out = vec![host];
+    if let Some(cf) = host.cf.as_ref() {
+        if let Some(at) = cf.attr("NestMembers") {
+            let b = cf.attr_bytes(at);
+            let n = u16::from_be_bytes([b[0], b[1]]) as usize;
+            for i in 0..n {
+                let index = u16::from_be_bytes([b[2 + 2 * i], b[3 + 2 * i]]);
+                if let Ok(m) = host.resolve_class(t, index) {
+                    if std::ptr::eq(m.nest_host(t), host) {
+                        out.push(m);
+                    }
+                }
+            }
+        }
+    }
+    ret_ref(class_array(t, &out)?)
 }
 
 /// `(outer_class_info_index, inner_name_index)` of the InnerClasses entry naming this class.
