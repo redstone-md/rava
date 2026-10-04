@@ -73,13 +73,13 @@ impl Gen<'_> {
             Intrinsic::UnsafeGet(ty, _) => {
                 let (b, o) = (self.reg(args[1], R::Rax), self.reg(args[2], R::Rcx));
                 let r = self.out(v);
-                crate::jit::emit_obj::unsafe_load(&mut self.a, r, ty, b, mem_idx(b, o, 1, 0));
+                crate::jit::emit_obj::unsafe_load(&mut self.a, r, ty, mem_idx(b, o, 1, 0));
                 self.put(v, r);
             }
             Intrinsic::UnsafePut(ty, volatile) => {
                 let (b, o) = (self.reg(args[1], R::Rax), self.reg(args[2], R::Rcx));
                 self.load(R::Rdx, args[3]);
-                crate::jit::emit_obj::unsafe_store(&mut self.a, R::Rdx, ty, b, mem_idx(b, o, 1, 0));
+                crate::jit::emit_obj::unsafe_store(&mut self.a, R::Rdx, ty, mem_idx(b, o, 1, 0));
                 if volatile {
                     self.a.storeload();
                 }
@@ -100,7 +100,7 @@ impl Gen<'_> {
                 self.load(R::R11, args[4]);
                 self.load(R::Rax, args[3]);
                 let (b, o) = (self.reg(args[1], R::Rcx), self.reg(args[2], R::Rdx));
-                crate::jit::emit_obj::unsafe_cas(&mut self.a, ty, b, mem_idx(b, o, 1, 0));
+                crate::jit::emit_obj::unsafe_cas(&mut self.a, ty, mem_idx(b, o, 1, 0));
                 self.a.setcc(Cond::E, R::Rax);
                 self.a.movzx8(R::Rax, R::Rax);
                 if ty == BasicType::Reference {
