@@ -419,7 +419,13 @@ impl Builder {
             }
             return;
         }
-        assert!(!self.sc.entry.contains_key(&to), "a single-predecessor block entered twice");
+        assert!(
+            !self.sc.entry.contains_key(&to),
+            "a single-predecessor block entered twice: {} bci {} from bci {}",
+            self.sc.m,
+            self.g.blocks[to as usize].bci,
+            self.sc.bci
+        );
         self.sc.ready.push(to);
         let merge = self.sc.npreds.get(&to).copied().unwrap_or(0) > 1 || self.g.blocks[to as usize].loop_header;
         if !merge {
