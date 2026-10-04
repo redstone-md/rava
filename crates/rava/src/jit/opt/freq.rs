@@ -14,6 +14,8 @@ use crate::method::Method;
 /// Branch executions below which the profile is not trusted.
 const MIN_PROFILE: u32 = 16;
 const MAX_CYCLIC: f32 = 0.95;
+/// Bound on the cyclic probability exits are scaled by (a loop measured to never exit).
+const MAX_EXIT_CYCLIC: f32 = 0.9999;
 
 struct Blocks {
     starts: Vec<usize>,
@@ -71,7 +73,14 @@ pub fn frequencies(m: &'static Method, code: &[u8], live: impl Fn(usize) -> bool
     let is_back = |from: usize, to: usize| back[to].contains(&from);
     let mut cyclic = vec![0f32; n];
     let mut freq = vec![0f32; n];
-    let propagate = |head: usize, body: &dyn Fn(usize) -> bool, cyclic: &mut Vec<f32>, freq: &mut Vec<f32>| {
+    // Per loop header: how much more often each exit is taken than its probability times the
+    // capped header frequency says, so a loop still hands its whole entry flow on when it
+    // runs longer than the cap (else everything after a long loop looked cold).
+    let mut exit_scale = vec![1f32; n];
+    let exits = |from: usize, to: usize, exit_scale: &[f32]| -> f32 {
+        loops.iter().filter(|(_, body)| body[from] && !body[to]).map(|&(h, _)| exit_scale[h]).product()
+    };
+    let propagate = |head: usize, body: &dyn Fn(usize) -> bool, cyclic: &mut Vec<f32>, freq: &mut Vec<f32>, exit_scale: &[f32]| {
         let mut to_head = 0f32;
         for &b in rpo.iter().filter(|&&b| body(b)) {
             // The head of the loop being measured is entered once (its cyclic probability is
@@ -79,7 +88,7 @@ pub fn frequencies(m: &'static Method, code: &[u8], live: impl Fn(usize) -> bool
             freq[b] = if b == head {
                 1.0 / (1.0 - cyclic[b])
             } else {
-                let inflow: f32 = bl.preds[b].iter().filter(|&&p| body(p) && !is_back(p, b)).map(|&p| freq[p] * prob(&bl, p, b)).sum();
+                let inflow: f32 = bl.preds[b].iter().filter(|&&p| body(p) && !is_back(p, b)).map(|&p| freq[p] * prob(&bl, p, b) * exits(p, b, exit_scale)).sum();
                 inflow / (1.0 - cyclic[b])
             };
             to_head += bl.succ[b].iter().filter(|&&(s, _)| s == head && is_back(b, s)).map(|&(_, p)| freq[b] * p).sum::<f32>();
@@ -87,10 +96,11 @@ pub fn frequencies(m: &'static Method, code: &[u8], live: impl Fn(usize) -> bool
         to_head
     };
     for (h, body) in &loops {
-        let c = propagate(*h, &|b| body[b], &mut cyclic, &mut freq);
+        let c = propagate(*h, &|b| body[b], &mut cyclic, &mut freq, &exit_scale);
         cyclic[*h] = c.min(MAX_CYCLIC);
+        exit_scale[*h] = (1.0 - cyclic[*h]) / (1.0 - c.min(MAX_EXIT_CYCLIC));
     }
-    propagate(0, &|_| true, &mut cyclic, &mut freq);
+    propagate(0, &|_| true, &mut cyclic, &mut freq, &exit_scale);
     let mut out = vec![0f32; code.len()];
     for (i, &start) in bl.starts.iter().enumerate() {
         let end = bl.starts.get(i + 1).copied().unwrap_or(code.len());
