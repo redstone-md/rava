@@ -15,10 +15,11 @@ vm_field!(primitive_offset, "java/lang/Class", "primitive_type", "I");
 vm_field!(loader_offset, "java/lang/Class", "classLoader", "Ljava/lang/ClassLoader;");
 vm_field!(component_offset, "java/lang/Class", "componentType", "Ljava/lang/Class;");
 
-/// Fields JDK 24+ declares for state it used to ask the VM for natively (`getModifiers`,
-/// `isPrimitive`, `getProtectionDomain`); the VM fills them in when it creates a mirror.
+/// Fields newer releases declare for state they used to ask the VM for natively
+/// (`getModifiers`, `isPrimitive`, `getProtectionDomain`); the VM fills them in when it
+/// creates a mirror (`crate::jdk`).
 fn class_field(cell: &'static std::sync::OnceLock<u32>, name: &str, desc: &str) -> Option<u32> {
-    super::optional_field_offset(cell, "java/lang/Class", name, desc)
+    crate::jdk::library().optional_field(cell, "java/lang/Class", name, desc)
 }
 
 fn modifiers_offset() -> Option<u32> {

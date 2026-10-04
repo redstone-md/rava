@@ -119,11 +119,40 @@ fn is_caller_sensitive(m: &'static Method) -> bool {
     })
 }
 
-/// Writes the resolution of method `m` into `mn` with reference kind `kind`.
-fn fill_method(t: &mut Thread, mn: Oop, m: &'static Method, requested: i32) -> JResult<()> {
+/// A `ResolvedMethodName` naming method `m`.
+pub(super) fn resolved_method_name(t: &mut Thread, m: &'static Method) -> JResult<Oop> {
     let rmn_class = crate::loader::load("java/lang/invoke/ResolvedMethodName").expect("ResolvedMethodName");
     rt::initialize(t, rmn_class)?;
     let rmn = rt::alloc_instance(t, rmn_class)?;
+    let holder = rt::mirror_of(t, m.holder)?;
+    // SAFETY: a fresh ResolvedMethodName.
+    unsafe {
+        obj::write::<u64>(rmn, rmn_vmtarget(), m as *const Method as u64);
+        obj::write_ref(rmn, rmn_vmholder(), holder);
+    }
+    Ok(rmn)
+}
+
+/// The method a `ResolvedMethodName` names.
+pub(super) fn method_of_resolved_name(rmn: Oop) -> Option<&'static Method> {
+    // SAFETY: a live ResolvedMethodName; vmtarget holds a leaked `&'static Method` or 0.
+    let raw = unsafe { obj::read::<u64>(rmn, rmn_vmtarget()) };
+    (raw != 0).then(|| unsafe { &*(raw as *const Method) })
+}
+
+/// `MemberName.flags` as stack frames report them (JDK 25's `ClassFrameInfo.flags`): access
+/// flags, method or constructor, caller-sensitive and hidden-member bits.
+pub(super) fn frame_member_flags(m: &'static Method) -> i32 {
+    const HIDDEN_MEMBER: i32 = 0x0040_0000;
+    let shape = if m.name == "<init>" { IS_CONSTRUCTOR } else { IS_METHOD };
+    let sensitive = if is_caller_sensitive(m) { CALLER_SENSITIVE } else { 0 };
+    let hidden = if m.is_hidden_frame() { HIDDEN_MEMBER } else { 0 };
+    (m.access as i32 & 0xffff) | shape | sensitive | hidden
+}
+
+/// Writes the resolution of method `m` into `mn` with reference kind `kind`.
+fn fill_method(t: &mut Thread, mn: Oop, m: &'static Method, requested: i32) -> JResult<()> {
+    let rmn = resolved_method_name(t, m)?;
     let holder = rt::mirror_of(t, m.holder)?;
     let (kind, shape) = if m.name == "<init>" {
         (REF_NEW_INVOKE_SPECIAL, IS_CONSTRUCTOR)
@@ -140,8 +169,6 @@ fn fill_method(t: &mut Thread, mn: Oop, m: &'static Method, requested: i32) -> J
     let flags = (m.access as i32 & 0xffff) | shape | sensitive | (kind << KIND_SHIFT);
     // SAFETY: live objects; offsets from their layouts.
     unsafe {
-        obj::write::<u64>(rmn, rmn_vmtarget(), m as *const Method as u64);
-        obj::write_ref(rmn, rmn_vmholder(), holder);
         obj::write_ref(mn, mn_method(), rmn);
         obj::write::<i32>(mn, mn_flags(), flags);
         obj::write_ref(mn, mn_clazz(), holder);

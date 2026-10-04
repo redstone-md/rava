@@ -28,6 +28,15 @@ pub fn main() -> ExitCode {
     let Some(java_home) = crate::java_home() else {
         return fail(LaunchError::Launcher("no Java class library found: rava reads <prefix>/lib/modules beside <prefix>/bin/rava (dist/make.sh builds that layout); a development build uses JAVA_HOME or the JDK of java on PATH".into()));
     };
+    let library = crate::jdk::init(&java_home);
+    if library.feature < crate::jdk::OLDEST {
+        return fail(LaunchError::Launcher(format!(
+            "the Java class library at {} is release {}; rava runs releases {} and later",
+            java_home.display(),
+            library.feature,
+            crate::jdk::OLDEST
+        )));
+    }
     std::thread::Builder::new()
         .name("main".into())
         .stack_size(1 << 30)

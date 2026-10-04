@@ -33,15 +33,6 @@ pub(crate) fn field_offset(cache: &OnceLock<u32>, class: &str, name: &str, desc:
     })
 }
 
-/// The offset of an instance field only some JDKs declare (`u32::MAX` when absent).
-pub(crate) fn optional_field_offset(cache: &OnceLock<u32>, class: &str, name: &str, desc: &str) -> Option<u32> {
-    let off = *cache.get_or_init(|| {
-        let k = crate::loader::load(class).unwrap_or_else(|e| panic!("VM class {class}: {e:?}"));
-        crate::link::find_field(k, Symbol::intern(name), Symbol::intern(desc)).map_or(u32::MAX, |(_, f)| f.offset)
-    });
-    (off != u32::MAX).then_some(off)
-}
-
 /// Declares a cached accessor for a VM-known instance field offset.
 macro_rules! vm_field {
     ($fn:ident, $class:literal, $name:literal, $desc:literal) => {
