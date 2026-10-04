@@ -221,6 +221,19 @@ fn set_os_thread_name(name: &str) {
     }
 }
 
+/// Ends Java thread `jt` (run on `t`, its own): `Thread.exit()` (thread-local cleanup, such as
+/// freeing cached temporary direct buffers), then terminated, its joiners notified.
+pub(crate) fn terminate(t: &mut Thread, jt: Oop) {
+    let thread_class = crate::loader::load("java/lang/Thread").expect("Thread");
+    if let Some(exit) = thread_class.declared_method(Symbol::intern("exit"), Symbol::intern("()V")) {
+        let _ = t.call(exit, &[jt as u64]);
+    }
+    sync::enter(t, jt);
+    mark_terminated(jt);
+    let _ = sync::notify(jt, true);
+    sync::exit(jt);
+}
+
 fn run_thread(jt: Oop, daemon: bool) {
     let mut t = Thread::new();
     t.java_thread = jt;
@@ -245,13 +258,7 @@ fn run_thread(jt: Oop, daemon: bool) {
             let _ = t.call(d, &[jt as u64, ex.0 as u64]);
         }
     }
-    if let Some(exit) = thread_class.declared_method(Symbol::intern("exit"), Symbol::intern("()V")) {
-        let _ = t.call(exit, &[jt as u64]);
-    }
-    sync::enter(&t, jt);
-    mark_terminated(jt);
-    let _ = sync::notify(jt, true);
-    sync::exit(jt);
+    terminate(&mut t, jt);
     t.detach();
     if !daemon {
         non_daemon_ended();
