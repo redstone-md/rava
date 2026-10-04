@@ -23,7 +23,12 @@ fn thresholds() -> (i32, i32) {
 }
 
 /// Counts between requests once a counter is past its threshold (a power of two).
-const RETRY: i32 = 1024;
+pub(super) const RETRY: i32 = 1024;
+
+/// The invocation threshold tier-1 prologues count toward, unless tier 2 is off.
+pub(super) fn invocation_threshold() -> Option<i32> {
+    enabled().then(|| thresholds().0)
+}
 
 fn enabled() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
@@ -83,22 +88,6 @@ impl Emitter {
         self.a.alu_ri(false, Alu::Sub, R::Rdx, threshold);
         self.a.alu_ri(false, Alu::And, R::Rdx, RETRY - 1);
         self.a.jcc(Cond::Ne, cont);
-    }
-
-    /// Prologue counter of tier-1 code.
-    pub(super) fn count_invocation(&mut self) {
-        if self.tier >= 2 || !enabled() {
-            return;
-        }
-        let cont = self.a.new_label();
-        self.a.mov_ri(R::Rax, &self.m.invocations as *const _ as i64);
-        self.a.alu_mi(false, Alu::Add, mem(R::Rax, 0), 1);
-        self.a.alu_mi(false, Alu::Cmp, mem(R::Rax, 0), thresholds().0);
-        self.a.jcc(Cond::L, cont);
-        self.past_threshold(thresholds().0, cont);
-        self.a.mov_ri(R::Rdi, self.m as *const Method as i64);
-        self.a.call_abs(tier_up as *const () as usize);
-        self.a.bind(cont);
     }
 
     /// A taken back-edge to `target` in tier-1 code (the stack already written back): counts
