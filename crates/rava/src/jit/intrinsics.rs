@@ -45,12 +45,21 @@ pub(super) enum Intrinsic {
     /// `popcnt`, `lzcnt` or `tzcnt` (its opcode), on a long with `true`. The count is at most
     /// 64, so the 32-bit form's zero-extended result is also the sign-extended int.
     BitCount(u8, bool),
+    /// `Math.sin/cos/tan/exp/log`: the C library's function (`natives/math.rs`, by index),
+    /// called directly on the double's bits.
+    Libm(u8),
 }
 
 impl Intrinsic {
     /// Needs no deoptimization state (usable where the optimizing tier has none at hand).
     pub(super) fn is_stateless(self) -> bool {
         !matches!(self, Intrinsic::GetClass | Intrinsic::ArrayCopy)
+    }
+
+    /// The baseline compiler emits it in place (else it calls the method, whose body computes
+    /// the same result).
+    pub(super) fn in_baseline(self) -> bool {
+        !matches!(self, Intrinsic::ArrayCopy | Intrinsic::Libm(_))
     }
 
     /// Without side effects (usable inside inlined leaf bodies).
@@ -101,6 +110,7 @@ pub(super) fn intrinsic(m: &Method) -> Option<Intrinsic> {
             };
             Some(if name == "abs" { Intrinsic::Abs(ty) } else { Intrinsic::MinMax(ty, name == "max") })
         }
+        "java/lang/Math" if desc == "(D)D" && crate::natives::math::index(name).is_some() => crate::natives::math::index(name).map(Intrinsic::Libm),
         "java/lang/Math" | "java/lang/StrictMath" if desc == "(D)D" => match name {
             "sqrt" => Some(Intrinsic::Sqrt),
             _ if !std::arch::is_x86_feature_detected!("sse4.1") => None,
@@ -175,10 +185,9 @@ impl Emitter {
 
     /// Compiles the call at `pc` to intrinsic `m` in place; false if `m` is not one.
     pub(super) fn try_intrinsic(&mut self, pc: usize, depth: u16, m: &'static Method, args: i32) -> bool {
-        let Some(k) = bound_intrinsic(m) else { return false };
+        let Some(k) = bound_intrinsic(m).filter(|k| k.in_baseline()) else { return false };
         match k {
-            // The optimizing tier's only.
-            Intrinsic::ArrayCopy => return false,
+            Intrinsic::ArrayCopy | Intrinsic::Libm(_) => unreachable!("not emitted by the baseline compiler"),
             Intrinsic::BitCount(opcode, wide) => {
                 self.a.load(true, R::Rax, self.stk(args));
                 self.a.bit_count(opcode, wide, R::Rax, R::Rax);

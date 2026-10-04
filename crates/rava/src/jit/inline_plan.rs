@@ -228,7 +228,7 @@ fn is_leaf(m: &'static Method) -> bool {
             0xaa | 0xab => switch_targets(code, pc).iter().all(|&t| t > pc),
             0xb2 => is(pc, |r| matches!(r, Resolved::StaticField { .. })),
             0xb4 => is(pc, |r| matches!(r, Resolved::InstanceField { .. })),
-            0xb6 | 0xb8 => is(pc, |r| matches!(r, Resolved::Method(t) if intrinsic(t).is_some_and(|i| i.is_pure()))),
+            0xb6 | 0xb8 => is(pc, |r| matches!(r, Resolved::Method(t) if intrinsic(t).is_some_and(|i| i.is_pure() && i.in_baseline()))),
             _ => false,
         };
         if !ok {
