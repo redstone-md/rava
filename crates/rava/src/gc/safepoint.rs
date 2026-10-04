@@ -23,8 +23,7 @@ pub struct Record {
     pub rsp: AtomicUsize,
     pub state: AtomicU8,
     /// `LockSupport.park` permit and its wakeup (also used by `sleep` and interrupts).
-    pub permit: Mutex<bool>,
-    pub unparked: Condvar,
+    pub parker: crate::parker::Parker,
     /// The object whose monitor this thread is `wait`ing on, or 0 (for `Thread.interrupt`).
     pub waiting_on: AtomicUsize,
 }
@@ -75,8 +74,7 @@ pub fn attach(t: &mut Thread) {
         stack_top: current_stack_top(),
         rsp: AtomicUsize::new(0),
         state: AtomicU8::new(RUNNING),
-        permit: Mutex::new(false),
-        unparked: Condvar::new(),
+        parker: crate::parker::Parker::default(),
         waiting_on: AtomicUsize::new(0),
     }));
     t.gc_record = Some(rec);

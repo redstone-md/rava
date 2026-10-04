@@ -16,6 +16,7 @@ pub mod loader;
 pub mod low;
 pub mod method;
 pub mod natives;
+pub mod parker;
 pub mod runtime;
 pub mod symbol;
 pub mod sync;
