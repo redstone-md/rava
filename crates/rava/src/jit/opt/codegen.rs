@@ -172,7 +172,7 @@ fn implicit_null_checks(g: &Graph, loc: &[Loc]) -> std::collections::HashSet<V> 
 /// Emits `g` for `m`, whose frame (inlined frames included) takes `frame_slots` value-stack slots;
 /// a synchronized method holds `monitor` while it runs. Returns the code and the size of its
 /// main part (without the out-of-line stubs after it, as C2 sizes code for inlining).
-pub(super) fn generate(g: &Graph, al: &Allocation, m: &'static Method, frame_slots: i32, monitor: Option<Monitor>) -> (Vec<u8>, usize, Vec<(usize, usize)>) {
+pub(super) fn generate(g: &Graph, al: &Allocation, m: &'static Method, frame_slots: i32, monitor: Option<Monitor>) -> (crate::jit::asm::Code, usize, Vec<(usize, usize)>) {
     let max_locals = m.code.expect("compiled method has code").max_locals as i32;
     let mut a = Asm::default();
     a.enable_peephole();
