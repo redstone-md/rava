@@ -73,9 +73,10 @@ impl Emitter {
             let cell = super::profile::cell(self.m, pc);
             let (hit, done, found) = (self.a.new_label(), self.a.new_label(), self.a.new_label());
             self.a.load(false, R::Rdi, mem(R::Rcx, 0));
-            // rax holds the cell throughout: the cached pair is inline, so a hit is one compare.
+            // rax holds the cell throughout, rdx its cached pair until the hit loads the target.
             self.a.mov_ri(R::Rax, cell as *const runtime::IcCell as i64);
-            self.a.alu_rm(true, super::asm::Alu::Cmp, R::Rdi, mem(R::Rax, runtime::IcCell::klass_offset()));
+            self.a.load(true, R::Rdx, mem(R::Rax, runtime::IcCell::pair_offset()));
+            self.a.alu_rm(true, super::asm::Alu::Cmp, R::Rdi, mem(R::Rdx, runtime::IcCell::pair_klass_offset()));
             self.a.jcc(Cond::E, hit);
             if m.holder.is_interface() {
                 // Megamorphic interface sites scan the itable in generated code.
@@ -99,7 +100,7 @@ impl Emitter {
             self.a.mov_rr(true, R::Rdx, R::Rax);
             self.a.jmp(done);
             self.a.bind(hit);
-            self.a.load(true, R::Rdx, mem(R::Rax, runtime::IcCell::target_offset()));
+            self.a.load(true, R::Rdx, mem(R::Rdx, runtime::IcCell::pair_target_offset()));
             self.a.bind(done);
         }
     }

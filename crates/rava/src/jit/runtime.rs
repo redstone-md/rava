@@ -73,15 +73,16 @@ pub extern "sysv64" fn select(k: *const Klass, m: *const Method) -> *const Metho
     crate::link::select_method(k, m).map_or(std::ptr::null(), |x| x as *const Method)
 }
 
-/// A monomorphic inline cache: the last receiver class a site saw (`klass`, 0 when empty) and
-/// the target for it, stored inline so a hit is one compare against the cell and one load, with
-/// no pointer to chase. The writer stores `target` before `klass` (x86 keeps store order), so a
-/// reader that sees a class also sees its matching target. After `IC_MAX_UPDATES` misses the
-/// site stops re-caching (megamorphic) and every miss dispatches through `select`.
+/// A monomorphic inline cache: the last receiver class a site saw and the target for it, as
+/// one immutable pair (`IcPair`) the cell points to. A hit compares the receiver's class with
+/// the pair's and loads the pair's target. The pair is replaced whole: two fields updated in
+/// place by two threads missing at once (parallel streams) could be left mismatched for good,
+/// one class with another's target, and a reader could see a class with the target written
+/// for the next one. After `IC_MAX_UPDATES` misses the site stops re-caching (megamorphic) and
+/// every miss dispatches through `select`.
 #[repr(C)]
 pub struct IcCell {
-    klass: std::sync::atomic::AtomicUsize,
-    target: std::sync::atomic::AtomicUsize,
+    pair: std::sync::atomic::AtomicPtr<IcPair>,
     misses: std::sync::atomic::AtomicU32,
     /// The first two receiver classes the site saw, and whether it saw more (type profile).
     seen: [std::sync::atomic::AtomicUsize; 2],
@@ -98,11 +99,22 @@ const MAJOR_MIN_CALLS: u64 = 1000;
 /// Share of a megamorphic site's calls a recorded receiver class needs to be checked for first.
 const FREQUENT_PERCENT: u64 = 25;
 
+/// A receiver class and the target of a call site for it (`klass` 0: none).
+#[repr(C)]
+pub struct IcPair {
+    klass: usize,
+    target: usize,
+}
+
+/// The pair of a cell that has cached nothing.
+static NO_PAIR: IcPair = IcPair { klass: 0, target: 0 };
+
 impl IcCell {
     /// The cached receiver class while the site has seen no other.
     pub(super) fn observed(&self) -> Option<usize> {
         use std::sync::atomic::Ordering;
-        let k = self.klass.load(Ordering::Acquire);
+        // SAFETY: pairs are immutable and never freed.
+        let k = unsafe { (*self.pair.load(Ordering::Acquire)).klass };
         (k != 0 && self.misses.load(Ordering::Relaxed) <= 1).then_some(k)
     }
 
@@ -181,21 +193,25 @@ impl IcCell {
         std::mem::offset_of!(IcCell, misses) as i32
     }
 
-    /// Offset of the cached receiver class (compared on the hit path).
-    pub(super) fn klass_offset() -> i32 {
-        std::mem::offset_of!(IcCell, klass) as i32
+    /// Offset of the pointer to the cached pair.
+    pub(super) fn pair_offset() -> i32 {
+        std::mem::offset_of!(IcCell, pair) as i32
     }
 
-    /// Offset of the cached target (loaded on the hit path).
-    pub(super) fn target_offset() -> i32 {
-        std::mem::offset_of!(IcCell, target) as i32
+    /// Offsets in the pair of the receiver class (compared on the hit path) and the target
+    /// (loaded on it).
+    pub(super) fn pair_klass_offset() -> i32 {
+        std::mem::offset_of!(IcPair, klass) as i32
+    }
+
+    pub(super) fn pair_target_offset() -> i32 {
+        std::mem::offset_of!(IcPair, target) as i32
     }
 
     /// A cell in low memory (`crate::low`): optimized code addresses it absolutely.
     pub fn new() -> &'static IcCell {
         crate::low::leak(IcCell {
-            klass: Default::default(),
-            target: Default::default(),
+            pair: std::sync::atomic::AtomicPtr::new(&NO_PAIR as *const IcPair as *mut IcPair),
             misses: std::sync::atomic::AtomicU32::new(0),
             seen: Default::default(),
             more: Default::default(),
@@ -214,10 +230,8 @@ pub extern "sysv64" fn ic_miss(k: *const Klass, m: *const Method, cell: *const I
     use std::sync::atomic::Ordering;
     // Megamorphic sites stop counting, so they do not keep writing a shared line.
     if !target.is_null() && cell.misses.load(Ordering::Relaxed) < IC_MAX_UPDATES && cell.misses.fetch_add(1, Ordering::Relaxed) < IC_MAX_UPDATES {
-        // Publish the target before the class: a reader that sees this class (store order is
-        // kept on x86) therefore sees its matching target.
-        cell.target.store(target as usize, Ordering::Release);
-        cell.klass.store(k as usize, Ordering::Release);
+        let pair = Box::leak(Box::new(IcPair { klass: k as usize, target: target as usize }));
+        cell.pair.store(pair, Ordering::Release);
     }
     target
 }

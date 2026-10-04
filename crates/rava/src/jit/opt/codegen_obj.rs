@@ -555,12 +555,13 @@ impl Gen<'_> {
         self.a.load(false, R::Rdi, mem(R::Rcx, 0));
         // A site known megamorphic goes straight to the itable scan.
         let megamorphic = m.holder.is_interface() && crate::jit::profile::megamorphic(s.method, s.bci as usize);
-        // The cell is in low memory, addressed absolutely (else through rax): the cached pair is
-        // inline, so a hit is one compare and a load.
+        // The cell is in low memory, addressed absolutely (else through rax); rdx holds its
+        // cached pair until the hit loads the target.
         let field = |this: &mut Self, off: i32| this.absolute((cell + off as i64) as usize, R::Rax);
         if !megamorphic {
-            let m_klass = field(self, IcCell::klass_offset());
-            self.a.alu_rm(true, Alu::Cmp, R::Rdi, m_klass);
+            let m_pair = field(self, IcCell::pair_offset());
+            self.a.load(true, R::Rdx, m_pair);
+            self.a.alu_rm(true, Alu::Cmp, R::Rdi, mem(R::Rdx, IcCell::pair_klass_offset()));
             self.a.jcc(Cond::E, hit);
         }
         if m.holder.is_interface() {
@@ -612,8 +613,7 @@ impl Gen<'_> {
         self.a.call_abs(runtime::no_target as *const () as usize);
         self.a.jmp(fail);
         self.a.bind(hit);
-        let m_target = field(self, IcCell::target_offset());
-        self.a.load(true, R::Rdx, m_target);
+        self.a.load(true, R::Rdx, mem(R::Rdx, IcCell::pair_target_offset()));
         self.a.bind(done);
     }
 }
