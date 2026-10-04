@@ -182,6 +182,31 @@ impl Emitter {
         self.vs[i].synced = true;
     }
 
+    /// Before an instruction that may take a slow path: the slots not yet written back, for
+    /// that slow path to store (`write_back_all`), so the fast path keeps them in registers.
+    /// Inlined leaves restart their call instead and still write back here.
+    pub(super) fn lazy_flush(&mut self) -> Vec<(Loc, i32)> {
+        if self.in_leaf() {
+            self.flush();
+            return Vec::new();
+        }
+        self.vs.iter().enumerate().filter(|(_, s)| !s.synced).map(|(i, s)| (s.loc, i as i32)).collect()
+    }
+
+    /// Stores slots captured by `lazy_flush` (their registers still hold them).
+    pub(super) fn write_back_all(&mut self, spill: &[(Loc, i32)]) {
+        for &(loc, i) in spill {
+            let at = self.stk(i);
+            match loc {
+                Loc::Reg(r) => self.a.store(true, at, r),
+                Loc::Xmm(x) => self.a.fstore(true, at, x),
+                Loc::Local(n) => self.a.store(true, at, self.lreg(n as usize).expect("cached local")),
+                Loc::Imm(v) => self.store_imm64(at, v),
+                Loc::Mem => {}
+            }
+        }
+    }
+
     /// Writes every slot back to the frame, keeping the register copies (no flags change).
     pub(super) fn flush(&mut self) {
         for i in 0..self.vs.len() {

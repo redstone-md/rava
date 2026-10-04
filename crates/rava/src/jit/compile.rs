@@ -14,6 +14,10 @@ use crate::classfile::{ClassFile, CodeInfo};
 use crate::method::Method;
 use crate::thread::{header, offsets};
 
+/// A deferred slow path: entry label, bci, depth, the registers to reload from their slots
+/// afterwards and the stack slots to write back first.
+pub(super) type SlowPath = (Label, usize, u16, Vec<(super::vstack::Loc, i32)>, Vec<(super::vstack::Loc, i32)>);
+
 pub(super) struct Emitter {
     pub a: Asm,
     pub m: &'static Method,
@@ -25,8 +29,9 @@ pub(super) struct Emitter {
     pub labels: Vec<Label>,
     pub exc: Label,
     pub epilogue: Label,
-    /// Deferred slow paths: (entry label, bci, depth, registers to reload from their slots).
-    pub slow: Vec<(Label, usize, u16, Vec<(super::vstack::Loc, i32)>)>,
+    /// Deferred slow paths: (entry label, bci, depth, registers to reload from their slots,
+    /// stack slots to write back first).
+    pub slow: Vec<SlowPath>,
     /// Safepoint-poll stubs: (entry label, label to resume at).
     pub polls: Vec<(Label, Label)>,
     /// Slots (from the frame base) of local 0 and operand-stack slot 0 of the code being emitted.
@@ -234,7 +239,17 @@ impl Emitter {
             return ctx.restart;
         }
         let l = self.a.new_label();
-        self.slow.push((l, bci, depth, Vec::new()));
+        self.slow.push((l, bci, depth, Vec::new(), Vec::new()));
+        l
+    }
+
+    /// `slow_path` for an instruction whose operands may still be only in registers: the slow
+    /// path writes back `spill` (from `lazy_flush`) before re-executing it.
+    pub fn slow_path_spilling(&mut self, bci: usize, depth: u16, spill: Vec<(super::vstack::Loc, i32)>) -> Label {
+        let l = self.slow_path(bci, depth);
+        if let Some(s) = self.slow.last_mut().filter(|s| s.0 == l) {
+            s.4 = spill;
+        }
         l
     }
 
@@ -381,8 +396,9 @@ impl Emitter {
     /// Slow paths re-execute one instruction in the interpreter, reload the operand-stack
     /// registers the fast path left live, and continue after the instruction.
     pub(super) fn emit_slow_paths(&mut self) {
-        for (l, bci, depth, reload) in std::mem::take(&mut self.slow) {
+        for (l, bci, depth, reload, spill) in std::mem::take(&mut self.slow) {
             self.a.bind(l);
+            self.write_back_all(&spill);
             self.defer(bci, depth);
             self.reload_live(&reload);
             let next = bci + insn_len(self.code, bci);
