@@ -36,7 +36,7 @@ impl From<LoadError> for LinkError {
 /// fields). Keyed by JDK class names: these are VM structure, not workload routing.
 fn injected_fields(class: &str) -> &'static [(&'static str, &'static str)] {
     match class {
-        "java/lang/Class" => &[("klass", "J"), ("array_klass", "J"), ("primitive_type", "I")],
+        "java/lang/Class" => &[("klass", "J"), ("array_klass", "J"), ("primitive_type", "I"), ("protection_domain", "Ljava/security/ProtectionDomain;")],
         "java/lang/invoke/ResolvedMethodName" => &[("vmtarget", "J"), ("vmholder", "Ljava/lang/Class;")],
         "java/lang/invoke/MemberName" => &[("vmindex", "J")],
         _ => &[],
