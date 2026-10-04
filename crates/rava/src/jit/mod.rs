@@ -28,6 +28,7 @@ mod emit_reg;
 mod emit_reg_mem;
 mod fault;
 mod fold;
+mod frame_stubs;
 mod inline;
 mod inline_plan;
 mod intrinsics;

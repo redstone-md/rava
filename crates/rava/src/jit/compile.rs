@@ -132,21 +132,23 @@ fn compile_timed(m: &'static Method, tier: u8) -> Option<CompiledMethod> {
         // Short branches; the dump map records raw positions, which relaxation would move.
         e.a.enable_peephole();
     }
-    let overflow = e.a.new_label();
-    let frame_patch = e.prologue(overflow);
+    let frame_patch = e.prologue();
     let mut leaders = Vec::new();
     e.emit_body(Some(&mut leaders))?;
     if e.failed {
         return None;
     }
     let frame_slots = e.extent;
-    e.a.patch_i32(frame_patch, 8 * frame_slots - FRAME_BIAS);
+    if frame_slots > 0xffff || e.max_locals > 0xffff {
+        return None;
+    }
+    e.a.patch_i32(frame_patch, e.max_locals | frame_slots << 16);
     let leaders = e.emit_entry_stubs(leaders, frame_slots);
     e.emit_slow_paths();
     e.emit_poll_stubs();
     e.emit_trampolines();
     e.emit_exception_dispatch();
-    e.emit_epilogue(overflow);
+    e.emit_epilogue();
     let (bcis, stubs): (Vec<u32>, Vec<Label>) = leaders.into_iter().unzip();
     let (code, _, offs) = e.a.finish_labels(e.epilogue, &stubs);
     let entry = code_cache::install(&code);
@@ -304,27 +306,13 @@ impl Emitter {
         self.a.jcc(Cond::Ne, self.exc);
     }
 
-    /// Frame setup; returns the position of the frame size, known once every body is emitted.
-    fn prologue(&mut self, overflow: Label) -> u32 {
-        let a = &mut self.a;
-        save_registers(a);
-        a.mov_rr(true, R::R12, R::Rdi);
-        a.lea(R::R13, mem(R::Rsi, FRAME_BIAS));
-        let frame_patch = a.lea_patchable(R::Rax, R::R13);
-        a.alu_rm(true, super::asm::Alu::Cmp, R::Rax, mem(R::R12, offsets::LIMIT));
-        a.jcc(Cond::A, overflow);
-        let h = |f: usize| slot(self.max_locals + f as i32);
-        a.store(true, h(header::METHOD), R::Rdx);
-        a.store_imm(h(header::BCI), 0);
-        a.load(true, R::Rcx, mem(R::R12, offsets::TOP));
-        a.store(true, h(header::CALLER), R::Rcx);
-        a.load(true, R::Rcx, mem(R::R12, offsets::SP));
-        a.store(true, h(header::SAVED_SP), R::Rcx);
-        a.lea(R::Rcx, h(header::METHOD));
-        a.store(true, mem(R::R12, offsets::TOP), R::Rcx);
-        a.store(true, mem(R::R12, offsets::SP), R::Rax);
-        self.poll();
-        self.count_invocation();
+    /// Frame setup through the shared `frame_stubs::enter`; returns the position of its
+    /// parameter, max_locals | frame_slots << 16, patched once every body is emitted.
+    fn prologue(&mut self) -> u32 {
+        self.a.mov_ri(R::Rcx, 0x7fff_0000);
+        let frame_patch = self.a.pos() - 4;
+        let counted = self.tier < 2;
+        self.a.call_abs(super::frame_stubs::enter(counted));
         if self.m.is_synchronized() {
             self.enter_method_monitor();
         }
@@ -415,44 +403,22 @@ impl Emitter {
     }
 
     fn emit_exception_dispatch(&mut self) {
-        let unwind = self.a.new_label();
         self.a.bind(self.exc);
-        self.a.mov_rr(true, R::Rdi, R::R12);
-        self.a.lea(R::Rsi, slot(0));
-        self.a.call_abs(runtime::handle_exception as *const () as usize);
-        self.a.test_rr(true, R::Rax, R::Rax);
-        self.a.jcc(Cond::E, unwind);
-        self.a.jmp_r(R::Rax);
-        self.a.bind(unwind);
+        self.a.call_abs(super::frame_stubs::dispatch());
+        // No handler here: unwind.
         self.a.alu_rr(false, super::asm::Alu::Xor, R::Rax, R::Rax);
         self.a.jmp(self.epilogue);
     }
 
-    fn emit_epilogue(&mut self, overflow: Label) {
-        let restore = self.a.new_label();
+    fn emit_epilogue(&mut self) {
         self.a.bind(self.epilogue);
         if self.m.is_synchronized() {
             // Every exit (return or exception) releases it.
             self.exit_method_monitor();
         }
-        let h = |f: usize| slot(self.max_locals + f as i32);
-        self.a.load(true, R::Rcx, h(header::CALLER));
-        self.a.store(true, mem(R::R12, offsets::TOP), R::Rcx);
-        self.a.load(true, R::Rcx, h(header::SAVED_SP));
-        self.a.store(true, mem(R::R12, offsets::SP), R::Rcx);
-        self.a.bind(restore);
-        restore_registers(&mut self.a);
-        if matches!(self.m.sig.ret, crate::types::BasicType::Float | crate::types::BasicType::Double) {
-            // Compiled callers take a float or double result from xmm0 (`jit::float_result_stub`).
-            self.a.mov_xr(true, super::asm::X(0), R::Rax);
-        }
-        self.a.ret();
-        // The frame was never linked: raise, then return without unlinking.
-        self.a.bind(overflow);
-        self.a.mov_rr(true, R::Rdi, R::R12);
-        self.a.call_abs(runtime::stack_overflow as *const () as usize);
-        self.a.alu_rr(false, super::asm::Alu::Xor, R::Rax, R::Rax);
-        self.a.jmp(restore);
+        self.a.mov_ri(R::Rcx, self.max_locals as i64);
+        let float = matches!(self.m.sig.ret, crate::types::BasicType::Float | crate::types::BasicType::Double);
+        self.a.jmp_abs(super::frame_stubs::leave(float));
     }
 }
 

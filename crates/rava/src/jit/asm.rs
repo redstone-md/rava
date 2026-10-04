@@ -480,6 +480,18 @@ impl Asm {
             self.call_r(R::Rax);
         }
     }
+    /// Jumps to an absolute address: `jmp rel32` when the code cache is within reach of it,
+    /// else through r11.
+    pub fn jmp_abs(&mut self, addr: usize) {
+        if super::code_cache::near() {
+            self.b(0xE9);
+            self.relocs.push((self.pos(), addr));
+            self.d32(0);
+        } else {
+            self.mov_ri(R::R11, addr as i64);
+            self.jmp_r(R::R11);
+        }
+    }
     pub fn push(&mut self, r: R) {
         self.rex(false, 0, 0, r as u8, false);
         self.b(0x50 + lo(r as u8));
