@@ -90,6 +90,8 @@ pub(super) fn register(r: &mut NativeRegistry) {
         ret_void()
     });
     r.add(T, "sleep0", "(J)V", sleep0);
+    // JDK 25's name for it (also nanoseconds).
+    r.add(T, "sleepNanos0", "(J)V", sleep0);
     r.add(T, "getThreads", "()[Ljava/lang/Thread;", get_threads);
     // Stacks of other threads are not walked here: each thread reports an empty trace.
     r.add(T, "dumpThreads", "([Ljava/lang/Thread;)[[Ljava/lang/StackTraceElement;", |t, a| {
