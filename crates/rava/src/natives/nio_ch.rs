@@ -38,6 +38,24 @@ crate::runtime::vm_field!(key_ino, "sun/nio/ch/FileKey", "st_ino", "J");
 
 pub(super) fn register(r: &mut NativeRegistry) {
     r.add("sun/nio/ch/FileKey", "initIDs", "()V", |_, _| ret_void());
+    // JDK 25's `FileChannelImpl.available`: what remains of a regular file past its position,
+    // else what a read could return without blocking.
+    r.add(UFD, "available0", "(Ljava/io/FileDescriptor;)I", |_, a| {
+        let fd = fd(a[0]);
+        // SAFETY: plain system calls on a descriptor.
+        let n = unsafe {
+            let mut st: libc::stat = std::mem::zeroed();
+            if libc::fstat(fd, &mut st) == 0 && st.st_mode & libc::S_IFMT == libc::S_IFREG {
+                let pos = libc::lseek(fd, 0, libc::SEEK_CUR);
+                (st.st_size - pos.max(0)).max(0)
+            } else {
+                let mut n: libc::c_int = 0;
+                libc::ioctl(fd, libc::FIONREAD, &mut n);
+                n.max(0) as i64
+            }
+        };
+        super::ret_int(n.min(i32::MAX as i64) as i32)
+    });
     r.add("sun/nio/ch/FileKey", "init", "(Ljava/io/FileDescriptor;)V", |t, a| {
         // The identity of the open file (FileLockTable keys locks by it).
         let mut st: libc::stat = unsafe { std::mem::zeroed() };

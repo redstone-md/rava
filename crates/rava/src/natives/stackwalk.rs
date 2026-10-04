@@ -29,12 +29,28 @@ pub(super) fn register(r: &mut NativeRegistry) {
         W,
         "callStackWalk",
         "(JILjdk/internal/vm/ContinuationScope;Ljdk/internal/vm/Continuation;II[Ljava/lang/Object;)Ljava/lang/Object;",
-        call_stack_walk,
+        // JDK 21: (long mode, int skip, scope, continuation, int batch, int start, frames).
+        |t, a| call_stack_walk(t, a[0] as Oop, a[1], a[3] as i32 as usize, a[6] as i32, a[7] as i32, a[8] as Oop),
+    );
+    // JDK 25: (int mode, int skip, scope, continuation, int batch, int start, frames).
+    r.add(
+        W,
+        "callStackWalk",
+        "(IILjdk/internal/vm/ContinuationScope;Ljdk/internal/vm/Continuation;II[Ljava/lang/Object;)Ljava/lang/Object;",
+        |t, a| call_stack_walk(t, a[0] as Oop, a[1] as u32 as u64, a[2] as i32 as usize, a[5] as i32, a[6] as i32, a[7] as Oop),
     );
     r.add(W, "fetchStackFrames", "(JJII[Ljava/lang/Object;)I", |t, a| {
         // SAFETY: the anchor is a live `Walk` for the duration of `callStackWalk`.
         let walk = unsafe { &mut *(a[3] as *mut Walk) };
         ret_int(fill(t, a[1], walk, a[5] as i32, a[6] as i32, a[7] as Oop)?)
+    });
+    // JDK 25: (int mode, long anchor, int lastBatchFrameCount, int bufferSize, int startIndex,
+    // frames): fill from startIndex up to the buffer's size.
+    r.add(W, "fetchStackFrames", "(IJIII[Ljava/lang/Object;)I", |t, a| {
+        // SAFETY: the anchor is a live `Walk` for the duration of `callStackWalk`.
+        let walk = unsafe { &mut *(a[2] as *mut Walk) };
+        let (size, start) = (a[5] as i32, a[6] as i32);
+        ret_int(fill(t, a[1] as u32 as u64, walk, size - start, start, a[7] as Oop)?)
     });
 }
 
@@ -43,9 +59,7 @@ fn is_walker_frame(m: &'static Method) -> bool {
     n == "java/lang/StackWalker" || n == W || m.holder.super_klass.is_some_and(|s| s.name == W)
 }
 
-fn call_stack_walk(t: &mut Thread, a: &[u64]) -> JResult<u64> {
-    let (walker, mode, skip) = (a[0] as Oop, a[1], a[3] as i32 as usize);
-    let (batch, start, buffer) = (a[6] as i32, a[7] as i32, a[8] as Oop);
+fn call_stack_walk(t: &mut Thread, walker: Oop, mode: u64, skip: usize, batch: i32, start: i32, buffer: Oop) -> JResult<u64> {
     let show_hidden = mode & SHOW_HIDDEN_FRAMES != 0;
     // Skip this native, the walker's own frames, then `skip` more.
     let frames: Vec<(&'static Method, i32)> = t
