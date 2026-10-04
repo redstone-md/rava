@@ -114,6 +114,12 @@ impl Gen<'_> {
                 self.put(v, r);
             }
             Intrinsic::Abs(ty) => self.abs(v, ty, args[0]),
+            Intrinsic::Libm(f) => {
+                self.call_preserving_vals(crate::natives::math::FNS[f as usize] as usize, args);
+                let r = self.xout(v);
+                self.a.mov_xr(true, r, R::Rax);
+                self.xput(v, r);
+            }
         }
     }
 

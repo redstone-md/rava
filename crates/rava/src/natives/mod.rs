@@ -15,6 +15,7 @@ mod desktop;
 mod digest;
 mod jfr;
 mod management;
+pub(crate) mod math;
 mod process;
 pub(crate) mod mh;
 mod module;
@@ -87,6 +88,7 @@ impl NativeRegistry {
         netif::register(&mut r);
         misc::register(&mut r);
         digest::register(&mut r);
+        math::register(&mut r);
         r
     }
 
