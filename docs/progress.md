@@ -1023,3 +1023,42 @@ A/B on the pack after these changes (`eb57764` against java, 3 rounds, means): w
 44.9 s against 51.0 s (-12%), user+sys CPU 89.1 s against 143.7 s (-38%), peak RSS 1798 MiB
 against 2039 MiB (-12%). The server's `Done` clock: 25.1 s against 23.1 s (was 25.7 against
 22.9).
+
+## 2026-10-04 (cont.) — many cores: the collector's helpers
+
+Measurements on real Minecraft code first, to find where a faster machine would leave rava
+behind. Steady-state code is not it: the spawn biome search (`Climate.findSpawnPosition` with
+vanilla's registries) runs a round in 11-16 ms on both VMs; `BlendedNoise.compute`, monomorphic
+or behind four `FunctionContext` classes, is 1.05-1.3 µs on rava against 1.2-1.4 µs on C2; the
+overworld's final density and climate sampling are within 10%, and scale from one to four
+threads like C2's. During Paper's start-region phase one `Paper Common Worker` thread generates
+every chunk on both VMs and is the critical path. (Paper's `PalettedContainer.getAndSet` is
+`synchronized`; C2 is faster on a tight loop of such calls only because it unrolls the loop and
+coarsens the locks, which world generation's calls, far apart, do not allow.)
+
+What grew with the core count was the collector:
+
+- **Spinning markers** (`gc/mark.rs`). A marker out of work spun until all were idle. When
+  markers outnumber free cores, or share one as SMT siblings, the spinners took CPU time from the
+  markers that still had work. They now spin for 1024 checks and then yield, as HotSpot's task
+  terminator does. Paper with 12 processors on 4 cores: young pause 39.5 → 15.6 ms on average,
+  `Done` 13.4 → 11.9 s.
+- **Helpers spawned per collection** (`gc/pool.rs`). The marking helpers were new threads every
+  collection, so creation and start-up sat inside each pause, once per helper. They are now
+  started once and parked, named `rava-gc-N`; they used to inherit the collecting thread's name,
+  which put a share of GC time into `Paper Common Worker` in profiles.
+- **Release after young collections** (`gc/mod.rs`). Free pages beyond the next period's budget
+  went back to the kernel after every collection, and the allocation that followed faulted them
+  back in, zeroed: ~640 MiB over a Paper start, each release being a TLB shootdown on every core
+  inside the pause. As G1 does, the heap now shrinks only after a full collection: minor faults
+  545k → 483k (java 329k), peak RSS +10 MiB.
+
+A/B (`4a9c03b2` against java, Paper 1.21.1-133, fresh world, 2 rounds each):
+
+| processors | rava `Done` | java `Done` | rava CPU | java CPU | rava peak RSS | java peak RSS |
+|---|---|---|---|---|---|---|
+| 4 (the host) | 22.7-22.9 s | 24.6-25.8 s | 35-36 s | 60-64 s | 957-960 MiB | 1075-1127 MiB |
+| 12 (`-XX:ActiveProcessorCount=12`) | 12.6-13.0 s | 19.8-20.0 s | 36-37 s | 66 s | 1024-1036 MiB | 1166-1244 MiB |
+
+The same start runs from the self-contained distribution (`dist/make.sh`) with an empty
+environment: no `JAVA_HOME`, no `java` on `PATH` (`Done` 21.9 s).
