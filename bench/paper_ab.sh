@@ -10,7 +10,9 @@
 #
 # PAPER_BASE is a directory with the server set up once (paper jar, eula.txt, libraries/ and
 # versions/ unpacked by a first run, server.properties with a fixed level-seed); each run copies
-# it into a scratch directory, so every world is generated from scratch.
+# it into a scratch directory, so every world is generated from scratch. A base with a
+# `launch.args` file (one line, e.g. a NeoForge server's `@user_jvm_args.txt @libraries/...
+# nogui`) is started with those arguments instead of `-jar paper-*.jar --nogui`.
 #
 # OUT (default bench/results/<utc date>-<host>) gets:
 #   env.txt   host, CPU, kernel, toolchains, Paper jar and server.properties hashes, seed, the
@@ -36,7 +38,8 @@ shift $((OPTIND - 1))
 REPO=$(cd "$(dirname "$0")/.." && pwd)
 CACHE=${AB_CACHE:-/tmp/rava-ab-cache}
 JAVA=${JAVA_HOME:-/usr/lib/jvm/java-21-openjdk-amd64}/bin/java
-JAR=$(cd "$BASE" && ls paper-*.jar | head -1)
+JAR=$(cd "$BASE" && ls paper-*.jar 2>/dev/null | head -1 || true)
+if [ -f "$BASE/launch.args" ]; then ARGS=$(cat "$BASE/launch.args"); else ARGS="-jar $JAR --nogui"; fi
 OUT=${OUT:-$REPO/bench/results/$(date -u +%Y%m%d-%H%M%S)-$(hostname -s)}
 mkdir -p "$OUT/logs" "$CACHE"
 
@@ -66,7 +69,8 @@ done
   echo "kernel $(uname -r)"
   echo "rustc $(rustc --version 2>/dev/null || echo -)"
   echo "java $("$JAVA" -version 2>&1 | grep -v '^Picked up' | head -1)"
-  echo "paper_jar $JAR $(sha256sum "$BASE/$JAR" | cut -d' ' -f1)"
+  if [ -n "$JAR" ]; then echo "paper_jar $JAR $(sha256sum "$BASE/$JAR" | cut -d' ' -f1)"; fi
+  echo "args $ARGS"
   echo "server_properties $(tr -d '\r' < "$BASE/server.properties" | sha256sum | cut -d' ' -f1) $(tr -d '\r' < "$BASE/server.properties" | grep -E '^(level-seed|level-name|view-distance|simulation-distance)=' | tr '\n' ' ')"
   echo "repo_head $(git -C "$REPO" rev-parse HEAD)"
   for rev in "$@"; do echo "build $rev commit ${COMMIT[$rev]} sha256 ${SHA[$rev]} cmd ${CMD[$rev]}"; done
@@ -81,11 +85,12 @@ run_one() { # label round
   local label=$1 round=$2 d
   d=$(mktemp -d /tmp/paper-ab-run.XXXXXX)
   cp -r "$BASE/." "$d/"
-  rm -rf "$d"/world* "$d/logs"
+  rm -rf "$d"/world* "$d/logs" "$d/crash-reports"
   (cd "$d" && mkfifo in.fifo)
   local start end pid
   start=$(date +%s.%N)
-  (cd "$d" && exec ${CMD[$label]} -jar "$JAR" --nogui < in.fifo > out.txt 2>&1) &
+  # shellcheck disable=SC2086 # ARGS is a word list
+  (cd "$d" && exec ${CMD[$label]} $ARGS < in.fifo > out.txt 2>&1) &
   pid=$!
   exec 3> "$d/in.fifo"
   # A server that fails (or hangs) before "Done" is recorded as FAILED after RUN_LIMIT seconds.
