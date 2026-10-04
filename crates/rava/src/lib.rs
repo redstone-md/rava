@@ -25,6 +25,22 @@ pub mod types;
 pub mod vm;
 
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
+
+static ACTIVE_PROCESSORS: AtomicUsize = AtomicUsize::new(0);
+
+/// The processors the program and the VM's own thread pools size themselves by: HotSpot's
+/// `-XX:ActiveProcessorCount=n`, else the CPUs this process may run on.
+pub fn processors() -> usize {
+    match ACTIVE_PROCESSORS.load(Relaxed) {
+        0 => std::thread::available_parallelism().map_or(1, |n| n.get()),
+        n => n,
+    }
+}
+
+pub(crate) fn set_active_processors(n: usize) {
+    ACTIVE_PROCESSORS.store(n, Relaxed);
+}
 
 // Class metadata is immutable after definition except through its atomics and locks.
 unsafe impl Sync for klass::Klass {}

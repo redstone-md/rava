@@ -38,7 +38,7 @@ fn register_vm(r: &mut NativeRegistry) {
         ret_long(now - started().elapsed().as_millis() as i64)
     });
     r.add(M, "getUptime0", "()J", |_, _| ret_long(started().elapsed().as_millis() as i64));
-    r.add(M, "getAvailableProcessors", "()I", |_, _| ret_int(std::thread::available_parallelism().map_or(1, |n| n.get()) as i32));
+    r.add(M, "getAvailableProcessors", "()I", |_, _| ret_int(crate::processors() as i32));
     r.add(M, "getTotalClassCount", "()J", |_, _| ret_long(vm().loaded_class_count() as i64));
     r.add(M, "getLiveThreadCount", "()I", |_, _| ret_int(crate::gc::safepoint::all_threads().len() as i32));
     for name in ["getUnloadedClassCount", "getTotalCompileTime", "getTotalThreadCount", "getSafepointCount", "getTotalSafepointTime", "getSafepointSyncTime", "getTotalApplicationNonStoppedTime", "getLoadedClassSize", "getUnloadedClassSize", "getClassLoadingTime", "getMethodDataSize", "getInitializedClassCount", "getClassInitializationTime", "getClassVerificationTime"] {
