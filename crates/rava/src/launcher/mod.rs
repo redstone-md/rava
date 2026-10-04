@@ -26,7 +26,7 @@ pub fn main() -> ExitCode {
         Err(e) => return fail(e),
     };
     let Some(java_home) = crate::java_home() else {
-        return fail(LaunchError::Launcher("no JDK found: set JAVA_HOME or put a JDK's java on PATH".into()));
+        return fail(LaunchError::Launcher("no Java class library found: rava reads <prefix>/lib/modules beside <prefix>/bin/rava (dist/make.sh builds that layout); a development build uses JAVA_HOME or the JDK of java on PATH".into()));
     };
     std::thread::Builder::new()
         .name("main".into())

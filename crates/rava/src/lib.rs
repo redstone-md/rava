@@ -48,11 +48,18 @@ unsafe impl Send for klass::Klass {}
 unsafe impl Sync for method::Method {}
 unsafe impl Send for method::Method {}
 
-/// Locates the JDK whose `lib/modules` supplies the class library: `JAVA_HOME`, else the
-/// installation that owns the `java` launcher on `PATH`.
+/// Locates the Java class library (`lib/modules` and the data files beside it): rava's own,
+/// shipped with it as `java` ships with its (`<prefix>/bin/rava` reads `<prefix>/lib`; see
+/// `dist/make.sh`), else, for development builds, a JDK's: `JAVA_HOME`, then the installation
+/// that owns the `java` launcher on `PATH`.
 pub fn java_home() -> Option<PathBuf> {
+    let has_library = |home: &std::path::Path| home.join("lib/modules").is_file();
+    let bundled = std::env::current_exe().ok().and_then(|exe| exe.parent()?.parent().map(PathBuf::from));
+    if let Some(home) = bundled.filter(|h| has_library(h)) {
+        return Some(home);
+    }
     if let Some(home) = std::env::var_os("JAVA_HOME").map(PathBuf::from) {
-        if home.join("lib/modules").is_file() {
+        if has_library(&home) {
             return Some(home);
         }
     }
@@ -62,5 +69,5 @@ pub fn java_home() -> Option<PathBuf> {
         .find(|java| java.is_file())
         .and_then(|java| std::fs::canonicalize(java).ok())
         .and_then(|java| java.parent()?.parent().map(PathBuf::from))
-        .filter(|home| home.join("lib/modules").is_file())
+        .filter(|home| has_library(home))
 }

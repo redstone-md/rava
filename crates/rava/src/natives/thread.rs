@@ -90,6 +90,22 @@ pub(super) fn register(r: &mut NativeRegistry) {
         ret_void()
     });
     r.add(T, "sleep0", "(J)V", sleep0);
+    r.add(T, "getThreads", "()[Ljava/lang/Thread;", get_threads);
+    // Stacks of other threads are not walked here: each thread reports an empty trace.
+    r.add(T, "dumpThreads", "([Ljava/lang/Thread;)[[Ljava/lang/StackTraceElement;", |t, a| {
+        // SAFETY: a live Thread[] when non-null.
+        let n = if a[0] == 0 { 0 } else { unsafe { obj::array_length(a[0] as Oop) } };
+        let ste = crate::loader::load("java/lang/StackTraceElement").expect("StackTraceElement");
+        let row = crate::vm::vm().array_class_of(ste).expect("StackTraceElement[]");
+        let table = crate::vm::vm().array_class_of(row).expect("StackTraceElement[][]");
+        let out = rt::alloc_array(t, table, n)?;
+        for i in 0..n as usize {
+            let empty = rt::alloc_array(t, row, 0)?;
+            // SAFETY: `out` has n reference elements.
+            unsafe { obj::store_elem(out, i, empty) };
+        }
+        ret_ref(out)
+    });
     r.add(T, "holdsLock", "(Ljava/lang/Object;)Z", |t, a| {
         if a[0] == 0 {
             return Err(rt::null_pointer(t));
@@ -261,4 +277,33 @@ pub(crate) fn record_of(jt: Oop) -> Option<&'static crate::gc::safepoint::Record
     // SAFETY: live java.lang.Thread; eetop is 0, -1 (starting) or a leaked record address.
     let eetop = unsafe { obj::read::<i64>(jt, eetop_offset()) };
     crate::gc::safepoint::all_threads().into_iter().find(|r| *r as *const _ as i64 == eetop)
+}
+
+/// `Thread.getThreads`: the started, not yet terminated platform threads.
+fn get_threads(t: &mut Thread, _: &[u64]) -> JResult<u64> {
+    let thread_class = crate::loader::load("java/lang/Thread").expect("Thread");
+    let array_class = crate::vm::vm().array_class_of(thread_class).expect("Thread[]");
+    let count = crate::gc::safepoint::all_threads().len() as i32;
+    let out = rt::alloc_array(t, array_class, count)?;
+    let mut n = 0;
+    for rec in crate::gc::safepoint::all_threads().into_iter().take(count as usize) {
+        // SAFETY: a registered thread's record points at its live `Thread`; its Java thread
+        // object is set once when it attaches.
+        let jt = unsafe { (*rec.thread.load(std::sync::atomic::Ordering::Acquire)).java_thread };
+        if !jt.is_null() {
+            // SAFETY: `out` has `count` reference elements and n < count.
+            unsafe { obj::store_elem(out, n, jt) };
+            n += 1;
+        }
+    }
+    if n == count as usize {
+        return ret_ref(out);
+    }
+    // Some record had no Java thread yet: return the filled prefix.
+    let trimmed = rt::alloc_array(t, array_class, n as i32)?;
+    for i in 0..n {
+        // SAFETY: both arrays have at least n reference elements.
+        unsafe { obj::store_elem(trimmed, i, obj::load_elem(out, i)) };
+    }
+    ret_ref(trimmed)
 }
