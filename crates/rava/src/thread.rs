@@ -88,6 +88,12 @@ pub struct Thread {
     pub(crate) handles: Vec<Oop>,
     /// `sync::thread_token()` of the OS thread running this thread (read by compiled locking).
     pub(crate) lock_token: u64,
+    /// Below this native stack address, calls into Java from the VM throw StackOverflowError
+    /// (0: unchecked). The value stack bounds Java frames, but frames the VM runs between them
+    /// (an interpreter resuming deoptimized code, which calls on) use the native stack only.
+    pub(crate) native_limit: usize,
+    /// A StackOverflowError is being constructed (`runtime::stack_overflow`).
+    pub(crate) overflowing: bool,
 }
 
 const _: () = assert!(std::mem::offset_of!(Thread, poll) == offsets::POLL as usize);
@@ -116,12 +122,25 @@ impl Thread {
             gc_record: None,
             handles: Vec::new(),
             lock_token: crate::sync::thread_token(),
+            native_limit: 0,
+            overflowing: false,
         }
     }
 
     /// Registers this thread (at its final address) with the collector.
     pub fn attach(&mut self) {
         crate::gc::safepoint::attach(self);
+        // What constructing the error and the VM's own calls need stays free (4 MiB, at most an
+        // eighth of a small stack).
+        let (low, size) = crate::gc::safepoint::current_stack();
+        self.native_limit = low + (4 << 20).min(size / 8);
+    }
+
+    /// Whether the native stack is down to its reserve (`native_limit`).
+    #[inline]
+    pub(crate) fn native_low(&self) -> bool {
+        let probe = 0u8;
+        (std::ptr::addr_of!(probe) as usize) < self.native_limit
     }
 
     pub fn detach(&mut self) {
@@ -134,11 +153,12 @@ impl Thread {
 
     /// Runs `f` with the reserved stack zone available (to build a StackOverflowError).
     pub(crate) fn with_reserve<T>(&mut self, f: impl FnOnce(&mut Thread) -> T) -> T {
-        let saved = self.limit;
+        let (saved, native) = (self.limit, self.native_limit);
         // SAFETY: one past the end of the owned slice.
         self.limit = unsafe { (self.stack.as_ptr() as *mut u64).add(self.stack.len()) };
+        self.native_limit = 0;
         let r = f(self);
-        self.limit = saved;
+        (self.limit, self.native_limit) = (saved, native);
         r
     }
 

@@ -134,8 +134,40 @@ pub fn link_error(t: &mut Thread, e: LinkError) -> Throw {
     }
 }
 
+vm_field!(throwable_stack_trace, "java/lang/Throwable", "stackTrace", "[Ljava/lang/StackTraceElement;");
+vm_field!(throwable_cause, "java/lang/Throwable", "cause", "Ljava/lang/Throwable;");
+
 pub fn stack_overflow(t: &mut Thread) -> Throw {
-    t.with_reserve(|t| throw_new(t, "java/lang/StackOverflowError", ""))
+    // Constructing the error runs Java code in the reserved zone; should that overflow too, the
+    // error is made without its constructor (HotSpot throws a preallocated one) rather than
+    // nesting constructions until the native stack runs out.
+    if t.overflowing {
+        return bare_stack_overflow(t);
+    }
+    t.overflowing = true;
+    let e = t.with_reserve(|t| throw_new(t, "java/lang/StackOverflowError", ""));
+    t.overflowing = false;
+    e
+}
+
+/// A StackOverflowError as its constructor leaves one, with an empty stack trace.
+fn bare_stack_overflow(t: &mut Thread) -> Throw {
+    let made = (|| {
+        let k = crate::loader::load("java/lang/StackOverflowError").map_err(|e| fatal(&format!("cannot load StackOverflowError: {e:?}")))?;
+        let ex = alloc_instance(t, k)?;
+        let ste = crate::loader::load("[Ljava/lang/StackTraceElement;").map_err(|e| fatal(&format!("cannot load StackTraceElement[]: {e:?}")))?;
+        let trace = alloc_array(t, ste, 0)?;
+        // SAFETY: reference fields of the fresh instance.
+        unsafe {
+            obj::write_ref(ex, throwable_stack_trace(), trace);
+            obj::write_ref(ex, throwable_cause(), ex);
+        }
+        Ok(ex)
+    })();
+    match made {
+        Ok(ex) => Throw(ex),
+        Err(e) => e,
+    }
 }
 
 pub fn null_pointer(t: &mut Thread) -> Throw {

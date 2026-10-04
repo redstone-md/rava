@@ -43,6 +43,12 @@ fn registry() -> &'static Registry {
 
 /// The top (highest address) of the calling OS thread's stack.
 fn current_stack_top() -> usize {
+    let (low, size) = current_stack();
+    low + size
+}
+
+/// The lowest address and size of the calling OS thread's stack.
+pub fn current_stack() -> (usize, usize) {
     // SAFETY: queries the attributes of the calling thread.
     unsafe {
         let mut attr: libc::pthread_attr_t = std::mem::zeroed();
@@ -50,7 +56,7 @@ fn current_stack_top() -> usize {
         let (mut addr, mut size) = (std::ptr::null_mut(), 0usize);
         libc::pthread_attr_getstack(&attr, &mut addr, &mut size);
         libc::pthread_attr_destroy(&mut attr);
-        addr as usize + size
+        (addr as usize, size)
     }
 }
 

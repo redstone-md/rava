@@ -280,6 +280,11 @@ pub extern "sysv64" fn deopt(t: *mut Thread, base: *mut u64, desc: *const u8, sa
     if outcome.is_ok() {
         crate::jit::profile::note_trap(frames[0].method, frames[0].bci as usize);
         note_receiver(&frames[0], base);
+        // The interpreter would go on below this native frame (deeper recursion resumed here
+        // runs on top of it): out of native stack, the scopes see StackOverflowError instead.
+        if t.native_low() {
+            outcome = Err(crate::runtime::stack_overflow(t));
+        }
     }
     if env_once!("RAVA_DEOPT_LOG").is_some() {
         let scopes: Vec<String> = frames.iter().map(|f| format!("{}@{} depth {} frame {}", f.method, f.bci, f.depth, f.frame)).collect();
