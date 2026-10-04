@@ -131,7 +131,8 @@ impl Method {
         unsafe { self.compiled.load(Ordering::Acquire).as_ref() }
     }
 
-    /// The latest baseline code: block entries for exception handlers and on-stack replacement.
+    /// The latest baseline code: block entries for exception handlers and on-stack replacement,
+    /// and what optimized code is retired to (`retire`).
     pub(crate) fn baseline(&self) -> Option<&'static crate::jit::CompiledMethod> {
         // SAFETY: published compiled methods are leaked and never freed.
         unsafe { self.baseline.load(Ordering::Acquire).as_ref() }
@@ -159,7 +160,7 @@ impl Method {
     /// Publishes new machine code for this method.
     pub(crate) fn install(&self, cm: crate::jit::CompiledMethod) -> &'static crate::jit::CompiledMethod {
         let cm: &'static crate::jit::CompiledMethod = Box::leak(Box::new(cm));
-        if !cm.blocks.is_empty() {
+        if !cm.optimized {
             self.baseline.store(cm as *const _ as *mut _, Ordering::Release);
         }
         self.compiled.store(cm as *const _ as *mut _, Ordering::Release);
@@ -174,7 +175,7 @@ impl Method {
         if self.compiled.compare_exchange(old, cm as *const _ as *mut _, Ordering::AcqRel, Ordering::Acquire).is_err() {
             return false;
         }
-        if !cm.blocks.is_empty() {
+        if !cm.optimized {
             self.baseline.store(cm as *const _ as *mut _, Ordering::Release);
         }
         let _ = self.entry.compare_exchange(current.entry, cm.entry, Ordering::AcqRel, Ordering::Acquire);
