@@ -34,12 +34,19 @@ fn background() -> bool {
 fn queue() -> &'static Queue {
     static Q: OnceLock<Queue> = OnceLock::new();
     Q.get_or_init(|| {
-        let workers = std::env::var("RAVA_COMPILER_THREADS").ok().and_then(|v| v.parse().ok()).unwrap_or_else(|| {
-            let cores = crate::processors();
-            (cores / 2).clamp(1, 3)
-        });
+        // A compiler thread per core, at a lower priority: compilation takes the cores the
+        // application leaves idle (most of a server start runs on one or two threads) without
+        // competing with its threads when they are busy.
+        let workers = std::env::var("RAVA_COMPILER_THREADS").ok().and_then(|v| v.parse().ok()).unwrap_or_else(|| crate::processors().clamp(2, 8));
+        let nice = std::env::var("RAVA_COMPILER_NICE").ok().and_then(|v| v.parse().ok()).unwrap_or(10);
         for i in 0..workers {
-            std::thread::Builder::new().name(format!("rava-compiler-{i}")).stack_size(64 << 20).spawn(work).expect("spawn a compiler thread");
+            std::thread::Builder::new().name(format!("rava-compiler-{i}")).stack_size(64 << 20).spawn(move || {
+                if nice != 0 {
+                    // SAFETY: plain syscalls on the calling thread.
+                    unsafe { libc::setpriority(libc::PRIO_PROCESS, libc::gettid() as libc::id_t, nice) };
+                }
+                work()
+            }).expect("spawn a compiler thread");
         }
         Queue { jobs: Mutex::new(VecDeque::new()), ready: Condvar::new() }
     })
@@ -51,7 +58,11 @@ pub(super) fn submit(job: Job) {
         return run(job);
     }
     let q = queue();
-    q.jobs.lock().unwrap().push_back(job);
+    // A loop waiting for its OSR version goes first: the frame runs slow code until it is in.
+    match job {
+        Job::Osr(..) => q.jobs.lock().unwrap().push_front(job),
+        _ => q.jobs.lock().unwrap().push_back(job),
+    }
     q.ready.notify_one();
 }
 
