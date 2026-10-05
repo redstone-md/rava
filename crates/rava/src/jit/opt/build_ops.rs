@@ -259,6 +259,12 @@ impl Builder {
                 Resolved::Class(k) if !k.mirror().is_null() => (Ty::A, k.mirror() as i64),
                 _ => return None,
             },
+            // A dynamic constant of a reference type, once resolved, is that object for good
+            // (JVMS 5.4.3): hidden classes read their class data this way on every call.
+            Cp::Dynamic { nat, .. } if crate::jit::analysis::dynamic_is_reference(self.sc.cf, nat) => match self.resolved(index)? {
+                Resolved::Constant(o) => (Ty::A, o as i64),
+                _ => return None,
+            },
             _ => return None,
         };
         self.push_const(ty, bits);

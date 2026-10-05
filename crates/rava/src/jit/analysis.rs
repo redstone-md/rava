@@ -16,6 +16,12 @@ pub struct Analysis {
     pub entry: Vec<bool>,
 }
 
+/// Whether the dynamic constant with name-and-type `nat` is of a reference type (its resolved
+/// value is the object itself, not a box to unwrap).
+pub fn dynamic_is_reference(cf: &ClassFile, nat: u16) -> bool {
+    cf.name_and_type(nat).is_some_and(|(_, d)| matches!(d.as_str().as_bytes()[0], b'L' | b'['))
+}
+
 /// Length in bytes of the instruction at `pc`.
 pub fn insn_len(code: &[u8], pc: usize) -> usize {
     match code[pc] {
