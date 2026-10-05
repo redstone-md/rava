@@ -1240,3 +1240,27 @@ A/B (`ca252dca`, 3 rounds, fresh world):
 | wall to `Done` | 130.8-135.4 s | 136.8-137.8 s | 134.9-146.5 s |
 | CPU (user+sys) | 232-244 s | 230-308 s (the spin) | 334-357 s |
 | peak RSS | 6.3-6.5 GiB | 6.3 GiB | 6.7-7.6 GiB |
+
+## 2026-10-05 (cont.) — The server tick: `/tick sprint`
+
+Startup is not the game. The vanilla `/tick sprint 1d` (24000 ticks as fast as the server can,
+`bench/tick_sprint.py`) measures the single game thread flat out, on All The Mods 10 after a
+fresh start (spawn chunks, every mod's per-tick handlers):
+
+| | ticks per second |
+|---|---|
+| rava `c6a7fcd2` | 730-757 |
+| java | 1602-1704 |
+
+Every sample is on the `Server thread`. Two generic causes found first:
+
+- **`ldc` of dynamic constants** was left to the interpreter on every execution by both
+  compiled tiers; NeoForge's generated event-listener classes read their class data so at the
+  start of every call, 35 M times in one sprint. Resolved reference-typed dynamic constants now
+  compile as constants: 866-913 tps.
+- **`Runtime.totalMemory`** (asked by a mod every tick) summed every large object under the
+  heap lock: now a running total. 1025-1040 tps.
+
+Java's lead is now 1.6x. Next: virtual calls through the event bus (object -> class ->
+vtable pointer -> method -> entry, each a likely miss across listener classes; HotSpot keeps the
+vtable inside the class), the call protocol, allocation refills.
