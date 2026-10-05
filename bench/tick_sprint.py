@@ -33,7 +33,8 @@ def run(binary):
             args = ['-jar', jar, '--nogui']
         p = subprocess.Popen(f'exec {binary} {" ".join(args)} < in.fifo > out.txt 2>&1', shell=True, cwd=d)
         fifo = open(d + '/in.fifo', 'w')
-        log = lambda: open(d + '/out.txt', errors='replace').read()
+        # The shell creates out.txt only once the FIFO is open on both ends.
+        log = lambda: open(d + '/out.txt', errors='replace').read() if os.path.exists(d + '/out.txt') else ''
         t0, res = time.time(), 'FAILED'
         while time.time() - t0 < 900 and p.poll() is None and 'Done (' not in log():
             time.sleep(1)
