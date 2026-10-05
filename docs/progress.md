@@ -1207,3 +1207,36 @@ wall time with a third less CPU and 1.4-2 GiB less memory. Left on the main thre
 quality of the recipe loading (regex, gson, KubeJS filters; C2 inlines more and
 scalar-replaces the iterators), allocation refills, and the module graph's memory locality
 (a copying young collection lays out each set's nodes together).
+
+## 2026-10-05 (cont.) — Using the idle cores
+
+Per-thread-group CPU over an All The Mods 10 start (`/proc` sampled each second):
+
+| | main | JIT | GC | application pools |
+|---|---|---|---|---|
+| rava `9a331a61` | 62 s | 29 s | 21 s | 122 s |
+| java | 53 s | 115 s | 48 s | 123 s |
+
+The application's own threads cost the same on both; most of the start is one thread at a
+time (the main thread, mod construction on `modloading-sync`, the datapack load) with the
+other cores idle. HotSpot fills them with compilation (~0.8 cores throughout). rava's two
+compiler threads used ~0.2.
+
+- Compiler threads are now one per core (2-8) at nice 10: they take only the cores the
+  application leaves idle. The tier-2 threshold dropped from 5000 to 1500 invocations
+  (variants: 1500 best; 1000 no better; 600 slower), and OSR requests jump the queue. Main
+  thread CPU 65 -> 60 s.
+- A JDK `Keep-Alive-Timer` thread spun a whole core in about one start in four: failed socket
+  writes (EPIPE) were reported as 0 bytes written (an error marker narrowed to `int`), which
+  the JDK retries forever (`BrokenPipeSem`).
+
+GC pauses were checked too: marking already runs on every core, sweeping takes 0.4 s of 8.5 s
+of pauses, time to safepoint ~50 ms over a start.
+
+A/B (`ca252dca`, 3 rounds, fresh world):
+
+| | rava `ca252dca` | rava `9a331a61` | java |
+|---|---|---|---|
+| wall to `Done` | 130.8-135.4 s | 136.8-137.8 s | 134.9-146.5 s |
+| CPU (user+sys) | 232-244 s | 230-308 s (the spin) | 334-357 s |
+| peak RSS | 6.3-6.5 GiB | 6.3 GiB | 6.7-7.6 GiB |
