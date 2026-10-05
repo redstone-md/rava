@@ -1164,3 +1164,46 @@ Milestones from the first log line (one run each): mods constructed at 64 s (jav
 server starting at 132 s (java 133 s), `Done` at 159 s (java 157 s). The data loading between
 construction and the server's start (recipes, KubeJS scripts, tags, unification) takes rava
 68 s against java's 57 s: the next target.
+
+## 2026-10-05 — All The Mods 10: OSR into optimized code, the main thread
+
+Profiling the main thread during the data loading found the module-graph resolution at
+ModLauncher start (`Resolver.makeGraph`, cubic in the ~450 automatic modules) running
+first-tier code to its end: a long loop of a method called once had no way into optimized
+code, which has no block entries. Changes, each generic:
+
+- **OSR into optimized code** (`jit/opt/osr.rs`, HotSpot's OSR compilations): a hot
+  first-tier back edge asks for a version of the method built from the loop header, its live
+  locals read from the frame as parameters (kinds from a verifier-style inference), entered
+  through a bridge that calls it on the running frame. Branches first-tier code never ran
+  deoptimize in such versions (C2's `Reason_unreached`), so code after the loop gets its own
+  version once profiled (`OsrSem`).
+- **Inline caches** publish (class, target) as one immutable pair: two threads missing on a
+  site at once could leave a class paired with another's target for good, which ran a method
+  on a receiver of the wrong class (an `AbstractMethodError` in a KubeJS codec, about one start
+  in eight).
+- **Retiring optimized code** works for methods without loops: their baseline code was not
+  recorded, so a failing speculation in, e.g., `HashSet.add` deoptimized on every call instead
+  of recompiling after 8.
+- **Frequency estimation** conserves flow out of loops longer than its 20-iteration cap; the
+  innermost sites of nested loops looked 20x colder per level and were not inlined.
+- **String and array intrinsics** (`jit/leaf.rs`): `StringLatin1.equals`,
+  `ArraysSupport.vectorizedMismatch` / `vectorizedHashCode`, `StringCoding.countPositives` as
+  word-at-a-time leaf calls (`StrIntrSem`).
+
+Main-thread CPU from ModLauncher to `Done`: 71.1 k samples before, 64.2 k after OSR (Java
+56.7 k); the resolver alone went from ~8.7 k to ~5 k samples.
+
+A/B (4 cores, fresh world, rounds 2-3 of 3; the first round of each build is cold):
+
+| | rava `9a331a61` | rava `3899ec26` | java |
+|---|---|---|---|
+| wall to `Done` | 134-145 s | 149-151 s | 141-151 s |
+| CPU (user+sys) | 246-263 s | 246-250 s | 350-360 s |
+| peak RSS | 6.2-6.4 GiB | 6.3 GiB | 7.6-8.3 GiB |
+
+Hosts vary by ±4 s between sessions; within one session rava now matches or beats java on
+wall time with a third less CPU and 1.4-2 GiB less memory. Left on the main thread: code
+quality of the recipe loading (regex, gson, KubeJS filters; C2 inlines more and
+scalar-replaces the iterators), allocation refills, and the module graph's memory locality
+(a copying young collection lays out each set's nodes together).
