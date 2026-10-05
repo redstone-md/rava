@@ -139,6 +139,9 @@ impl Emitter {
                 Some(Resolved::Class(k)) if matches!(self.cf.pool.at(index as usize), crate::classfile::Cp::Class(_)) && !k.mirror().is_null() => {
                     self.const64(d, k.mirror() as i64)
                 }
+                Some(Resolved::Constant(o)) if matches!(self.cf.pool.at(index as usize), crate::classfile::Cp::Dynamic { nat, .. } if super::analysis::dynamic_is_reference(self.cf, nat)) => {
+                    self.const64(d, o as i64)
+                }
                 _ => self.defer_unresolved(pc, depth),
             },
         }

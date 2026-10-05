@@ -245,6 +245,7 @@ fn ldc_is_constant(m: &Method, code: &[u8], pc: usize) -> bool {
     match cf.pool.at(index as usize) {
         Cp::Int(_) | Cp::Float(_) | Cp::Long(_) | Cp::Double(_) => true,
         Cp::String(_) => matches!(m.holder.resolved[index as usize].get(), Some(Resolved::String(_))),
+        Cp::Dynamic { nat, .. } => super::analysis::dynamic_is_reference(cf, nat) && matches!(m.holder.resolved[index as usize].get(), Some(Resolved::Constant(_))),
         _ => false,
     }
 }

@@ -104,6 +104,10 @@ impl Emitter {
                 Some(Resolved::String(o)) | Some(Resolved::Constant(o)) => (o as i64, false),
                 _ => return false,
             },
+            Cp::Dynamic { nat, .. } if super::analysis::dynamic_is_reference(self.cf, nat) => match self.m.holder.resolved[index as usize].get() {
+                Some(Resolved::Constant(o)) => (o as i64, false),
+                _ => return false,
+            },
             _ => return false,
         };
         self.push_w(wide, Loc::Imm(v));
