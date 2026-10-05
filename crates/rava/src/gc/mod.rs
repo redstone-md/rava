@@ -300,7 +300,7 @@ impl Heap {
 
     pub fn used_bytes(&self) -> usize {
         let s = self.space.lock().unwrap();
-        (s.fresh - s.base) - s.empty.len() * PAGE_SIZE + s.large.values().map(|l| l.size).sum::<usize>()
+        (s.fresh - s.base) - s.empty.len() * PAGE_SIZE + s.large_bytes
     }
 
     pub fn contains(&self, addr: usize) -> bool {
@@ -399,9 +399,10 @@ fn sweep(space: &mut Space) -> usize {
     let dead: Vec<usize> = space.large.iter().filter(|(_, l)| !l.marked).map(|(&a, _)| a).collect();
     for a in dead {
         let l = space.large.remove(&a).unwrap();
+        space.large_bytes -= l.size;
         space.large_area.free(a, l.size);
     }
     space.large_area.trim(LARGE_FREE_KEEP);
-    live + space.large.values().map(|l| l.size).sum::<usize>()
+    live + space.large_bytes
 }
 
