@@ -215,29 +215,36 @@ fn accept(t: &mut Thread, a: &[u64]) -> JResult<u64> {
 
 /// Reads/writes on sockets and datagram sockets, with IOStatus results.
 fn register_dispatch(r: &mut NativeRegistry) {
-    fn finish(t: &mut Thread, v: i64) -> JResult<u64> {
+    /// An `io_status` result, checked for the error marker before an int-returning native
+    /// narrows it (`i64::MIN` narrowed is 0: a failed write read as nothing written, which the
+    /// JDK retries forever on a closed connection).
+    fn finish(t: &mut Thread, v: i64, int: bool) -> JResult<u64> {
         if v == i64::MIN {
             let msg = super::io::errno_text();
             return Err(throw_new(t, "java/net/SocketException", &msg));
         }
-        Ok(v as u64)
+        Ok(if int { v as i32 as i64 as u64 } else { v as u64 })
     }
     for c in ["sun/nio/ch/SocketDispatcher", "sun/nio/ch/DatagramDispatcher"] {
         r.add(c, "read0", "(Ljava/io/FileDescriptor;JI)I", |t, a| {
-            let n = crate::gc::safepoint::blocking(t, || unsafe { libc::read(fd(a[0]), a[1] as *mut libc::c_void, a[3] as u32 as usize) });
-            finish(t, io_status(n, true) as i32 as i64)
+            // errno is read before leaving the blocking state (which may wait).
+            let v = crate::gc::safepoint::blocking(t, || io_status(unsafe { libc::read(fd(a[0]), a[1] as *mut libc::c_void, a[3] as u32 as usize) }, true));
+            finish(t, v, true)
         });
         r.add(c, "readv0", "(Ljava/io/FileDescriptor;JI)J", |t, a| {
-            let n = crate::gc::safepoint::blocking(t, || unsafe { libc::readv(fd(a[0]), a[1] as *const libc::iovec, a[3] as i32) });
-            finish(t, io_status(n, true))
+            // errno is read before leaving the blocking state (which may wait).
+            let v = crate::gc::safepoint::blocking(t, || io_status(unsafe { libc::readv(fd(a[0]), a[1] as *const libc::iovec, a[3] as i32) }, true));
+            finish(t, v, false)
         });
         r.add(c, "write0", "(Ljava/io/FileDescriptor;JI)I", |t, a| {
-            let n = unsafe { libc::write(fd(a[0]), a[1] as *const libc::c_void, a[3] as u32 as usize) };
-            finish(t, io_status(n, false) as i32 as i64)
+            // errno is read before leaving the blocking state (which may wait).
+            let v = crate::gc::safepoint::blocking(t, || io_status(unsafe { libc::write(fd(a[0]), a[1] as *const libc::c_void, a[3] as u32 as usize) }, false));
+            finish(t, v, true)
         });
         r.add(c, "writev0", "(Ljava/io/FileDescriptor;JI)J", |t, a| {
-            let n = unsafe { libc::writev(fd(a[0]), a[1] as *const libc::iovec, a[3] as i32) };
-            finish(t, io_status(n, false))
+            // errno is read before leaving the blocking state (which may wait).
+            let v = crate::gc::safepoint::blocking(t, || io_status(unsafe { libc::writev(fd(a[0]), a[1] as *const libc::iovec, a[3] as i32) }, false));
+            finish(t, v, false)
         });
     }
     r.add("sun/nio/ch/UnixDispatcher", "init", "()V", |_, _| ret_void());
