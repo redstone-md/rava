@@ -216,6 +216,8 @@ pub struct Space {
     /// Old pages with free cells, per class, for objects collections move.
     pub old_partial: [Vec<usize>; CLASSES],
     pub large: BTreeMap<usize, Large>,
+    /// Bytes of the objects in `large` (kept with it, for `Heap::used_bytes`).
+    pub large_bytes: usize,
     pub large_area: LargeArea,
     /// Bytes handed to allocation caches or large objects since the last collection.
     pub allocated_since_gc: usize,
@@ -261,6 +263,7 @@ impl Space {
             partial: std::array::from_fn(|_| Vec::new()),
             old_partial: std::array::from_fn(|_| Vec::new()),
             large: BTreeMap::new(),
+            large_bytes: 0,
             large_area: LargeArea::new(pages_end, base + reserve),
             allocated_since_gc: 0,
             live_after_gc: 0,
@@ -379,6 +382,7 @@ impl Space {
     pub fn alloc_large(&mut self, bytes: usize) -> Option<usize> {
         let (p, size) = self.large_area.alloc(bytes)?;
         self.large.insert(p, Large { size, marked: false });
+        self.large_bytes += size;
         self.allocated_since_gc += size;
         Some(p)
     }
