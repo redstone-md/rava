@@ -90,13 +90,30 @@ fn describe_uncaught(t: &mut Thread, thread: &str, ex: Oop) {
     }
 }
 
+/// `-version` in the JDK launcher's format (`<name> version "<java version>" <date>`, which
+/// tools parse), naming rava: its runtime, the class library's build, and the VM.
+fn print_version(t: &mut Thread, to_stderr: bool) -> JResult<()> {
+    let p = |t: &mut Thread, k: &str| boot::property(t, k);
+    let (version, date, build) = (p(t, "java.version")?, p(t, "java.version.date")?, p(t, "java.runtime.version")?);
+    let (vm, vm_version, info) = (p(t, "java.vm.name")?, p(t, "java.vm.version")?, p(t, "java.vm.info")?);
+    let text = format!(
+        "rava version \"{version}\" {date}\nRava Runtime Environment (build {vm_version}, class library {build})\n{vm} (build {vm_version}, {info})\n"
+    );
+    if to_stderr {
+        eprint!("{text}");
+    } else {
+        print!("{text}");
+    }
+    Ok(())
+}
+
 fn execute(t: &mut Thread, line: &CommandLine) -> JResult<ExitCode> {
     if let Some(flag) = &line.show_settings {
         let flag = rt::new_string(t, flag)?;
         call_static(t, HELPER, "showSettings", "(ZLjava/lang/String;JJJ)V", &[1, flag as u64, 0, 0, 0, 0, 0, 0])?;
     }
     if let Some(version) = &line.version {
-        call_static(t, "java/lang/VersionProps", "print", "(Z)V", &[version.to_stderr as u64])?;
+        print_version(t, version.to_stderr)?;
         if version.then_exit {
             return Ok(ExitCode::SUCCESS);
         }

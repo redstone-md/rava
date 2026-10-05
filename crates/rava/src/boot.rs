@@ -19,6 +19,31 @@ fn method(k: &'static Klass, name: &str, desc: &str) -> &'static crate::method::
 }
 
 /// Calls a static method of a boot class.
+/// The runtime is rava (its VM runs the class library), so the properties naming the runtime
+/// and its vendor say so instead of what the class library's build wrote into `VersionProps`;
+/// the Java version and the library's build string stay as they are.
+const BRANDING: [(&str, &str); 4] = [
+    ("java.runtime.name", "Rava Runtime Environment"),
+    ("java.vendor", "rava"),
+    ("java.vendor.url", "https://github.com/redstone-md/rava"),
+    ("java.vendor.url.bug", "https://github.com/redstone-md/rava/issues"),
+];
+
+fn brand(t: &mut Thread) -> JResult<()> {
+    for (key, value) in BRANDING {
+        let (k, v) = (rt::new_string(t, key)?, rt::new_string(t, value)?);
+        call_static(t, "java/lang/System", "setProperty", "(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;", &[k as u64, v as u64])?;
+    }
+    Ok(())
+}
+
+/// The system property `key` (empty when unset).
+pub fn property(t: &mut Thread, key: &str) -> JResult<String> {
+    let k = rt::new_string(t, key)?;
+    let v = call_static(t, "java/lang/System", "getProperty", "(Ljava/lang/String;)Ljava/lang/String;", &[k as u64])? as Oop;
+    Ok(if v.is_null() { String::new() } else { rt::java_string_to_rust(v) })
+}
+
 pub fn call_static(t: &mut Thread, class_name: &str, name: &str, desc: &str, args: &[u64]) -> JResult<u64> {
     let k = class(class_name);
     rt::initialize(t, k)?;
@@ -55,6 +80,7 @@ pub fn boot(t: &mut Thread) -> JResult<()> {
         rt::initialize(t, class(c))?;
     }
     call_static(t, "java/lang/System", "initPhase1", "()V", &[])?;
+    brand(t)?;
     // The errors the VM itself throws are initialized now, as HotSpot does after phase 1: one
     // first initialized where it is thrown (at a stack's end, for StackOverflowError) could fail
     // there and be erroneous for good, each later throw of it becoming another error to build.
