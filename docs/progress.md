@@ -1261,6 +1261,10 @@ Every sample is on the `Server thread`. Two generic causes found first:
 - **`Runtime.totalMemory`** (asked by a mod every tick) summed every large object under the
   heap lock: now a running total. 1025-1040 tps.
 
-Java's lead is now 1.6x. Next: virtual calls through the event bus (object -> class ->
+Java's lead is now 1.6x (rava 970-1040, java 1600-1700). Checked and not the cause: megamorphic
+dispatch (an event-bus microbenchmark: 2.9 ns per listener against java's 2.4), object
+locality (a pointer walk over mixed-size objects: rava 7.7-8.4 ns, java 9.4-9.6), inline
+copies of short arrays (a stub made no difference to the sprint, removed). 82% of the tick runs
+optimized code; the gap is its quality against C2 across all mod code. Next: virtual calls through the event bus (object -> class ->
 vtable pointer -> method -> entry, each a likely miss across listener classes; HotSpot keeps the
 vtable inside the class), the call protocol, allocation refills.
