@@ -65,7 +65,7 @@ fn multi_block(t: &mut Thread, a: &[u64]) -> JResult<u64> {
         f(t, this, buf as Oop, ofs, n)?;
         return super::ret_int(ofs + n as i32 * size);
     }
-    let base = crate::loader::load("sun/security/provider/DigestBase").expect("DigestBase");
+    let base = crate::loader::boot_class!("sun/security/provider/DigestBase").expect("DigestBase");
     let decl = base.declared_method(crate::symbol::Symbol::intern("implCompress"), crate::symbol::Symbol::intern("([BI)V")).expect("implCompress");
     let m = crate::link::select_method(k, decl).unwrap_or(decl);
     for _ in 0..n {

@@ -153,9 +153,9 @@ pub fn stack_overflow(t: &mut Thread) -> Throw {
 /// A StackOverflowError as its constructor leaves one, with an empty stack trace.
 fn bare_stack_overflow(t: &mut Thread) -> Throw {
     let made = (|| {
-        let k = crate::loader::load("java/lang/StackOverflowError").map_err(|e| fatal(&format!("cannot load StackOverflowError: {e:?}")))?;
+        let k = crate::loader::boot_class!("java/lang/StackOverflowError").map_err(|e| fatal(&format!("cannot load StackOverflowError: {e:?}")))?;
         let ex = alloc_instance(t, k)?;
-        let ste = crate::loader::load("[Ljava/lang/StackTraceElement;").map_err(|e| fatal(&format!("cannot load StackTraceElement[]: {e:?}")))?;
+        let ste = crate::loader::boot_class!("[Ljava/lang/StackTraceElement;").map_err(|e| fatal(&format!("cannot load StackTraceElement[]: {e:?}")))?;
         let trace = alloc_array(t, ste, 0)?;
         // SAFETY: reference fields of the fresh instance.
         unsafe {

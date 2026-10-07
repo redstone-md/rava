@@ -20,7 +20,7 @@ pub fn new_string(t: &mut Thread, s: &str) -> JResult<Oop> {
 }
 
 pub fn new_string_utf16(t: &mut Thread, units: &[u16]) -> JResult<Oop> {
-    let string_class = vm().wk.string.get().copied().unwrap_or_else(|| crate::loader::load("java/lang/String").unwrap());
+    let string_class = vm().wk.string.get().copied().unwrap_or_else(|| crate::loader::boot_class!("java/lang/String").unwrap());
     initialize(t, string_class)?;
     let bytes_class = vm().primitive_array_class(BasicType::Byte).expect("[B");
     let latin1 = units.iter().all(|&u| u < 256);

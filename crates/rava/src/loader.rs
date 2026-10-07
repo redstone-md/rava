@@ -203,11 +203,19 @@ impl Vm {
     }
 
     pub fn primitive_array_class(&'static self, elem: BasicType) -> LoadResult {
-        let name = Symbol::intern(&format!("[{}", elem.desc_char()));
-        if let Some(k) = self.find_loaded(std::ptr::null_mut(), name) {
+        // Asked for every string and byte array the VM makes: one cell per element type instead
+        // of formatting, interning and looking up the name each time.
+        static CLASSES: [std::sync::OnceLock<&'static Klass>; 10] = [const { std::sync::OnceLock::new() }; 10];
+        let cell = &CLASSES[elem as usize];
+        if let Some(&k) = cell.get() {
             return Ok(k);
         }
-        self.new_array_klass(name, KlassKind::TypeArray { elem }, std::ptr::null_mut())
+        let name = Symbol::intern(&format!("[{}", elem.desc_char()));
+        let k = match self.find_loaded(std::ptr::null_mut(), name) {
+            Some(k) => k,
+            None => self.new_array_klass(name, KlassKind::TypeArray { elem }, std::ptr::null_mut())?,
+        };
+        Ok(*cell.get_or_init(|| k))
     }
 
     fn new_array_klass(&'static self, name: Symbol, kind: KlassKind, loader: Oop) -> LoadResult {
@@ -370,3 +378,17 @@ fn build_vtable(klass: &'static Klass) -> Box<[&'static Method]> {
 pub fn load(name: &str) -> LoadResult {
     vm().load_boot_class(Symbol::intern(name))
 }
+
+/// `load` of a literal name, looked up once per call site (natives ask for the same few
+/// classes on every call: interning the name and searching the class table each time showed up
+/// in method-handle-heavy code).
+macro_rules! boot_class {
+    ($name:literal) => {{
+        static K: std::sync::OnceLock<&'static $crate::klass::Klass> = std::sync::OnceLock::new();
+        match K.get() {
+            Some(&k) => Ok(k),
+            None => $crate::loader::load($name).map(|k| *K.get_or_init(|| k)),
+        }
+    }};
+}
+pub(crate) use boot_class;

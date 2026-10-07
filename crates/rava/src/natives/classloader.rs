@@ -222,7 +222,7 @@ fn for_name0(t: &mut Thread, a: &[u64]) -> JResult<u64> {
         Err(LinkError::Load(_)) => return Err(not_found(t)),
         Err(LinkError::Thrown(ex)) => {
             // SAFETY: live exception.
-            let ncdfe = crate::loader::load("java/lang/NoClassDefFoundError").expect("NCDFE");
+            let ncdfe = crate::loader::boot_class!("java/lang/NoClassDefFoundError").expect("NCDFE");
             return Err(if unsafe { obj::klass(ex.0) }.is_subtype_of(ncdfe) { not_found(t) } else { ex });
         }
         Err(e) => return Err(rt::link_error(t, e)),
@@ -234,7 +234,7 @@ fn for_name0(t: &mut Thread, a: &[u64]) -> JResult<u64> {
 }
 
 fn retrieve_directives(t: &mut Thread, _: &[u64]) -> JResult<u64> {
-    let k = crate::loader::load("java/lang/AssertionStatusDirectives").expect("AssertionStatusDirectives");
+    let k = crate::loader::boot_class!("java/lang/AssertionStatusDirectives").expect("AssertionStatusDirectives");
     rt::initialize(t, k)?;
     let assertions = &vm().options.assertions;
     let d = rt::alloc_instance(t, k)?;

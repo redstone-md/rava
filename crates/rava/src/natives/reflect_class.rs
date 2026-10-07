@@ -30,7 +30,7 @@ pub(super) fn register(r: &mut NativeRegistry) {
     });
     r.add(C, "getRawTypeAnnotations", "()[B", |_, _| ret_ref(std::ptr::null_mut()));
     r.add(C, "getConstantPool", "()Ljdk/internal/reflect/ConstantPool;", |t, a| {
-        let cp_class = crate::loader::load("jdk/internal/reflect/ConstantPool").expect("ConstantPool");
+        let cp_class = crate::loader::boot_class!("jdk/internal/reflect/ConstantPool").expect("ConstantPool");
         rt::initialize(t, cp_class)?;
         let cp = rt::alloc_instance(t, cp_class)?;
         let f = cp_class.declared_field(Symbol::intern("constantPoolOop"), Symbol::intern("Ljava/lang/Object;")).expect("constantPoolOop");
@@ -150,7 +150,7 @@ fn optional_bytes(t: &mut Thread, k: &'static Klass, at: Option<Attr>) -> JResul
 }
 
 fn declared_fields(t: &mut Thread, a: &[u64]) -> JResult<u64> {
-    let field_class = crate::loader::load("java/lang/reflect/Field").expect("Field");
+    let field_class = crate::loader::boot_class!("java/lang/reflect/Field").expect("Field");
     rt::initialize(t, field_class)?;
     let Some(k) = klass(a[0]) else { return ret_ref(new_object_array(t, field_class, 0)?) };
     let public_only = a[1] != 0;
@@ -305,7 +305,7 @@ fn enclosing_method(t: &mut Thread, a: &[u64]) -> JResult<u64> {
     let b = cf.attr_bytes(at);
     let (class_idx, nat) = (u16::from_be_bytes([b[0], b[1]]), u16::from_be_bytes([b[2], b[3]]));
     let outer = k.resolve_class(t, class_idx).map_err(|e| rt::link_error(t, e))?;
-    let items = new_object_array(t, crate::loader::load("java/lang/Object").expect("Object"), 3)?;
+    let items = new_object_array(t, crate::loader::boot_class!("java/lang/Object").expect("Object"), 3)?;
     let outer_mirror = rt::mirror_of(t, outer)?;
     store(items, 0, outer_mirror);
     if let Some((name, desc)) = cf.name_and_type(nat) {

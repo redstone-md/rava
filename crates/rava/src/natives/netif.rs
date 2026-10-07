@@ -85,7 +85,7 @@ fn interface_object(t: &mut Thread, f: &Iface) -> JResult<Oop> {
     let addrs = object_array(t, "java/net/InetAddress", f.addrs.len())?;
     let bindings = object_array(t, "java/net/InterfaceAddress", f.addrs.len())?;
     let childs = object_array(t, NI, 0)?;
-    let ia_class = crate::loader::load("java/net/InterfaceAddress").expect("InterfaceAddress");
+    let ia_class = crate::loader::boot_class!("java/net/InterfaceAddress").expect("InterfaceAddress");
     rt::initialize(t, ia_class)?;
     for (i, &(ip, prefix, broadcast)) in f.addrs.iter().enumerate() {
         let a = super::net::inet4(t, None, ip)?;

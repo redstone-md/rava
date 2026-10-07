@@ -302,7 +302,7 @@ fn register_inet(r: &mut NativeRegistry) {
         if ips.is_empty() {
             return Err(throw_new(t, "java/net/UnknownHostException", &host));
         }
-        let ia = crate::loader::load("java/net/InetAddress").expect("InetAddress");
+        let ia = crate::loader::boot_class!("java/net/InetAddress").expect("InetAddress");
         let arr = rt::alloc_array(t, vm().array_class_of(ia).expect("InetAddress[]"), ips.len() as i32)?;
         for (i, ip) in ips.into_iter().enumerate() {
             let o = inet4(t, Some(&host), ip)?;

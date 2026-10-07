@@ -51,7 +51,7 @@ pub(super) fn register(r: &mut NativeRegistry) {
         let index = rt::box_value(t, BasicType::Long, vmindex(a[0] as Oop) as u64)?;
         // SAFETY: live MemberName.
         let clazz = unsafe { obj::read_ref(a[0] as Oop, mn_clazz()) };
-        let object = crate::loader::load("java/lang/Object").expect("Object");
+        let object = crate::loader::boot_class!("java/lang/Object").expect("Object");
         let arr = rt::alloc_array(t, crate::vm::vm().array_class_of(object).expect("Object[]"), 2)?;
         unsafe {
             obj::store_elem(arr, 0, index);
@@ -121,7 +121,7 @@ fn is_caller_sensitive(m: &'static Method) -> bool {
 
 /// A `ResolvedMethodName` naming method `m`.
 pub(super) fn resolved_method_name(t: &mut Thread, m: &'static Method) -> JResult<Oop> {
-    let rmn_class = crate::loader::load("java/lang/invoke/ResolvedMethodName").expect("ResolvedMethodName");
+    let rmn_class = crate::loader::boot_class!("java/lang/invoke/ResolvedMethodName").expect("ResolvedMethodName");
     rt::initialize(t, rmn_class)?;
     let rmn = rt::alloc_instance(t, rmn_class)?;
     let holder = rt::mirror_of(t, m.holder)?;
