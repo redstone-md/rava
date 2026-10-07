@@ -566,19 +566,30 @@ impl Gen<'_> {
                 self.a.fstore(true, mem(R::Rsp, 8 * i as i32), X(x));
             }
         }
-        // Through the stack, so no argument register is written before every value is read;
-        // spill slots are rsp-relative, so their offsets follow the pushes.
-        let mut below = 8 * (gprs.len() + pad as usize) as i32 + xbytes;
-        for &v in vals {
-            match self.loc[v as usize] {
-                Loc::Stack(n) => self.a.load(true, R::R11, mem(R::Rsp, 8 * n + below)),
-                l => moves::mov(&mut self.a, Loc::Reg(R::R11), l),
+        // A parallel move into the argument registers: a register is written only once no
+        // pending move still reads it, and a cycle is broken through r11. Spill slots are
+        // rsp-relative, so their offsets follow the pushes.
+        let below = 8 * (gprs.len() + pad as usize) as i32 + xbytes;
+        let mut pending: Vec<(R, Loc)> = vals.iter().enumerate().map(|(i, &v)| (PARAMS[i], self.loc[v as usize])).filter(|&(d, l)| l != Loc::Reg(d)).collect();
+        while !pending.is_empty() {
+            let free = pending.iter().position(|&(d, _)| !pending.iter().any(|&(_, l)| l == Loc::Reg(d)));
+            match free {
+                Some(i) => {
+                    let (d, l) = pending.remove(i);
+                    match l {
+                        Loc::Stack(n) => self.a.load(true, d, mem(R::Rsp, 8 * n + below)),
+                        l => moves::mov(&mut self.a, Loc::Reg(d), l),
+                    }
+                }
+                None => {
+                    // Every destination is still read: park the first one's value in r11.
+                    let d = pending[0].0;
+                    self.a.mov_rr(true, R::R11, d);
+                    for m in pending.iter_mut().filter(|m| m.1 == Loc::Reg(d)) {
+                        m.1 = Loc::Reg(R::R11);
+                    }
+                }
             }
-            self.a.push(R::R11);
-            below += 8;
-        }
-        for i in (0..vals.len()).rev() {
-            self.a.pop(PARAMS[i]);
         }
         self.a.call_abs(addr);
         if xbytes > 0 {
