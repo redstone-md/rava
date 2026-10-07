@@ -163,6 +163,8 @@ const LEAF_NATIVES: &[(&str, &str, &str)] = &[
     ("java/lang/Class", "isPrimitive", "()Z"),
     ("java/lang/Class", "isArray", "()Z"),
     ("java/lang/Class", "isInterface", "()Z"),
+    ("java/lang/Class", "isAssignableFrom", "(Ljava/lang/Class;)Z"),
+    ("java/lang/Object", "hashCode", "()I"),
     ("java/lang/reflect/Array", "newArray", "(Ljava/lang/Class;I)Ljava/lang/Object;"),
     ("java/lang/System", "nanoTime", "()J"),
     ("java/lang/System", "currentTimeMillis", "()J"),

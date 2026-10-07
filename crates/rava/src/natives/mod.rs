@@ -8,7 +8,7 @@ mod fs;
 pub(crate) mod io;
 mod arraycopy;
 mod lang;
-mod misc;
+pub(crate) mod misc;
 mod nio_ch;
 mod auth;
 mod desktop;

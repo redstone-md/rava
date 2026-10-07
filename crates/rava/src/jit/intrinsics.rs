@@ -64,6 +64,15 @@ impl Intrinsic {
         !matches!(self, Intrinsic::ArrayCopy | Intrinsic::Libm(_) | Intrinsic::Leaf(_))
     }
 
+    /// Reads memory that stores or a collection change: not computed once before a loop.
+    pub(super) fn reads_mutable(self) -> bool {
+        match self {
+            Intrinsic::UnsafeGet(..) => true,
+            Intrinsic::Leaf(l) => l.reads_mutable(),
+            _ => false,
+        }
+    }
+
     /// Without side effects (usable inside inlined leaf bodies).
     pub(super) fn is_pure(self) -> bool {
         !matches!(self, Intrinsic::UnsafePut(..) | Intrinsic::CompareAndSet(_) | Intrinsic::IdentityHash | Intrinsic::UnsafeGet(_, true) | Intrinsic::ArrayCopy)

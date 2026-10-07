@@ -75,7 +75,7 @@ pub fn hoist(g: &mut Graph) {
                     && match inst {
                         Inst::Bin(op, ..) => !matches!(op, BinOp::Div | BinOp::Rem) || matches!(g.ty(v), Ty::F | Ty::D),
                         Inst::Neg(_) | Inst::Convert(..) | Inst::Compare(..) | Inst::Select(..) => true,
-                        Inst::Intrinsic(k, _, None) => k.is_pure(),
+                        Inst::Intrinsic(k, _, None) => k.is_pure() && !k.reads_mutable(),
                         Inst::ArrayLength(o) => known.contains(&g.resolve(*o)),
                         Inst::LoadField(o, off, _) => !barrier && !stored.contains(off) && !g.ordered.contains(&v) && known.contains(&g.resolve(*o)),
                         _ => false,
