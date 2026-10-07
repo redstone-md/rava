@@ -39,6 +39,7 @@ mod scratch;
 mod select;
 mod split;
 mod thread;
+mod typecheck;
 mod unroll;
 
 use super::{code_cache, CompiledMethod};
@@ -147,6 +148,7 @@ fn compile_timed(m: &'static Method, osr: Option<u32>) -> Option<CompiledMethod>
     };
     phis::simplify(&mut g);
     nullcheck::eliminate(&mut g);
+    typecheck::eliminate(&mut g);
     fields::forward(&mut g);
     escape::eliminate(&mut g);
     select::convert(&mut g);
