@@ -16,6 +16,33 @@ impl Builder {
         }
     }
 
+    /// Adds intrinsic `k` on `args`. `Class.isInstance` of a constant class is that class's
+    /// `instanceof` (a method handle's guard, as a record's `equals` has): the inline class
+    /// tests and the passes that sharpen and fuse them apply.
+    pub(super) fn intrinsic_inst(&mut self, k: crate::jit::intrinsics::Intrinsic, args: Vec<V>, s: Option<Rc<State>>, ty: Ty) -> V {
+        if let crate::jit::intrinsics::Intrinsic::IsInstance = k {
+            let class = self.constant_object(args[0]).filter(|&m| m != 0).and_then(|m| crate::runtime::klass_of_mirror(m as crate::heap::Oop));
+            if let Some(class) = class {
+                return self.add(Inst::InstanceOf(args[1], class), Ty::I);
+            }
+        }
+        self.add(Inst::Intrinsic(k, args, s), ty)
+    }
+
+    /// The constant object `v` is, looking through casts of it (a lambda form casts its bound
+    /// handle to the species class before reading the bound values).
+    pub(super) fn constant_object(&self, v: V) -> Option<i64> {
+        let mut v = self.g.resolve(v);
+        for _ in 0..4 {
+            match *self.g.inst(v) {
+                Inst::Const(c) => return Some(c),
+                Inst::CheckCast(x, ..) => v = self.g.resolve(x),
+                _ => return None,
+            }
+        }
+        None
+    }
+
     pub(super) fn field(&mut self, pc: usize, op: u8) -> Option<()> {
         // Constant fields fold (`jit/fold.rs`).
         let index = self.u2(pc);
@@ -23,7 +50,7 @@ impl Builder {
         let folded = match (op, resolved) {
             (0xb2, Resolved::StaticField { .. }) => crate::jit::fold::static_field(self.sc.m, index),
             (0xb4, Resolved::InstanceField { .. }) => {
-                let o = self.sc.stack.last().copied().flatten().and_then(|v| self.g.constant(v));
+                let o = self.sc.stack.last().copied().flatten().and_then(|v| self.constant_object(v));
                 o.and_then(|o| crate::jit::fold::instance_field(self.sc.m, index, o as usize))
             }
             _ => None,
@@ -126,7 +153,7 @@ impl Builder {
         if op != 0xb8 {
             self.null_check(args[0], pre.clone());
         }
-        if self.allocate_instance(m, &args, &pre, &s) || self.fold_class_query(m, &args) || self.floor_pow2(m, &args) || self.caller_class(m) {
+        if self.allocate_instance(m, &args, &pre, &s) || self.fold_class_query(m, &args) || self.floor_pow2(m, &args) || self.caller_class(m) || self.mh_hints(m, &args) {
             return Some(true);
         }
         if let (0xb6 | 0xb8, Some(k)) = (op, crate::jit::intrinsics::bound_intrinsic(m)) {
@@ -146,13 +173,34 @@ impl Builder {
                 }
             }
             let s = matches!(k, crate::jit::intrinsics::Intrinsic::GetClass | crate::jit::intrinsics::Intrinsic::ArrayCopy).then_some(pre);
-            let v = self.add(Inst::Intrinsic(k, args, s), if ret == BasicType::Void { Ty::I } else { Ty::of(ret) });
+            let v = self.intrinsic_inst(k, args, s, if ret == BasicType::Void { Ty::I } else { Ty::of(ret) });
             if ret != BasicType::Void {
                 self.push(v);
             }
             return Some(true);
         }
         Some(self.call_or_inline(pc, op, m, callee, args, s, pre))
+    }
+
+    /// The method-handle runtime's hints to the compiler (C2's intrinsics): `profileBoolean`
+    /// counts a guard's outcomes for the compiler and returns the outcome, so compiled code takes
+    /// the outcome without counting (two read-modify-writes of a shared array per inlined
+    /// `guardWithTest`, such as every record `equals`); `isCompileConstant` is whether its
+    /// argument is a constant of this compilation.
+    fn mh_hints(&mut self, m: &'static Method, args: &[V]) -> bool {
+        if m.holder.name != "java/lang/invoke/MethodHandleImpl" {
+            return false;
+        }
+        let v = match (m.name.as_str(), m.desc.as_str()) {
+            ("profileBoolean", "(Z[I)Z") => args[0],
+            ("isCompileConstant", "(Ljava/lang/Object;)Z") => {
+                let c = self.g.constant(self.g.resolve(args[0])).is_some();
+                self.konst(Ty::I, c as i64)
+            }
+            _ => return false,
+        };
+        self.push(v);
+        true
     }
 
     /// `Reflection.getCallerClass()` in a body inlined into its caller's caller (C2's intrinsic):
