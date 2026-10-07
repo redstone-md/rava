@@ -411,12 +411,57 @@ pub extern "sysv64" fn arraycopy_fast(src: crate::heap::Oop, sp: u64, dst: crate
     // SAFETY: checked bounds; `copy` handles overlap (same array).
     unsafe {
         let (from, to) = (obj::array_data::<u8>(src).add(sp as usize * es), obj::array_data::<u8>(dst).add(dp as usize * es));
-        std::ptr::copy(from, to, n);
+        copy_short(from, to, n);
         if refs {
             crate::gc::cards::dirty_range(to as usize, n);
         }
     }
     1
+}
+
+/// `std::ptr::copy`, without the library call for the short copies most `arraycopy`s are (a
+/// few references or chars): up to four unaligned loads covering the range from both ends,
+/// all done before any store, so overlapping ranges copy correctly (as glibc's memmove does
+/// for short sizes).
+///
+/// # Safety
+/// As `std::ptr::copy`.
+#[inline(always)]
+unsafe fn copy_short(from: *const u8, to: *mut u8, n: usize) {
+    use std::ptr::{read_unaligned as rd, write_unaligned as wr};
+    match n {
+        0 => {}
+        1..=3 => {
+            let (a, b, c) = (rd(from), rd(from.add(n / 2)), rd(from.add(n - 1)));
+            wr(to, a);
+            wr(to.add(n / 2), b);
+            wr(to.add(n - 1), c);
+        }
+        4..=7 => {
+            let (a, b) = (rd(from as *const u32), rd(from.add(n - 4) as *const u32));
+            wr(to as *mut u32, a);
+            wr(to.add(n - 4) as *mut u32, b);
+        }
+        8..=16 => {
+            let (a, b) = (rd(from as *const u64), rd(from.add(n - 8) as *const u64));
+            wr(to as *mut u64, a);
+            wr(to.add(n - 8) as *mut u64, b);
+        }
+        17..=32 => {
+            let (a, b) = (rd(from as *const u128), rd(from.add(n - 16) as *const u128));
+            wr(to as *mut u128, a);
+            wr(to.add(n - 16) as *mut u128, b);
+        }
+        33..=64 => {
+            let (a, b) = (rd(from as *const u128), rd(from.add(16) as *const u128));
+            let (c, d) = (rd(from.add(n - 32) as *const u128), rd(from.add(n - 16) as *const u128));
+            wr(to as *mut u128, a);
+            wr(to.add(16) as *mut u128, b);
+            wr(to.add(n - 32) as *mut u128, c);
+            wr(to.add(n - 16) as *mut u128, d);
+        }
+        _ => std::ptr::copy(from, to, n),
+    }
 }
 
 /// Calls a site compiled without a receiver profile records before its method is recompiled.

@@ -75,7 +75,14 @@ pub fn dirty_range(addr: usize, len: usize) {
     }
     let (first, last) = ((lo - t.base) >> CARD_SHIFT, (hi - 1 - t.base) >> CARD_SHIFT);
     // SAFETY: inside the table.
-    unsafe { std::ptr::write_bytes(t.bytes.add(first), 1, last - first + 1) };
+    unsafe {
+        // A few references (most copies) lie on one card: no memset call for it.
+        if first == last {
+            *t.bytes.add(first) = 1;
+        } else {
+            std::ptr::write_bytes(t.bytes.add(first), 1, last - first + 1);
+        }
+    }
 }
 
 /// Calls `f` with the start address of each dirty card in `[from, to)`, then cleans them.
