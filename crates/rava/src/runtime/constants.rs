@@ -33,7 +33,7 @@ pub fn mirror_for_desc(t: &mut Thread, k: &'static Klass, desc: &str) -> JResult
 pub fn method_type(t: &mut Thread, k: &'static Klass, desc: &str) -> JResult<Oop> {
     let b = desc.as_bytes();
     let count = crate::types::MethodSig::parse(Symbol::intern(desc)).params.len();
-    let class_class = crate::loader::load("java/lang/Class").expect("Class");
+    let class_class = crate::loader::boot_class!("java/lang/Class").expect("Class");
     // Fill a Java array in place: it (not a Rust Vec) keeps the mirrors reachable.
     let arr = super::alloc_array(t, vm().array_class_of(class_class).expect("Class[]"), count as i32)?;
     let (mut i, mut n) = (1, 0);
@@ -110,7 +110,7 @@ pub fn bootstrap_specifier(t: &mut Thread, k: &'static Klass, bsm: u16) -> JResu
     let cf = k.cf.as_ref().unwrap();
     let (handle, args) = cf.bootstrap_method(bsm).ok_or_else(|| bad(t))?;
     let mh = resolve_constant(t, k, handle)?;
-    let object = crate::loader::load("java/lang/Object").expect("Object");
+    let object = crate::loader::boot_class!("java/lang/Object").expect("Object");
     let arr = super::alloc_array(t, vm().array_class_of(object).expect("Object[]"), args.len() as i32)?;
     for (i, &a) in args.iter().enumerate() {
         let v = resolve_constant(t, k, a)?;

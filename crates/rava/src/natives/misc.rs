@@ -137,7 +137,7 @@ fn refers_to(_: &mut Thread, a: &[u64]) -> JResult<u64> {
 }
 
 fn set_system_stream(name: &str, desc: &str, value: u64) -> JResult<u64> {
-    let system = crate::loader::load("java/lang/System").expect("System");
+    let system = crate::loader::boot_class!("java/lang/System").expect("System");
     let f = system.declared_field(Symbol::intern(name), Symbol::intern(desc)).expect("System stream field");
     system.statics[f.offset as usize].store(value, Ordering::Relaxed);
     ret_void()

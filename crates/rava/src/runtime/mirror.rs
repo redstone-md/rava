@@ -43,7 +43,7 @@ pub fn mirror_of(t: &mut Thread, k: &'static Klass) -> JResult<Oop> {
     if !existing.is_null() {
         return Ok(existing);
     }
-    let class_class = crate::loader::load("java/lang/Class").expect("java/lang/Class");
+    let class_class = crate::loader::boot_class!("java/lang/Class").expect("java/lang/Class");
     initialize(t, class_class)?;
     let component = match k.kind {
         KlassKind::ObjArray { elem } => mirror_of(t, elem)?,
@@ -111,7 +111,7 @@ pub fn primitive_mirror(t: &mut Thread, ty: BasicType) -> JResult<Oop> {
     if let Some(&m) = TABLE.lock().unwrap().get(ty as usize).filter(|&&m| m != 0) {
         return Ok(m as Oop);
     }
-    let class_class = crate::loader::load("java/lang/Class").expect("java/lang/Class");
+    let class_class = crate::loader::boot_class!("java/lang/Class").expect("java/lang/Class");
     initialize(t, class_class)?;
     let m = alloc_instance(t, class_class)?;
     // SAFETY: fresh Class instance.

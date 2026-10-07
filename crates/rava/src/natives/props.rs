@@ -129,7 +129,7 @@ fn vm_properties(t: &mut Thread, _: &[u64]) -> JResult<u64> {
 
 /// A `String[]` with the given (possibly null) elements.
 pub fn string_array(t: &mut Thread, values: &[Option<String>]) -> JResult<Oop> {
-    let string_class = crate::loader::load("java/lang/String").expect("String");
+    let string_class = crate::loader::boot_class!("java/lang/String").expect("String");
     let array_class = vm().array_class_of(string_class).expect("String[]");
     let arr = rt::alloc_array(t, array_class, values.len() as i32)?;
     for (i, v) in values.iter().enumerate() {

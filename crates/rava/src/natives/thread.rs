@@ -97,7 +97,7 @@ pub(super) fn register(r: &mut NativeRegistry) {
     r.add(T, "dumpThreads", "([Ljava/lang/Thread;)[[Ljava/lang/StackTraceElement;", |t, a| {
         // SAFETY: a live Thread[] when non-null.
         let n = if a[0] == 0 { 0 } else { unsafe { obj::array_length(a[0] as Oop) } };
-        let ste = crate::loader::load("java/lang/StackTraceElement").expect("StackTraceElement");
+        let ste = crate::loader::boot_class!("java/lang/StackTraceElement").expect("StackTraceElement");
         let row = crate::vm::vm().array_class_of(ste).expect("StackTraceElement[]");
         let table = crate::vm::vm().array_class_of(row).expect("StackTraceElement[][]");
         let out = rt::alloc_array(t, table, n)?;
@@ -230,7 +230,7 @@ fn set_os_thread_name(name: &str) {
 /// Ends Java thread `jt` (run on `t`, its own): `Thread.exit()` (thread-local cleanup, such as
 /// freeing cached temporary direct buffers), then terminated, its joiners notified.
 pub(crate) fn terminate(t: &mut Thread, jt: Oop) {
-    let thread_class = crate::loader::load("java/lang/Thread").expect("Thread");
+    let thread_class = crate::loader::boot_class!("java/lang/Thread").expect("Thread");
     if let Some(exit) = thread_class.declared_method(Symbol::intern("exit"), Symbol::intern("()V")) {
         let _ = t.call(exit, &[jt as u64]);
     }
@@ -254,7 +254,7 @@ fn run_thread(jt: Oop, daemon: bool) {
     }
     // SAFETY: live receiver.
     let k = unsafe { obj::klass(jt) };
-    let thread_class = crate::loader::load("java/lang/Thread").expect("Thread");
+    let thread_class = crate::loader::boot_class!("java/lang/Thread").expect("Thread");
     let run = thread_class.declared_method(Symbol::intern("run"), Symbol::intern("()V")).expect("Thread.run");
     let target = select_method(k, run).unwrap_or(run);
     if let Err(ex) = t.call(target, &[jt as u64]) {
@@ -283,7 +283,7 @@ pub(crate) fn record_of(jt: Oop) -> Option<&'static crate::gc::safepoint::Record
 
 /// `Thread.getThreads`: the started, not yet terminated platform threads.
 fn get_threads(t: &mut Thread, _: &[u64]) -> JResult<u64> {
-    let thread_class = crate::loader::load("java/lang/Thread").expect("Thread");
+    let thread_class = crate::loader::boot_class!("java/lang/Thread").expect("Thread");
     let array_class = crate::vm::vm().array_class_of(thread_class).expect("Thread[]");
     let count = crate::gc::safepoint::all_threads().len() as i32;
     let out = rt::alloc_array(t, array_class, count)?;

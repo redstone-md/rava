@@ -100,7 +100,7 @@ fn assign_constant_values(t: &mut Thread, k: &'static Klass) -> JResult<()> {
 
 /// JVMS 5.5 step 11: a non-`Error` exception from `<clinit>` becomes ExceptionInInitializerError.
 fn wrap_in_initializer_error(t: &mut Thread, e: Throw) -> Throw {
-    let error = crate::loader::load("java/lang/Error").expect("java/lang/Error");
+    let error = crate::loader::boot_class!("java/lang/Error").expect("java/lang/Error");
     // SAFETY: the thrown object is live.
     if unsafe { obj::klass(e.0) }.is_subtype_of(error) {
         return e;
@@ -112,7 +112,7 @@ fn wrap_in_initializer_error(t: &mut Thread, e: Throw) -> Throw {
 }
 
 fn make_eiie(t: &mut Thread, cause: Oop) -> JResult<Oop> {
-    let k = crate::loader::load("java/lang/ExceptionInInitializerError").expect("EIIE");
+    let k = crate::loader::boot_class!("java/lang/ExceptionInInitializerError").expect("EIIE");
     initialize(t, k)?;
     let w = alloc_instance(t, k)?;
     let ctor = k
