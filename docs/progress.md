@@ -1274,3 +1274,10 @@ call sites) each left the sprint within noise (direct 824/849 tps against 895/79
 was kept. Class queries on unknown classes and `Reference.refersTo0` now skip the native adapter
 (1.8x on a microbenchmark, within noise on the sprint). Next: the call protocol's argument
 stores and register saves around calls, allocation refills.
+
+**Huge pages.** The hottest tick method (a mod's level system: a map lookup, a cast, a virtual
+call) spent most of its samples on the first touch of each object and its class, and neither
+rava nor this `java` command line used huge pages: with 4 KiB pages the TLB covers a few
+megabytes of a multi-gigabyte heap. `MADV_HUGEPAGE` on the code cache gave 832/890/855 tps
+against 847/849/812, on the heap 911/912/939 against 867/889/868. Paper's start costs 1-6% more
+peak RSS (1015/1058 MiB against 1001/993) at the same start time.
