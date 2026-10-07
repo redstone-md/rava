@@ -327,12 +327,25 @@ impl Gen<'_> {
         self.xput(v, r);
     }
 
+    /// Whether int `x` was loaded from memory, which sign-extends it to 64 bits (or zero-extends
+    /// a char or boolean, the same for those): `i2l` of it needs no `movsxd`.
+    fn sign_extended(&self, x: V) -> bool {
+        use crate::types::BasicType::{Double, Float};
+        match *self.g.inst(self.g.resolve(x)) {
+            Inst::LoadField(_, _, bt) | Inst::LoadIndexed(_, _, bt) | Inst::LoadStatic(_, bt) => !matches!(bt, Float | Double),
+            Inst::ArrayLength(_) => true,
+            _ => false,
+        }
+    }
+
     fn convert(&mut self, v: V, op: u8, x: V) {
         let r = self.out(v);
         match op {
             0x85 => {
                 self.load(r, x);
-                self.a.movsxd(r, r);
+                if !self.sign_extended(x) {
+                    self.a.movsxd(r, r);
+                }
             }
             0x88 => {
                 self.load(r, x);
