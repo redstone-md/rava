@@ -250,6 +250,10 @@ impl Space {
         assert!(!crate::heap::COMPRESSED || raw as usize + reserve + PAGE_SIZE <= NARROW_END, "heap reservation above 32 GiB");
         let base = (raw as usize + PAGE_SIZE - 1) & !(PAGE_SIZE - 1);
         let pages_end = base + (reserve / 4 * 3 & !(PAGE_SIZE - 1));
+        // Transparent huge pages where the system offers them on request: object graphs spread
+        // over gigabytes then miss the TLB far less (released pages split them again).
+        // SAFETY: advice on the reservation just made; failure leaves ordinary pages.
+        unsafe { libc::madvise(base as *mut libc::c_void, reserve, libc::MADV_HUGEPAGE) };
         super::cards::init(base, reserve);
         super::prefault::start((base, pages_end), (pages_end, base + reserve));
         Space {
