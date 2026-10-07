@@ -38,6 +38,7 @@ mod regalloc;
 mod scratch;
 mod select;
 mod split;
+mod thread;
 mod unroll;
 
 use super::{code_cache, CompiledMethod};
@@ -152,6 +153,8 @@ fn compile_timed(m: &'static Method, osr: Option<u32>) -> Option<CompiledMethod>
     licm::hoist(&mut g);
     rce::eliminate(&mut g);
     guards::hoist(&mut g);
+    g.merge_chains();
+    thread::thread(&mut g);
     g.merge_chains();
     unroll::unroll(&mut g);
     consts::hoist(&mut g);
