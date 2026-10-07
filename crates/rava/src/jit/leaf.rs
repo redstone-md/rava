@@ -20,6 +20,14 @@ pub(crate) enum Leaf {
     HashCode,
     /// `StringCoding.countPositives(byte[], int, int)`.
     CountPositives,
+    /// `Class.isArray()`, `isPrimitive()`, `isInterface()`.
+    IsArray,
+    IsPrimitive,
+    IsInterface,
+    /// `Class.isAssignableFrom(Class)`.
+    IsAssignableFrom,
+    /// `Reference.refersTo0(Object)` (and `PhantomReference`'s): the referent is the object.
+    RefersTo,
 }
 
 impl Leaf {
@@ -30,6 +38,11 @@ impl Leaf {
             Leaf::Mismatch => vectorized_mismatch as *const () as usize,
             Leaf::HashCode => vectorized_hash_code as *const () as usize,
             Leaf::CountPositives => count_positives as *const () as usize,
+            Leaf::IsArray => is_array as *const () as usize,
+            Leaf::IsPrimitive => is_primitive as *const () as usize,
+            Leaf::IsInterface => is_interface as *const () as usize,
+            Leaf::IsAssignableFrom => is_assignable_from as *const () as usize,
+            Leaf::RefersTo => refers_to as *const () as usize,
         }
     }
 
@@ -40,18 +53,32 @@ impl Leaf {
             ("jdk/internal/util/ArraysSupport", "vectorizedMismatch", "(Ljava/lang/Object;JLjava/lang/Object;JII)I") => Leaf::Mismatch,
             ("jdk/internal/util/ArraysSupport", "vectorizedHashCode", "(Ljava/lang/Object;IIII)I") => Leaf::HashCode,
             ("java/lang/StringCoding", "countPositives", "([BII)I") => Leaf::CountPositives,
+            ("java/lang/Class", "isArray", "()Z") => Leaf::IsArray,
+            ("java/lang/Class", "isPrimitive", "()Z") => Leaf::IsPrimitive,
+            ("java/lang/Class", "isInterface", "()Z") => Leaf::IsInterface,
+            ("java/lang/Class", "isAssignableFrom", "(Ljava/lang/Class;)Z") => Leaf::IsAssignableFrom,
+            ("java/lang/ref/Reference" | "java/lang/ref/PhantomReference", "refersTo0", "(Ljava/lang/Object;)Z") => Leaf::RefersTo,
             _ => return None,
         })
     }
 
-    /// Which arguments are arrays the routine reads (null-checked before the call); the
-    /// mismatch's bases may be null, its offsets then being addresses (direct buffers).
+    /// Which arguments must not be null (checked before the call): arrays the routine reads,
+    /// and the class `isAssignableFrom` compares with. The mismatch's bases may be null, its
+    /// offsets then being addresses (direct buffers); receivers are checked by the invoke.
     pub(crate) fn array_args(self) -> &'static [usize] {
         match self {
             Leaf::Latin1Equals => &[0, 1],
-            Leaf::Mismatch => &[],
+            Leaf::Mismatch | Leaf::IsArray | Leaf::IsPrimitive | Leaf::IsInterface | Leaf::RefersTo => &[],
             Leaf::HashCode | Leaf::CountPositives => &[0],
+            Leaf::IsAssignableFrom => &[1],
         }
+    }
+
+    /// Reads memory a store or a collection can change (array contents, a referent the
+    /// collector clears), so a loop cannot compute it once before it starts; the class queries
+    /// read immutable metadata.
+    pub(crate) fn reads_mutable(self) -> bool {
+        !matches!(self, Leaf::IsArray | Leaf::IsPrimitive | Leaf::IsInterface | Leaf::IsAssignableFrom)
     }
 }
 
@@ -139,4 +166,29 @@ extern "C" fn count_positives(a: Oop, off: i32, len: i32) -> i64 {
         i += 8;
     }
     (i + b[i..].iter().take_while(|&&x| x < 0x80).count()) as i64
+}
+
+extern "C" fn is_array(mirror: Oop) -> i64 {
+    crate::runtime::klass_of_mirror(mirror).is_some_and(|k| !matches!(k.kind, crate::klass::KlassKind::Instance)) as i64
+}
+
+extern "C" fn is_primitive(mirror: Oop) -> i64 {
+    crate::runtime::klass_of_mirror(mirror).is_none() as i64
+}
+
+extern "C" fn is_interface(mirror: Oop) -> i64 {
+    crate::runtime::klass_of_mirror(mirror).is_some_and(|k| k.is_interface()) as i64
+}
+
+/// A primitive mirror is assignable only from itself.
+extern "C" fn is_assignable_from(to: Oop, from: Oop) -> i64 {
+    match (crate::runtime::klass_of_mirror(to), crate::runtime::klass_of_mirror(from)) {
+        (Some(to), Some(from)) => from.is_subtype_of(to) as i64,
+        _ => (to == from) as i64,
+    }
+}
+
+extern "C" fn refers_to(r: Oop, o: Oop) -> i64 {
+    // SAFETY: a live Reference (the receiver, null-checked by the invoke).
+    (unsafe { obj::read_ref(r, crate::natives::misc::referent_offset()) } == o) as i64
 }
