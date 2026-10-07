@@ -1281,3 +1281,42 @@ rava nor this `java` command line used huge pages: with 4 KiB pages the TLB cove
 megabytes of a multi-gigabyte heap. `MADV_HUGEPAGE` on the code cache gave 832/890/855 tps
 against 847/849/812, on the heap 911/912/939 against 867/889/868. Paper's start costs 1-6% more
 peak RSS (1015/1058 MiB against 1001/993) at the same start time.
+
+## 2026-10-07 — where the tick gap is: C2, not the runtime
+
+**Steady state, not warm-up.** Three sprints in a row in one server (`bench/tick_sprint.py -r`):
+rava 918, 1019, 997 tps; `java` 1422, 1755, 1704. Both settle after the first sprint; the gap
+(1.7x) is steady-state code.
+
+**Not the runtime, collector or heap.** `java -XX:TieredStopAtLevel=1` (C1 only, the same
+G1, heap and class library) runs the sprint at 412-414 tps: the optimizing tier here is 2.4x
+better than C1, and everything `java` gains beyond that is C2's. Allocation is the same in both:
+rava allocates 7.4 GB over the 24000-tick sprint (306 KB per tick, `RAVA_GC_LOG`), `java` about
+6.9 GB (290 KB per tick, `-Xlog:gc`), so escape analysis removes about as much in both; young
+pauses cost rava 0.5 s of the sprint against `java`'s 0.2 s.
+
+**Kernels** (best of 12, ms; `java` / rava): HashMap get with record keys 19.3 / 53.0,
+ConcurrentHashMap get with String keys 10.6 / 30.6, stream filter-map-sum 4.9 / 12.9, string
+concatenation 15.8 / 40.9, `instanceof` pattern chain 13.2 / 31.4, boxing in a HashMap merge
+27.4 / 41.2, allocation of small records 47.6 / 64.1, lambdas 10.3 / 13.2, megamorphic interface
+calls over a list 30.0 / 22.0, `Arrays.sort` 80.2 / 85.7. A map lookup loop bisected: summing
+cached String hashes 0.60 / 0.91 ns, a hand-written chained table 2.14 / 3.06, HashMap 2.56 /
+4.01, ConcurrentHashMap 2.87 / 4.89 ns per lookup: 1.4-1.7x at every step. Method-handle
+construction (`unreflect`, `bindTo`, `invokeWithArguments`, what one mod does per event) is
+760 / 1450 ns.
+
+**Measured and dropped** (each within noise on the sprint or the kernels): direct calls to known
+methods through patched stubs; the entry in vtable slots; larger allocation chunks (16 and
+64 KiB against 4 KiB); larger inlining budgets (worse); no safepoint polls in loops (3-8 % on
+tight loops, nothing on object code); spill weights by block frequency (the spilled accumulator
+of a lookup loop moved to a register, same time); values across cold calls kept in caller-saved
+registers; a scratch register instead of `push`/`pop` in `Unsafe` reference accesses.
+
+**Kept:** transparent huge pages for the heap (911/912/939 tps against 867/889/868) and the code
+cache (+2-3 %), class queries and `Reference.refersTo0` as direct leaf calls, jump threading of
+branches on merged boolean constants, type checks dominated by a proving test.
+
+What remains is C2's breadth, spread evenly over every method: loop optimizations (unrolling,
+range-check predication, strip-mined polls), fewer instructions per bytecode (sign extensions,
+copies, repeated checks, decoded narrow references), a leaner call protocol. No single change
+found here moves the sprint by more than a few percent.
