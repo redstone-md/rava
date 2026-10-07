@@ -45,6 +45,11 @@ fn region() -> &'static Mutex<Region> {
         // Just below the text, else anywhere.
         let hint = (text & !((2 << 20) - 1)).saturating_sub(RESERVE + GAP);
         let p = (hint != 0).then(|| map(hint, libc::MAP_FIXED_NOREPLACE)).flatten().or_else(|| map(0, 0)).expect("cannot reserve the code cache");
+        // Transparent huge pages where the system offers them on request: hot code spread over
+        // tens of megabytes then takes a few TLB entries instead of thousands. Memory is still
+        // committed only as code is written (one huge page at a time).
+        // SAFETY: advice on the mapping just made; failure leaves ordinary pages.
+        unsafe { libc::madvise(p as *mut libc::c_void, RESERVE, libc::MADV_HUGEPAGE) };
         Mutex::new(Region { base: p, top: p, near: reaches(p, text) })
     })
 }
