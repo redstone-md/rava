@@ -3,6 +3,7 @@
 //! not support are refused and keep the baseline compiler's code. See `docs/core/opt-tier.md`.
 
 mod barrier;
+mod booleans;
 mod build;
 mod build_cache;
 mod build_arr;
@@ -147,6 +148,7 @@ fn compile_timed(m: &'static Method, osr: Option<u32>) -> Option<CompiledMethod>
         return None;
     };
     phis::simplify(&mut g);
+    booleans::fold_masks(&mut g);
     nullcheck::eliminate(&mut g);
     typecheck::eliminate(&mut g);
     fields::forward(&mut g);
