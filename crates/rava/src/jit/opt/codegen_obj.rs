@@ -143,6 +143,7 @@ impl Gen<'_> {
                     super::moves::mov(&mut self.a, dst, src);
                 }
             }
+            Inst::InstanceOf(..) if self.fused.contains(&v) => {}
             Inst::InstanceOf(x, k) => {
                 let (done, null) = (self.a.new_label(), self.a.new_label());
                 let rx = self.reg(x, R::Rax);
@@ -265,7 +266,7 @@ impl Gen<'_> {
     }
 
     /// Class `k` as an immediate when it is in low memory (`crate::low`), else loaded into rdx.
-    fn class_operand(&mut self, k: &'static Klass) -> Option<i32> {
+    pub(super) fn class_operand(&mut self, k: &'static Klass) -> Option<i32> {
         let addr = k as *const Klass as usize;
         if crate::low::is_low(addr) {
             return Some(addr as i32);
@@ -275,7 +276,7 @@ impl Gen<'_> {
     }
 
     /// Compares the class word at `m` (else the class in rcx) with `k` (`class_operand`).
-    fn cmp_class(&mut self, m: Option<M>, k: Option<i32>) {
+    pub(super) fn cmp_class(&mut self, m: Option<M>, k: Option<i32>) {
         match (m, k) {
             (None, Some(imm)) => self.a.alu_ri(true, Alu::Cmp, R::Rcx, imm),
             (None, None) => self.a.alu_rr(true, Alu::Cmp, R::Rcx, R::Rdx),
@@ -302,7 +303,12 @@ impl Gen<'_> {
         self.cmp_class(None, kk);
         self.a.jcc(Cond::E, done);
         let after = self.a.new_label();
-        if let Some(d) = crate::jit::emit_obj::primary_depth(k) {
+        let leaf = matches!(k.kind, crate::klass::KlassKind::Instance) && k.access & crate::klass::ACC_FINAL != 0;
+        if leaf {
+            // A final class has no subclasses: only itself passed the test above.
+            self.a.alu_rr(false, Alu::Xor, R::Rax, R::Rax);
+            self.a.jmp(after);
+        } else if let Some(d) = crate::jit::emit_obj::primary_depth(k) {
             // A class: its ancestor at k's depth is k, or the answer is no.
             let at = std::mem::offset_of!(Klass, primary) as i32 + 8 * d as i32;
             self.cmp_class(Some(mem(R::Rcx, at)), kk);

@@ -42,7 +42,7 @@ pub fn thread(g: &mut Graph) {
 }
 
 /// How many times each value is read (instructions, terminators and deoptimization states).
-fn reads(g: &Graph) -> Vec<u32> {
+pub(super) fn reads(g: &Graph) -> Vec<u32> {
     let mut reads = vec![0u32; g.values.len()];
     let mut states = Vec::new();
     for blk in g.blocks.iter().filter(|b| !matches!(b.term, Term::None)) {
