@@ -114,6 +114,29 @@ impl Gen<'_> {
                 self.put(v, r);
             }
             Intrinsic::Abs(ty) => self.abs(v, ty, args[0]),
+            // Class queries read the mirror's class (null for a primitive) in place.
+            Intrinsic::Leaf(crate::jit::leaf::Leaf::IsPrimitive) => {
+                let m = self.reg(args[0], R::Rcx);
+                let r = self.out(v);
+                self.a.load(true, R::Rcx, mem(m, crate::runtime::mirror_klass_offset() as i32));
+                self.a.alu_rr(false, Alu::Xor, r, r);
+                self.a.test_rr(true, R::Rcx, R::Rcx);
+                self.a.setcc(Cond::E, r);
+                self.put(v, r);
+            }
+            Intrinsic::Leaf(crate::jit::leaf::Leaf::IsInterface) => {
+                let done = self.a.new_label();
+                let m = self.reg(args[0], R::Rcx);
+                self.a.load(true, R::Rcx, mem(m, crate::runtime::mirror_klass_offset() as i32));
+                self.a.alu_rr(false, Alu::Xor, R::Rax, R::Rax);
+                self.a.test_rr(true, R::Rcx, R::Rcx);
+                self.a.jcc(Cond::E, done);
+                self.a.load_zx(2, R::Rax, mem(R::Rcx, offset_of!(Klass, access) as i32));
+                self.a.shift_ri(false, crate::jit::asm::Shift::Shr, R::Rax, crate::klass::ACC_INTERFACE.trailing_zeros() as u8);
+                self.a.alu_ri(false, Alu::And, R::Rax, 1);
+                self.a.bind(done);
+                self.put(v, R::Rax);
+            }
             Intrinsic::Leaf(l) => {
                 self.call_preserving_vals(l.address(), args);
                 let r = self.out(v);
