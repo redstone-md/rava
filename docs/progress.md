@@ -1265,6 +1265,12 @@ Java's lead is now 1.6x (rava 970-1040, java 1600-1700). Checked and not the cau
 dispatch (an event-bus microbenchmark: 2.9 ns per listener against java's 2.4), object
 locality (a pointer walk over mixed-size objects: rava 7.7-8.4 ns, java 9.4-9.6), inline
 copies of short arrays (a stub made no difference to the sprint, removed). 82% of the tick runs
-optimized code; the gap is its quality against C2 across all mod code. Next: virtual calls through the event bus (object -> class ->
-vtable pointer -> method -> entry, each a likely miss across listener classes; HotSpot keeps the
-vtable inside the class), the call protocol, allocation refills.
+optimized code; the gap is its quality against C2 across all mod code.
+
+Also checked and not the cause: the load before each call. Virtual calls with the entry kept in
+the vtable slot (one dependent load fewer), and calls to known methods made direct (`call rel32`
+to a per-method `jmp rel32` stub patched when the method's code changes, as HotSpot's static
+call sites) each left the sprint within noise (direct 824/849 tps against 895/793), so neither
+was kept. Class queries on unknown classes and `Reference.refersTo0` now skip the native adapter
+(1.8x on a microbenchmark, within noise on the sprint). Next: the call protocol's argument
+stores and register saves around calls, allocation refills.
