@@ -201,6 +201,12 @@ impl Emitter {
         self.a.load(false, R::Rdi, mem(R::Rdx, 0));
         self.a.alu_rr(true, Alu::Cmp, R::Rdi, R::Rsi);
         self.a.jcc(Cond::E, ok);
+        // Anything goes into an Object[] (ArrayList's and HashMap's arrays).
+        if let Some(&object) = crate::vm::vm().wk.object.get() {
+            self.a.mov_ri(R::R11, object as *const Klass as i64);
+            self.a.alu_rr(true, Alu::Cmp, R::Rsi, R::R11);
+            self.a.jcc(Cond::E, ok);
+        }
         self.a.call_abs(runtime::subtype as *const () as usize);
         self.a.test_rr(true, R::Rax, R::Rax);
         self.a.jcc(Cond::E, slow);
