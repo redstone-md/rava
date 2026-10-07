@@ -55,7 +55,7 @@ pub(crate) fn site_sig(desc: Symbol) -> &'static MethodSig {
 }
 
 fn object_array(t: &mut Thread, len: i32) -> JResult<Oop> {
-    let object = crate::loader::load("java/lang/Object").expect("Object");
+    let object = crate::loader::boot_class!("java/lang/Object").expect("Object");
     rt::alloc_array(t, crate::vm::vm().array_class_of(object).expect("Object[]"), len)
 }
 

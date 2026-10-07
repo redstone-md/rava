@@ -57,7 +57,7 @@ impl Library {
     /// whose `release` file is missing or wrong) still gets the protocol it implements.
     pub fn class_frame_info(self) -> bool {
         static HAS: OnceLock<bool> = OnceLock::new();
-        *HAS.get_or_init(|| crate::loader::load("java/lang/ClassFrameInfo").is_ok())
+        *HAS.get_or_init(|| crate::loader::boot_class!("java/lang/ClassFrameInfo").is_ok())
     }
 
     /// The offset of an instance field the class library may or may not declare (fields the
