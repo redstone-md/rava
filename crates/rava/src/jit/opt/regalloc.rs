@@ -368,6 +368,21 @@ fn scan(g: &Graph, iv: &Intervals, full: &Intervals, loops: &LoopMap) -> (Vec<Lo
         }
     }
     todo.sort_by_key(|&v| (iv.start[v], v));
+    // The phis each value flows into: taking a phi's register when the phi dies where the value
+    // is defined (a loop's `s = s + x`) saves the move on the edge into the phi.
+    let mut phi_users: Vec<Vec<V>> = vec![Vec::new(); n];
+    for (p, val) in g.values.iter().enumerate() {
+        if let Inst::Phi(ins) = &val.inst {
+            if g.resolve(p as V) == p as V {
+                for &i in ins {
+                    let i = g.resolve(i) as usize;
+                    if i != p && !phi_users[i].contains(&(p as V)) {
+                        phi_users[i].push(p as V);
+                    }
+                }
+            }
+        }
+    }
     let mut active: Vec<usize> = Vec::new();
     for &v in &todo {
         active.retain(|&a| iv.end[a] >= iv.start[v]);
@@ -399,7 +414,11 @@ fn scan(g: &Graph, iv: &Intervals, full: &Intervals, loops: &LoopMap) -> (Vec<Lo
             let c = loc[x as usize];
             (iv.end[x as usize] == iv.start[v] && allowed(c) && !active.iter().any(|&a| a != x as usize && loc[a] == c)).then_some((x as usize, c))
         };
-        let hint = operands.first().and_then(|&x| reuse(x)).or_else(|| operands.get(1).filter(|_| commutes).and_then(|&y| reuse(y)));
+        let hint = phi_users[v]
+            .iter()
+            .find_map(|&p| reuse(p))
+            .or_else(|| operands.first().and_then(|&x| reuse(x)))
+            .or_else(|| operands.get(1).filter(|_| commutes).and_then(|&y| reuse(y)));
         if let Some((x, c)) = hint {
             loc[v] = c;
             active.retain(|&a| a != x);
