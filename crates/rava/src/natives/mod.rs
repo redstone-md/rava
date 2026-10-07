@@ -22,7 +22,7 @@ mod module;
 mod net;
 mod netif;
 pub(crate) mod props;
-mod reflect;
+pub(crate) mod reflect;
 mod records;
 mod reflect_class;
 mod stackwalk;

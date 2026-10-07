@@ -126,7 +126,7 @@ impl Builder {
         if op != 0xb8 {
             self.null_check(args[0], pre.clone());
         }
-        if self.allocate_instance(m, &args, &pre, &s) || self.fold_class_query(m, &args) || self.floor_pow2(m, &args) {
+        if self.allocate_instance(m, &args, &pre, &s) || self.fold_class_query(m, &args) || self.floor_pow2(m, &args) || self.caller_class(m) {
             return Some(true);
         }
         if let (0xb6 | 0xb8, Some(k)) = (op, crate::jit::intrinsics::bound_intrinsic(m)) {
@@ -153,6 +153,26 @@ impl Builder {
             return Some(true);
         }
         Some(self.call_or_inline(pc, op, m, callee, args, s, pre))
+    }
+
+    /// `Reflection.getCallerClass()` in a body inlined into its caller's caller (C2's intrinsic):
+    /// the frames above it are this compilation's inline chain, so the class it would find by
+    /// walking the stack (the first frame past the caller-sensitive method that is not
+    /// reflection machinery, `natives::reflect::caller_class`) is a constant. Each
+    /// `MethodHandles.lookup()` otherwise walked the stack.
+    fn caller_class(&mut self, m: &'static Method) -> bool {
+        if m.holder.name != "jdk/internal/reflect/Reflection" || m.name != "getCallerClass" || m.desc != "()Ljava/lang/Class;" {
+            return false;
+        }
+        let n = self.chain.len();
+        let Some(&(caller, _)) = self.chain[..n.saturating_sub(1)].iter().rev().find(|(c, _)| !crate::natives::reflect::is_reflection_frame(c.holder)) else { return false };
+        let mirror = caller.holder.mirror();
+        if mirror.is_null() {
+            return false;
+        }
+        let c = self.konst(Ty::A, mirror as usize as i64);
+        self.push(c);
+        true
     }
 
     /// `Math.floorMod` and `Math.floorDiv` by a constant positive power of two `2^k` are

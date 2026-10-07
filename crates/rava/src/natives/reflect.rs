@@ -124,7 +124,7 @@ fn parameters(t: &mut Thread, a: &[u64]) -> JResult<u64> {
     };
     let b = cf.attr_bytes(attr);
     let count = b.first().copied().unwrap_or(0) as usize;
-    let parameter_class = crate::loader::load("java/lang/reflect/Parameter").expect("Parameter");
+    let parameter_class = crate::loader::boot_class!("java/lang/reflect/Parameter").expect("Parameter");
     let array_class = crate::vm::vm().array_class_of(parameter_class).expect("Parameter[]");
     let arr = rt::alloc_array(t, array_class, count as i32)?;
     for i in 0..count {
@@ -147,7 +147,7 @@ fn parameters(t: &mut Thread, a: &[u64]) -> JResult<u64> {
 /// from its caller on and without reflection frames (HotSpot's `JVM_GetClassContext`).
 fn class_context(t: &mut Thread, _: &[u64]) -> JResult<u64> {
     let holders: Vec<&'static Klass> = t.frames().skip(1).map(|(m, _)| m.holder).filter(|&k| !is_reflection_frame(k)).collect();
-    let class_class = crate::loader::load("java/lang/Class").expect("Class");
+    let class_class = crate::loader::boot_class!("java/lang/Class").expect("Class");
     let array_class = crate::vm::vm().array_class_of(class_class).expect("Class[]");
     let arr = rt::alloc_array(t, array_class, holders.len() as i32)?;
     for (i, k) in holders.into_iter().enumerate() {
@@ -158,7 +158,7 @@ fn class_context(t: &mut Thread, _: &[u64]) -> JResult<u64> {
     ret_ref(arr)
 }
 
-fn is_reflection_frame(k: &Klass) -> bool {
+pub(crate) fn is_reflection_frame(k: &Klass) -> bool {
     let n = k.name.as_str();
     n == "java/lang/reflect/Method" || n.starts_with("jdk/internal/reflect/") || n.starts_with("java/lang/invoke/LambdaForm$")
 }
