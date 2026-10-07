@@ -116,6 +116,8 @@ pub(super) struct Gen<'a> {
     /// Loop headers whose test back edges repeat (`rotations`), with their successor in the loop.
     rotations: HashMap<B, B>,
     faults: Vec<(Label, Label)>,
+    /// `instanceof` tests of final classes emitted as their block's branch (`fused_type_tests`).
+    pub(super) fused: std::collections::HashSet<V>,
 }
 
 /// Loop rotation (C2's loop inversion, without copying code): a loop header that only merges
@@ -279,6 +281,7 @@ pub(super) fn generate(g: &Graph, al: &Allocation, m: &'static Method, frame_slo
         pending_null: None,
         rotations: rotations(g),
         faults: Vec::new(),
+        fused: fused_type_tests(g),
         frame_slots,
         root: m,
         osr,
@@ -700,6 +703,22 @@ impl Gen<'_> {
                 if then == other {
                     return self.edge(b, then, next == Some(then));
                 }
+                if let Some((x, k)) = [a, y].into_iter().map(|v| self.g.resolve(v)).find(|v| self.fused.contains(v)).and_then(|v| match *self.g.inst(v) {
+                    Inst::InstanceOf(x, k) => Some((x, k)),
+                    _ => None,
+                }) {
+                    // `x instanceof k` compared with 0: the test branches by itself.
+                    let (yes, no) = if cmp == Cmp::Ne { (then, other) } else { (other, then) };
+                    let lno = self.edge_target(b, no);
+                    let rx = self.reg(x, R::Rax);
+                    self.a.test_rr(true, rx, rx);
+                    self.a.jcc(Cond::E, lno);
+                    self.a.load(false, R::Rcx, mem(rx, 0));
+                    let kk = self.class_operand(k);
+                    self.cmp_class(None, kk);
+                    self.a.jcc(Cond::Ne, lno);
+                    return self.edge(b, yes, next == Some(yes));
+                }
                 let c = if matches!(ty, Ty::F | Ty::D) {
                     // ucomis: unordered sets PF (and ZF, CF), ordered results read as unsigned.
                     let xa = self.xreg(a, X(0));
@@ -880,4 +899,28 @@ fn reads_params_on_entry(g: &Graph, al: &Allocation) -> bool {
         let lead = if i == 0 { b.insts.iter().take_while(|&&v| matches!(g.inst(v), Inst::Param(_))).count() } else { 0 };
         b.insts[lead..].iter().all(|&v| !matches!(g.inst(v), Inst::Param(_)))
     })
+}
+
+/// `instanceof` tests of a final class whose only reader is their block's branch on them
+/// (`if (o instanceof T)`), the last instruction there: the branch tests the class itself
+/// instead of materializing a boolean and comparing it with 0.
+fn fused_type_tests(g: &Graph) -> std::collections::HashSet<V> {
+    let reads = super::thread::reads(g);
+    let mut fused = std::collections::HashSet::new();
+    for blk in &g.blocks {
+        let Term::If { cmp: Cmp::Eq | Cmp::Ne, ty: Ty::I, a, b, .. } = blk.term else { continue };
+        let (a, b) = (g.resolve(a), g.resolve(b));
+        let v = match (g.constant(a), g.constant(b)) {
+            (None, Some(0)) => a,
+            (Some(0), None) => b,
+            _ => continue,
+        };
+        let Inst::InstanceOf(_, k) = *g.inst(v) else { continue };
+        let last = blk.insts.iter().rev().find(|&&x| g.resolve(x) == x && !matches!(g.inst(x), Inst::Const(_)));
+        let leaf = matches!(k.kind, crate::klass::KlassKind::Instance) && k.access & crate::klass::ACC_FINAL != 0;
+        if leaf && last == Some(&v) && reads[v as usize] == 1 {
+            fused.insert(v);
+        }
+    }
+    fused
 }
