@@ -166,6 +166,17 @@ impl Gen<'_> {
                 self.a.load(true, R::Rdx, mem(R::Rdx, offset_of!(Klass, elem_klass) as i32));
                 self.a.alu_rr(true, Alu::Cmp, R::Rcx, R::Rdx);
                 self.a.jcc(Cond::E, ok);
+                // Anything goes into an Object[] (ArrayList's and HashMap's arrays).
+                if let Some(&object) = crate::vm::vm().wk.object.get() {
+                    let addr = object as *const Klass as usize;
+                    if crate::low::is_low(addr) {
+                        self.a.alu_ri(true, Alu::Cmp, R::Rdx, addr as i32);
+                    } else {
+                        self.a.mov_ri(R::R11, addr as i64);
+                        self.a.alu_rr(true, Alu::Cmp, R::Rdx, R::R11);
+                    }
+                    self.a.jcc(Cond::E, ok);
+                }
                 self.call_preserving(runtime::subtype as *const () as usize, &[Arg::Reg(R::Rcx), Arg::Reg(R::Rdx)]);
                 self.a.test_rr(true, R::Rax, R::Rax);
                 self.a.jcc(Cond::E, fail);
