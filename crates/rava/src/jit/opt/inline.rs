@@ -304,7 +304,7 @@ impl Builder {
     /// `target` as intrinsic `i` on `args` in the current block, which then goes to `k`.
     fn intrinsic_body(&mut self, i: crate::jit::intrinsics::Intrinsic, target: &'static Method, args: &[V], k: B) -> Vec<(B, Option<V>)> {
         let ret = target.sig.ret;
-        let v = self.add(Inst::Intrinsic(i, args.to_vec(), None), if ret == BasicType::Void { Ty::I } else { Ty::of(ret) });
+        let v = self.intrinsic_inst(i, args.to_vec(), None, if ret == BasicType::Void { Ty::I } else { Ty::of(ret) });
         self.g.blocks[self.cur as usize].term = Term::Goto(k);
         self.g.blocks[k as usize].preds.push(self.cur);
         vec![(self.cur, (ret != BasicType::Void).then_some(v))]
