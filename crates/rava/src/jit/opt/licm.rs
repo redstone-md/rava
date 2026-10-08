@@ -77,7 +77,7 @@ pub fn hoist(g: &mut Graph) {
                         Inst::Neg(_) | Inst::Convert(..) | Inst::Compare(..) | Inst::Select(..) => true,
                         Inst::Intrinsic(k, _, None) => k.is_pure() && !k.reads_mutable(),
                         Inst::ArrayLength(o) => known.contains(&g.resolve(*o)),
-                        Inst::LoadField(o, off, _) => !barrier && !stored.contains(off) && !g.ordered.contains(&v) && known.contains(&g.resolve(*o)),
+                        Inst::LoadField(o, off, _) => !barrier && (g.final_loads.contains(&v) || !stored.contains(off)) && !g.ordered.contains(&v) && known.contains(&g.resolve(*o)),
                         _ => false,
                     };
                 if movable {

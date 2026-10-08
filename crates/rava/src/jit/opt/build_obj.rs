@@ -96,6 +96,10 @@ impl Builder {
                     Some(&v) if !volatile => v,
                     _ => {
                         let v = self.add(Inst::LoadField(o, offset, ty), Ty::of(ty));
+                        let in_init = self.chain.iter().any(|(m, _)| m.name == "<init>");
+                        if !in_init && crate::jit::fold::field_decl(self.sc.m, self.u2(pc)).is_some_and(|(_, f)| f.access & ACC_FINAL != 0) {
+                            self.g.final_loads.insert(v);
+                        }
                         if volatile {
                             // Acquire: later loads read memory again.
                             self.loads.clear();

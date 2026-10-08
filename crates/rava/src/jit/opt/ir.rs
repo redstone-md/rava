@@ -330,6 +330,9 @@ pub struct Graph {
     pub alias: Vec<V>,
     /// Field loads with acquire semantics (volatile): they stay where they are (`licm.rs`).
     pub ordered: std::collections::HashSet<V>,
+    /// Loads of final instance fields outside constructors: a store to another field at the
+    /// same offset (of another class) does not change them (`licm.rs`).
+    pub final_loads: std::collections::HashSet<V>,
     /// The receiver of an instance method, never null.
     pub receiver: Option<V>,
     /// Allocations removed as non-escaping, rebuilt on deoptimization (`escape.rs`).

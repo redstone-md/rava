@@ -20,7 +20,7 @@ use crate::natives::mh;
 use crate::types::BasicType;
 
 /// The declaration of field reference `index` in `m`'s class, once it is resolved.
-fn field_decl(m: &'static Method, index: u16) -> Option<(&'static Klass, &'static FieldDesc)> {
+pub(in crate::jit) fn field_decl(m: &'static Method, index: u16) -> Option<(&'static Klass, &'static FieldDesc)> {
     let cf = m.holder.cf.as_ref()?;
     let (_, name, desc) = cf.member_ref(index)?;
     let Cp::Field { class, .. } = cf.pool.at(index as usize) else { return None };
