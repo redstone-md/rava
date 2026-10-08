@@ -72,6 +72,9 @@ pub fn hoist(g: &mut Graph) {
         loop {
             predicate_null_checks(g, l, pre, &block_of, &mut known);
             super::guards::branches(g, l, pre, &block_of, &known);
+            // What those added (guards, class words reloaded for them) is in the preheader.
+            block_of.resize(g.values.len(), usize::MAX);
+            g.blocks[pre as usize].insts.iter().for_each(|&v| block_of[v as usize] = pre as usize);
             let known = &known;
             let typed = type_tests(g, l);
             let mut moved = Vec::new();
