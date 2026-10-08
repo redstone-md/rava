@@ -12,6 +12,7 @@ mod build_obj;
 mod build_ops;
 mod canon;
 mod codegen;
+mod codegen_copy;
 mod codegen_intr;
 mod codegen_obj;
 mod codegen_ops;
