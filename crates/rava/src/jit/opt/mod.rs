@@ -24,6 +24,7 @@ mod fields;
 mod freq;
 mod inline;
 mod ir;
+mod conds;
 mod consts;
 mod dce;
 mod guards;
@@ -152,6 +153,7 @@ fn compile_timed(m: &'static Method, osr: Option<u32>) -> Option<CompiledMethod>
     booleans::fold_masks(&mut g);
     nullcheck::eliminate(&mut g);
     typecheck::eliminate(&mut g);
+    conds::eliminate(&mut g);
     fields::forward(&mut g);
     escape::eliminate(&mut g);
     select::convert(&mut g);
