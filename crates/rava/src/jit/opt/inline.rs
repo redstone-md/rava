@@ -266,8 +266,7 @@ impl Builder {
             Guard::Klass(k) => (self.klass_of(receiver?), k as *const Klass as i64),
             Guard::Vtable(i) => {
                 let k = self.klass_of(receiver?);
-                let vt = self.add(Inst::LoadField(k, std::mem::offset_of!(Klass, vtable_ptr) as u32, BasicType::Long), Ty::J);
-                (self.add(Inst::LoadField(vt, 8 * i as u32, BasicType::Long), Ty::J), target as *const Method as i64)
+                (self.add(Inst::LoadField(k, (crate::klass::VTABLE_OFFSET + 8 * i as usize) as u32, BasicType::Long), Ty::J), target as *const Method as i64)
             }
         };
         let c = self.konst(Ty::J, expect);

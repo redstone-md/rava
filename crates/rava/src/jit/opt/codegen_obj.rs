@@ -489,8 +489,7 @@ impl Gen<'_> {
             Callee::Virtual(m) => {
                 self.load(R::Rcx, args[0]);
                 self.a.load(false, R::Rax, mem(R::Rcx, 0));
-                self.a.load(true, R::Rax, mem(R::Rax, offset_of!(Klass, vtable_ptr) as i32));
-                self.a.load(true, R::Rdx, mem(R::Rax, 8 * m.vtable_index()));
+                self.a.load(true, R::Rdx, mem(R::Rax, crate::klass::VTABLE_OFFSET as i32 + 8 * m.vtable_index()));
             }
             Callee::Interface(m) => self.interface_target(m, s, args[0], fail),
             Callee::Method(t) => self.load(R::Rdx, t),

@@ -63,8 +63,7 @@ impl Emitter {
                 self.profile_receiver(pc);
             }
             self.a.load(false, R::Rax, mem(R::Rcx, 0));
-            self.a.load(true, R::Rax, mem(R::Rax, offset_of!(Klass, vtable_ptr) as i32));
-            self.a.load(true, R::Rdx, mem(R::Rax, 8 * m.vtable_index()));
+            self.a.load(true, R::Rdx, mem(R::Rax, crate::klass::VTABLE_OFFSET as i32 + 8 * m.vtable_index()));
         } else {
             if self.tier == 1 && m.holder.is_interface() {
                 self.profile_receiver(pc);
