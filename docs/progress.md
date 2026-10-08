@@ -1346,3 +1346,30 @@ Stream: 330 ns (`java` 352). The tick sprint stays within noise (two A/Bs, both 
 first sprint 1004-1212 against 1106-1196, warm 1138-1279 against 1174-1306 tps).
 `LoopHoistSem` covers final chains, a speculated check on a skipped path, and a polymorphic
 receiver read in a loop.
+
+## 2026-10-08 (cont.) — the sprint profiled method by method against `java`
+
+`bench`-style sprint profiles of both VMs (`perf record` over one `/tick sprint 1d`, `java` with
+`-XX:+DumpPerfMapAtExit`) put the server thread at 21.2 s for rava against 15.1 s. `java` spends
+1.5 s of it in megamorphic dispatch stubs ("vtable chunks") and 0.6 s interpreting, so event
+dispatch (NeoForge's `EventBus.post` and its generated listeners) costs about the same in both;
+rava's runtime takes 2.5 s on that thread (`arraycopy_fast` 0.7 s, allocation refills 0.4 s,
+helping the collector mark). The largest single difference was xycraft's per-tick system loop,
+which builds `dimension().location().toLanguageKey()` (a string concatenation) for every system
+on every tick.
+
+- **arraycopy in place**: a copy into a fresh primitive array (what concatenation and
+  `String.getBytes` do) is checked and copied inline, with overlapping unaligned moves up to 16
+  bytes; the shared helper's size switch was mispredicted by sites of different lengths.
+  `namespace + "." + path`: 32 to 21 ns (`java` 10).
+- **declared types**: a field declared with a final class gives its loads that exact class (C2
+  types loads by declaration), so `stringOf`'s `toString` on a `String` field binds statically
+  however polluted its profile. Only a supertype cast keeps the exact class (null passes any
+  cast; binding through an unrelated one inlined a body with the wrong locals and panicked).
+- **exact class past a guarded inline**: when every inlined target needed one class guard and a
+  miss deoptimizes, the receiver keeps that class in the builder's per-block facts.
+- **Unsafe on arrays**: an Unsafe access whose base the method also uses as an array (CHM's
+  `tabAt`) skips the heap-range test.
+
+Sprint A/B, 3 rounds, against the build before these: first sprint 1341/1408/1354 against
+1303/1271/1260 tps, warm 1479/1496/1513 against 1454/1409/1365 (+5-6 %).
