@@ -120,6 +120,34 @@ impl Builder {
                 eprintln!("[opt-inline] {indent}{} @{} (freq {freq:.3}) -> {target} {}{why}", self.sc.m, s.bci, if ok { "inlined" } else { "call" });
             }
             if !ok {
+                // A receiver class the profile names, whose target is not inlined: tested
+                // and called directly (HotSpot's monomorphic inline cache), the dispatch left
+                // to the other receivers.
+                let virtual_site = matches!(callee, Callee::Virtual(_) | Callee::Interface(_));
+                if let (Guard::Klass(c), true) = (&guard, virtual_site && intrinsic.is_none() && !target.is_abstract()) {
+                    let c = *c;
+                    let slow = self.guard(guard.clone(), target, receiver);
+                    let r = self.call(Callee::Direct(target), args.clone(), s.clone(), ret);
+                    self.g.blocks[self.cur as usize].term = Term::Goto(k);
+                    self.g.blocks[k as usize].preds.push(self.cur);
+                    returns.push((self.cur, r));
+                    inlined = true;
+                    done += 1;
+                    proved = match proved {
+                        None => Some(Some(c)),
+                        Some(p) => Some(p.filter(|p| std::ptr::eq(*p, c))),
+                    };
+                    match slow {
+                        Some(b) => {
+                            self.start_block(b);
+                            self.facts.clone_from(&known);
+                        }
+                        None => {
+                            open = false;
+                            break;
+                        }
+                    }
+                }
                 continue;
             }
             let mark = self.mark();
