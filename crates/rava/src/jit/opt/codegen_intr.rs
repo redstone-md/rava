@@ -53,6 +53,10 @@ impl Gen<'_> {
             }
             Intrinsic::ArrayCopy => {
                 let fail = self.deopt(s.expect("arraycopy has a deopt state"));
+                if let Some(k) = super::codegen_copy::known_destination(self.g, args[0], args[2]) {
+                    self.array_copy_inline(args, k, fail);
+                    return;
+                }
                 self.call_preserving_vals(runtime::arraycopy_fast as *const () as usize, args);
                 self.a.test_rr(false, R::Rax, R::Rax);
                 self.a.jcc(Cond::E, fail);
