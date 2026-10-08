@@ -9,11 +9,16 @@
 //!   loop makes no call, takes no monitor, has no fence or volatile read, and stores to no field
 //!   at that offset.
 //!
-//! A null check inside the loop of a value defined outside it, in a block that runs on every
-//! iteration, is predicated first (C2 peels such loops for the same effect): it becomes one
-//! `Inst::Guard` in the preheader that deoptimizes to the loop's entry state, so the value is
-//! known non-null there and its field loads can leave the loop. A failing guard counts as a trap
-//! at the header, so the recompilation keeps the check in the loop.
+//! A field load waits for the loop's tests of its object's class: invariant branches that
+//! deoptimize on one side (`guards::branches`) become preheader guards first, and a class that
+//! stays tested keeps the loads of its object below the test.
+//!
+//! A null check inside the loop of a value defined outside it is predicated first (C2 peels
+//! such loops for the same effect): it becomes one `Inst::Guard` in the preheader that
+//! deoptimizes to the loop's entry state, so the value is known non-null there and its field
+//! loads can leave the loop. A check on a path some iterations skip is speculated the same way.
+//! A failing guard counts as a trap at the header, so the recompilation keeps the check in the
+//! loop. Hoisting repeats until nothing moves: a hoisted load's null check is invariant next.
 //!
 //! The climate tree's distance loop reloaded `node.parameterSpace` every iteration.
 
@@ -22,6 +27,7 @@ use super::ir::*;
 use std::collections::HashSet;
 
 pub fn hoist(g: &mut Graph) {
+    preheaders(g);
     let dom = Dom::new(g);
     let n = g.blocks.len();
     let index = dom.index(n);
@@ -60,37 +66,109 @@ pub fn hoist(g: &mut Graph) {
             }
         }
         let mut known = nonnull[index[pre as usize]].clone();
-        predicate_null_checks(g, &dom, &index, l, pre, &block_of, &mut known);
-        let known = &known;
         let order: Vec<B> = dom.rpo.iter().copied().filter(|&b| l.body[b as usize]).collect();
-        let mut moved = Vec::new();
-        for b in order {
-            let insts = g.blocks[b as usize].insts.clone();
-            let mut keep = Vec::with_capacity(insts.len());
-            for v in insts {
-                let invariant = |x: V| block_of.get(g.resolve(x) as usize).map_or(true, |&b| b == usize::MAX || !l.body[b]);
-                let inst = g.inst(v);
-                let movable = g.resolve(v) == v
-                    && inst.inputs().into_iter().all(invariant)
-                    && match inst {
-                        Inst::Bin(op, ..) => !matches!(op, BinOp::Div | BinOp::Rem) || matches!(g.ty(v), Ty::F | Ty::D),
-                        Inst::Neg(_) | Inst::Convert(..) | Inst::Compare(..) | Inst::Select(..) => true,
-                        Inst::Intrinsic(k, _, None) => k.is_pure() && !k.reads_mutable(),
-                        Inst::ArrayLength(o) => known.contains(&g.resolve(*o)),
-                        Inst::LoadField(o, off, _) => !barrier && (g.final_loads.contains(&v) || !stored.contains(off)) && !g.ordered.contains(&v) && known.contains(&g.resolve(*o)),
-                        _ => false,
-                    };
-                if movable {
-                    block_of[v as usize] = pre as usize;
-                    moved.push(v);
-                } else {
-                    keep.push(v);
+        // A hoisted load makes its null check invariant, and the check's predicate lets the
+        // loads through the loaded object follow (`this.a.b.c`).
+        loop {
+            predicate_null_checks(g, l, pre, &block_of, &mut known);
+            super::guards::branches(g, l, pre, &block_of, &known);
+            let known = &known;
+            let typed = type_tests(g, l);
+            let mut moved = Vec::new();
+            for &b in &order {
+                let insts = g.blocks[b as usize].insts.clone();
+                let mut keep = Vec::with_capacity(insts.len());
+                for v in insts {
+                    let invariant = |x: V| block_of.get(g.resolve(x) as usize).map_or(true, |&b| b == usize::MAX || !l.body[b]);
+                    let inst = g.inst(v);
+                    let movable = g.resolve(v) == v
+                        && inst.inputs().into_iter().all(invariant)
+                        && match inst {
+                            Inst::Bin(op, ..) => !matches!(op, BinOp::Div | BinOp::Rem) || matches!(g.ty(v), Ty::F | Ty::D),
+                            Inst::Neg(_) | Inst::Convert(..) | Inst::Compare(..) | Inst::Select(..) => true,
+                            Inst::Intrinsic(k, _, None) => k.is_pure() && !k.reads_mutable(),
+                            Inst::ArrayLength(o) => known.contains(&g.resolve(*o)) && !typed.contains(&g.resolve(*o)),
+                            Inst::LoadField(o, off, _) => {
+                                let o = g.resolve(*o);
+                                !barrier && (g.final_loads.contains(&v) || !stored.contains(off)) && !g.ordered.contains(&v) && known.contains(&o) && (*off == 0 || !typed.contains(&o))
+                            }
+                            _ => false,
+                        };
+                    if movable {
+                        block_of[v as usize] = pre as usize;
+                        moved.push(v);
+                    } else {
+                        keep.push(v);
+                    }
                 }
+                g.blocks[b as usize].insts = keep;
             }
-            g.blocks[b as usize].insts = keep;
+            if moved.is_empty() {
+                break;
+            }
+            g.blocks[pre as usize].insts.extend(moved);
         }
-        g.blocks[pre as usize].insts.extend(moved);
     }
+}
+
+/// Gives each loop entered by one forward edge from a branch (`if (hi > a.length) ...; for
+/// (...)`) a block of its own on that edge, ending in a jump to the header: the preheader this
+/// pass, `rce.rs` and `guards.rs` place what they hoist in.
+fn preheaders(g: &mut Graph) {
+    let headers: Vec<B> = (0..g.blocks.len() as B).filter(|&h| g.blocks[h as usize].loop_header && !matches!(g.blocks[h as usize].term, Term::None)).collect();
+    let mut renumbered = false;
+    for h in headers {
+        let order = g.blocks[h as usize].order;
+        let entries: Vec<usize> = g.blocks[h as usize].preds.iter().enumerate().filter(|&(_, &p)| g.blocks[p as usize].order < order).map(|(i, _)| i).collect();
+        let [i] = entries[..] else { continue };
+        let p = g.blocks[h as usize].preds[i];
+        if matches!(g.blocks[p as usize].term, Term::Goto(_)) {
+            continue;
+        }
+        // Make room in the build order between the branch and the header.
+        if !std::mem::replace(&mut renumbered, true) {
+            for blk in g.blocks.iter_mut().filter(|b| b.order != u32::MAX) {
+                blk.order *= 2;
+            }
+        }
+        let pre = g.new_block(-1);
+        let (order, freq) = (g.blocks[h as usize].order - 1, g.blocks[p as usize].freq.min(g.blocks[h as usize].freq));
+        let blk = &mut g.blocks[pre as usize];
+        (blk.term, blk.preds, blk.order, blk.freq) = (Term::Goto(h), vec![p], order, freq);
+        g.blocks[h as usize].preds[i] = pre;
+        match &mut g.blocks[p as usize].term {
+            Term::If { then, other, .. } => [then, other].into_iter().filter(|t| **t == h).for_each(|t| *t = pre),
+            Term::Switch { cases, default, .. } => cases.iter_mut().map(|c| &mut c.1).chain(std::iter::once(default)).filter(|t| **t == h).for_each(|t| *t = pre),
+            _ => {}
+        }
+    }
+}
+
+/// The values whose class loop `l` still tests (a class-word compare, `instanceof`, a cast): a
+/// load from one may rely on the test (an inlined method of the tested class reading its own
+/// field), so it stays below the test until the test is a guard in the preheader.
+fn type_tests(g: &Graph, l: &super::dom::Loop) -> HashSet<V> {
+    let mut typed = HashSet::new();
+    let class_of = |x: V| match *g.inst(g.resolve(x)) {
+        Inst::LoadField(o, 0, _) => Some(g.resolve(o)),
+        _ => None,
+    };
+    for blk in g.blocks.iter().enumerate().filter(|&(b, _)| l.body[b]).map(|(_, blk)| blk) {
+        for &v in &blk.insts {
+            match *g.inst(v) {
+                Inst::InstanceOf(x, _) | Inst::CheckCast(x, ..) => {
+                    typed.insert(g.resolve(x));
+                }
+                Inst::Guard(_, _, a, b, _) => typed.extend(class_of(a).into_iter().chain(class_of(b))),
+                Inst::Intrinsic(crate::jit::intrinsics::Intrinsic::IsInstance, ref args, _) => typed.extend(args.get(1).map(|&x| g.resolve(x))),
+                _ => {}
+            }
+        }
+        if let Term::If { a, b, .. } = blk.term {
+            typed.extend(class_of(a).into_iter().chain(class_of(b)));
+        }
+    }
+    typed
 }
 
 /// For each block (by rpo position), the values non-null at its end: checked by a null check in
@@ -122,22 +200,15 @@ pub(super) fn nonnull_by_block(g: &Graph, dom: &Dom) -> Vec<HashSet<V>> {
     out
 }
 
-/// Moves the null checks of loop-invariant values that run on every iteration of `l` to its
-/// preheader `pre` as guards (adding the values to `known`).
-fn predicate_null_checks(g: &mut Graph, dom: &Dom, index: &[usize], l: &super::dom::Loop, pre: B, block_of: &[usize], known: &mut HashSet<V>) {
+/// Moves the null checks of loop-invariant values in `l` to its preheader `pre` as guards
+/// (adding the values to `known`). A check on a path the loop may never take is speculated too:
+/// a null there deoptimizes on entry, and the recompilation keeps the checks in the loop.
+fn predicate_null_checks(g: &mut Graph, l: &super::dom::Loop, pre: B, block_of: &[usize], known: &mut HashSet<V>) {
     let h = l.header as usize;
     let Some(entry_state) = g.loop_entry.get(&l.header).cloned() else { return };
-    // Blocks that run on every iteration dominate every back edge's source.
-    let latches: Vec<usize> = g.blocks[h].preds.iter().filter(|&&p| l.body[p as usize]).map(|&p| index[p as usize]).collect();
-    if latches.iter().any(|&i| i == usize::MAX) {
-        return;
-    }
     let invariant = |x: V| block_of.get(x as usize).map_or(true, |&b| b == usize::MAX || !l.body[b]);
     let mut checks = Vec::new();
-    for b in (0..g.blocks.len()).filter(|&b| l.body[b] && index[b] != usize::MAX) {
-        if !latches.iter().all(|&i| dom.dominates(index[b], i)) {
-            continue;
-        }
+    for b in (0..g.blocks.len()).filter(|&b| l.body[b]) {
         for &v in &g.blocks[b].insts {
             if let Inst::NullCheck(x, _) = g.inst(v) {
                 let x = g.resolve(*x);
