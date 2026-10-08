@@ -11,6 +11,7 @@ mod build_mh;
 mod build_obj;
 mod build_ops;
 mod canon;
+mod cha;
 mod codegen;
 mod codegen_copy;
 mod codegen_intr;

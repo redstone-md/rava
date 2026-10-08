@@ -25,6 +25,9 @@ pub(super) enum Guard {
     Vtable(i32),
     /// The receiver's class is exactly this one.
     Klass(&'static Klass),
+    /// The receiver's class is a subclass of this one (an interface call's receiver) whose
+    /// vtable entry `index` is the target.
+    Subclass(&'static Klass, i32),
 }
 
 /// The graph's size and the current block's contents, to undo a failed inlining.
@@ -274,12 +277,24 @@ impl Builder {
             // The receiver classes first-tier code saw, else the declared method for receivers
             // still dispatching to it.
             let seen = profiled();
-            if !seen.is_empty() || m.is_abstract() {
+            if !seen.is_empty() {
                 return seen;
             }
-            return vec![(m, Guard::Vtable(m.vtable_index()))];
+            // A megamorphic (or unprofiled) site: the one implementation its receivers can
+            // have, behind a test of the vtable entry.
+            return match super::cha::unique_target(m).or((!m.is_abstract()).then_some(m)) {
+                Some(t) => vec![(t, Guard::Vtable(m.vtable_index()))],
+                None => Vec::new(),
+            };
         }
-        profiled()
+        let seen = profiled();
+        if !seen.is_empty() || op != 0xb9 {
+            return seen;
+        }
+        match super::cha::unique_target(m).and_then(|t| super::cha::interface_guard(t).map(|(c, i)| (t, Guard::Subclass(c, i)))) {
+            Some(plan) => vec![plan],
+            None => Vec::new(),
+        }
     }
 
     /// Ends the current block with the guard's test; returns the failure block, and continues in
@@ -292,6 +307,28 @@ impl Builder {
                 return None;
             }
             Guard::Klass(k) => (self.klass_of(receiver?), k as *const Klass as i64),
+            Guard::Subclass(c, i) => {
+                // Two tests failing to one block: the class's ancestor at c's depth, then its
+                // vtable entry.
+                let k = self.klass_of(receiver?);
+                let d = crate::jit::emit_obj::primary_depth(c).expect("a guarded class in the display");
+                let at = (std::mem::offset_of!(Klass, primary) + 8 * d) as u32;
+                let p = self.add(Inst::LoadField(k, at, BasicType::Long), Ty::J);
+                let cc = self.konst(Ty::J, c as *const Klass as i64);
+                let (mid, other) = (self.g.new_block(-1), self.g.new_block(-1));
+                self.g.blocks[mid as usize].preds.push(self.cur);
+                self.g.blocks[other as usize].preds.push(self.cur);
+                self.g.blocks[self.cur as usize].term = Term::If { cmp: Cmp::Eq, ty: Ty::J, a: p, b: cc, then: mid, other, unordered: false };
+                self.start_block(mid);
+                let e = self.add(Inst::LoadField(k, (crate::klass::VTABLE_OFFSET + 8 * i as usize) as u32, BasicType::Long), Ty::J);
+                let t = self.konst(Ty::J, target as *const Method as i64);
+                let then = self.g.new_block(-1);
+                self.g.blocks[then as usize].preds.push(self.cur);
+                self.g.blocks[other as usize].preds.push(self.cur);
+                self.g.blocks[self.cur as usize].term = Term::If { cmp: Cmp::Eq, ty: Ty::J, a: e, b: t, then, other, unordered: false };
+                self.start_block(then);
+                return Some(other);
+            }
             Guard::Vtable(i) => {
                 let k = self.klass_of(receiver?);
                 (self.add(Inst::LoadField(k, (crate::klass::VTABLE_OFFSET + 8 * i as usize) as u32, BasicType::Long), Ty::J), target as *const Method as i64)
