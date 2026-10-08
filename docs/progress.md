@@ -1398,3 +1398,30 @@ listeners), the rest spread at 1.3-2x.
 
 Sprint A/B, 5 rounds against the build before these four: first sprint 1400 against 1292 tps
 (+8.4 %), warm 1491 against 1415 (+5.4 %). `java` on this host: 1780-1827 first, 2382-2487 warm.
+
+## 2026-10-08 (cont.) — against C2's code itself
+
+**Where the steady state goes.** On the warm sprint rava's server thread spends 1.97 s on the
+first instruction of compiled methods against `java`'s 0.18 s (plus 1.19 s in its vtable stubs):
+control reaching callees stalls (instruction fetch), not the instructions after it. The code
+cache is all on huge pages (182 MB resident, all `AnonHugePages`), so it is not the TLB.
+Doubling the inlining limits looked like +4 % in two A/Bs and was noise in a third (the start
+lost 3 % every time): reverted.
+
+**C2's code, instruction by instruction.** Without a working `hsdis`, `-XX:CompileCommand=print`
+still dumps C2's code as hex; a small script (`objdump` over the dump, HotSpot's comments kept)
+reads it. `LevelChunk.getBlockState` is about 75 instructions on its hot path in C2's code and 110
+in rava's. The difference, piece by piece: a 15-instruction prologue against 5 (frame-stack check,
+method and caller links, entry poll, parameters loaded from the frame), stores of values that
+deoptimization states read, null tests repeated after a branch already tested the value, three
+range checks where C2 keeps one, CHA flag tests (C2 records dependencies instead), and sign
+extensions.
+
+- **Dominated conditions** (`opt/conds.rs`, C2's `dominated_by`): branch edges, null checks and
+  bounds checks leave facts (operands keyed by value, immutable class word, array length or
+  constant; integer ranges against constants); null checks of known non-null values (casts of
+  them too), bounds checks inside an explicit range test, and branches with a known outcome go.
+- **Array elements read again** in an extended block reuse the first load (int, long, float,
+  double and reference elements only: a mask may make a byte load unsigned).
+
+Sprint A/B, 4 rounds on this (slower) host: 706/829 tps against 694/812 (+2 %, within noise).
