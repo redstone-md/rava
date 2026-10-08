@@ -76,6 +76,45 @@ pub fn install(code: &super::asm::Code) -> usize {
     at
 }
 
+/// Serializes making and repointing trampolines (`direct_entry`, `repoint`).
+static TRAMPOLINES: Mutex<()> = Mutex::new(());
+
+/// The address of a `jmp rel32` to `m`'s current entry, for compiled code to call `m` with a
+/// direct `call rel32` (HotSpot's static call stubs): the target is known as the call decodes,
+/// where an indirect call through `Method::entry` waits for its load whenever the branch
+/// predictor has lost it. Made on first use; None when the code cache is out of reach of rava's
+/// text (the adapters an entry may be).
+pub fn direct_entry(m: &'static crate::method::Method) -> Option<usize> {
+    use std::sync::atomic::Ordering::{Acquire, Release};
+    if !near() {
+        return None;
+    }
+    let _g = TRAMPOLINES.lock().unwrap();
+    let t = m.trampoline.load(Acquire);
+    if t != 0 {
+        return Some(t);
+    }
+    // A 3-byte nop puts the displacement at offset 4: aligned, so a repoint writes it whole.
+    let code = super::asm::Code { bytes: vec![0x0F, 0x1F, 0x00, 0xE9, 0, 0, 0, 0], relocs: vec![(4, m.entry.load(Acquire))] };
+    let t = install(&code);
+    m.trampoline.store(t, Release);
+    Some(t)
+}
+
+/// Points `m`'s trampoline (if any) at its current entry, after `Method::entry` changed.
+pub fn repoint(m: &crate::method::Method) {
+    use std::sync::atomic::Ordering::Acquire;
+    if m.trampoline.load(Acquire) == 0 {
+        return;
+    }
+    let _g = TRAMPOLINES.lock().unwrap();
+    let t = m.trampoline.load(Acquire);
+    let rel = i32::try_from(m.entry.load(Acquire) as i64 - (t + 8) as i64).expect("entry within reach");
+    // SAFETY: the aligned displacement of the trampoline's jump; an aligned 4-byte store is
+    // atomic, so a thread executing the jump meanwhile goes to the old entry or the new one.
+    unsafe { (*((t + 4) as *const std::sync::atomic::AtomicI32)).store(rel, std::sync::atomic::Ordering::Release) };
+}
+
 /// Appends `address size name` to `/tmp/perf-<pid>.map` when `RAVA_PERF_MAP` is set, so
 /// `perf` can name compiled methods.
 pub fn perf_map(address: usize, size: usize, name: &str) {
