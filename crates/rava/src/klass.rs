@@ -116,8 +116,8 @@ pub struct Klass {
     /// The same itable flattened for generated code: `[count, (interface, block pointer)...]`,
     /// or null until first built (`jit/stubs.rs` scans it).
     pub(crate) itable_raw: AtomicPtr<usize>,
-    /// The `(interface, block pointer)` pair of `itable_raw` an inline scan found last (HotSpot's
-    /// secondary super cache), checked before scanning; a pair of zeros until then.
+    /// The block of `itable_raw` an inline scan found last (HotSpot's secondary super cache),
+    /// checked before scanning: its interface is the word before it (zero until a first hit).
     pub(crate) itable_hit: AtomicPtr<usize>,
     pub(crate) mirror: AtomicPtr<crate::heap::ObjHeader>,
     pub name: Symbol,
@@ -169,7 +169,7 @@ pub(crate) struct KlassParts {
     pub hidden: bool,
 }
 
-/// The `itable_hit` of a class no scan has hit yet: no interface is null.
+/// The `itable_hit` of a class no scan has hit yet points past this zero: no interface is null.
 static NO_ITABLE_HIT: [usize; 2] = [0, 0];
 
 /// Classes live in low memory (`crate::low`): generated code compares and stores class pointers
@@ -224,7 +224,7 @@ impl Klass {
             array_klass: OnceLock::new(),
             itable: OnceLock::new(),
             itable_raw: AtomicPtr::new(std::ptr::null_mut()),
-            itable_hit: AtomicPtr::new(NO_ITABLE_HIT.as_ptr() as *mut usize),
+            itable_hit: AtomicPtr::new(NO_ITABLE_HIT[1..].as_ptr() as *mut usize),
             hidden: p.hidden,
             nest_host: OnceLock::new(),
             vtable_ptr: AtomicPtr::new(std::ptr::null_mut()),
