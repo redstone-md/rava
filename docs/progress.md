@@ -1425,3 +1425,29 @@ extensions.
   double and reference elements only: a mask may make a byte load unsigned).
 
 Sprint A/B, 4 rounds on this (slower) host: 706/829 tps against 694/812 (+2 %, within noise).
+
+## 2026-10-08 (cont.) — the gap is spread evenly
+
+**Method by method.** The biggest single difference in the sprint profile,
+`LevelSystemBase.tick` (12 % of the server thread), takes the same share of `java`'s server
+thread (12.2 % against 12.4 %): every part of it costs rava about 1.5x, on the same loads that
+miss in both (the attachment's class word, a slot of the `IdentityHashMap` table, the class
+metadata of a megamorphic receiver). `EventBus.post`'s listener loop is already six instructions
+around the call; its time is the receiver class's vtable line, as in C2's code. No one method or
+mechanism holds the gap: it is the code quality everywhere.
+
+**`bench/java/SystemTickBench.java`** reproduces it in seconds (listener lambdas over 40 system
+classes, attachment lookups, interface calls, a discarded concatenation): rava ~5.4 µs per tick
+against `java` ~3.5 µs. The tick is compiled on its own: entered through OSR in the middle of the
+loop, the list iterator could not be scalar-replaced, which no real tick has.
+
+- **Publishing the frame once.** A method that calls Java stores its header as `Thread::top`
+  in the prologue; each call then writes only its BCI (callees restore `top` on every exit).
+- **Interface type checks** compare `Klass::super_hit`, the interface the class was last
+  found to implement: one load from the class instead of the itable block and its header.
+- **Array allocations** have an exact class, so the cast of a fresh `byte[]` (string
+  concatenation's `newArray`) is gone.
+
+Still open from these profiles: megamorphic call sites whose receivers all share one
+implementation (an interface implemented by one abstract base class) are dispatched, not
+inlined; loop counters live across calls are reloaded from their spill slot at every use.
