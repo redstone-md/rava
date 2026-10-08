@@ -323,7 +323,7 @@ impl Gen<'_> {
                 let (scan, no, slow) = (self.a.new_label(), self.a.new_label(), self.a.new_label());
                 let hit = std::mem::offset_of!(Klass, itable_hit) as i32;
                 self.a.load(true, R::R11, mem(R::Rcx, hit));
-                self.cmp_class(Some(mem(R::R11, 0)), kk);
+                self.cmp_class(Some(mem(R::R11, -8)), kk);
                 self.a.jcc(Cond::E, done);
                 self.a.load(true, R::R11, mem(R::Rcx, std::mem::offset_of!(Klass, itable_raw) as i32));
                 self.a.test_rr(true, R::R11, R::R11);
@@ -335,7 +335,7 @@ impl Gen<'_> {
                 self.a.jcc(Cond::L, no);
                 self.cmp_class(Some(mem(R::R11, -8)), kk);
                 self.a.jcc(Cond::Ne, scan);
-                self.a.lea(R::Rax, mem(R::R11, -8));
+                self.a.load(true, R::Rax, mem(R::R11, 0));
                 self.a.store(true, mem(R::Rcx, hit), R::Rax);
                 if answer {
                     self.a.mov_ri(R::Rax, 1);
@@ -588,13 +588,14 @@ impl Gen<'_> {
                 self.a.alu_mi(false, Alu::Cmp, m_misses, runtime::IC_MAX_UPDATES as i32);
                 self.a.jcc(Cond::B, learn);
             }
-            // Megamorphic: the class's last itable hit, else a scan of its itable in place
-            // (`stubs::itable_lookup`).
+            // Megamorphic: the class's last itable hit (a block, its interface in the word
+            // before it: the method loads as the interface compares), else a scan of its itable
+            // in place (`stubs::itable_lookup`).
             let (scan, block) = (self.a.new_label(), self.a.new_label());
             let hit = offset_of!(Klass, itable_hit) as i32;
             self.a.mov_ri(R::Rsi, m.holder as *const Klass as i64);
             self.a.load(true, R::Rax, mem(R::Rdi, hit));
-            self.a.alu_rm(true, Alu::Cmp, R::Rsi, mem(R::Rax, 0));
+            self.a.alu_rm(true, Alu::Cmp, R::Rsi, mem(R::Rax, -8));
             self.a.jcc(Cond::E, block);
             self.a.load(true, R::Rax, mem(R::Rdi, offset_of!(Klass, itable_raw) as i32));
             self.a.test_rr(true, R::Rax, R::Rax);
@@ -606,10 +607,9 @@ impl Gen<'_> {
             self.a.jcc(Cond::L, learn);
             self.a.alu_rm(true, Alu::Cmp, R::Rsi, mem(R::Rax, -8));
             self.a.jcc(Cond::Ne, scan);
-            self.a.alu_ri(true, Alu::Sub, R::Rax, 8);
+            self.a.load(true, R::Rax, mem(R::Rax, 0));
             self.a.store(true, mem(R::Rdi, hit), R::Rax);
             self.a.bind(block);
-            self.a.load(true, R::Rax, mem(R::Rax, 8));
             self.a.load(true, R::Rax, mem(R::Rax, 8 * m.index() as i32));
             self.a.test_rr(true, R::Rax, R::Rax);
             self.a.jcc(Cond::Ne, found);

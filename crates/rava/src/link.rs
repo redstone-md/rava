@@ -300,9 +300,14 @@ pub fn select_method(recv: &'static Klass, m: &'static Method) -> Option<&'stati
 pub(crate) fn itable_of(k: &'static Klass) -> &'static [crate::klass::Itable] {
     let itable = k.itable.get_or_init(|| build_itable(k));
     if k.itable_raw.load(std::sync::atomic::Ordering::Acquire).is_null() {
+        // Each block again with its interface in the word before its first method, so a pointer
+        // to the block (`Klass::itable_hit`) also names the interface.
         let mut raw = vec![itable.len()];
         for (iface, block) in itable.iter() {
-            raw.extend([*iface, block.as_ptr() as usize]);
+            let mut headed = vec![*iface];
+            headed.extend(block.iter().map(|m| m.map_or(0, |m| m as *const Method as usize)));
+            let headed = Box::leak(headed.into_boxed_slice());
+            raw.extend([*iface, headed[1..].as_ptr() as usize]);
         }
         let raw = Box::leak(raw.into_boxed_slice());
         k.itable_raw.store(raw.as_mut_ptr(), std::sync::atomic::Ordering::Release);
