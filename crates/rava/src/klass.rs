@@ -137,6 +137,8 @@ pub struct Klass {
     /// In low memory (`crate::low`): code stores and passes methods as 32-bit immediates.
     pub(crate) methods: OnceLock<&'static [Method]>,
     pub(crate) vtable: OnceLock<Box<[&'static Method]>>,
+    /// Entries of room after the class for its vtable (`leak`, `VTABLE_OFFSET`).
+    vtable_cap: u32,
     pub init: InitLock,
     pub(crate) loader: AtomicPtr<crate::heap::ObjHeader>,
     pub(crate) resolved: Box<[crate::link::ResolvedSlot]>,
@@ -172,10 +174,18 @@ pub(crate) struct KlassParts {
 /// The `itable_hit` of a class no scan has hit yet points past this zero: no interface is null.
 static NO_ITABLE_HIT: [usize; 2] = [0, 0];
 
+/// Where a class's vtable starts, from the class: it follows the class in memory (HotSpot's
+/// embedded vtable), so dispatch loads the method at a fixed offset from the class.
+pub(crate) const VTABLE_OFFSET: usize = std::mem::size_of::<Klass>().next_multiple_of(8);
+
 /// Classes live in low memory (`crate::low`): generated code compares and stores class pointers
-/// as 32-bit immediates.
+/// as 32-bit immediates. Each is followed by room for its vtable: at most its superclass's
+/// entries, one per method it declares and one per method of its interfaces (defaults).
 pub(crate) fn leak(k: Klass) -> &'static Klass {
-    let k = crate::low::leak(k);
+    let cap = k.super_klass.map_or(0, |s| s.vtable().len()) + k.cf.as_ref().map_or(0, |cf| cf.methods.len()) + k.all_interfaces.iter().map(|i| i.methods().len()).sum::<usize>();
+    let mut k = k;
+    k.vtable_cap = cap as u32;
+    let k = crate::low::leak_with_tail(k, 8 * cap).expect("out of low memory for classes");
     // Object headers hold a class in 32 bits.
     assert!(crate::low::is_low(k as *const Klass as usize), "out of low memory for classes");
     k
@@ -217,6 +227,7 @@ impl Klass {
             statics: crate::low::leak_slice((0..p.static_slots).map(|_| AtomicU64::new(0)).collect()),
             methods: OnceLock::new(),
             vtable: OnceLock::new(),
+            vtable_cap: 0,
             init: InitLock::new(if p.initialized { InitState::Initialized } else { InitState::Linked }),
             mirror: AtomicPtr::new(std::ptr::null_mut()),
             loader: AtomicPtr::new(std::ptr::null_mut()),
@@ -247,7 +258,11 @@ impl Klass {
 
     pub(crate) fn set_vtable(&'static self, vt: Box<[&'static Method]>) {
         let vt = self.vtable.get_or_init(|| vt);
-        self.vtable_ptr.store(vt.as_ptr() as *mut &'static Method, Ordering::Release);
+        assert!(vt.len() <= self.vtable_cap as usize, "vtable of {} past its room", self.name);
+        let at = (self as *const Klass as usize + VTABLE_OFFSET) as *mut &'static Method;
+        // SAFETY: the room `leak` left after the class, written once before any instance exists.
+        unsafe { std::ptr::copy_nonoverlapping(vt.as_ptr(), at, vt.len()) };
+        self.vtable_ptr.store(at, Ordering::Release);
     }
 
     pub fn vtable(&'static self) -> &'static [&'static Method] {

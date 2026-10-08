@@ -14,6 +14,7 @@ const CHUNK: usize = 4 << 20;
 fn reserve(size: usize, align: usize) -> Option<usize> {
     static ARENA: Mutex<(usize, usize)> = Mutex::new((0, 0));
     if size > CHUNK / 4 {
+        // (A class's vtable tail stays far below this.)
         return None;
     }
     let mut arena = ARENA.lock().unwrap();
@@ -40,6 +41,18 @@ pub fn leak<T>(value: T) -> &'static T {
     unsafe {
         std::ptr::write(at as *mut T, value);
         &*(at as *const T)
+    }
+}
+
+/// Moves `value` into low memory followed by `tail` zeroed bytes (8-aligned, at
+/// `size_of::<T>()` rounded up to 8), or None when none is left.
+pub fn leak_with_tail<T>(value: T, tail: usize) -> Option<&'static T> {
+    let head = std::mem::size_of::<T>().next_multiple_of(8);
+    let at = reserve(head + tail, std::mem::align_of::<T>().max(8))?;
+    // SAFETY: an aligned, unused run of the arena (fresh mappings are zeroed), never freed.
+    unsafe {
+        std::ptr::write(at as *mut T, value);
+        Some(&*(at as *const T))
     }
 }
 
