@@ -69,8 +69,13 @@ impl Builder {
             && !crate::jit::profile::megamorphic(self.sc.m, pc)
             && self.speculates(self.sc.m, pc);
         self.unprofiled_call = plans.is_empty() && matches!(callee, Callee::Virtual(_) | Callee::Interface(_)) && crate::jit::profile::unprofiled(self.sc.m, pc);
+        let boxed = (op == 0xb8 && super::build_obj::box_value_of(m)).then(|| args[0]);
         let r = self.emit_miss(plans, callee, args, s, m.sig.ret, profiled.then_some(pre));
         self.unprofiled_call = false;
+        if let (true, Some(x)) = (r, boxed) {
+            let b = self.g.resolve(*self.sc.stack.last().and_then(|v| v.as_ref()).expect("valueOf's result"));
+            self.boxes.insert(b, (m.holder, x));
+        }
         r
     }
 
@@ -183,8 +188,18 @@ impl Builder {
             let v = match returns.as_slice() {
                 [(_, v)] => v.expect("a value return"),
                 _ => {
-                    let p = self.add(Inst::Phi(returns.iter().map(|r| r.1.expect("a value return")).collect()), Ty::of(ret));
+                    let ins: Vec<V> = returns.iter().map(|r| r.1.expect("a value return")).collect();
+                    let p = self.add(Inst::Phi(ins.clone()), Ty::of(ret));
                     self.complete_phis.insert(p);
+                    // Boxes of one class from every path: a box of the merged values.
+                    let boxes: Option<Vec<_>> = ins.iter().map(|&x| self.boxes.get(&self.g.resolve(x)).copied()).collect();
+                    if let Some(bs) = boxes.filter(|bs| bs.iter().all(|b| std::ptr::eq(b.0, bs[0].0))) {
+                        let ty = self.g.ty(bs[0].1);
+                        if bs.iter().all(|b| self.g.ty(b.1) == ty) {
+                            let q = self.add(Inst::Phi(bs.iter().map(|b| b.1).collect()), ty);
+                            self.boxes.insert(p, (bs[0].0, q));
+                        }
+                    }
                     p
                 }
             };
@@ -398,6 +413,7 @@ impl Builder {
         self.facts = m.facts;
         self.complete_phis.retain(|&v| (v as usize) < m.values);
         self.declared.retain(|&v, _| (v as usize) < m.values);
+        self.boxes.retain(|&v, _| (v as usize) < m.values);
         // The abandoned body's values are gone: so are the facts about them.
         self.set_caches(m.caches);
         self.forget_blocks(m.blocks as B);

@@ -151,6 +151,10 @@ pub(super) struct Builder {
     /// Field loads whose declared type is a final class: that class exactly, when not null
     /// (C2 types a load by its field's declaration).
     pub declared: HashMap<V, &'static crate::klass::Klass>,
+    /// Boxes made by `Integer.valueOf` and its siblings (`build_obj::box_value_of`): the box's
+    /// class and the value in it, which an unboxing reads back without the box (C2's
+    /// `EliminateAutoBox`); a box is never null.
+    pub boxes: HashMap<V, (&'static crate::klass::Klass, V)>,
     /// Phis made with all their inputs (the results of inlined bodies with several returns).
     pub complete_phis: std::collections::HashSet<V>,
     /// The call about to be made is at a site without a receiver profile.
@@ -225,7 +229,7 @@ impl Builder {
     fn new(sc: Scope) -> Builder {
         let m = sc.m;
         let speculate = m.deopt_recompiles.load(std::sync::atomic::Ordering::Relaxed) < super::SPECULATIVE_RECOMPILES;
-        Builder { g: Graph::default(), extent: sc.frame_end(), sc, cur: 0, spent: 0, chain: vec![(m, None)], seq: 0, speculate, facts: Default::default(), stable: HashMap::new(), numbered: HashMap::new(), loads: HashMap::new(), exact: Vec::new(), declared: HashMap::new(), complete_phis: Default::default(), unprofiled_call: false, cold_call: false, bounds: Vec::new(), exits: HashMap::new() }
+        Builder { g: Graph::default(), extent: sc.frame_end(), sc, cur: 0, spent: 0, chain: vec![(m, None)], seq: 0, speculate, facts: Default::default(), stable: HashMap::new(), numbered: HashMap::new(), loads: HashMap::new(), exact: Vec::new(), declared: HashMap::new(), boxes: HashMap::new(), complete_phis: Default::default(), unprofiled_call: false, cold_call: false, bounds: Vec::new(), exits: HashMap::new() }
     }
 
     /// Makes `block` the current one, next in code order, with the caches of its single
@@ -630,6 +634,7 @@ impl Builder {
         match self.g.constant(v) {
             Some(c) => Some(c == 0),
             None if matches!(self.g.inst(self.g.resolve(v)), Inst::New(..) | Inst::NewArray(..) | Inst::NewMulti(..)) => Some(false),
+            None if self.boxes.contains_key(&self.g.resolve(v)) => Some(false),
             None => self.facts.contains(&v).then_some(false),
         }
     }

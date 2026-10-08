@@ -10,6 +10,13 @@ use crate::types::BasicType;
 use std::rc::Rc;
 
 impl Builder {
+    /// The value in box `o` when the field read at `pc` is its `value` (`Builder::boxes`).
+    fn unboxed(&self, o: V, pc: usize) -> Option<V> {
+        let &(k, x) = self.boxes.get(&self.g.resolve(o))?;
+        let (holder, f) = crate::jit::fold::field_decl(self.sc.m, self.u2(pc))?;
+        (std::ptr::eq(holder, k) && f.name.as_str() == "value").then_some(x)
+    }
+
     /// Records the class a field load at `pc` has exactly when its field is declared with a
     /// final class already loaded (`Builder::declared`).
     fn note_declared(&mut self, v: V, pc: usize) {
@@ -102,6 +109,10 @@ impl Builder {
             (0xb4, Resolved::InstanceField { offset, ty, volatile }) => {
                 let s = self.state();
                 let o = self.pop();
+                if let Some(x) = self.unboxed(o, pc) {
+                    self.push(x);
+                    return Some(());
+                }
                 self.null_check(o, s);
                 // A load the block already did (or a store it made) since the last call, store
                 // to a field at this offset, or other memory effect, is reused.
@@ -344,4 +355,18 @@ impl Builder {
         }
         Some(true)
     }
+}
+
+/// `Integer.valueOf(int)` and its siblings for long, short, byte and char: a box (cached or
+/// new) holding exactly the argument.
+pub(super) fn box_value_of(m: &'static Method) -> bool {
+    let desc = match m.holder.name.as_str() {
+        "java/lang/Integer" => "(I)Ljava/lang/Integer;",
+        "java/lang/Long" => "(J)Ljava/lang/Long;",
+        "java/lang/Short" => "(S)Ljava/lang/Short;",
+        "java/lang/Byte" => "(B)Ljava/lang/Byte;",
+        "java/lang/Character" => "(C)Ljava/lang/Character;",
+        _ => return false,
+    };
+    m.is_static() && m.name.as_str() == "valueOf" && m.desc.as_str() == desc
 }
