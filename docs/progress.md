@@ -1373,3 +1373,28 @@ on every tick.
 
 Sprint A/B, 3 rounds, against the build before these: first sprint 1341/1408/1354 against
 1303/1271/1260 tps, warm 1479/1496/1513 against 1454/1409/1365 (+5-6 %).
+
+## 2026-10-08 (cont.) — dispatch, guards and boxes
+
+Instruction classes of the warm sprint's compiled code (every optimized method dumped, samples
+by instruction): 12 % on a method's first instruction (control reaching a callee), 5.6 % on the
+instruction right after a virtual call's target loads (class, vtable pointer, entry: cache
+misses on class metadata), 11.6 % on class compares and 8.5 % on reference decodes (mostly the
+loads before them missing). `java`'s second sprint is 34 % faster than its first, rava's 7 %:
+the gap is steady-state code. Per method (warm, matched by name) rava is 1.9x `java` on the
+same methods, a third of the difference in the few at 3x or more (xycraft's system loop, NeoForge
+listeners), the rest spread at 1.3-2x.
+
+- **itable hits point at their block** (its interface in the word before it): the method loads
+  while the interface compares, four dependent loads instead of five.
+- **embedded vtables**: each class has room after it for its vtable, read at a fixed offset from
+  the class in every tier (no vtable pointer load).
+- **class guards in place**: a class word read only by its block's branch is one `cmp dword
+  [obj], class` (the implicit null check moves onto it); compressed references also stay
+  compressed when their block's branch tests them for null or a field store takes them.
+- **box elimination** (C2's EliminateAutoBox): `Integer.valueOf(x)` and its siblings return a
+  box of x; an unboxing of such a box, merged through inlined call results, reads x and the
+  allocation goes. A bimorphic `Supplier<Integer>` loop: 19.9 to 11-13 ms (`java` 8).
+
+Sprint A/B, 5 rounds against the build before these four: first sprint 1400 against 1292 tps
+(+8.4 %), warm 1491 against 1415 (+5.4 %). `java` on this host: 1780-1827 first, 2382-2487 warm.
