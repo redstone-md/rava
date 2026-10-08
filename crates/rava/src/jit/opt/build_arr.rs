@@ -22,13 +22,17 @@ impl Builder {
         self.null_check(arr, s.clone());
         self.bounds_check(arr, idx, s);
         let bt = ARRAY_ELEMS[(op - 0x2e) as usize];
-        // The element the block already read (or stored) since the last memory effect.
+        // The element the block already read (or stored) since the last memory effect. Not
+        // for narrow types: masking may turn a byte or short load into an unsigned one.
         let key = (arr, super::build_cache::ELEM | idx);
+        let wide = matches!(bt, BasicType::Int | BasicType::Long | BasicType::Float | BasicType::Double | BasicType::Reference);
         let v = match self.loads.get(&key) {
-            Some(&v) => v,
-            None => {
+            Some(&v) if wide => v,
+            _ => {
                 let v = self.add(Inst::LoadIndexed(arr, idx, bt), Ty::of(bt));
-                self.loads.insert(key, v);
+                if wide {
+                    self.loads.insert(key, v);
+                }
                 v
             }
         };
