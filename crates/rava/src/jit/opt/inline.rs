@@ -305,6 +305,9 @@ impl Builder {
             }
             _ => {}
         }
+        if let Some(&k) = self.declared.get(&r) {
+            return Some(k);
+        }
         if let Some(o) = self.g.constant(r).filter(|&o| o != 0 && self.g.ty(r) == Ty::A) {
             return Some(crate::jit::fold::class_of(o as usize));
         }
@@ -390,6 +393,7 @@ impl Builder {
         self.spent = m.spent;
         self.facts = m.facts;
         self.complete_phis.retain(|&v| (v as usize) < m.values);
+        self.declared.retain(|&v, _| (v as usize) < m.values);
         // The abandoned body's values are gone: so are the facts about them.
         self.set_caches(m.caches);
         self.forget_blocks(m.blocks as B);

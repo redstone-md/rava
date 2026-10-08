@@ -148,6 +148,9 @@ pub(super) struct Builder {
     /// Values whose class is known exactly where they are used (allocations, and receivers
     /// inside a body inlined behind an exact class check), innermost last.
     pub exact: Vec<(V, &'static crate::klass::Klass)>,
+    /// Field loads whose declared type is a final class: that class exactly, when not null
+    /// (C2 types a load by its field's declaration).
+    pub declared: HashMap<V, &'static crate::klass::Klass>,
     /// Phis made with all their inputs (the results of inlined bodies with several returns).
     pub complete_phis: std::collections::HashSet<V>,
     /// The call about to be made is at a site without a receiver profile.
@@ -222,7 +225,7 @@ impl Builder {
     fn new(sc: Scope) -> Builder {
         let m = sc.m;
         let speculate = m.deopt_recompiles.load(std::sync::atomic::Ordering::Relaxed) < super::SPECULATIVE_RECOMPILES;
-        Builder { g: Graph::default(), extent: sc.frame_end(), sc, cur: 0, spent: 0, chain: vec![(m, None)], seq: 0, speculate, facts: Default::default(), stable: HashMap::new(), numbered: HashMap::new(), loads: HashMap::new(), exact: Vec::new(), complete_phis: Default::default(), unprofiled_call: false, cold_call: false, bounds: Vec::new(), exits: HashMap::new() }
+        Builder { g: Graph::default(), extent: sc.frame_end(), sc, cur: 0, spent: 0, chain: vec![(m, None)], seq: 0, speculate, facts: Default::default(), stable: HashMap::new(), numbered: HashMap::new(), loads: HashMap::new(), exact: Vec::new(), declared: HashMap::new(), complete_phis: Default::default(), unprofiled_call: false, cold_call: false, bounds: Vec::new(), exits: HashMap::new() }
     }
 
     /// Makes `block` the current one, next in code order, with the caches of its single

@@ -10,6 +10,18 @@ use crate::types::BasicType;
 use std::rc::Rc;
 
 impl Builder {
+    /// Records the class a field load at `pc` has exactly when its field is declared with a
+    /// final class already loaded (`Builder::declared`).
+    fn note_declared(&mut self, v: V, pc: usize) {
+        let Some((holder, f)) = crate::jit::fold::field_decl(self.sc.m, self.u2(pc)) else { return };
+        let desc = f.desc.as_str();
+        let Some(name) = desc.strip_prefix('L').and_then(|d| d.strip_suffix(';')) else { return };
+        let Some(k) = crate::vm::vm().find_loaded(holder.loader(), crate::symbol::Symbol::intern(name)) else { return };
+        if matches!(k.kind, crate::klass::KlassKind::Instance) && k.access & ACC_FINAL != 0 {
+            self.declared.insert(v, k);
+        }
+    }
+
     pub fn init_check(&mut self, k: &'static Klass, s: &Rc<State>) {
         if k.init.state() != InitState::Initialized {
             self.add(Inst::InitCheck(k, s.clone()), Ty::I);
@@ -71,6 +83,7 @@ impl Builder {
                 let s = self.state();
                 self.init_check(holder, &s);
                 let v = self.add(Inst::LoadStatic(slot as *const _ as usize, ty), Ty::of(ty));
+                self.note_declared(v, pc);
                 if volatile {
                     // Acquire: later loads read memory again.
                     self.loads.clear();
@@ -96,6 +109,7 @@ impl Builder {
                     Some(&v) if !volatile => v,
                     _ => {
                         let v = self.add(Inst::LoadField(o, offset, ty), Ty::of(ty));
+                        self.note_declared(v, pc);
                         let in_init = self.chain.iter().any(|(m, _)| m.name == "<init>");
                         if !in_init && crate::jit::fold::field_decl(self.sc.m, self.u2(pc)).is_some_and(|(_, f)| f.access & ACC_FINAL != 0) {
                             self.g.final_loads.insert(v);
