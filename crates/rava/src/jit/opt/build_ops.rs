@@ -147,7 +147,7 @@ impl Builder {
                 self.init_check(k, &s);
                 let v = self.add(Inst::New(k, s), Ty::A);
                 self.exact.push((v, k));
-                self.nonnull.push(v);
+                self.facts.push(v);
                 self.push(v);
             }
             0xbc | 0xbd => {
