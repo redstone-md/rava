@@ -1320,3 +1320,29 @@ What remains is C2's breadth, spread evenly over every method: loop optimization
 range-check predication, strip-mined polls), fewer instructions per bytecode (sign extensions,
 copies, repeated checks, decoded narrow references), a leaner call protocol. No single change
 found here moves the sprint by more than a few percent.
+
+## 2026-10-08 — loop-invariant chains: a stream pipeline at `java`'s speed
+
+The stream kernel (`filter`/`mapToLong`/`sum` over 200 `Integer`s) ran at 828 ns against
+`java`'s 352: every element reloaded the sink chain (`downstream.downstream...`) and rechecked
+each sink's class. Four causes, one per fix:
+
+- **Final fields past stores.** The sum sink stores its state at the offset where other sinks
+  keep `downstream`; LICM kept every load at a stored offset. Loads of final instance fields
+  outside constructors (`Graph.final_loads`) now pass such stores (764 ns).
+- **Loops entered from a branch.** A bounds check before the loop made its only outside
+  predecessor end in an `If`, and LICM, RCE and guard hoisting all skipped loops without a
+  plain preheader. Such an edge now gets a block of its own (`licm::preheaders`).
+- **Chains.** LICM repeats until nothing moves: a hoisted load's null check is invariant on the
+  next round and becomes a preheader guard, so `this.a.b.c` leaves the loop whole. Null checks
+  on paths some iterations skip are speculated too (a failing guard traps at the header).
+- **Type tests first.** Loads of an inlined receiver's fields are valid only below the test of
+  its class. Invariant branches that deoptimize on one side become guards inside the LICM
+  fixpoint (`guards::branches`), and an object whose class the loop still tests keeps its
+  loads in the loop. Without this, `LinkedList` iteration in compiled `ArrayList` code
+  dereferenced a field read from the wrong class (ScalarLoopSem crashed one run in two).
+
+Stream: 330 ns (`java` 352). The tick sprint stays within noise (two A/Bs, both orders:
+first sprint 1004-1212 against 1106-1196, warm 1138-1279 against 1174-1306 tps).
+`LoopHoistSem` covers final chains, a speculated check on a skipped path, and a polymorphic
+receiver read in a loop.
