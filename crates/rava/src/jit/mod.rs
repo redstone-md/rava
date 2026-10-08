@@ -19,7 +19,7 @@ macro_rules! env_once {
 
 pub mod asm;
 mod analysis;
-mod code_cache;
+pub(crate) mod code_cache;
 mod compile;
 mod emit;
 mod emit_call;

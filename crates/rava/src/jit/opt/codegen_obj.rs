@@ -497,7 +497,14 @@ impl Gen<'_> {
         }
         self.a.mov_rr(true, R::Rdi, R::R12);
         self.a.lea(R::Rsi, self.slot(base));
-        self.a.call_m(mem(R::Rdx, offset_of!(Method, entry) as i32));
+        // A known target is called directly through its trampoline (`code_cache::direct_entry`).
+        match match callee {
+            Callee::Direct(m) => crate::jit::code_cache::direct_entry(m),
+            _ => None,
+        } {
+            Some(t) => self.a.call_abs(t),
+            None => self.a.call_m(mem(R::Rdx, offset_of!(Method, entry) as i32)),
+        }
         self.restore_around(v);
         self.a.alu_mi(true, Alu::Cmp, mem(R::R12, offsets::PENDING), 0);
         self.a.jcc(Cond::Ne, deopt);
