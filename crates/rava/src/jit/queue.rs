@@ -58,6 +58,7 @@ pub(super) fn submit(job: Job) {
         return run(job);
     }
     let q = queue();
+    QUEUED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     // A loop waiting for its OSR version goes first: the frame runs slow code until it is in.
     match job {
         Job::Osr(..) => q.jobs.lock().unwrap().push_front(job),
@@ -73,13 +74,25 @@ fn work() {
             let mut jobs = q.jobs.lock().unwrap();
             loop {
                 match jobs.pop_front() {
-                    Some(j) => break j,
+                    Some(j) => {
+                        QUEUED.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+                        break j;
+                    }
                     None => jobs = q.ready.wait(jobs).unwrap(),
                 }
             }
         };
         run(job);
     }
+}
+
+/// Jobs waiting for a compiler thread.
+static QUEUED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// Whether the compiler threads keep up: few jobs wait (a server start keeps many waiting;
+/// a running server, few). Compilations then afford more (`inline_plan.rs`).
+pub(super) fn idle() -> bool {
+    QUEUED.load(std::sync::atomic::Ordering::Relaxed) < 4
 }
 
 /// Nanoseconds spent compiling (`RAVA_PROFILE`).
