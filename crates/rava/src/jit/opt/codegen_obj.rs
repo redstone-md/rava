@@ -49,6 +49,7 @@ impl Gen<'_> {
                 let at = self.element(arr, idx, bt);
                 self.a.fstore(bt == BasicType::Double, at, a);
             }
+            Inst::LoadField(..) if self.fused.contains(&v) => {}
             Inst::LoadField(o, off, bt) => {
                 let at = self.field(o, off as i32);
                 let r = self.out(v);
@@ -63,7 +64,7 @@ impl Gen<'_> {
             Inst::StoreField(o, off, bt, x) => {
                 let ro = self.reg(o, R::Rax);
                 let mut rx = self.value_reg(x, bt, R::R11);
-                if bt == BasicType::Reference {
+                if bt == BasicType::Reference && !self.narrow.contains(&self.g.resolve(x)) {
                     rx = crate::jit::emit_obj::encode_ref(&mut self.a, rx, R::R11);
                 }
                 self.fault_site();
@@ -203,7 +204,7 @@ impl Gen<'_> {
     /// The address of element `idx` of `arr` (a constant index folded into the displacement).
     /// The field at `off` of object `o`, through its compressed reference if it is kept
     /// compressed (`codegen::narrow_refs`).
-    fn field(&mut self, o: V, off: i32) -> M {
+    pub(super) fn field(&mut self, o: V, off: i32) -> M {
         let ro = self.reg(o, R::Rax);
         if self.narrow.contains(&self.g.resolve(o)) {
             crate::jit::asm::mem_narrow(ro, off)

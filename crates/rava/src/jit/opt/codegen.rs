@@ -116,7 +116,8 @@ pub(super) struct Gen<'a> {
     /// Loop headers whose test back edges repeat (`rotations`), with their successor in the loop.
     rotations: HashMap<B, B>,
     faults: Vec<(Label, Label)>,
-    /// `instanceof` tests of final classes emitted as their block's branch (`fused_type_tests`).
+    /// `instanceof` tests of final classes and class-word loads emitted as their block's branch
+    /// (`fused_type_tests`).
     pub(super) fused: std::collections::HashSet<V>,
     /// Values the code uses as arrays (`arrays`): an Unsafe access based on one is in the heap.
     pub(super) arrays: std::collections::HashSet<V>,
@@ -179,7 +180,8 @@ fn implicit_null_checks(g: &Graph, loc: &[Loc]) -> std::collections::HashSet<V> 
 
 /// Compressed references kept compressed in their register (C2 decodes them in the address of
 /// their use): a reference loaded from the heap whose every use follows it in its block as the
-/// object of a field load or array length, or a null check of it (a compressed null is 0),
+/// object of a field load or array length, the value of a reference field store (stored as it
+/// is), a null check of it or its block's branch on it being null (a compressed null is 0),
 /// with no call, allocation or deoptimization state in between (no collection can see the
 /// register, no state reads it).
 fn narrow_refs(g: &Graph, al: &Allocation) -> std::collections::HashSet<V> {
@@ -190,9 +192,20 @@ fn narrow_refs(g: &Graph, al: &Allocation) -> std::collections::HashSet<V> {
     }
     // Uses of every value outside instructions (terminators, phi inputs): never narrow.
     let mut escapes = vec![false; g.values.len()];
+    // The value a block's branch tests for null, compressed or not alike.
+    let null_test = |b: &Block| match b.term {
+        Term::If { cmp: Cmp::Eq | Cmp::Ne, ty: Ty::A, a, b: y, .. } => match (g.constant(g.resolve(a)), g.constant(g.resolve(y))) {
+            (None, Some(0)) => Some(g.resolve(a)),
+            (Some(0), None) => Some(g.resolve(y)),
+            _ => None,
+        },
+        _ => None,
+    };
     for b in g.blocks.iter().filter(|b| !matches!(b.term, Term::None)) {
         for u in b.term.inputs() {
-            escapes[g.resolve(u) as usize] = true;
+            if null_test(b) != Some(g.resolve(u)) {
+                escapes[g.resolve(u) as usize] = true;
+            }
         }
         for &v in &b.insts {
             if let Inst::Phi(ins) = g.inst(v) {
@@ -210,6 +223,10 @@ fn narrow_refs(g: &Graph, al: &Allocation) -> std::collections::HashSet<V> {
                 users[g.resolve(u) as usize].push((bi as B, i));
             }
         }
+        // The branch reads after the last instruction.
+        if let Some(t) = null_test(b) {
+            users[t as usize].push((bi as B, b.insts.len()));
+        }
     }
     for (bi, b) in g.blocks.iter().enumerate().filter(|(_, b)| !matches!(b.term, Term::None)) {
         for (i, &v) in b.insts.iter().enumerate() {
@@ -222,14 +239,15 @@ fn narrow_refs(g: &Graph, al: &Allocation) -> std::collections::HashSet<V> {
             let Some(last) = users[v as usize].iter().map(|&(ub, ui)| (ub == bi as B).then_some(ui)).try_fold(0, |m, u| u.map(|u| m.max(u))) else { continue };
             let base_use = |w: V| match g.inst(w) {
                 Inst::LoadField(o, ..) | Inst::ArrayLength(o) | Inst::NullCheck(o, _) => g.resolve(*o) == v,
+                Inst::StoreField(o, _, Reference, x) => g.resolve(*x) == v && g.resolve(*o) != v,
                 _ => false,
             };
             let quiet = |w: V| {
                 let inst = g.inst(w);
                 inst.state().is_none() && !matches!(inst, Inst::Call(..) | Inst::Intrinsic(..) | Inst::Monitor(..) | Inst::Phi(_))
             };
-            let window = &b.insts[i + 1..=last];
-            let uses_ok = users[v as usize].iter().all(|&(_, ui)| base_use(b.insts[ui]));
+            let window = &b.insts[i + 1..last.min(b.insts.len() - 1) + 1];
+            let uses_ok = users[v as usize].iter().all(|&(_, ui)| ui == b.insts.len() || base_use(b.insts[ui]));
             let quiet_ok = window.iter().all(|&w| quiet(w) || matches!(g.inst(w), Inst::NullCheck(o, _) if g.resolve(*o) == v));
             if uses_ok && quiet_ok {
                 out.insert(v);
@@ -321,7 +339,9 @@ pub(super) fn generate(g: &Graph, al: &Allocation, m: &'static Method, frame_slo
             let pending = gen.pending_null.is_some();
             gen.preserve = gen.live_at.get(&v).copied().unwrap_or(gen.all_registers());
             gen.inst(v);
-            assert!(!pending || gen.pending_null.is_none(), "an implicit null check without its access");
+            // A fused class-word load (and the constants after it) leaves the check to the branch.
+            let deferred = gen.fused.contains(&v) && matches!(g.inst(v), Inst::LoadField(..)) || matches!(g.inst(v), Inst::Const(_));
+            assert!(!pending || gen.pending_null.is_none() || deferred, "an implicit null check without its access");
             if let (Some(h @ Loc::Stack(_)), true) = (al.home[v as usize], g.resolve(v) == v && !matches!(g.inst(v), Inst::Phi(_))) {
                 moves::mov(&mut gen.a, h, al.loc[v as usize]);
             }
@@ -722,7 +742,18 @@ impl Gen<'_> {
                     self.a.jcc(Cond::Ne, lno);
                     return self.edge(b, yes, next == Some(yes));
                 }
-                let c = if matches!(ty, Ty::F | Ty::D) {
+                let class_word = [a, y].into_iter().map(|v| self.g.resolve(v)).find(|v| self.fused.contains(v)).and_then(|v| match *self.g.inst(v) {
+                    Inst::LoadField(o, 0, _) => Some((v, o)),
+                    _ => None,
+                });
+                let c = if let Some((v, o)) = class_word {
+                    // A class guard on the header in place (`fused_type_tests`).
+                    let k = [a, y].into_iter().map(|x| self.g.resolve(x)).find(|&x| x != v).and_then(|x| self.g.constant(x)).expect("a class constant");
+                    let at = self.field(o, 0);
+                    self.fault_site();
+                    self.a.alu_mi(false, Alu::Cmp, at, k as i32);
+                    cond(cmp)
+                } else if matches!(ty, Ty::F | Ty::D) {
                     // ucomis: unordered sets PF (and ZF, CF), ordered results read as unsigned.
                     let xa = self.xreg(a, X(0));
                     self.fcmp_val(ty == Ty::D, xa, y);
@@ -931,6 +962,21 @@ fn fused_type_tests(g: &Graph) -> std::collections::HashSet<V> {
     let reads = super::thread::reads(g);
     let mut fused = std::collections::HashSet::new();
     for blk in &g.blocks {
+        let last = blk.insts.iter().rev().find(|&&x| g.resolve(x) == x && !matches!(g.inst(x), Inst::Const(_)));
+        // A class guard: the class word compared with a class (in low memory), one `cmp` on
+        // the object's header.
+        if let Term::If { cmp: Cmp::Eq | Cmp::Ne, ty: Ty::J, a, b, .. } = blk.term {
+            let (a, b) = (g.resolve(a), g.resolve(b));
+            let v = match (g.constant(a), g.constant(b)) {
+                (None, Some(k)) if (0..1 << 31).contains(&k) => a,
+                (Some(k), None) if (0..1 << 31).contains(&k) => b,
+                _ => continue,
+            };
+            if matches!(g.inst(v), Inst::LoadField(_, 0, crate::types::BasicType::Int)) && last == Some(&v) && reads[v as usize] == 1 {
+                fused.insert(v);
+            }
+            continue;
+        }
         let Term::If { cmp: Cmp::Eq | Cmp::Ne, ty: Ty::I, a, b, .. } = blk.term else { continue };
         let (a, b) = (g.resolve(a), g.resolve(b));
         let v = match (g.constant(a), g.constant(b)) {
@@ -939,7 +985,6 @@ fn fused_type_tests(g: &Graph) -> std::collections::HashSet<V> {
             _ => continue,
         };
         let Inst::InstanceOf(_, k) = *g.inst(v) else { continue };
-        let last = blk.insts.iter().rev().find(|&&x| g.resolve(x) == x && !matches!(g.inst(x), Inst::Const(_)));
         let leaf = matches!(k.kind, crate::klass::KlassKind::Instance) && k.access & crate::klass::ACC_FINAL != 0;
         if leaf && last == Some(&v) && reads[v as usize] == 1 {
             fused.insert(v);
