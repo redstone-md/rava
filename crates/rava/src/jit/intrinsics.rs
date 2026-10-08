@@ -221,14 +221,14 @@ impl Emitter {
                 // A null base makes the offset an absolute address.
                 self.a.load(true, R::Rax, self.stk(args + 1));
                 self.a.load(true, R::Rcx, self.stk(args + 2));
-                super::emit_obj::unsafe_load(&mut self.a, R::Rax, ty, mem_idx(R::Rax, R::Rcx, 1, 0));
+                super::emit_obj::unsafe_load(&mut self.a, R::Rax, ty, mem_idx(R::Rax, R::Rcx, 1, 0), false);
                 self.a.store(true, self.stk(args), R::Rax);
             }
             Intrinsic::UnsafePut(ty, volatile) => {
                 self.a.load(true, R::Rax, self.stk(args + 1));
                 self.a.load(true, R::Rcx, self.stk(args + 2));
                 self.a.load(true, R::Rdx, self.stk(args + 4));
-                super::emit_obj::unsafe_store(&mut self.a, R::Rdx, ty, mem_idx(R::Rax, R::Rcx, 1, 0));
+                super::emit_obj::unsafe_store(&mut self.a, R::Rdx, ty, mem_idx(R::Rax, R::Rcx, 1, 0), false);
                 if volatile {
                     self.a.storeload();
                 }
@@ -243,7 +243,7 @@ impl Emitter {
                 self.a.load(true, R::Rdx, self.stk(args + 2));
                 self.a.load(true, R::Rax, self.stk(args + 4));
                 self.a.load(true, R::R11, self.stk(args + if wide { 6 } else { 5 }));
-                super::emit_obj::unsafe_cas(&mut self.a, ty, mem_idx(R::Rcx, R::Rdx, 1, 0));
+                super::emit_obj::unsafe_cas(&mut self.a, ty, mem_idx(R::Rcx, R::Rdx, 1, 0), false);
                 self.a.setcc(Cond::E, R::Rax);
                 self.a.movzx8(R::Rax, R::Rax);
                 self.a.store(true, self.stk(args), R::Rax);

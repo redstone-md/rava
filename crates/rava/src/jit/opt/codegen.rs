@@ -118,6 +118,8 @@ pub(super) struct Gen<'a> {
     faults: Vec<(Label, Label)>,
     /// `instanceof` tests of final classes emitted as their block's branch (`fused_type_tests`).
     pub(super) fused: std::collections::HashSet<V>,
+    /// Values the code uses as arrays (`arrays`): an Unsafe access based on one is in the heap.
+    pub(super) arrays: std::collections::HashSet<V>,
 }
 
 /// Loop rotation (C2's loop inversion, without copying code): a loop header that only merges
@@ -282,6 +284,7 @@ pub(super) fn generate(g: &Graph, al: &Allocation, m: &'static Method, frame_slo
         rotations: rotations(g),
         faults: Vec::new(),
         fused: fused_type_tests(g),
+        arrays: arrays(g),
         frame_slots,
         root: m,
         osr,
@@ -904,6 +907,26 @@ fn reads_params_on_entry(g: &Graph, al: &Allocation) -> bool {
 /// `instanceof` tests of a final class whose only reader is their block's branch on them
 /// (`if (o instanceof T)`), the last instruction there: the branch tests the class itself
 /// instead of materializing a boolean and comparing it with 0.
+/// Values read or written as arrays (or allocated as ones): verified bytecode makes them arrays
+/// wherever they flow, so an Unsafe access with one as its base addresses an element.
+fn arrays(g: &Graph) -> std::collections::HashSet<V> {
+    let mut arrays = std::collections::HashSet::new();
+    for blk in &g.blocks {
+        for &v in &blk.insts {
+            match *g.inst(v) {
+                Inst::ArrayLength(a) | Inst::LoadIndexed(a, ..) | Inst::StoreIndexed(a, ..) | Inst::BoundsCheck(a, ..) => {
+                    arrays.insert(g.resolve(a));
+                }
+                Inst::NewArray(..) | Inst::NewMulti(..) => {
+                    arrays.insert(v);
+                }
+                _ => {}
+            }
+        }
+    }
+    arrays
+}
+
 fn fused_type_tests(g: &Graph) -> std::collections::HashSet<V> {
     let reads = super::thread::reads(g);
     let mut fused = std::collections::HashSet::new();

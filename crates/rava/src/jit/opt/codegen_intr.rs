@@ -69,17 +69,19 @@ impl Gen<'_> {
                 self.a.fsqrt(r, a);
                 self.xput(v, r);
             }
-            // A null base makes the offset an absolute address.
+            // A null base makes the offset an absolute address; an array base, an element's.
             Intrinsic::UnsafeGet(ty, _) => {
+                let heap = self.arrays.contains(&self.g.resolve(args[1]));
                 let (b, o) = (self.reg(args[1], R::Rax), self.reg(args[2], R::Rcx));
                 let r = self.out(v);
-                crate::jit::emit_obj::unsafe_load(&mut self.a, r, ty, mem_idx(b, o, 1, 0));
+                crate::jit::emit_obj::unsafe_load(&mut self.a, r, ty, mem_idx(b, o, 1, 0), heap);
                 self.put(v, r);
             }
             Intrinsic::UnsafePut(ty, volatile) => {
+                let heap = self.arrays.contains(&self.g.resolve(args[1]));
                 let (b, o) = (self.reg(args[1], R::Rax), self.reg(args[2], R::Rcx));
                 self.load(R::Rdx, args[3]);
-                crate::jit::emit_obj::unsafe_store(&mut self.a, R::Rdx, ty, mem_idx(b, o, 1, 0));
+                crate::jit::emit_obj::unsafe_store(&mut self.a, R::Rdx, ty, mem_idx(b, o, 1, 0), heap);
                 if volatile {
                     self.a.storeload();
                 }
@@ -97,13 +99,16 @@ impl Gen<'_> {
             Intrinsic::MinMax(ty, max) => self.min_max(v, ty, max, args[0], args[1]),
             Intrinsic::CompareAndSet(ty) => {
                 // [unsafe, o, offset, expected, x]; a null base makes the offset absolute.
+                let heap = self.arrays.contains(&self.g.resolve(args[1]));
                 self.load(R::R11, args[4]);
                 self.load(R::Rax, args[3]);
                 let (b, o) = (self.reg(args[1], R::Rcx), self.reg(args[2], R::Rdx));
-                crate::jit::emit_obj::unsafe_cas(&mut self.a, ty, mem_idx(b, o, 1, 0));
+                crate::jit::emit_obj::unsafe_cas(&mut self.a, ty, mem_idx(b, o, 1, 0), heap);
                 self.a.setcc(Cond::E, R::Rax);
                 self.a.movzx8(R::Rax, R::Rax);
-                if ty == BasicType::Reference {
+                if ty == BasicType::Reference && heap {
+                    crate::jit::emit_obj::card_mark(&mut self.a, mem_idx(b, o, 1, 0));
+                } else if ty == BasicType::Reference {
                     crate::jit::emit_obj::card_mark_checked(&mut self.a, mem_idx(b, o, 1, 0));
                 }
                 self.put(v, R::Rax);
