@@ -22,7 +22,16 @@ impl Builder {
         self.null_check(arr, s.clone());
         self.bounds_check(arr, idx, s);
         let bt = ARRAY_ELEMS[(op - 0x2e) as usize];
-        let v = self.add(Inst::LoadIndexed(arr, idx, bt), Ty::of(bt));
+        // The element the block already read (or stored) since the last memory effect.
+        let key = (arr, super::build_cache::ELEM | idx);
+        let v = match self.loads.get(&key) {
+            Some(&v) => v,
+            None => {
+                let v = self.add(Inst::LoadIndexed(arr, idx, bt), Ty::of(bt));
+                self.loads.insert(key, v);
+                v
+            }
+        };
         self.push(v);
     }
 

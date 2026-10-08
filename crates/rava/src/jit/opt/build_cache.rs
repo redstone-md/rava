@@ -50,6 +50,10 @@ impl Facts {
     }
 }
 
+/// The `loads` key of an array element: `(array, ELEM | index value)` (field offsets stay below
+/// it).
+pub(super) const ELEM: u32 = 1 << 31;
+
 pub(super) type Caches = (HashMap<(u8, u8, V, V, u8), V>, HashMap<(V, u32), V>, Vec<(V, V, V)>);
 
 impl Builder {
@@ -71,6 +75,13 @@ impl Builder {
         match inst {
             Inst::Call(..) | Inst::Monitor(..) | Inst::Fence => self.loads.clear(),
             Inst::Intrinsic(k, ..) if !k.is_pure() => self.loads.clear(),
+            // Any array may be the one stored to: element values are forgotten (`ELEM`).
+            Inst::StoreIndexed(arr, idx, bt, x) => {
+                self.loads.retain(|&(_, f), _| f & ELEM == 0);
+                if matches!(bt, BasicType::Int | BasicType::Long | BasicType::Float | BasicType::Double | BasicType::Reference) {
+                    self.loads.insert((arr, ELEM | idx), x);
+                }
+            }
             // Another object's field at this offset may be the same one.
             Inst::StoreField(o, off, bt, x) => {
                 self.loads.retain(|&(_, f), _| f != off);
