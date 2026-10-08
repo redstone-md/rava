@@ -44,7 +44,7 @@ pub(super) struct Scope {
     /// entered by one forward edge only), which keep their entry value instead of a phi.
     invariant: HashMap<B, Vec<bool>>,
     /// Entry state of each block reached so far: locals, stack and the values known non-null.
-    entry: HashMap<B, (Vec<Option<V>>, Vec<Option<V>>, Vec<V>)>,
+    entry: HashMap<B, (Vec<Option<V>>, Vec<Option<V>>, super::build_cache::Facts)>,
     /// The phi of each slot (locals, then stack) of merge blocks.
     phis: HashMap<B, Vec<Option<V>>>,
     /// Blocks with an entry state, not built yet.
@@ -137,8 +137,8 @@ pub(super) struct Builder {
     seq: u32,
     /// Whether this compilation may speculate (see `speculates`).
     speculate: bool,
-    /// Values known non-null at the current point (checked on every path to it).
-    pub nonnull: Vec<V>,
+    /// Values known non-null, or of an exact class, at the current point (on every path to it).
+    pub facts: super::build_cache::Facts,
     /// Constant arrays read from `@Stable` fields, with their stable dimensions left.
     pub stable: HashMap<i64, u8>,
     /// Pure instructions of the current block, for value numbering within it.
@@ -172,7 +172,7 @@ pub(super) fn build(m: &'static Method) -> Option<(Graph, i32)> {
     if !m.is_static() {
         let this = b.g.add(start, Inst::Param(0), Ty::A);
         b.sc.locals[0] = Some(this);
-        b.nonnull.push(this);
+        b.facts.push(this);
         b.g.receiver = Some(this);
         slot = 1;
     }
@@ -209,7 +209,7 @@ pub(super) fn build_osr(m: &'static Method, bci: usize, types: &[Option<Ty>]) ->
     // The receiver, unless the method stores into local 0.
     if let (false, Some(this)) = (m.is_static(), b.sc.locals[0]) {
         if !super::locals::written(b.sc.code, 0, b.sc.code.len(), 1)[0] {
-            b.nonnull.push(this);
+            b.facts.push(this);
             b.g.receiver = Some(this);
         }
     }
@@ -222,7 +222,7 @@ impl Builder {
     fn new(sc: Scope) -> Builder {
         let m = sc.m;
         let speculate = m.deopt_recompiles.load(std::sync::atomic::Ordering::Relaxed) < super::SPECULATIVE_RECOMPILES;
-        Builder { g: Graph::default(), extent: sc.frame_end(), sc, cur: 0, spent: 0, chain: vec![(m, None)], seq: 0, speculate, nonnull: Vec::new(), stable: HashMap::new(), numbered: HashMap::new(), loads: HashMap::new(), exact: Vec::new(), complete_phis: Default::default(), unprofiled_call: false, cold_call: false, bounds: Vec::new(), exits: HashMap::new() }
+        Builder { g: Graph::default(), extent: sc.frame_end(), sc, cur: 0, spent: 0, chain: vec![(m, None)], seq: 0, speculate, facts: Default::default(), stable: HashMap::new(), numbered: HashMap::new(), loads: HashMap::new(), exact: Vec::new(), complete_phis: Default::default(), unprofiled_call: false, cold_call: false, bounds: Vec::new(), exits: HashMap::new() }
     }
 
     /// Makes `block` the current one, next in code order, with the caches of its single
@@ -280,7 +280,7 @@ impl Builder {
             self.start_block(block);
             self.sc.locals = locals;
             self.sc.stack = stack;
-            self.nonnull = nonnull;
+            self.facts = nonnull;
             let bci = self.g.blocks[block as usize].bci as usize;
             if self.g.blocks[block as usize].loop_header && self.speculates(self.sc.m, bci) {
                 self.sc.bci = bci;
@@ -453,8 +453,8 @@ impl Builder {
         if !back {
             self.sc.fwd.entry(to).or_default().1 += 1;
             if let Some(entry) = self.sc.entry.get_mut(&to) {
-                let known = &self.nonnull;
-                entry.2.retain(|v| known.contains(v));
+                let known = &self.facts;
+                entry.2.narrow(known);
             }
         }
         if let Some(phis) = self.sc.phis.get(&to).cloned() {
@@ -482,7 +482,7 @@ impl Builder {
         self.sc.ready.push(to);
         let merge = self.sc.npreds.get(&to).copied().unwrap_or(0) > 1 || self.g.blocks[to as usize].loop_header;
         if !merge {
-            self.sc.entry.insert(to, (self.sc.locals.clone(), self.sc.stack.clone(), self.nonnull.clone()));
+            self.sc.entry.insert(to, (self.sc.locals.clone(), self.sc.stack.clone(), self.facts.clone()));
             return;
         }
         let invariant = self.sc.invariant.get(&to).cloned().unwrap_or_default();
@@ -493,7 +493,7 @@ impl Builder {
         // The first edge's facts; later forward edges narrow them to what holds on every path.
         // A loop header first reached by a back edge (an outer loop of an OSR version's) keeps
         // none: later back edges narrow nothing.
-        let facts = if back { Vec::new() } else { self.nonnull.clone() };
+        let facts = if back { Default::default() } else { self.facts.clone() };
         self.sc.entry.insert(to, (l.to_vec(), s.to_vec(), facts));
         self.sc.phis.insert(to, phis);
     }
@@ -618,7 +618,7 @@ impl Builder {
             return;
         }
         self.add(Inst::NullCheck(v, s), Ty::A);
-        self.nonnull.push(v);
+        self.facts.push(v);
     }
 
     /// Whether `v` is known to be null (`Some(true)`) or not (`Some(false)`): an allocation's
@@ -627,7 +627,7 @@ impl Builder {
         match self.g.constant(v) {
             Some(c) => Some(c == 0),
             None if matches!(self.g.inst(self.g.resolve(v)), Inst::New(..) | Inst::NewArray(..) | Inst::NewMulti(..)) => Some(false),
-            None => self.nonnull.contains(&v).then_some(false),
+            None => self.facts.contains(&v).then_some(false),
         }
     }
 

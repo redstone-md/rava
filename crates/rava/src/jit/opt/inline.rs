@@ -36,7 +36,7 @@ struct Mark {
     term: Term,
     extent: i32,
     spent: usize,
-    nonnull: Vec<V>,
+    facts: super::build_cache::Facts,
     caches: super::build_cache::Caches,
 }
 
@@ -84,12 +84,16 @@ impl Builder {
         let all = plans.len();
         // What is known at the call holds after it, on every path through the callee.
         self.cold_call = false;
-        let known = self.nonnull.clone();
+        let known = self.facts.clone();
         let first = args.first().and_then(|&a| self.g.constant(a));
         let k = self.g.new_block(-1);
         let mut returns = Vec::new();
         // `open`: the current block (the last guard's failure path) still needs the call.
         let (mut open, mut inlined, mut done) = (true, false, 0);
+        // The one class every inlined body's guard required (None once two differ or a body
+        // needed no class guard): with no call path left, the receiver has it after the call.
+        let mut proved: Option<Option<&'static Klass>> = None;
+        let receiver = args.first().copied();
         for (target, guard) in plans {
             // A guarded target the VM compiles in place (`Object.hashCode` for a class that
             // does not override it).
@@ -128,11 +132,19 @@ impl Builder {
             };
             returns.extend(r);
             inlined = true;
+            let c = match guard {
+                Guard::Klass(c) => Some(c),
+                _ => None,
+            };
+            proved = match proved {
+                None => Some(c),
+                Some(p) => Some(p.zip(c).filter(|(p, c)| std::ptr::eq(*p, *c)).map(|(p, _)| p)),
+            };
             done += 1;
             match slow {
                 Some(b) => {
                     self.start_block(b);
-                    self.nonnull.clone_from(&known);
+                    self.facts.clone_from(&known);
                 }
                 None => {
                     open = false;
@@ -160,7 +172,10 @@ impl Builder {
             return false;
         }
         self.start_block(k);
-        self.nonnull = known;
+        self.facts = known;
+        if let (false, Some(Some(c)), Some(r)) = (open, proved, receiver) {
+            self.facts.push_exact(r, c);
+        }
         if ret != BasicType::Void {
             let v = match returns.as_slice() {
                 [(_, v)] => v.expect("a value return"),
@@ -293,7 +308,7 @@ impl Builder {
         if let Some(o) = self.g.constant(r).filter(|&o| o != 0 && self.g.ty(r) == Ty::A) {
             return Some(crate::jit::fold::class_of(o as usize));
         }
-        self.exact.iter().rev().find(|&&(x, _)| x == v).map(|&(_, k)| k)
+        self.exact.iter().rev().find(|&&(x, _)| x == v).map(|&(_, k)| k).or_else(|| self.facts.exact(v))
     }
 
     /// The receiver's class word: 32 bits at offset 0, zero-extended (classes live in low memory).
@@ -359,7 +374,7 @@ impl Builder {
             term: cur.term.clone(),
             extent: self.extent,
             spent: self.spent,
-            nonnull: self.nonnull.clone(),
+            facts: self.facts.clone(),
             caches: (self.numbered.clone(), self.loads.clone(), self.bounds.clone()),
         }
     }
@@ -373,7 +388,7 @@ impl Builder {
         self.cur = m.cur;
         self.extent = m.extent;
         self.spent = m.spent;
-        self.nonnull = m.nonnull;
+        self.facts = m.facts;
         self.complete_phis.retain(|&v| (v as usize) < m.values);
         // The abandoned body's values are gone: so are the facts about them.
         self.set_caches(m.caches);

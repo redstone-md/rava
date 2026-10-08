@@ -10,6 +10,46 @@ use std::collections::HashMap;
 
 /// Value numbers, field values and bounds checks valid at a point (`Builder::numbered`, `loads`,
 /// `bounds`).
+/// What holds on every path to the current point: values checked non-null, and values whose
+/// class a guard proved exactly (a receiver past an inlined call behind one class guard), so a
+/// later call on them binds statically however polluted its own profile is.
+#[derive(Clone, Default)]
+pub struct Facts {
+    nonnull: Vec<V>,
+    exact: Vec<(V, &'static crate::klass::Klass)>,
+}
+
+impl Facts {
+    pub fn push(&mut self, v: V) {
+        self.nonnull.push(v);
+    }
+
+    pub fn contains(&self, v: &V) -> bool {
+        self.nonnull.contains(v)
+    }
+
+    /// `v` is non-null and exactly of class `k`.
+    pub fn push_exact(&mut self, v: V, k: &'static crate::klass::Klass) {
+        self.nonnull.push(v);
+        self.exact.push((v, k));
+    }
+
+    pub fn exact(&self, v: V) -> Option<&'static crate::klass::Klass> {
+        self.exact.iter().rev().find(|&&(x, _)| x == v).map(|&(_, k)| k)
+    }
+
+    pub fn clear(&mut self) {
+        self.nonnull.clear();
+        self.exact.clear();
+    }
+
+    /// Keeps what `other` (another path in) also has.
+    pub fn narrow(&mut self, other: &Facts) {
+        self.nonnull.retain(|v| other.nonnull.contains(v));
+        self.exact.retain(|&(v, k)| other.exact(v).is_some_and(|o| std::ptr::eq(o, k)));
+    }
+}
+
 pub(super) type Caches = (HashMap<(u8, u8, V, V, u8), V>, HashMap<(V, u32), V>, Vec<(V, V, V)>);
 
 impl Builder {

@@ -96,7 +96,7 @@ impl Builder {
     /// that constant handle (so its form's reads of the handle fold too), then the generic call.
     fn invoke_basic_split(&mut self, handles: Vec<(i64, &'static Method)>, args: Vec<V>, s: std::rc::Rc<State>, ret: BasicType) -> bool {
         let k = self.g.new_block(-1);
-        let known = self.nonnull.clone();
+        let known = self.facts.clone();
         let mut returns: Vec<(B, Option<V>)> = Vec::new();
         for (c, target) in handles {
             let cv = self.konst(Ty::A, c);
@@ -114,7 +114,7 @@ impl Builder {
                 returns.push((self.cur, v));
             }
             self.start_block(other);
-            self.nonnull.clone_from(&known);
+            self.facts.clone_from(&known);
         }
         let entry = self.add(Inst::LoadField(args[0], indy::mh_form(), BasicType::Reference), Ty::A);
         let entry = self.add(Inst::LoadField(entry, indy::lf_vmentry(), BasicType::Reference), Ty::A);
@@ -129,7 +129,7 @@ impl Builder {
             return false;
         }
         self.start_block(k);
-        self.nonnull = known;
+        self.facts = known;
         if ret != BasicType::Void {
             let v = match returns.as_slice() {
                 [(_, v)] => v.expect("a value return"),
