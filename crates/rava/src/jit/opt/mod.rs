@@ -39,6 +39,7 @@ pub(crate) mod osr;
 mod operands;
 mod phis;
 mod regalloc;
+mod reload;
 mod scratch;
 mod select;
 mod split;
@@ -176,7 +177,16 @@ fn compile_timed(m: &'static Method, osr: Option<u32>) -> Option<CompiledMethod>
     if dump {
         eprintln!("[opt-ir] {m}\n{}", g.dump());
     }
-    let al = regalloc::allocate(&g);
+    let mut al = regalloc::allocate(&g);
+    if env_once!("RAVA_OPT_RELOAD").map_or(true, |v| v != "0") {
+        let copies = reload::split(&mut g, &al.loc);
+        if !copies.is_empty() {
+            al = regalloc::allocate(&g);
+            if reload::undo_spilled(&mut g, &copies, &al.loc) {
+                al = regalloc::allocate(&g);
+            }
+        }
+    }
     if dump {
         let locs: Vec<String> = al.loc.iter().enumerate().filter(|(_, l)| !matches!(l, regalloc::Loc::None | regalloc::Loc::Const(_))).map(|(v, l)| format!("v{v}={l:?}")).collect();
         eprintln!("[opt-alloc] {}", locs.join(" "));
