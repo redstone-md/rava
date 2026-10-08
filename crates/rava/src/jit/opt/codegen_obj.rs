@@ -322,9 +322,8 @@ impl Gen<'_> {
                 // included) its flattened itable lists; the runtime only for a class whose
                 // itable is not built yet.
                 let (scan, no, slow) = (self.a.new_label(), self.a.new_label(), self.a.new_label());
-                let hit = std::mem::offset_of!(Klass, itable_hit) as i32;
-                self.a.load(true, R::R11, mem(R::Rcx, hit));
-                self.cmp_class(Some(mem(R::R11, -8)), kk);
+                let hit = std::mem::offset_of!(Klass, super_hit) as i32;
+                self.cmp_class(Some(mem(R::Rcx, hit)), kk);
                 self.a.jcc(Cond::E, done);
                 self.a.load(true, R::R11, mem(R::Rcx, std::mem::offset_of!(Klass, itable_raw) as i32));
                 self.a.test_rr(true, R::R11, R::R11);
@@ -336,8 +335,10 @@ impl Gen<'_> {
                 self.a.jcc(Cond::L, no);
                 self.cmp_class(Some(mem(R::R11, -8)), kk);
                 self.a.jcc(Cond::Ne, scan);
-                self.a.load(true, R::Rax, mem(R::R11, 0));
-                self.a.store(true, mem(R::Rcx, hit), R::Rax);
+                match kk {
+                    Some(imm) => self.a.store_imm(mem(R::Rcx, hit), imm),
+                    None => self.a.store(true, mem(R::Rcx, hit), R::Rdx),
+                }
                 if answer {
                     self.a.mov_ri(R::Rax, 1);
                 }

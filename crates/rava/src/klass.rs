@@ -119,6 +119,10 @@ pub struct Klass {
     /// The block of `itable_raw` an inline scan found last (HotSpot's secondary super cache),
     /// checked before scanning: its interface is the word before it (zero until a first hit).
     pub(crate) itable_hit: AtomicPtr<usize>,
+    /// The interface a compiled type check found this class implementing last (null until
+    /// one did): a cast to it compares this word, one load from the class instead of the two
+    /// `itable_hit` needs.
+    pub(crate) super_hit: AtomicPtr<Klass>,
     pub(crate) mirror: AtomicPtr<crate::heap::ObjHeader>,
     pub name: Symbol,
     pub kind: KlassKind,
@@ -236,6 +240,7 @@ impl Klass {
             itable: OnceLock::new(),
             itable_raw: AtomicPtr::new(std::ptr::null_mut()),
             itable_hit: AtomicPtr::new(NO_ITABLE_HIT[1..].as_ptr() as *mut usize),
+            super_hit: AtomicPtr::new(std::ptr::null_mut()),
             hidden: p.hidden,
             nest_host: OnceLock::new(),
             vtable_ptr: AtomicPtr::new(std::ptr::null_mut()),
