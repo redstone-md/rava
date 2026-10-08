@@ -30,6 +30,8 @@ pub fn hoist(g: &mut Graph) {
             continue;
         }
         branches(g, l, pre, &block_of, &nonnull[index[pre as usize]]);
+        block_of.resize(g.values.len(), usize::MAX);
+        g.blocks[pre as usize].insts.iter().for_each(|&v| block_of[v as usize] = pre as usize);
         let Some(entry_state) = g.loop_entry.get(&l.header).cloned() else { continue };
         let outside = |v: V| g.constant(v).is_some() || block_of.get(v as usize).map_or(true, |&b| b == usize::MAX || !l.body[b]);
         // Guards already made (an inner loop's predicates, null-check predicates) whose inputs
@@ -66,7 +68,9 @@ pub fn hoist(g: &mut Graph) {
                 _ => unreachable!(),
             };
             g.blocks[bi].insts.retain(|&i| i != v);
-            g.add(pre, moved, Ty::I);
+            let v = g.add(pre, moved, Ty::I);
+            block_of.resize(g.values.len(), usize::MAX);
+            block_of[v as usize] = pre as usize;
         }
     }
 }
