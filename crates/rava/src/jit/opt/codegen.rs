@@ -80,6 +80,9 @@ pub(super) struct Gen<'a> {
     /// A leaf that cannot stop, throw, deoptimize or call Java: no frame header is written or
     /// linked (nothing walks the stack while it runs), no poll or stack check is needed.
     frameless: bool,
+    /// The prologue published the frame as `Thread::top`, as it stays across calls (each callee
+    /// restores it on return or unwind): Java calls then only write the BCI.
+    top_published: bool,
     /// The method's return type.
     ret: crate::types::BasicType,
     /// The register holding the frame base: r13, or for a frameless body that reads its
@@ -287,6 +290,7 @@ pub(super) fn generate(g: &Graph, al: &Allocation, m: &'static Method, frame_slo
         live_xmms: XMMS.into_iter().filter(|x| al.loc.contains(&Loc::Xmm(*x))).collect(),
         lock: None,
         frameless: monitor.is_none() && osr.is_none() && super::polls::frameless(g),
+        top_published: false,
         base: R::R13,
         ret: m.sig.ret,
         saves: &al.saves,
@@ -419,14 +423,20 @@ impl Gen<'_> {
         a.jcc(Cond::A, overflow);
         let h = |f: usize| mem(R::R13, 8 * (self.max_locals + f as i32));
         // The frame is linked to its caller (every caller publishes its innermost header as
-        // `Thread::top` before a call), but `top` and `sp` are only published here once the
-        // method calls out (`link`, `anchor`); see the module comment.
+        // `Thread::top` before a call), but `top` and `sp` are only published once the method
+        // calls out (below for Java calls, else `link`, `anchor`); see the module comment.
         // The BCI slot is written by whatever publishes the frame (`link`, `anchor`).
         a.store(true, h(header::METHOD), R::Rdx);
         // A version entered from a running loop continues a frame its caller already linked.
         if self.osr.is_none() {
             a.load(true, R::Rcx, mem(R::R12, offsets::TOP));
             a.store(true, h(header::CALLER), R::Rcx);
+        }
+        // A method that calls Java publishes its frame once, not before each call.
+        if calls_java(self.g) {
+            a.lea(R::Rcx, h(header::METHOD));
+            a.store(true, mem(R::R12, offsets::TOP), R::Rcx);
+            self.top_published = true;
         }
         self.poll();
         if let Some((mon, at)) = self.lock {
@@ -649,8 +659,10 @@ impl Gen<'_> {
             let site: &'static crate::thread::InlinedSite = crate::low::leak(crate::thread::InlinedSite { frames: frames.into() });
             self.a.store_const(at, site as *const _ as i64, R::Rax);
         }
-        self.a.lea(R::Rcx, self.hdr(header::METHOD));
-        self.a.store(true, mem(R::R12, offsets::TOP), R::Rcx);
+        if !self.top_published {
+            self.a.lea(R::Rcx, self.hdr(header::METHOD));
+            self.a.store(true, mem(R::R12, offsets::TOP), R::Rcx);
+        }
         if sp {
             self.publish_sp();
         }
@@ -991,4 +1003,9 @@ fn fused_type_tests(g: &Graph) -> std::collections::HashSet<V> {
         }
     }
     fused
+}
+
+/// Whether the body calls a Java method (an `Inst::Call` left in a reachable block).
+fn calls_java(g: &Graph) -> bool {
+    g.blocks.iter().filter(|b| !matches!(b.term, Term::None)).flat_map(|b| &b.insts).any(|&v| g.resolve(v) == v && matches!(g.inst(v), Inst::Call(..)))
 }
