@@ -319,7 +319,7 @@ impl Builder {
         let r = self.g.resolve(v);
         let leaf = |k: &'static Klass| matches!(k.kind, crate::klass::KlassKind::Instance) && k.access & crate::klass::ACC_FINAL != 0;
         match self.g.inst(r) {
-            Inst::New(k, _) => return Some(k),
+            Inst::New(k, _) | Inst::NewArray(k, ..) | Inst::NewMulti(k, ..) => return Some(k),
             Inst::CheckCast(x, k, _) => {
                 if leaf(k) {
                     return Some(k);
