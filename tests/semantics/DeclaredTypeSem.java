@@ -5,6 +5,14 @@ public class DeclaredTypeSem {
     static final class Name { final String ns, path; Name(String a, String b) { ns = a; path = b; } }
     static final class Holder { String s; Integer i; Holder(String s, Integer i) { this.s = s; this.i = i; } }
     static String label = "lbl";
+    interface Shape { int sides(int k); }
+    static final class Plain { }
+    static Plain none;
+
+    // Only null passes the cast of a `Plain` to `Shape`; the call then throws.
+    static int sides(Object o) { return ((Shape) o).sides(3); }
+    static int viaField() { Object o = none; return o == null ? -1 : ((Shape) o).sides(4); }
+    static int castNull() { try { return ((Shape) (Object) none).sides(5); } catch (NullPointerException e) { return -2; } }
 
     static int use(Holder h) {
         Object o = h.s;
@@ -41,5 +49,8 @@ public class DeclaredTypeSem {
             System.out.println("npe static");
         }
         System.out.println(key(new Name(null, "p")));
+        long t = 0;
+        for (int r = 0; r < 30000; r++) t += viaField() + castNull() + sides((Shape) k -> k * 2);
+        System.out.println("casts " + t);
     }
 }

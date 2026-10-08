@@ -49,6 +49,9 @@ impl Builder {
         // A receiver whose class is known exactly dispatches statically (C2's type-based
         // devirtualization): no profile or guard is needed.
         let exact = (op != 0xb8).then(|| args.first().and_then(|&r| self.exact_class(r))).flatten();
+        // A receiver whose exact class does not have the method can only be null (a field of a
+        // final class's type cast to an unrelated interface): no static target then.
+        let exact = exact.filter(|k| k.is_subtype_of(m.holder));
         let plans = match exact.and_then(|k| crate::link::select_method(k, m)).filter(|t| !t.is_abstract()) {
             Some(t) if matches!(op, 0xb6 | 0xb9) => vec![(t, Guard::None)],
             _ => self.inline_targets(pc, op, m, pre.clone()),
@@ -279,9 +282,10 @@ impl Builder {
                 if leaf(k) {
                     return Some(k);
                 }
+                // Only null passes a cast to a class its exact one is not a subtype of.
                 if depth > 0 {
-                    if let Some(k) = self.exact_class_within(*x, depth - 1) {
-                        return Some(k);
+                    if let Some(c) = self.exact_class_within(*x, depth - 1).filter(|c| c.is_subtype_of(k)) {
+                        return Some(c);
                     }
                 }
             }
