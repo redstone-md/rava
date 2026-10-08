@@ -45,11 +45,7 @@ pub(super) enum Kind {
 pub(super) type Chain = [(&'static Method, Option<i64>)];
 
 /// Hot callees inlined at tier 2 up to HotSpot's `FreqInlineSize`, within a per-compilation
-/// budget of inlined bytecode (C2's `DesiredMethodLimit`). The three limits below suit a
-/// server start, whose compiler threads run behind; once they keep up (`queue::idle`) each
-/// compilation affords twice as much: the tick sprint's steady state gained 3.7 % on its first
-/// sprint and 4.5 % warm with all three doubled (two A/Bs; halved -9 %; quadrupled +8 % warm
-/// but a slower first sprint), while doubling them always slowed the start 2.6 %.
+/// budget of inlined bytecode (C2's `DesiredMethodLimit`).
 const HOT_INLINE_SIZE: usize = 325;
 const HOT_INVOCATIONS: u32 = 2000;
 /// Twice C2's `DesiredMethodLimit`: C2 counts only bytecode it actually inlines after pruning
@@ -65,11 +61,6 @@ const TIER2_BUDGET: usize = 16000;
 /// methods) cost more in code size than the calls they save.
 const INLINE_SMALL_CODE: usize = 3500;
 const TIER1_BUDGET: usize = 2000;
-
-/// `limit`, doubled while the compiler threads keep up (see `HOT_INLINE_SIZE`).
-fn roomy(limit: usize) -> usize {
-    if super::queue::idle() { 2 * limit } else { limit }
-}
 /// Call-site frequencies (executions per entry of the compiled method, `opt/freq.rs`) for the
 /// optimizing tier, as C2's: at least `InlineFrequencyRatio` inlines up to `FreqInlineSize`,
 /// less only `MaxInlineSize`, and below `MinInlineFrequencyRatio` only trivial methods.
@@ -84,7 +75,7 @@ const MAX_TRIVIAL_SIZE: usize = 6;
 /// estimate; baseline tiers pass 1).
 pub(super) fn decide(target: &'static Method, first: Option<i64>, chain: &Chain, tier: u8, spent: usize, freq: f32) -> Option<Kind> {
     let size = target.code.map_or(0, |c| c.code.len());
-    if spent + size > if tier >= 2 { roomy(TIER2_BUDGET) } else { TIER1_BUDGET } {
+    if spent + size > if tier >= 2 { TIER2_BUDGET } else { TIER1_BUDGET } {
         return None;
     }
     if env_once!("RAVA_NO_INLINE").is_some() || target.is_abstract() || target.is_native() || intrinsic(target).is_some() {
@@ -111,14 +102,14 @@ pub(super) fn cold_site(target: &'static Method, freq: f32) -> bool {
 /// it probably inlined much itself), a quarter of that at a call site that is not hot (C2's
 /// "already compiled into a medium method"). `@ForceInline` methods are exempt, as in C2.
 fn compiled_too_large(target: &'static Method, freq: f32) -> bool {
-    let limit = if freq >= HOT_SITE { roomy(INLINE_SMALL_CODE) } else { roomy(INLINE_SMALL_CODE) / 4 };
+    let limit = if freq >= HOT_SITE { INLINE_SMALL_CODE } else { INLINE_SMALL_CODE / 4 };
     target.compiled().is_some_and(|c| c.tier >= 2 && c.size > limit) && !target.has_annotation("Ljdk/internal/vm/annotation/ForceInline;")
 }
 
 /// Why `decide` refuses `target` (for `RAVA_INLINE_LOG`).
 pub(super) fn refusal(target: &'static Method, chain: &Chain, tier: u8, spent: usize, freq: f32) -> &'static str {
     let size = target.code.map_or(0, |c| c.code.len());
-    if spent + size > if tier >= 2 { roomy(TIER2_BUDGET) } else { TIER1_BUDGET } {
+    if spent + size > if tier >= 2 { TIER2_BUDGET } else { TIER1_BUDGET } {
         return "inlining budget spent";
     }
     if target.is_abstract() || target.is_native() {
@@ -143,7 +134,7 @@ pub(super) fn refusal(target: &'static Method, chain: &Chain, tier: u8, spent: u
     if target.has_annotation("Ljdk/internal/vm/annotation/DontInline;") {
         return "@DontInline";
     }
-    if info.code.len() > roomy(HOT_INLINE_SIZE) || (tier >= 3 && freq < HOT_SITE && info.code.len() > MAX_INLINE_SIZE) {
+    if info.code.len() > HOT_INLINE_SIZE || (tier >= 3 && freq < HOT_SITE && info.code.len() > MAX_INLINE_SIZE) {
         return "bytecode too large";
     }
     "jsr or other"
@@ -189,7 +180,7 @@ fn framed_ok(t: &'static Method, first: Option<i64>, chain: &Chain, hot: bool, o
         return false;
     }
     let forced = t.has_annotation("Ljdk/internal/vm/annotation/ForceInline;");
-    if info.code.len() > if forced { MAX_FORCED_SIZE } else if hot { roomy(HOT_INLINE_SIZE) } else { MAX_INLINE_SIZE } {
+    if info.code.len() > if forced { MAX_FORCED_SIZE } else if hot { HOT_INLINE_SIZE } else { MAX_INLINE_SIZE } {
         return false;
     }
     let mut pc = 0;
