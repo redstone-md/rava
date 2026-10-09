@@ -140,7 +140,7 @@ impl Gen<'_> {
 
     /// The int constant `v` is, if any.
     fn int_const(&self, v: V) -> Option<i64> {
-        self.g.constant(self.g.resolve(v))
+        self.g.constant_value(v)
     }
 
     /// `r := v` zero-extended from 32 bits.

@@ -183,10 +183,15 @@ fn compile_timed(m: &'static Method, osr: Option<u32>) -> Option<CompiledMethod>
     conds::mark_nonnull_inputs(&mut g);
     let mut al = regalloc::allocate(&g);
     if env_once!("RAVA_OPT_RELOAD").map_or(true, |v| v != "0") {
-        let copies = reload::split(&mut g, &al.loc);
+        let mut copies = reload::split(&mut g, &al.loc);
         if !copies.is_empty() {
             al = regalloc::allocate(&g);
-            if reload::undo_spilled(&mut g, &copies, &al.loc) {
+            // Each allocation may leave other copies without a register: take those back too.
+            for _ in 0..3 {
+                if !reload::undo_spilled(&mut g, &copies, &al.loc) {
+                    break;
+                }
+                copies.retain(|&c| matches!(al.loc[c as usize], regalloc::Loc::Reg(_) | regalloc::Loc::Xmm(_)));
                 al = regalloc::allocate(&g);
             }
         }
