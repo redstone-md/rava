@@ -120,7 +120,10 @@ pub(crate) fn identity_hash(o: Oop) -> i32 {
     if current != 0 {
         return current as i32;
     }
-    thread_local!(static SEED: std::cell::Cell<u32> = std::cell::Cell::new(0x9E37_79B9 ^ std::process::id()));
+    // `RAVA_HASH_SEED` fixes the sequence (reproducible measurements); else it differs per process.
+    thread_local!(static SEED: std::cell::Cell<u32> = std::cell::Cell::new(
+        0x9E37_79B9 ^ std::env::var("RAVA_HASH_SEED").ok().and_then(|v| v.parse().ok()).unwrap_or_else(std::process::id)
+    ));
     let h = SEED.with(|s| {
         let mut x = s.get();
         loop {
