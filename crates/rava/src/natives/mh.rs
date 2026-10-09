@@ -119,8 +119,23 @@ fn is_caller_sensitive(m: &'static Method) -> bool {
     })
 }
 
-/// A `ResolvedMethodName` naming method `m`.
+/// The `ResolvedMethodName` naming method `m`: one per method, a root for good once made (so it
+/// never moves), as HotSpot interns them.
 pub(super) fn resolved_method_name(t: &mut Thread, m: &'static Method) -> JResult<Oop> {
+    use std::sync::atomic::Ordering;
+    let cached = m.resolved_name.load(Ordering::Acquire);
+    if cached != 0 {
+        return Ok(cached as Oop);
+    }
+    let rmn = new_resolved_method_name(t, m)?;
+    crate::gc::recent::embed(rmn);
+    match m.resolved_name.compare_exchange(0, rmn as usize, Ordering::AcqRel, Ordering::Acquire) {
+        Ok(_) => Ok(rmn),
+        Err(won) => Ok(won as Oop),
+    }
+}
+
+fn new_resolved_method_name(t: &mut Thread, m: &'static Method) -> JResult<Oop> {
     let rmn_class = crate::loader::boot_class!("java/lang/invoke/ResolvedMethodName").expect("ResolvedMethodName");
     rt::initialize(t, rmn_class)?;
     let rmn = rt::alloc_instance(t, rmn_class)?;
