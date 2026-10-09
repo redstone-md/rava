@@ -30,6 +30,9 @@ pub struct Method {
     /// A `jmp rel32` to `entry` for direct calls from compiled code (`code_cache::direct_entry`),
     /// repointed whenever `entry` changes; 0 until a call site wants one.
     pub(crate) trampoline: AtomicUsize,
+    /// The `ResolvedMethodName` naming this method, made once and kept for good (HotSpot's
+    /// `ResolvedMethodTable` interns them likewise); 0 until a `MemberName` resolves to it.
+    pub(crate) resolved_name: AtomicUsize,
     /// Current compiled code (replaced on recompilation; old code stays valid for frames still
     /// running it, since every version shares the frame layout).
     compiled: std::sync::atomic::AtomicPtr<crate::jit::CompiledMethod>,
@@ -76,6 +79,7 @@ impl Method {
             backedges: AtomicU32::new(0),
             entry: AtomicUsize::new(if native { crate::jit::native_entry() } else { crate::jit::interpreter_entry() }),
             trampoline: AtomicUsize::new(0),
+            resolved_name: AtomicUsize::new(0),
             stub,
             overridden: crate::low::leak(std::sync::atomic::AtomicBool::new(false)),
             compiled: std::sync::atomic::AtomicPtr::new(std::ptr::null_mut()),
