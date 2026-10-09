@@ -147,6 +147,17 @@ impl Facts {
 }
 
 pub fn eliminate(g: &mut Graph) {
+    walk(g, false);
+}
+
+/// Marks the casts, instance tests and identity hashes whose object is proved non-null where
+/// they are (`Graph::nonnull_input`), on the final graph: code generation then leaves out
+/// their null test. Run last, after anything that moves instructions.
+pub fn mark_nonnull_inputs(g: &mut Graph) {
+    walk(g, true);
+}
+
+fn walk(g: &mut Graph, mark_only: bool) {
     let super::dom::Dom { rpo, idom, .. } = super::dom::Dom::new(g);
     let mut children = vec![Vec::new(); rpo.len()];
     for i in 1..rpo.len() {
@@ -155,7 +166,7 @@ pub fn eliminate(g: &mut Graph) {
         }
     }
     let mut facts = Facts(Vec::new());
-    let (mut drop, mut folds) = (Vec::new(), Vec::new());
+    let (mut drop, mut folds, mut marked) = (Vec::new(), Vec::new(), Vec::new());
     let mut walk = vec![(0usize, false)];
     let mut marks = Vec::new();
     while let Some((i, done)) = walk.pop() {
@@ -172,6 +183,14 @@ pub fn eliminate(g: &mut Graph) {
         for &v in &g.blocks[b as usize].insts {
             if g.resolve(v) != v {
                 continue;
+            }
+            let obj = match g.inst(v) {
+                Inst::CheckCast(x, ..) | Inst::InstanceOf(x, _) => Some(*x),
+                Inst::Intrinsic(crate::jit::intrinsics::Intrinsic::IdentityHash, xs, _) => xs.first().copied(),
+                _ => None,
+            };
+            if obj.is_some_and(|x| facts.nonnull(g, x)) {
+                marked.push(v);
             }
             match *g.inst(v) {
                 Inst::NullCheck(x, _) => {
@@ -209,6 +228,10 @@ pub fn eliminate(g: &mut Graph) {
             }
         }
         walk.extend(children[i].iter().map(|&c| (c, false)));
+    }
+    if mark_only {
+        g.nonnull_input = marked.into_iter().collect();
+        return;
     }
     if drop.is_empty() && folds.is_empty() {
         return;
