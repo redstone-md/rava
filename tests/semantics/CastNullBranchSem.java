@@ -22,7 +22,27 @@ public class CastNullBranchSem {
         return -7;
     }
 
+    static int sink;
+    static void touch(int k) { sink += k; }
+
+    // The null side is never taken while profiling, so it deoptimizes; its state reads the cast
+    // value (kept across the call in a home slot), which must hold null there.
+    static int rare(Object o, int k) {
+        Integer v = (Integer) o;
+        touch(k);
+        if (v == null) {
+            touch(-k);
+            return k + (v == null ? 1000 : 0);
+        }
+        touch(v);
+        return v + k;
+    }
+
     public static void main(String[] args) {
+        long rareAcc = 0;
+        for (int r = 0; r < 60000; r++) rareAcc += rare(r, r & 3);
+        for (int r = 0; r < 100; r++) rareAcc += rare(null, r);
+        System.out.println("rare " + rareAcc + " " + sink);
         Object[] vals = { 1, null, 5, null, 9 };
         Object[] mids = { new Mid(), null, new Mid() };
         HashMap<Key, Integer> map = new HashMap<>();
