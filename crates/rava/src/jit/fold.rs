@@ -2,8 +2,9 @@
 //! `ciMethodHandle`):
 //! - **Static finals** of initialized classes, except `System.in/out/err` (which `System.setOut`
 //!   and friends reassign).
-//! - **Instance finals** of *trusted* holders: `java.lang.invoke`, `sun.invoke`, hidden classes
-//!   and records, whose final fields cannot be changed through reflection.
+//! - **Instance finals** of *trusted* holders (`trusts_instance_finals`): `java.lang.invoke`,
+//!   `sun.invoke` and other system packages, hidden classes, records, the boxes and `String`,
+//!   whose final fields cannot be changed through reflection.
 //! - **`@Stable`** fields, once they hold a non-default value.
 //! - **Method handles**: a constant handle's `form.vmentry` and a constant `MemberName`'s target.
 //!   A handle may later get an equivalent form (customization), so the old target stays correct.
@@ -36,9 +37,27 @@ fn is_stable(holder: &'static Klass, f: &'static FieldDesc) -> bool {
     })
 }
 
+/// HotSpot's `trust_final_non_static_fields`: system closures' packages, hidden classes,
+/// records, the boxes, `String` and the field updaters' implementations.
 fn trusts_instance_finals(holder: &'static Klass) -> bool {
+    const PACKAGES: [&str; 8] = ["java/lang/invoke/", "sun/invoke/", "java/lang/reflect/", "jdk/internal/reflect/", "jdk/internal/foreign/", "java/lang/foreign/", "jdk/incubator/vector/", "jdk/internal/vm/vector/"];
+    const CLASSES: [&str; 13] = [
+        "java/lang/String",
+        "java/lang/Boolean",
+        "java/lang/Byte",
+        "java/lang/Character",
+        "java/lang/Short",
+        "java/lang/Integer",
+        "java/lang/Long",
+        "java/lang/Float",
+        "java/lang/Double",
+        "java/util/concurrent/atomic/AtomicIntegerFieldUpdater$AtomicIntegerFieldUpdaterImpl",
+        "java/util/concurrent/atomic/AtomicLongFieldUpdater$CASUpdater",
+        "java/util/concurrent/atomic/AtomicLongFieldUpdater$LockedUpdater",
+        "java/util/concurrent/atomic/AtomicReferenceFieldUpdater$AtomicReferenceFieldUpdaterImpl",
+    ];
     let n = holder.name.as_str();
-    n.starts_with("java/lang/invoke/") || n.starts_with("sun/invoke/") || holder.is_hidden() || holder.super_klass.is_some_and(|s| s.name == "java/lang/Record")
+    PACKAGES.iter().any(|p| n.starts_with(p) && !n[p.len()..].contains('/')) || CLASSES.contains(&n) || holder.is_hidden() || holder.super_klass.is_some_and(|s| s.name == "java/lang/Record")
 }
 
 /// A folded value `v` of type `ty`, about to become a constant of compiled code: a collection
