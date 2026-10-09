@@ -1522,3 +1522,50 @@ frame instead).
 
 Wall time stays noisy on this host; the CHM loop is 1.26 ms against `java`'s 0.87 per 200k gets,
 in line with the instruction counts (IPC is similar).
+
+## 2026-10-09 (cont.) — strings, folds, and two compiler bugs All The Mods 10 found
+
+Counted per operation (valgrind, `x86-64-v3` build), `java -Xbatch` alongside:
+
+| kernel | before | after | `java` |
+|---|---|---|---|
+| `SystemTickBench`, instructions per tick | 33,839 | 31,320 | 33,500 |
+| two-string concatenation | 211 | 195 | 198 |
+| `HashMap.get` with record keys | 66 | 61 | 44 |
+| `ConcurrentHashMap.get` with `String` keys | 64 | 62 | 50 |
+
+- **`vectorizedHashCode`** (`String.hashCode`, `Arrays.hashCode`): AVX2 lanes, 32- and 8-element
+  blocks, instead of an iterator fold (11 instructions per byte).
+- **Trusted instance finals** as `ciField::trust_final_non_static_fields`: `String`, the boxes,
+  reflection, foreign and vector packages, the field updaters. A literal's `coder` and length fold.
+- **Late folds**: a fresh array's length is its size, a constant array's a constant, bounds checks
+  of constant indexes against them go, branches between constants fold; an inline arraycopy from a
+  constant array checks it at compile time; `bastore` into an array of known class skips the
+  `boolean[]` test; a constant Unsafe offset is a displacement.
+- **Null tests**: a cast whose block then branches on null tests null once; a phi of values
+  non-null on each edge is non-null.
+- **Shift counts** skip `l2i`/`i2b`/`i2c`/`i2s`; conversions read their source register.
+
+**Wall time is not instruction count.** With fewer instructions than `java`, `SystemTickBench`
+still takes 2414 ns per tick against 1939. Without its per-tick string concatenation the two are
+within 8 % (1268 / 1171 ns); a concatenation alone is 13.2 against 8.3 ns. Timer-sampled
+profiles (`perf -e cpu-clock` works in this VM, hardware counters do not) put the time on
+dependent loads: object headers and class display words in the tick, and in allocation the bump
+pointer of the size class, whose address depends on the computed size (HotSpot's single TLAB top
+loads in parallel). Allocation prefetch (`prefetchw` past the bump pointer) measured as noise.
+
+**Two bugs All The Mods 10 exposed** (Paper and the semantics probes passed):
+- the cast/null fusion left the null side before the cast's home-slot store: a deoptimization
+  there rebuilt the frame from a stale slot (SIGSEGV in the interpreter's `checkcast` at start).
+  Found by bisecting the day's commits on ATM10's start, then by method-hash bisection.
+- `prune_unreachable` left unreachable blocks jumping into removed ones; a later pass laid one out
+  and code generation hit an unbound label, so `BlockableEventLoop.execute`, a
+  `ChunkGenerator.createStructures` lambda and others stayed at the lower tier. `RAVA_OPT_VERIFY`
+  now checks edges after every pass; a fatal SIGSEGV report gives pc's module offset.
+
+ATM10 `/tick sprint 1d` (one server each, two sprints): rava 1654 / 1810 tps, `java` 1686 / 2335
+(earlier today rava 1506 / 1663). The warm sprint's profile: xycraft's level systems ~16 %, chunk
+ticking ~6 %, NeoForge event dispatch ~4 %, and ~6 % in `java.lang.invoke` building method handles
+per event (one mod calls `unreflect(m).bindTo(o).invokeWithArguments(a)` for each): 652 against
+431 ns, a third of it in the runtime (`Array.newInstance` behind `Arrays.copyOf`, which HotSpot
+allocates inline).
