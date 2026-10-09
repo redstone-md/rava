@@ -236,7 +236,7 @@ fn narrow_refs(g: &Graph, al: &Allocation) -> std::collections::HashSet<V> {
             if !matches!(g.inst(v), Inst::LoadField(_, _, Reference) | Inst::LoadIndexed(_, _, Reference)) || g.resolve(v) != v || escapes[v as usize] {
                 continue;
             }
-            if !matches!(al.loc[v as usize], Loc::Reg(_)) || al.home[v as usize].is_some() || users[v as usize].is_empty() {
+            if !matches!(al.loc[v as usize], Loc::Reg(_)) || al.home[v as usize].is_some() || al.state_regs[v as usize] || users[v as usize].is_empty() {
                 continue;
             }
             let Some(last) = users[v as usize].iter().map(|&(ub, ui)| (ub == bi as B).then_some(ui)).try_fold(0, |m, u| u.map(|u| m.max(u))) else { continue };
