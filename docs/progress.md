@@ -1451,3 +1451,35 @@ loop, the list iterator could not be scalar-replaced, which no real tick has.
 Still open from these profiles: megamorphic call sites whose receivers all share one
 implementation (an interface implemented by one abstract base class) are dispatched, not
 inlined; loop counters live across calls are reloaded from their spill slot at every use.
+
+## 2026-10-09 — counting instructions instead of timing
+
+**A noise-free yardstick.** Timing on this host moves ±5-20 % between runs, more than most
+code-generation changes. Under `valgrind --tool=callgrind` (a `target-cpu=x86-64-v3` build, as
+valgrind does not decode AVX-512), with `RAVA_SYNC_COMPILE=1` and `RAVA_PERF_MAP=exit` (the map
+written once at exit: a write per compilation stalled the serialized threads), the main
+thread's instructions per tick of `SystemTickBench` are exact to about ±3 % (identity hashes vary
+the `IdentityHashMap` probes), and `--dump-instr=yes` gives each JIT instruction's execution
+count. `java -Xbatch` runs the same way.
+
+- Per tick, `java` executes 33,500 instructions; rava 37,400 before the changes below, 34,200
+  after (−7 % measured over three runs each).
+- **Late algebra** (`opt/algebra.rs`): `x + 0`, `x << 0`, `x * 1`, `x & -1` and constant pairs
+  that only became constant after inlining and folding.
+- **Wide constants** read twice between calls take one `movabs` (`reload.rs`).
+- **Proved non-null objects**: casts, instance tests and identity hashes skip their null test,
+  marked by a last dominator walk over the final graph (marking earlier let LICM move a cast
+  above its null check).
+- **Inline arraycopy**: one move per zero-extension, constant positions as displacements.
+- Dropping `l2i`'s sign extension crashed Paper: array indexing reads an int index's whole
+  register (reverted; the comment there now says so).
+
+**What the instructions do not explain.** With equal instruction counts rava still takes
+~4.4 µs per tick against `java`'s ~3.0 µs. `MegaCallBench`'s "2x slower call" turned out to be
+baseline code: the baseline compiler inlined the loop into `main`, whose loop never reached OSR,
+so 65 % of the time ran at tier 1. The optimized loop's own bytes, run in a C harness at the
+process's own data addresses, take 3.65-3.9 ns a call, as HotSpot's do. In that harness two of
+64 frame offsets doubled the cost (4K aliasing between the frame stores of a call and the loads
+after it), a hazard only memory-passed arguments and per-call BCI stores have. Padding
+branches off 32-byte boundaries (HotSpot's JCC-erratum mitigation, worth 10 % to `java` here)
+and 32/64-byte code alignment changed nothing measurable: reverted.
