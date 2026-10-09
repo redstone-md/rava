@@ -484,6 +484,11 @@ fn scan(g: &Graph, iv: &mut Intervals, full: &Intervals, loops: &LoopMap) -> (Ve
             _ => spilled.push(v),
         }
     }
+    // A value spilled for another one gives up its register (its slot, assigned below, is
+    // where the states read it too).
+    for &v in &spilled {
+        loc[v] = Loc::None;
+    }
     // Home slots of values states read after their register is free.
     let read_by_states = extend_for_states(g, iv, full, &loc);
     let homed: Vec<usize> = (0..n).filter(|&v| matches!(loc[v], Loc::Reg(_) | Loc::Xmm(_)) && full.end[v] > iv.end[v]).collect();

@@ -192,7 +192,10 @@ fn compile_timed(m: &'static Method, osr: Option<u32>) -> Option<CompiledMethod>
         }
     }
     if dump {
-        let locs: Vec<String> = al.loc.iter().enumerate().filter(|(_, l)| !matches!(l, regalloc::Loc::None | regalloc::Loc::Const(_))).map(|(v, l)| format!("v{v}={l:?}")).collect();
+        let locs: Vec<String> = al.loc.iter().enumerate().filter(|(_, l)| !matches!(l, regalloc::Loc::None | regalloc::Loc::Const(_))).map(|(v, l)| match al.home[v] {
+            Some(h) => format!("v{v}={l:?}/home {h:?}"),
+            None => format!("v{v}={l:?}"),
+        }).collect();
         eprintln!("[opt-alloc] {}", locs.join(" "));
     }
     let (code, main, faults) = codegen::generate(&g, &al, m, extent, monitor, osr);
