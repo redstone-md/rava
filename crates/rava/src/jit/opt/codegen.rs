@@ -271,7 +271,9 @@ fn narrow_refs(g: &Graph, al: &Allocation) -> std::collections::HashSet<V> {
 /// Emits `g` for `m`, whose frame (inlined frames included) takes `frame_slots` value-stack slots;
 /// a synchronized method holds `monitor` while it runs. Returns the code and the size of its
 /// main part (without the out-of-line stubs after it, as C2 sizes code for inlining).
-pub(super) fn generate(g: &Graph, al: &Allocation, m: &'static Method, frame_slots: i32, monitor: Option<Monitor>, osr: Option<u32>) -> (crate::jit::asm::Code, usize, Vec<(usize, usize)>) {
+/// Code, main part's size, implicit null checks' (access, handler) offsets, and with `trace`
+/// (`RAVA_JIT_DUMP`) the offset each value's code starts at, described.
+pub(super) fn generate(g: &Graph, al: &Allocation, m: &'static Method, frame_slots: i32, monitor: Option<Monitor>, osr: Option<u32>, trace: bool) -> (crate::jit::asm::Code, usize, Vec<(usize, usize)>, Vec<(usize, String)>) {
     let max_locals = m.code.expect("compiled method has code").max_locals as i32;
     let mut a = Asm::default();
     a.enable_peephole();
@@ -342,6 +344,7 @@ pub(super) fn generate(g: &Graph, al: &Allocation, m: &'static Method, frame_slo
     // Blocks that only deoptimize are not laid out: branches into them go straight to the
     // deoptimization stub, so the path that stays in compiled code falls through.
     let order = layout(g, &al.order.iter().copied().filter(|&b| !cold_exit(g, b)).collect::<Vec<B>>());
+    let mut traced: Vec<(Label, V)> = Vec::new();
     for (i, &b) in order.iter().enumerate() {
         gen.a.bind(gen.labels[b as usize]);
         let mut insts = g.blocks[b as usize].insts.clone();
@@ -351,6 +354,11 @@ pub(super) fn generate(g: &Graph, al: &Allocation, m: &'static Method, frame_slo
             insts[..n].sort_by_key(|&v| al.loc[v as usize] == Loc::Reg(R::Rsi));
         }
         for &v in &insts {
+            if trace {
+                let at = gen.a.new_label();
+                gen.a.bind(at);
+                traced.push((at, v));
+            }
             let pending = gen.pending_null.is_some();
             gen.preserve = gen.live_at.get(&v).copied().unwrap_or(gen.all_registers());
             gen.inst(v);
@@ -373,10 +381,25 @@ pub(super) fn generate(g: &Graph, al: &Allocation, m: &'static Method, frame_slo
     for (bits, l) in pool {
         gen.a.data8(l, bits);
     }
-    let marks: Vec<Label> = gen.faults.iter().flat_map(|&(at, to)| [at, to]).collect();
+    let mut marks: Vec<Label> = gen.faults.iter().flat_map(|&(at, to)| [at, to]).collect();
+    let nfaults = marks.len();
+    marks.extend(traced.iter().map(|&(l, _)| l));
     let (code, main, pos) = gen.a.finish_labels(stubs, &marks);
-    let faults = pos.chunks(2).map(|p| (p[0] as usize, p[1] as usize)).collect();
-    (code, main as usize, faults)
+    let faults = pos[..nfaults].chunks(2).map(|p| (p[0] as usize, p[1] as usize)).collect();
+    // Each value with the bytecode position of the nearest state at or before it.
+    let mut last = String::new();
+    let trace = traced
+        .iter()
+        .zip(&pos[nfaults..])
+        .map(|(&(_, v), &at)| {
+            if let Some(s) = g.inst(v).state() {
+                last = format!("{}.{}:{}", s.method.holder.name, s.method.name, s.bci);
+            }
+            let kind = format!("{:?}", g.inst(v));
+            (at as usize, format!("v{v} {} @ {last}", kind.chars().take(60).collect::<String>()))
+        })
+        .collect();
+    (code, main as usize, faults, trace)
 }
 
 impl Gen<'_> {
