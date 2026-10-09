@@ -134,6 +134,16 @@ fn compile_osr(m: &'static Method, bci: u32) -> Option<CompiledMethod> {
     })
 }
 
+/// With `RAVA_OPT_VERIFY`, checks the graph's edges after a pass (`Graph::verify`); a broken
+/// graph fails the compilation naming the pass.
+fn verify(g: &ir::Graph, m: &'static Method, pass: &str) {
+    if env_once!("RAVA_OPT_VERIFY").is_some() {
+        if let Err(e) = g.verify() {
+            panic!("{m}: graph broken after {pass}: {e}");
+        }
+    }
+}
+
 fn compile_timed(m: &'static Method, osr: Option<u32>) -> Option<CompiledMethod> {
     let log = env_once!("RAVA_OPT_LOG").is_some();
     let monitor = match (m.is_synchronized(), m.is_static()) {
@@ -152,35 +162,59 @@ fn compile_timed(m: &'static Method, osr: Option<u32>) -> Option<CompiledMethod>
         }
         return None;
     };
+    verify(&g, m, "build");
     phis::simplify(&mut g);
+    verify(&g, m, "phis::simplify");
     booleans::fold_masks(&mut g);
+    verify(&g, m, "booleans::fold_masks");
     nullcheck::eliminate(&mut g);
+    verify(&g, m, "nullcheck::eliminate");
     typecheck::eliminate(&mut g);
+    verify(&g, m, "typecheck::eliminate");
     conds::eliminate(&mut g);
+    verify(&g, m, "conds::eliminate");
     fields::forward(&mut g);
+    verify(&g, m, "fields::forward");
     escape::eliminate(&mut g);
+    verify(&g, m, "escape::eliminate");
     select::convert(&mut g);
+    verify(&g, m, "select::convert");
     algebra::simplify(&mut g);
+    verify(&g, m, "algebra::simplify");
     licm::hoist(&mut g);
+    verify(&g, m, "licm::hoist");
     rce::eliminate(&mut g);
+    verify(&g, m, "rce::eliminate");
     guards::hoist(&mut g);
+    verify(&g, m, "guards::hoist");
     g.merge_chains();
+    verify(&g, m, "g.merge_chains");
     thread::thread(&mut g);
+    verify(&g, m, "thread::thread");
     g.merge_chains();
+    verify(&g, m, "g.merge_chains");
     unroll::unroll(&mut g);
+    verify(&g, m, "unroll::unroll");
     algebra::simplify_late(&mut g);
+    verify(&g, m, "algebra::simplify_late");
     consts::hoist(&mut g);
+    verify(&g, m, "consts::hoist");
     g.prune_unreachable();
+    verify(&g, m, "g.prune_unreachable");
     dce::eliminate(&mut g);
+    verify(&g, m, "dce::eliminate");
     if env_once!("RAVA_OPT_SPLIT").map_or(true, |v| v != "0") {
         split::split(&mut g);
+        verify(&g, m, "split::split");
     }
     g.merge_chains();
+    verify(&g, m, "g.merge_chains");
     let dump = env_once!("RAVA_OPT_IR").is_some_and(|f| m.to_string().contains(f.to_str().unwrap_or("")));
     if dump {
         eprintln!("[opt-ir] {m}\n{}", g.dump());
     }
     conds::mark_nonnull_inputs(&mut g);
+    verify(&g, m, "conds::mark_nonnull_inputs");
     let mut al = regalloc::allocate(&g);
     if env_once!("RAVA_OPT_RELOAD").map_or(true, |v| v != "0") {
         let mut copies = reload::split(&mut g, &al.loc);

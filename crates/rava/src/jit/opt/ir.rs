@@ -365,10 +365,24 @@ impl Graph {
             }
             stack.extend(self.blocks[b as usize].term.successors());
         }
-        for (b, blk) in self.blocks.iter_mut().enumerate() {
-            if !seen[b] && !matches!(blk.term, Term::None) && blk.term.successors().is_empty() {
-                blk.term = Term::None;
-                blk.insts.clear();
+        // Every block the entry does not reach goes, and leaves its successors' predecessors
+        // (with the matching phi inputs): a block left jumping to a removed one was laid out
+        // once a later pass made it reachable again.
+        for b in 0..self.blocks.len() {
+            if seen[b] || matches!(self.blocks[b].term, Term::None) {
+                continue;
+            }
+            let term = std::mem::replace(&mut self.blocks[b].term, Term::None);
+            self.blocks[b].insts.clear();
+            for s in term.successors() {
+                while let Some(j) = self.blocks[s as usize].preds.iter().position(|&x| x as usize == b) {
+                    self.blocks[s as usize].preds.remove(j);
+                    for v in self.blocks[s as usize].insts.clone() {
+                        if let Inst::Phi(ins) = &mut self.values[v as usize].inst {
+                            ins.remove(j);
+                        }
+                    }
+                }
             }
         }
     }
@@ -427,6 +441,30 @@ impl Graph {
             v = self.resolve(x);
         }
         self.constant(v)
+    }
+
+    /// The edges agree with the predecessor lists: every successor of a live block is live and
+    /// lists it, and every predecessor is live and jumps there.
+    pub fn verify(&self) -> Result<(), String> {
+        let live = |b: B| !matches!(self.blocks[b as usize].term, Term::None);
+        for (b, blk) in self.blocks.iter().enumerate().filter(|(b, _)| live(*b as B)) {
+            let succ = blk.term.successors();
+            for &s in &succ {
+                if !live(s) {
+                    return Err(format!("B{b} jumps to removed B{s}"));
+                }
+                // A switch's cases into one block are one predecessor entry.
+                if !self.blocks[s as usize].preds.contains(&(b as B)) {
+                    return Err(format!("B{b} jumps to B{s}, which does not list it"));
+                }
+            }
+            for &p in &blk.preds {
+                if !live(p) || !self.blocks[p as usize].term.successors().contains(&(b as B)) {
+                    return Err(format!("B{b} lists B{p}, which does not jump there"));
+                }
+            }
+        }
+        Ok(())
     }
 
     pub fn resolve(&self, mut v: V) -> V {
