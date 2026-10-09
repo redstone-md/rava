@@ -188,6 +188,8 @@ pub(super) fn build(m: &'static Method) -> Option<(Graph, i32)> {
         b.sc.locals[slot as usize] = Some(b.g.add(start, Inst::Param(slot), ty));
         slot += p.slots() as u16;
     }
+    let params: Vec<V> = b.sc.locals.iter().flatten().copied().collect();
+    b.note_declared_params(m, &params);
     b.enter_scope();
     b.build_scope()?;
     Some((b.g, b.extent))
