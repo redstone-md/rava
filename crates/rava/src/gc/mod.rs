@@ -226,6 +226,7 @@ impl Heap {
             return;
         }
         let started = std::time::Instant::now();
+        let faults = minor_faults();
         let mut phases = [0f64; 3];
         let done = safepoint::stop_the_world(t, |_| {
             let stopped = std::time::Instant::now();
@@ -283,7 +284,7 @@ impl Heap {
         });
         if let (Some((marked, live, allocated, touched)), true) = (done, std::env::var_os("RAVA_GC_LOG").is_some()) {
             eprintln!(
-                "[gc {:.3}s] {} after {} MiB allocated: marked {marked} objects, {} MiB live of {}+{} MiB touched, {:.1} ms (stop {:.1}, mark {:.1}, sweep {:.1})",
+                "[gc {:.3}s] {} after {} MiB allocated: marked {marked} objects, {} MiB live of {}+{} MiB touched, {:.1} ms (stop {:.1}, mark {:.1}, sweep {:.1}), {} page faults",
                 self.created.elapsed().as_secs_f64(),
                 if full { "full" } else { "young" },
                 allocated >> 20,
@@ -293,7 +294,8 @@ impl Heap {
                 started.elapsed().as_secs_f64() * 1e3,
                 phases[0],
                 phases[1],
-                phases[2]
+                phases[2],
+                minor_faults() - faults
             );
         }
     }
@@ -406,3 +408,12 @@ fn sweep(space: &mut Space) -> usize {
     live + space.large_bytes
 }
 
+/// The process's minor page faults so far (for `RAVA_GC_LOG`).
+fn minor_faults() -> i64 {
+    // SAFETY: getrusage fills the struct.
+    unsafe {
+        let mut u: libc::rusage = std::mem::zeroed();
+        libc::getrusage(libc::RUSAGE_SELF, &mut u);
+        u.ru_minflt as i64
+    }
+}
