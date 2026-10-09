@@ -74,7 +74,7 @@ extern "C" fn handler(sig: libc::c_int, info: *mut libc::siginfo_t, ctx: *mut li
 
 /// Writes the faulting instruction and address to stderr (async-signal-safe: no allocation).
 fn report(pc: usize, addr: usize) {
-    let mut buf = [0u8; 80];
+    let mut buf = [0u8; 128];
     let mut n = 0;
     let mut put = |bytes: &[u8]| {
         for &b in bytes {
@@ -98,6 +98,14 @@ fn report(pc: usize, addr: usize) {
     put(&hex(pc));
     put(b" address ");
     put(&hex(addr));
+    // The offset in the binary (or library) holding pc, for addr2line.
+    let mut info: libc::Dl_info = unsafe { std::mem::zeroed() };
+    // SAFETY: dladdr reads the loader's tables (not async-signal-safe, but this is the crash path).
+    if unsafe { libc::dladdr(pc as *const libc::c_void, &mut info) } != 0 && !info.dli_fbase.is_null() {
+        put(b" (module offset ");
+        put(&hex(pc - info.dli_fbase as usize));
+        put(b")");
+    }
     put(b"\n");
     // SAFETY: write(2) of a stack buffer.
     unsafe { libc::write(2, buf.as_ptr() as *const libc::c_void, n) };
