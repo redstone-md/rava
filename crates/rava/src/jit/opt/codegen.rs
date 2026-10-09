@@ -83,6 +83,10 @@ pub(super) struct Gen<'a> {
     /// The prologue published the frame as `Thread::top`, as it stays across calls (each callee
     /// restores it on return or unwind): Java calls then only write the BCI.
     top_published: bool,
+    /// A method that calls no Java code writes its frame header (method, caller) only when a
+    /// slow path first publishes the frame, and its exit unlinks only a published frame: the
+    /// path that stays in compiled code never touches the header or `Thread::top`.
+    lazy_header: bool,
     /// The method's return type.
     ret: crate::types::BasicType,
     /// The register holding the frame base: r13, or for a frameless body that reads its
@@ -291,6 +295,7 @@ pub(super) fn generate(g: &Graph, al: &Allocation, m: &'static Method, frame_slo
         lock: None,
         frameless: monitor.is_none() && osr.is_none() && super::polls::frameless(g),
         top_published: false,
+        lazy_header: false,
         base: R::R13,
         ret: m.sig.ret,
         saves: &al.saves,
@@ -313,6 +318,7 @@ pub(super) fn generate(g: &Graph, al: &Allocation, m: &'static Method, frame_slo
     };
     // Entry rsp is 8 mod 16: an odd number of pushes realigns it, spill slots come in pairs.
     // r12 holds the thread in all compiled code (Rust enters through `jit::enter_trampoline`).
+    gen.lazy_header = !gen.frameless && osr.is_none() && !calls_java(g);
     let leaf = gen.frameless && reads_params_on_entry(g, al);
     if leaf {
         gen.base = R::Rsi;
@@ -425,10 +431,13 @@ impl Gen<'_> {
         // The frame is linked to its caller (every caller publishes its innermost header as
         // `Thread::top` before a call), but `top` and `sp` are only published once the method
         // calls out (below for Java calls, else `link`, `anchor`); see the module comment.
-        // The BCI slot is written by whatever publishes the frame (`link`, `anchor`).
-        a.store(true, h(header::METHOD), R::Rdx);
+        // The BCI slot is written by whatever publishes the frame (`link`, `anchor`), and with
+        // a lazy header the whole header.
+        if !self.lazy_header {
+            a.store(true, h(header::METHOD), R::Rdx);
+        }
         // A version entered from a running loop continues a frame its caller already linked.
-        if self.osr.is_none() {
+        if self.osr.is_none() && !self.lazy_header {
             a.load(true, R::Rcx, mem(R::R12, offsets::TOP));
             a.store(true, h(header::CALLER), R::Rcx);
         }
@@ -508,8 +517,15 @@ impl Gen<'_> {
         if !self.frameless {
             // The caller's frame is innermost again; `sp` is left as published (callers do
             // not rely on it, see the module comment).
+            let unlinked = self.a.new_label();
+            if self.lazy_header {
+                self.a.lea(R::Rcx, self.hdr(header::METHOD));
+                self.a.alu_rm(true, Alu::Cmp, R::Rcx, mem(R::R12, offsets::TOP));
+                self.a.jcc(Cond::Ne, unlinked);
+            }
             self.a.load(true, R::Rcx, self.hdr(header::CALLER));
             self.a.store(true, mem(R::R12, offsets::TOP), R::Rcx);
+            self.a.bind(unlinked);
         }
         self.a.bind(restore);
         if self.frame_bytes > 0 {
@@ -660,8 +676,7 @@ impl Gen<'_> {
             self.a.store_const(at, site as *const _ as i64, R::Rax);
         }
         if !self.top_published {
-            self.a.lea(R::Rcx, self.hdr(header::METHOD));
-            self.a.store(true, mem(R::R12, offsets::TOP), R::Rcx);
+            self.publish(R::Rcx, R::Rax);
         }
         if sp {
             self.publish_sp();
@@ -669,13 +684,32 @@ impl Gen<'_> {
     }
 
     /// Publishes this frame as the innermost one (`Thread::top` and `sp`) for a runtime call
-    /// without a state (polls, monitors, deoptimization). Clobbers rax.
+    /// without a state (polls, monitors, deoptimization). Clobbers rax and r11.
     pub fn anchor(&mut self) {
         // No call site to name: the method's entry.
         self.a.store_imm(self.hdr(header::BCI), 0);
-        self.a.lea(R::Rax, self.hdr(header::METHOD));
-        self.a.store(true, mem(R::R12, offsets::TOP), R::Rax);
+        if !self.top_published {
+            self.publish(R::Rax, R::R11);
+        }
         self.publish_sp();
+    }
+
+    /// `Thread::top` := this frame's header (address left in `at`). A lazy header is written
+    /// first, unless the frame is already published (by an earlier slow path that returned):
+    /// `top` is then this frame, not the caller's. Clobbers `at` and `tmp`.
+    fn publish(&mut self, at: R, tmp: R) {
+        self.a.lea(at, self.hdr(header::METHOD));
+        let done = self.a.new_label();
+        if self.lazy_header {
+            self.a.alu_rm(true, Alu::Cmp, at, mem(R::R12, offsets::TOP));
+            self.a.jcc(Cond::E, done);
+            self.a.load(true, tmp, mem(R::R12, offsets::TOP));
+            self.a.store(true, self.hdr(header::CALLER), tmp);
+            self.a.mov_ri(tmp, self.root as *const Method as i64);
+            self.a.store(true, self.hdr(header::METHOD), tmp);
+        }
+        self.a.store(true, mem(R::R12, offsets::TOP), at);
+        self.a.bind(done);
     }
 
     /// Raises `Thread::sp` to the end of this frame. Clobbers rax and the flags.
