@@ -346,6 +346,9 @@ pub struct Graph {
     /// The interpreter state on entering each loop header whose bytecode has not trapped (its
     /// phis as the locals): where predicates hoisted out of the loop deoptimize (`rce.rs`).
     pub loop_entry: std::collections::HashMap<B, std::rc::Rc<State>>,
+    /// Casts, instance tests and identity hashes whose object a dominating test proved non-null
+    /// (`conds.rs`): their code skips its own null test.
+    pub nonnull_input: std::collections::HashSet<V>,
 }
 
 impl Graph {

@@ -119,8 +119,10 @@ impl Gen<'_> {
                     // A final class or primitive array is only itself; a class at a primary
                     // depth is the object's class or its ancestor there. Null passes.
                     let rx = self.reg(x, R::Rax);
-                    self.a.test_rr(true, rx, rx);
-                    self.a.jcc(Cond::E, done);
+                    if !self.g.nonnull_input.contains(&v) {
+                        self.a.test_rr(true, rx, rx);
+                        self.a.jcc(Cond::E, done);
+                    }
                     self.a.load(false, R::Rcx, mem(rx, 0));
                     let kk = self.class_operand(k);
                     self.cmp_class(None, kk);
@@ -134,7 +136,7 @@ impl Gen<'_> {
                         }
                     }
                 } else {
-                    self.subtype_check(x, k, done, false);
+                    self.subtype_check(x, k, done, false, self.g.nonnull_input.contains(&v));
                     self.a.test_rr(true, R::Rax, R::Rax);
                     self.a.jcc(Cond::E, fail);
                 }
@@ -147,10 +149,13 @@ impl Gen<'_> {
             Inst::InstanceOf(..) if self.fused.contains(&v) => {}
             Inst::InstanceOf(x, k) => {
                 let (done, null) = (self.a.new_label(), self.a.new_label());
-                let rx = self.reg(x, R::Rax);
-                self.a.test_rr(true, rx, rx);
-                self.a.jcc(Cond::E, null);
-                self.subtype_check(x, k, done, true);
+                let nonnull = self.g.nonnull_input.contains(&v);
+                if !nonnull {
+                    let rx = self.reg(x, R::Rax);
+                    self.a.test_rr(true, rx, rx);
+                    self.a.jcc(Cond::E, null);
+                }
+                self.subtype_check(x, k, done, true, true);
                 self.a.jmp(done);
                 self.a.bind(null);
                 self.a.alu_rr(false, Alu::Xor, R::Rax, R::Rax);
@@ -289,13 +294,16 @@ impl Gen<'_> {
     /// rax := 1 if `x`'s class is a subtype of `k` (jumping to `done` on the inline hits, and
     /// for null), else the runtime's answer. Without `answer`, the jumps to `done` leave rax
     /// as it is (a cast only tests rax on the way that falls through).
-    fn subtype_check(&mut self, x: V, k: &'static Klass, done: crate::jit::asm::Label, answer: bool) {
+    /// `nonnull`: `x` is known not to be null here, so the null test is left out.
+    fn subtype_check(&mut self, x: V, k: &'static Klass, done: crate::jit::asm::Label, answer: bool, nonnull: bool) {
         // The class seen last (in low memory, compared as an absolute operand).
         let cell: &'static std::sync::atomic::AtomicUsize = crate::low::leak(std::sync::atomic::AtomicUsize::new(0));
         let null_ok = self.a.new_label();
         let rx = self.reg(x, R::Rax);
-        self.a.test_rr(true, rx, rx);
-        self.a.jcc(Cond::E, null_ok);
+        if !nonnull {
+            self.a.test_rr(true, rx, rx);
+            self.a.jcc(Cond::E, null_ok);
+        }
         self.a.load(false, R::Rcx, mem(rx, 0));
         if answer {
             self.a.mov_ri(R::Rax, 1);

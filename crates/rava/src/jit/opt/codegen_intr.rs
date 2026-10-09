@@ -42,9 +42,11 @@ impl Gen<'_> {
             Intrinsic::IdentityHash => {
                 let done = self.a.new_label();
                 self.load(R::Rcx, args[0]);
-                self.a.alu_rr(false, Alu::Xor, R::Rax, R::Rax);
-                self.a.test_rr(true, R::Rcx, R::Rcx);
-                self.a.jcc(Cond::E, done);
+                if !self.g.nonnull_input.contains(&v) {
+                    self.a.alu_rr(false, Alu::Xor, R::Rax, R::Rax);
+                    self.a.test_rr(true, R::Rcx, R::Rcx);
+                    self.a.jcc(Cond::E, done);
+                }
                 crate::jit::intrinsics::identity_hash_fast(&mut self.a, R::Rcx);
                 self.a.jcc(Cond::Ne, done);
                 self.call_preserving(runtime::identity_hash as *const () as usize, &[Arg::Reg(R::Rcx)]);

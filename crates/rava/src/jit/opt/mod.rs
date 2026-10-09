@@ -180,6 +180,7 @@ fn compile_timed(m: &'static Method, osr: Option<u32>) -> Option<CompiledMethod>
     if dump {
         eprintln!("[opt-ir] {m}\n{}", g.dump());
     }
+    conds::mark_nonnull_inputs(&mut g);
     let mut al = regalloc::allocate(&g);
     if env_once!("RAVA_OPT_RELOAD").map_or(true, |v| v != "0") {
         let copies = reload::split(&mut g, &al.loc);
