@@ -207,7 +207,7 @@ impl Builder {
         if op != 0xb8 {
             self.null_check(args[0], pre.clone());
         }
-        if self.allocate_instance(m, &args, &pre, &s) || self.fold_class_query(m, &args) || self.floor_pow2(m, &args) || self.caller_class(m) || self.mh_hints(m, &args) {
+        if self.allocate_instance(m, &args, &pre, &s) || self.new_array_reflective(m, &args, &pre) || self.fold_class_query(m, &args) || self.floor_pow2(m, &args) || self.caller_class(m) || self.mh_hints(m, &args) {
             return Some(true);
         }
         if let (0xb6 | 0xb8, Some(k)) = (op, crate::jit::intrinsics::bound_intrinsic(m)) {
@@ -334,10 +334,34 @@ impl Builder {
             ("isInterface", "()Z") => (k.is_some_and(|k| k.is_interface()) as i64, Ty::I),
             ("isArray", "()Z") => (k.is_some_and(|k| !matches!(k.kind, crate::klass::KlassKind::Instance)) as i64, Ty::I),
             ("isPrimitive", "()Z") => (k.is_none() as i64, Ty::I),
+            // An object array's element class (a primitive array's is left to the call).
+            ("getComponentType", "()Ljava/lang/Class;") => match k.map(|k| &k.kind) {
+                Some(crate::klass::KlassKind::ObjArray { elem }) if !elem.mirror().is_null() => (elem.mirror() as usize as i64, Ty::A),
+                Some(crate::klass::KlassKind::Instance) | None => (0, Ty::A),
+                _ => return false,
+            },
             _ => return false,
         };
         let c = self.konst(ty, v);
         self.push(c);
+        true
+    }
+
+    /// `Array.newArray` (behind `Array.newInstance` and `Arrays.copyOf`) of a constant class whose
+    /// array class exists: an ordinary allocation (C2's `_newArray`), deoptimizing to the call for
+    /// a negative length.
+    fn new_array_reflective(&mut self, m: &'static Method, args: &[V], pre: &Rc<State>) -> bool {
+        if m.holder.name != "java/lang/reflect/Array" || m.name != "newArray" || args.len() != 2 {
+            return false;
+        }
+        let Some(elem) = self.g.constant(args[0]).filter(|&c| c != 0).and_then(|c| crate::runtime::klass_of_mirror(c as crate::heap::Oop)) else { return false };
+        if elem.name == "void" {
+            return false;
+        }
+        let Some(&k) = elem.array_klass.get() else { return false };
+        let v = self.add(Inst::NewArray(k, args[1], pre.clone()), Ty::A);
+        self.exact.push((v, k));
+        self.push(v);
         true
     }
 
