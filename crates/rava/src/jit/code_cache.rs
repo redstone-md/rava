@@ -120,12 +120,28 @@ pub fn repoint(m: &crate::method::Method) {
 pub fn perf_map(address: usize, size: usize, name: &str) {
     use std::io::Write;
     static FILE: std::sync::OnceLock<Option<Mutex<std::fs::File>>> = std::sync::OnceLock::new();
+    let Some(mode) = env_once!("RAVA_PERF_MAP") else { return };
+    // `exit`: kept in memory and written when the VM exits (`flush_perf_map`), no write per
+    // compilation (tools that serialize threads, such as valgrind, stall on them).
+    if mode == "exit" {
+        PERF_LINES.lock().unwrap().push(format!("{address:x} {size:x} {name}"));
+        return;
+    }
     let file = FILE.get_or_init(|| {
-        std::env::var_os("RAVA_PERF_MAP")?;
         let path = format!("/tmp/perf-{}.map", std::process::id());
         std::fs::File::create(path).ok().map(Mutex::new)
     });
     if let Some(f) = file {
         let _ = writeln!(f.lock().unwrap(), "{address:x} {size:x} {name}");
+    }
+}
+
+static PERF_LINES: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+/// Writes the perf map kept in memory (`RAVA_PERF_MAP=exit`).
+pub fn flush_perf_map() {
+    let lines = std::mem::take(&mut *PERF_LINES.lock().unwrap());
+    if !lines.is_empty() {
+        let _ = std::fs::write(format!("/tmp/perf-{}.map", std::process::id()), lines.join("\n") + "\n");
     }
 }
