@@ -142,8 +142,9 @@ public class SystemTickBench {
         for (int i = 0; i < SYSTEMS; i++) register(makers.get(i % makers.size()), i, i % 3 == 0);
         Level level = new Level();
         TickEvent event = new TickEvent(level);
-        int ticks = 20_000;
-        for (int round = 0; round < 15; round++) {
+        int ticks = args.length > 1 ? Integer.parseInt(args[1]) : 20_000;
+        int rounds = args.length > 0 ? Integer.parseInt(args[0]) : 15;
+        for (int round = 0; round < rounds; round++) {
             long t0 = System.nanoTime();
             for (int t = 0; t < ticks; t++) tick(level, event);
             long t1 = System.nanoTime();
