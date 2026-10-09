@@ -445,7 +445,9 @@ impl Gen<'_> {
                 self.a.alu_ri(false, Alu::Cmp, R::R11, max as i32);
                 self.a.jcc(Cond::A, slow);
                 self.a.mov_rr(false, R::Rcx, R::R11);
-                self.a.shift_ri(false, Shift::Shl, R::Rcx, elem.trailing_zeros() as u8);
+                if elem > 1 {
+                    self.a.shift_ri(false, Shift::Shl, R::Rcx, elem.trailing_zeros() as u8);
+                }
                 self.a.alu_ri(false, Alu::Add, R::Rcx, crate::heap::ARRAY_BASE_OFFSET as i32 + 7);
                 self.a.alu_ri(false, Alu::And, R::Rcx, -8);
                 let (bump, end) = crate::gc::step_cache_offsets();

@@ -2,6 +2,7 @@
 //! (`regalloc.rs`) and code generation (`codegen*.rs`). Methods using anything the builder does
 //! not support are refused and keep the baseline compiler's code. See `docs/core/opt-tier.md`.
 
+mod algebra;
 mod barrier;
 mod booleans;
 mod build;
@@ -159,6 +160,7 @@ fn compile_timed(m: &'static Method, osr: Option<u32>) -> Option<CompiledMethod>
     fields::forward(&mut g);
     escape::eliminate(&mut g);
     select::convert(&mut g);
+    algebra::simplify(&mut g);
     licm::hoist(&mut g);
     rce::eliminate(&mut g);
     guards::hoist(&mut g);
@@ -166,6 +168,7 @@ fn compile_timed(m: &'static Method, osr: Option<u32>) -> Option<CompiledMethod>
     thread::thread(&mut g);
     g.merge_chains();
     unroll::unroll(&mut g);
+    algebra::simplify(&mut g);
     consts::hoist(&mut g);
     g.prune_unreachable();
     dce::eliminate(&mut g);
