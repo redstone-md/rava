@@ -22,6 +22,15 @@ pub fn simplify(g: &mut Graph) {
                 }
                 let ty = g.ty(v);
                 match *g.inst(v) {
+                    // A shift reads its count's low 5 or 6 bits, which a narrowing conversion
+                    // (l2i, i2b, i2c, i2s) keeps: the count is the conversion's input.
+                    Inst::Bin(op @ (BinOp::Shl | BinOp::Shr | BinOp::Ushr), a, c)
+                        if matches!(ty, Ty::I | Ty::J) && matches!(*g.inst(g.resolve(c)), Inst::Convert(0x88 | 0x91 | 0x92 | 0x93, _)) =>
+                    {
+                        let Inst::Convert(_, y) = *g.inst(g.resolve(c)) else { unreachable!() };
+                        g.values[v as usize].inst = Inst::Bin(op, a, g.resolve(y));
+                        changed = true;
+                    }
                     Inst::Bin(op, a, c) if matches!(ty, Ty::I | Ty::J) => {
                         let (x, y) = (g.constant(g.resolve(a)), g.constant(g.resolve(c)));
                         // Division by zero keeps its instruction (the zero check before it throws).
