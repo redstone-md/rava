@@ -227,7 +227,12 @@ impl Builder {
                 }
             }
             let s = matches!(k, crate::jit::intrinsics::Intrinsic::GetClass | crate::jit::intrinsics::Intrinsic::ArrayCopy).then_some(pre);
+            // A copy into a primitive array of a known class copies inline (`codegen_copy`).
+            let into = matches!(k, crate::jit::intrinsics::Intrinsic::ArrayCopy).then(|| self.exact_class(args[2])).flatten();
             let v = self.intrinsic_inst(k, args, s, if ret == BasicType::Void { Ty::I } else { Ty::of(ret) });
+            if let Some(into) = into.filter(|k| matches!(k.kind, crate::klass::KlassKind::TypeArray { .. })) {
+                self.g.copy_into.insert(v, into);
+            }
             if ret != BasicType::Void {
                 self.push(v);
             }
@@ -421,16 +426,26 @@ pub(super) fn box_value_of(m: &'static Method) -> bool {
 }
 
 /// The class a value declared with type `desc` in `holder` has exactly when not null: a final
-/// class already loaded, or an array of one whose array class exists (no other class is
-/// assignable to either).
+/// class already loaded, a primitive array, or an array of either whose array class exists (no
+/// other class is assignable to any of them).
 fn declared_class(holder: &'static Klass, desc: &str) -> Option<&'static Klass> {
     let elem = desc.trim_start_matches('[');
-    let name = elem.strip_prefix('L').and_then(|d| d.strip_suffix(';'))?;
-    let mut k = crate::vm::vm().find_loaded(holder.loader(), crate::symbol::Symbol::intern(name))?;
-    if !matches!(k.kind, crate::klass::KlassKind::Instance) || k.access & ACC_FINAL == 0 {
-        return None;
-    }
-    for _ in 0..desc.len() - elem.len() {
+    let mut dims = desc.len() - elem.len();
+    let mut k = match elem.strip_prefix('L').and_then(|d| d.strip_suffix(';')) {
+        Some(name) => {
+            let k = crate::vm::vm().find_loaded(holder.loader(), crate::symbol::Symbol::intern(name))?;
+            if !matches!(k.kind, crate::klass::KlassKind::Instance) || k.access & ACC_FINAL == 0 {
+                return None;
+            }
+            k
+        }
+        None if dims > 0 && elem.len() == 1 && "ZCFDBSIJ".contains(elem) => {
+            dims -= 1;
+            crate::vm::vm().primitive_array_class(BasicType::from_desc(elem.as_bytes()[0])).ok()?
+        }
+        None => return None,
+    };
+    for _ in 0..dims {
         k = k.array_klass.get().copied()?;
     }
     Some(k)
