@@ -69,11 +69,22 @@ impl Gen<'_> {
         // from = rcx, to = r11, bytes = rdx.
         let base = ARRAY_BASE_OFFSET as i32;
         let rs = self.reg(src, R::Rax);
-        self.zext(R::Rcx, sp);
-        self.a.lea(R::Rcx, mem_idx(rs, R::Rcx, es, base));
-        self.zext(R::Rax, dp);
+        match self.int_const(sp) {
+            Some(c) => self.a.lea(R::Rcx, mem(rs, base + c as i32 * es as i32)),
+            None => {
+                self.zext(R::Rcx, sp);
+                self.a.lea(R::Rcx, mem_idx(rs, R::Rcx, es, base));
+            }
+        }
         let rd = self.reg(dst, R::R11);
-        self.a.lea(R::R11, mem_idx(rd, R::Rax, es, base));
+        match self.int_const(dp) {
+            Some(c) => self.a.lea(R::R11, mem(rd, base + c as i32 * es as i32)),
+            None => {
+                self.zext(R::Rax, dp);
+                let rd = self.reg(dst, R::R11);
+                self.a.lea(R::R11, mem_idx(rd, R::Rax, es, base));
+            }
+        }
         match self.int_const(len) {
             Some(n) => self.copy_fixed(n as usize * es as usize),
             None => {
@@ -95,10 +106,14 @@ impl Gen<'_> {
     fn zext(&mut self, r: R, v: V) {
         match self.int_const(v) {
             Some(c) => self.a.mov_ri(r, c as u32 as i64),
-            None => {
-                self.load(r, v);
-                self.a.mov_rr(false, r, r);
-            }
+            // One 32-bit move from wherever the value is (a 32-bit write clears the top half).
+            None => match self.loc[v as usize] {
+                super::regalloc::Loc::Reg(src) => self.a.mov_rr(false, r, src),
+                _ => {
+                    self.load(r, v);
+                    self.a.mov_rr(false, r, r);
+                }
+            },
         }
     }
 
