@@ -248,18 +248,38 @@ impl Gen<'_> {
             return self.store_typed(v, rx, bt, at);
         }
         // bastore: boolean[] stores value & 1, byte[] the low byte. The class test uses r11
-        // before the element's address may need it for a spilled index.
+        // before the element's address may need it for a spilled index. An array of a known
+        // class (allocated here, or a constant), or a value of 0 or 1, needs no test.
         self.load(R::Rdx, x);
         let ra = self.reg(arr, R::Rax);
         let bools = crate::vm::vm().primitive_array_class(BasicType::Boolean).ok().map_or(0, |k| k as *const Klass as i64);
-        let plain = self.a.new_label();
-        self.a.mov_ri(R::R11, bools);
-        self.a.alu_rm(false, Alu::Cmp, R::R11, mem(ra, 0));
-        self.a.jcc(Cond::Ne, plain);
-        self.a.alu_ri(false, Alu::And, R::Rdx, 1);
-        self.a.bind(plain);
+        let known = self.known_array_class(arr).map(|k| k as *const Klass as i64);
+        let bit = self.g.constant(self.g.resolve(x)).is_some_and(|c| c == 0 || c == 1);
+        if known == Some(bools) && !bit {
+            self.a.alu_ri(false, Alu::And, R::Rdx, 1);
+        } else if known.is_none() && !bit {
+            let plain = self.a.new_label();
+            self.a.mov_ri(R::R11, bools);
+            self.a.alu_rm(false, Alu::Cmp, R::R11, mem(ra, 0));
+            self.a.jcc(Cond::Ne, plain);
+            self.a.alu_ri(false, Alu::And, R::Rdx, 1);
+            self.a.bind(plain);
+        }
         let at = self.element(arr, idx, bt);
         self.a.store8(at, R::Rdx);
+    }
+
+    /// The class of array `a` when known here: allocated in this code, or a constant.
+    fn known_array_class(&self, a: V) -> Option<&'static Klass> {
+        let mut r = self.g.resolve(a);
+        if let Inst::CheckCast(x, ..) = *self.g.inst(r) {
+            r = self.g.resolve(x);
+        }
+        match *self.g.inst(r) {
+            Inst::NewArray(k, ..) => Some(k),
+            Inst::Const(o) if o != 0 && self.g.ty(r) == Ty::A => Some(crate::jit::fold::class_of(o as usize)),
+            _ => None,
+        }
     }
 
     /// The memory at `addr`: an absolute operand in low memory, else through `scratch`.
