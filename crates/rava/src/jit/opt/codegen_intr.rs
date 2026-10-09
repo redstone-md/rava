@@ -80,14 +80,16 @@ impl Gen<'_> {
                 let heap = self.arrays.contains(&self.g.resolve(args[1]));
                 let (b, o) = (self.reg(args[1], R::Rax), self.reg(args[2], R::Rcx));
                 let r = self.out(v);
-                crate::jit::emit_obj::unsafe_load(&mut self.a, r, ty, mem_idx(b, o, 1, 0), heap);
+                let at = self.unsafe_at(b, o, &args[3..]);
+                crate::jit::emit_obj::unsafe_load(&mut self.a, r, ty, at, heap);
                 self.put(v, r);
             }
             Intrinsic::UnsafePut(ty, volatile) => {
                 let heap = self.arrays.contains(&self.g.resolve(args[1]));
                 let (b, o) = (self.reg(args[1], R::Rax), self.reg(args[2], R::Rcx));
                 self.load(R::Rdx, args[3]);
-                crate::jit::emit_obj::unsafe_store(&mut self.a, R::Rdx, ty, mem_idx(b, o, 1, 0), heap);
+                let at = self.unsafe_at(b, o, &args[4..]);
+                crate::jit::emit_obj::unsafe_store(&mut self.a, R::Rdx, ty, at, heap);
                 if volatile {
                     self.a.storeload();
                 }
@@ -109,13 +111,14 @@ impl Gen<'_> {
                 self.load(R::R11, args[4]);
                 self.load(R::Rax, args[3]);
                 let (b, o) = (self.reg(args[1], R::Rcx), self.reg(args[2], R::Rdx));
-                crate::jit::emit_obj::unsafe_cas(&mut self.a, ty, mem_idx(b, o, 1, 0), heap);
+                let at = self.unsafe_at(b, o, &args[5..]);
+                crate::jit::emit_obj::unsafe_cas(&mut self.a, ty, at, heap);
                 self.a.setcc(Cond::E, R::Rax);
                 self.a.movzx8(R::Rax, R::Rax);
                 if ty == BasicType::Reference && heap {
-                    crate::jit::emit_obj::card_mark(&mut self.a, mem_idx(b, o, 1, 0));
+                    crate::jit::emit_obj::card_mark(&mut self.a, at);
                 } else if ty == BasicType::Reference {
-                    crate::jit::emit_obj::card_mark_checked(&mut self.a, mem_idx(b, o, 1, 0));
+                    crate::jit::emit_obj::card_mark_checked(&mut self.a, at);
                 }
                 self.put(v, R::Rax);
             }
@@ -165,6 +168,18 @@ impl Gen<'_> {
 
     /// `mirror.isInstance(o)` for a non-null mirror: null → false, a primitive mirror → false,
     /// the exact class → true, else the subtype check.
+    /// An Unsafe access's address: base `b` plus offset `o`, or with a folded scale and
+    /// displacement (`algebra::fold_unsafe_addresses`), plus index `o` scaled.
+    fn unsafe_at(&self, b: R, o: R, folded: &[V]) -> crate::jit::asm::M {
+        match *folded {
+            [s, d] => {
+                let k = |x: V| self.g.constant(self.g.resolve(x)).expect("a folded constant");
+                mem_idx(b, o, k(s) as u8, k(d) as i32)
+            }
+            _ => mem_idx(b, o, 1, 0),
+        }
+    }
+
     fn is_instance(&mut self, v: V, mirror: V, obj: V) {
         let done = self.a.new_label();
         let m = self.reg(mirror, R::Rcx);
