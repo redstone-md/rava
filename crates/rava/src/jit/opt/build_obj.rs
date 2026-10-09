@@ -18,14 +18,39 @@ impl Builder {
     }
 
     /// Records the class a field load at `pc` has exactly when its field is declared with a
-    /// final class already loaded (`Builder::declared`).
+    /// final class already loaded, or an array of one (`Builder::declared`).
     fn note_declared(&mut self, v: V, pc: usize) {
         let Some((holder, f)) = crate::jit::fold::field_decl(self.sc.m, self.u2(pc)) else { return };
-        let desc = f.desc.as_str();
-        let Some(name) = desc.strip_prefix('L').and_then(|d| d.strip_suffix(';')) else { return };
-        let Some(k) = crate::vm::vm().find_loaded(holder.loader(), crate::symbol::Symbol::intern(name)) else { return };
-        if matches!(k.kind, crate::klass::KlassKind::Instance) && k.access & ACC_FINAL != 0 {
+        if let Some(k) = declared_class(holder, f.desc.as_str()) {
             self.declared.insert(v, k);
+        }
+    }
+
+    /// Records the exact classes of the compiled method `m`'s parameters (`args`, the receiver
+    /// first unless static) declared with a final class or an array of one, as C2 types
+    /// parameters by the signature. Only the root's: an inlined body's parameter is a value of
+    /// its caller, whose type there may hold only on the guarded path the body is inlined on
+    /// (a receiver passed on as `this`).
+    pub(super) fn note_declared_params(&mut self, m: &'static Method, args: &[V]) {
+        let desc = m.desc.as_str();
+        let Some(params) = desc.strip_prefix('(').and_then(|d| d.split(')').next()) else { return };
+        let mut rest = params;
+        let mut args = args.iter().skip(usize::from(!m.is_static()));
+        while !rest.is_empty() {
+            let dims = rest.len() - rest.trim_start_matches('[').len();
+            let end = match rest.as_bytes()[dims] {
+                b'L' => match rest.find(';') {
+                    Some(i) => i + 1,
+                    None => return,
+                },
+                _ => dims + 1,
+            };
+            let (one, tail) = rest.split_at(end);
+            rest = tail;
+            let Some(&v) = args.next() else { return };
+            if let Some(k) = declared_class(m.holder, one) {
+                self.declared.insert(self.g.resolve(v), k);
+            }
         }
     }
 
@@ -369,4 +394,20 @@ pub(super) fn box_value_of(m: &'static Method) -> bool {
         _ => return false,
     };
     m.is_static() && m.name.as_str() == "valueOf" && m.desc.as_str() == desc
+}
+
+/// The class a value declared with type `desc` in `holder` has exactly when not null: a final
+/// class already loaded, or an array of one whose array class exists (no other class is
+/// assignable to either).
+fn declared_class(holder: &'static Klass, desc: &str) -> Option<&'static Klass> {
+    let elem = desc.trim_start_matches('[');
+    let name = elem.strip_prefix('L').and_then(|d| d.strip_suffix(';'))?;
+    let mut k = crate::vm::vm().find_loaded(holder.loader(), crate::symbol::Symbol::intern(name))?;
+    if !matches!(k.kind, crate::klass::KlassKind::Instance) || k.access & ACC_FINAL == 0 {
+        return None;
+    }
+    for _ in 0..desc.len() - elem.len() {
+        k = k.array_klass.get().copied()?;
+    }
+    Some(k)
 }
