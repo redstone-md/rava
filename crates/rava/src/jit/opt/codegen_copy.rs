@@ -29,19 +29,23 @@ impl Gen<'_> {
         let [src, sp, dst, dp, len] = args[..] else { unreachable!("arraycopy takes five arguments") };
         let es = k.elem_size() as u8;
         let scale = es.trailing_zeros() as u8;
-        let len_ = ARRAY_LENGTH_OFFSET as i32;
-        // The source: non-null and of the destination's class.
-        let rs = self.reg(src, R::Rax);
-        self.a.test_rr(true, rs, rs);
-        self.a.jcc(Cond::E, fail);
-        let addr = k as *const Klass as usize;
-        if crate::low::is_low(addr) {
-            self.a.alu_mi(false, Alu::Cmp, mem(rs, 0), addr as i32);
-        } else {
-            self.a.mov_ri(R::Rdx, addr as i64);
-            self.a.alu_rm(false, Alu::Cmp, R::Rdx, mem(rs, 0));
+        // The source: non-null and of the destination's class; a constant one (a literal's
+        // bytes) is checked here, its length known.
+        let constant = self.int_const(src).filter(|&o| o != 0 && std::ptr::eq(crate::jit::fold::class_of(o as usize), k));
+        let src_len = constant.map(|o| crate::jit::fold::array_length(o as usize) as i64);
+        if constant.is_none() {
+            let rs = self.reg(src, R::Rax);
+            self.a.test_rr(true, rs, rs);
+            self.a.jcc(Cond::E, fail);
+            let addr = k as *const Klass as usize;
+            if crate::low::is_low(addr) {
+                self.a.alu_mi(false, Alu::Cmp, mem(rs, 0), addr as i32);
+            } else {
+                self.a.mov_ri(R::Rdx, addr as i64);
+                self.a.alu_rm(false, Alu::Cmp, R::Rdx, mem(rs, 0));
+            }
+            self.a.jcc(Cond::Ne, fail);
         }
-        self.a.jcc(Cond::Ne, fail);
         // No negative position or length.
         for x in [sp, dp, len] {
             if self.int_const(x).is_none() {
@@ -54,18 +58,18 @@ impl Gen<'_> {
         // the whole source from its start needs no check there.
         let whole = self.int_const(sp) == Some(0) && matches!(*self.g.inst(self.g.resolve(len)), Inst::ArrayLength(a) if self.g.resolve(a) == self.g.resolve(src));
         if !whole {
-            self.zext(R::Rcx, sp);
-            self.zext(R::Rdx, len);
-            self.a.alu_rr(false, Alu::Add, R::Rcx, R::Rdx);
-            self.a.alu_rm(false, Alu::Cmp, R::Rcx, mem(rs, len_));
-            self.a.jcc(Cond::A, fail);
+            match (self.int_const(sp), self.int_const(len), src_len) {
+                (Some(p), Some(n), Some(l)) => {
+                    if (p as u32 as i64) + (n as u32 as i64) > l {
+                        self.a.jmp(fail);
+                    }
+                }
+                _ => {
+                    self.end_within(sp, len, src, src_len, fail);
+                }
+            }
         }
-        let rd = self.reg(dst, R::R11);
-        self.zext(R::Rcx, dp);
-        self.zext(R::Rdx, len);
-        self.a.alu_rr(false, Alu::Add, R::Rcx, R::Rdx);
-        self.a.alu_rm(false, Alu::Cmp, R::Rcx, mem(rd, len_));
-        self.a.jcc(Cond::A, fail);
+        self.end_within(dp, len, dst, None, fail);
         // from = rcx, to = r11, bytes = rdx.
         let base = ARRAY_BASE_OFFSET as i32;
         let rs = self.reg(src, R::Rax);
@@ -93,6 +97,32 @@ impl Gen<'_> {
                     self.a.shift_ri(true, Shift::Shl, R::Rdx, scale);
                 }
                 self.copy_variable();
+            }
+        }
+    }
+
+    /// Fails unless `pos + len` (both non-negative) is at most the length of array `a`, known
+    /// (`known`) or in its header.
+    fn end_within(&mut self, pos: V, len: V, a: V, known: Option<i64>, fail: Label) {
+        let len_ = ARRAY_LENGTH_OFFSET as i32;
+        match (self.int_const(pos), self.int_const(len), known) {
+            (Some(p), Some(n), None) if (p as u32 as i64) + (n as u32 as i64) <= i32::MAX as i64 => {
+                let ra = self.reg(a, R::R11);
+                self.a.alu_mi(false, Alu::Cmp, mem(ra, len_), (p as u32 as i64 + n as u32 as i64) as i32);
+                self.a.jcc(Cond::B, fail);
+            }
+            _ => {
+                self.zext(R::Rcx, pos);
+                self.zext(R::Rdx, len);
+                self.a.alu_rr(false, Alu::Add, R::Rcx, R::Rdx);
+                match known {
+                    Some(l) => self.a.alu_ri(false, Alu::Cmp, R::Rcx, l as i32),
+                    None => {
+                        let ra = self.reg(a, R::R11);
+                        self.a.alu_rm(false, Alu::Cmp, R::Rcx, mem(ra, len_));
+                    }
+                }
+                self.a.jcc(Cond::A, fail);
             }
         }
     }
