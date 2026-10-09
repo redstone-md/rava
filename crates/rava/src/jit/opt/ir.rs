@@ -457,18 +457,40 @@ impl Graph {
                     Inst::Call(c, args, s) => format!("Call({c:?}, {args:?}) @{}", s.bci),
                     i @ (Inst::NullCheck(..) | Inst::FlagCheck(..) | Inst::ZeroCheck(..) | Inst::BoundsCheck(..) | Inst::RangeGuard(..) | Inst::Guard(..) | Inst::InitCheck(..) | Inst::CheckCast(..) | Inst::StoreCheck(..) | Inst::New(..) | Inst::NewArray(..) | Inst::NewMulti(..) | Inst::Monitor(..)) => {
                         let s = i.state().unwrap();
-                        format!("{} @{}:{}", format!("{i:?}").split(", State").next().unwrap_or(""), s.method.name, s.bci)
+                        format!("{} @{}:{}{}", format!("{i:?}").split(", State").next().unwrap_or(""), s.method.name, s.bci, state_values(s))
                     }
                     i => format!("{i:?}"),
                 };
                 out += &format!("  v{v}: {:?} = {inst}\n", self.values[v as usize].ty);
             }
             let term = match &blk.term {
-                Term::Deopt(s) => format!("Deopt @{}:{}", s.method.name, s.bci),
+                Term::Deopt(s) => format!("Deopt @{}:{}{}", s.method.name, s.bci, state_values(s)),
                 t => format!("{t:?}"),
             };
             out += &format!("  {term}\n");
         }
+        if std::env::var_os("RAVA_OPT_IR_STATES").is_some() {
+            let aliases: Vec<String> = (0..self.values.len() as V).filter(|&v| self.resolve(v) != v).map(|v| format!("v{v}->v{}", self.resolve(v))).collect();
+            out += &format!("aliases {}\n", aliases.join(" "));
+            let mut virtuals: Vec<String> = self.virtuals.iter().map(|(v, x)| format!("v{v}={}{:?}", x.klass.name, x.fields.iter().map(|&(o, _, f)| (o, f)).collect::<Vec<_>>())).collect();
+            virtuals.sort();
+            out += &format!("virtuals {}\n", virtuals.join(" "));
+        }
         out
     }
+}
+
+/// With `RAVA_OPT_IR_STATES`, a state's values per scope (locals | stack) for the IR dump.
+fn state_values(s: &State) -> String {
+    if std::env::var_os("RAVA_OPT_IR_STATES").is_none() {
+        return String::new();
+    }
+    let show = |xs: &[Option<V>]| xs.iter().map(|x| x.map_or("_".into(), |v| format!("v{v}"))).collect::<Vec<_>>().join(",");
+    let mut out = String::new();
+    let mut sc = Some(s);
+    while let Some(s) = sc {
+        out += &format!(" [{}@{} {} | {}]", s.method.name, s.bci, show(&s.locals), show(&s.stack));
+        sc = s.caller.as_deref();
+    }
+    out
 }
