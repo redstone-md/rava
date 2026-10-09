@@ -10,6 +10,14 @@ public class RefCopySem {
     static Object[] mid(Object[] a, int p, int n) { Object[] b = new Object[n + 2]; System.arraycopy(a, p, b, 1, n); return b; }
     static String[] toStrings(Object[] a) { String[] b = new String[a.length]; System.arraycopy(a, 0, b, 0, a.length); return b; }
     static <T> T[] copyOf(T[] a, int n) { return Arrays.copyOf(a, n); }
+    // Several copies into one fresh array, as MethodType.insertParameterTypes makes.
+    static String[] insert(String[] a, int at, String[] ins) {
+        String[] b = new String[a.length + ins.length];
+        System.arraycopy(a, 0, b, 0, at);
+        System.arraycopy(ins, 0, b, at, ins.length);
+        System.arraycopy(a, at, b, at + ins.length, a.length - at);
+        return b;
+    }
 
     public static void main(String[] args) {
         long acc = 0;
@@ -23,6 +31,8 @@ public class RefCopySem {
             Object[] m = mid(src, r % 5, n);
             Object[] c = copyOf(ss, n);
             Object[] w = grow(ss, n);
+            String[] ins = insert(ss, r % 40, new String[] { "i" + (r & 7), "j" });
+            acc += ins[r % 40].length() + ins[(r % 40) + 2].hashCode() + ins[41].length();
             acc += g[n - 1].hashCode() + h[n - 1].length() + (h[n + 2] == null ? 1 : 0) + m[n].hashCode() + c[n - 1].hashCode() + w.length + w[0].hashCode();
             if (r % 1000 == 0) { src[r % 40] = "n" + r; System.gc(); }
         }
