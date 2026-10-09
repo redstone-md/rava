@@ -217,7 +217,8 @@ impl Gen<'_> {
         self.a.mov_ri(R::Rax, 1);
         self.a.alu_rr(true, Alu::Cmp, R::Rdx, R::Rcx);
         self.a.jcc(Cond::E, done);
-        self.call_preserving(runtime::subtype as *const () as usize, &[Arg::Reg(R::Rdx), Arg::Reg(R::Rcx)]);
+        self.dynamic_subtype(R::Rdx, R::Rcx, done);
+        self.call_preserving(runtime::subtype_noted as *const () as usize, &[Arg::Reg(R::Rdx), Arg::Reg(R::Rcx)]);
         self.a.bind(done);
         self.put(v, R::Rax);
     }

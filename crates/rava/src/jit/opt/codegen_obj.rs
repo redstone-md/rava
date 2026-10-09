@@ -198,7 +198,8 @@ impl Gen<'_> {
                     }
                     self.a.jcc(Cond::E, ok);
                 }
-                self.call_preserving(runtime::subtype as *const () as usize, &[Arg::Reg(R::Rcx), Arg::Reg(R::Rdx)]);
+                self.dynamic_subtype(R::Rcx, R::Rdx, ok);
+                self.call_preserving(runtime::subtype_noted as *const () as usize, &[Arg::Reg(R::Rcx), Arg::Reg(R::Rdx)]);
                 self.a.test_rr(true, R::Rax, R::Rax);
                 self.a.jcc(Cond::E, fail);
                 self.a.bind(ok);
@@ -412,6 +413,24 @@ impl Gen<'_> {
         }
         self.a.jmp(done);
         self.a.bind(after);
+    }
+
+    /// Jumps to `yes` when the class in `sub` is a subtype of the class in `target` by the
+    /// checks HotSpot makes inline for a target known only at run time: the ancestor at the
+    /// target's depth (the primary supers display), then the interface `sub` matched last
+    /// (`Klass::super_hit`); falls through otherwise, for the runtime to answer. r11 is
+    /// scratch. (`sub == target` is the caller's.)
+    pub(super) fn dynamic_subtype(&mut self, sub: R, target: R, yes: crate::jit::asm::Label) {
+        let skip = self.a.new_label();
+        self.a.load(false, R::R11, mem(target, std::mem::offset_of!(Klass, depth) as i32));
+        self.a.alu_ri(false, Alu::Cmp, R::R11, crate::klass::PRIMARY as i32);
+        self.a.jcc(Cond::Ae, skip);
+        self.a.load(true, R::R11, mem_idx(sub, R::R11, 8, std::mem::offset_of!(Klass, primary) as i32));
+        self.a.alu_rr(true, Alu::Cmp, R::R11, target);
+        self.a.jcc(Cond::E, yes);
+        self.a.bind(skip);
+        self.a.alu_rm(true, Alu::Cmp, target, mem(sub, std::mem::offset_of!(Klass, super_hit) as i32));
+        self.a.jcc(Cond::E, yes);
     }
 
     /// The thin-lock fast path inline; the runtime otherwise (blocking, inflated monitors, or

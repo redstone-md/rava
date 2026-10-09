@@ -331,6 +331,19 @@ pub extern "sysv64" fn subtype(k: *const Klass, target: *const Klass) -> u64 {
     k.is_subtype_of(target) as u64
 }
 
+/// `subtype` for inline checks against a class known only at run time
+/// (`codegen_obj::dynamic_subtype`): a yes for an interface is noted in `k.super_hit`, which
+/// those checks compare first.
+pub extern "sysv64" fn subtype_noted(k: *const Klass, target: *const Klass) -> u64 {
+    // SAFETY: immortal class metadata.
+    let (k, target): (&'static Klass, &'static Klass) = unsafe { (&*k, &*target) };
+    let yes = k.is_subtype_of(target);
+    if yes && target.is_interface() {
+        k.super_hit.store(target as *const Klass as *mut Klass, std::sync::atomic::Ordering::Relaxed);
+    }
+    yes as u64
+}
+
 /// Allocates an instance of an initialized class; null with an exception pending on failure.
 pub extern "sysv64" fn new_instance(t: *mut Thread, k: *const Klass) -> u64 {
     // SAFETY: the current thread and an immortal class.
