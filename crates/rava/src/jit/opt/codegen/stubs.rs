@@ -161,7 +161,7 @@ impl Gen<'_> {
 
     /// Where a conditional jump from `from` to `to` goes: the block itself, or a stub doing the
     /// edge's phi moves and poll first.
-    pub(super) fn edge_target(&mut self, from: B, to: B) -> Label {
+    pub(in crate::jit::opt) fn edge_target(&mut self, from: B, to: B) -> Label {
         if let Some(l) = self.cold_target(to) {
             return l;
         }
