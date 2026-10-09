@@ -74,7 +74,8 @@ fn decides(f: Cmp, q: Cmp) -> Option<bool> {
     }
 }
 
-struct Facts(Vec<Fact>);
+/// The facts on the current path, and the phis non-null on every edge into them.
+struct Facts(Vec<Fact>, std::collections::HashSet<V>);
 
 impl Facts {
     /// Whether the facts decide `a cmp b`.
@@ -131,7 +132,10 @@ impl Facts {
     fn nonnull(&self, g: &Graph, v: V) -> bool {
         let mut v = g.resolve(v);
         loop {
-            if matches!(g.inst(v), Inst::New(..) | Inst::NewArray(..) | Inst::NewMulti(..)) || g.receiver == Some(v) {
+            if matches!(g.inst(v), Inst::New(..) | Inst::NewArray(..) | Inst::NewMulti(..)) || g.receiver == Some(v) || self.1.contains(&v) {
+                return true;
+            }
+            if g.constant(v).is_some_and(|c| c != 0) && g.ty(v) == Ty::A {
                 return true;
             }
             if self.decide(Cmp::Ne, Ty::A, Key::Val(v), Key::Const(0)) == Some(true) {
@@ -147,17 +151,57 @@ impl Facts {
 }
 
 pub fn eliminate(g: &mut Graph) {
-    walk(g, false);
+    let phis = nonnull_phis(g);
+    walk(g, false, phis);
 }
 
 /// Marks the casts, instance tests and identity hashes whose object is proved non-null where
 /// they are (`Graph::nonnull_input`), on the final graph: code generation then leaves out
 /// their null test. Run last, after anything that moves instructions.
 pub fn mark_nonnull_inputs(g: &mut Graph) {
-    walk(g, true);
+    let phis = nonnull_phis(g);
+    walk(g, true, phis);
 }
 
-fn walk(g: &mut Graph, mark_only: bool) {
+/// The reference phis whose every input is non-null at the end of its edge's predecessor (a
+/// lookup's result merged from paths that each tested it), other such phis included: the
+/// greatest set closed under that rule.
+fn nonnull_phis(g: &mut Graph) -> std::collections::HashSet<V> {
+    let mut edges = Vec::new();
+    walk_with(g, &mut Facts(Vec::new(), Default::default()), &mut |facts, g, b| {
+        for s in g.blocks[b as usize].term.successors() {
+            let Some(j) = g.blocks[s as usize].preds.iter().position(|&p| p == b) else { continue };
+            for &p in &g.blocks[s as usize].insts {
+                if let (Inst::Phi(ins), Ty::A, true) = (g.inst(p), g.ty(p), g.resolve(p) == p) {
+                    let x = g.resolve(ins[j]);
+                    // The edge itself may be a branch's non-null side for the input.
+                    let tested = match g.blocks[b as usize].term {
+                        Term::If { cmp: c @ (Cmp::Eq | Cmp::Ne), ty: Ty::A, a, b: y, then, other, .. } if then != other => {
+                            let (a, y) = (g.resolve(a), g.resolve(y));
+                            let on = if c == Cmp::Ne { then } else { other };
+                            on == s && (a == x && g.constant(y) == Some(0) || y == x && g.constant(a) == Some(0))
+                        }
+                        _ => false,
+                    };
+                    edges.push((p, x, tested || facts.nonnull(g, x)));
+                }
+            }
+        }
+    });
+    let mut set: std::collections::HashSet<V> = edges.iter().map(|e| e.0).collect();
+    loop {
+        let out: Vec<V> = edges.iter().filter(|&&(p, x, known)| set.contains(&p) && !known && !set.contains(&x)).map(|e| e.0).collect();
+        if out.is_empty() {
+            return set;
+        }
+        out.iter().for_each(|p| {
+            set.remove(p);
+        });
+    }
+}
+
+/// The dominator-tree walk alone: `end` sees each block's facts at its end.
+fn walk_with(g: &Graph, facts: &mut Facts, end: &mut dyn FnMut(&Facts, &Graph, B)) {
     let super::dom::Dom { rpo, idom, .. } = super::dom::Dom::new(g);
     let mut children = vec![Vec::new(); rpo.len()];
     for i in 1..rpo.len() {
@@ -165,7 +209,48 @@ fn walk(g: &mut Graph, mark_only: bool) {
             children[idom[i]].push(i);
         }
     }
-    let mut facts = Facts(Vec::new());
+    let mut walk = vec![(0usize, false)];
+    let mut marks = Vec::new();
+    while let Some((i, done)) = walk.pop() {
+        if done {
+            facts.0.truncate(marks.pop().unwrap());
+            continue;
+        }
+        marks.push(facts.0.len());
+        walk.push((i, true));
+        let b = rpo[i];
+        if let Some(f) = on_entry(g, b) {
+            facts.0.push(f);
+        }
+        for &v in &g.blocks[b as usize].insts {
+            if g.resolve(v) != v {
+                continue;
+            }
+            if let Inst::NullCheck(x, _) = *g.inst(v) {
+                let mut x = g.resolve(x);
+                loop {
+                    facts.0.push(fact(Cmp::Ne, Ty::A, Key::Val(x), Key::Const(0)));
+                    match *g.inst(x) {
+                        Inst::CheckCast(y, ..) => x = g.resolve(y),
+                        _ => break,
+                    }
+                }
+            }
+        }
+        end(facts, g, b);
+        walk.extend(children[i].iter().map(|&c| (c, false)));
+    }
+}
+
+fn walk(g: &mut Graph, mark_only: bool, phis: std::collections::HashSet<V>) {
+    let super::dom::Dom { rpo, idom, .. } = super::dom::Dom::new(g);
+    let mut children = vec![Vec::new(); rpo.len()];
+    for i in 1..rpo.len() {
+        if idom[i] != usize::MAX {
+            children[idom[i]].push(i);
+        }
+    }
+    let mut facts = Facts(Vec::new(), phis);
     let (mut drop, mut folds, mut marked) = (Vec::new(), Vec::new(), Vec::new());
     let mut walk = vec![(0usize, false)];
     let mut marks = Vec::new();
@@ -222,7 +307,17 @@ fn walk(g: &mut Graph, mark_only: bool) {
         }
         if let Term::If { cmp, ty: ty @ (Ty::I | Ty::J | Ty::A), a, b: y, then, other, .. } = g.blocks[b as usize].term {
             if then != other {
-                if let Some(r) = facts.decide(cmp, ty, key(g, a), key(g, y)) {
+                // A reference proved non-null (an allocation, a phi of non-null values) against null.
+                let null_test = (ty == Ty::A && matches!(cmp, Cmp::Eq | Cmp::Ne))
+                    .then(|| match (g.constant(g.resolve(a)), g.constant(g.resolve(y))) {
+                        (None, Some(0)) => Some(a),
+                        (Some(0), None) => Some(y),
+                        _ => None,
+                    })
+                    .flatten()
+                    .filter(|&x| facts.nonnull(g, x))
+                    .map(|_| cmp == Cmp::Ne);
+                if let Some(r) = null_test.or_else(|| facts.decide(cmp, ty, key(g, a), key(g, y))) {
                     folds.push((b, if r { then } else { other }, if r { other } else { then }));
                 }
             }
@@ -230,7 +325,15 @@ fn walk(g: &mut Graph, mark_only: bool) {
         walk.extend(children[i].iter().map(|&c| (c, false)));
     }
     if mark_only {
+        // Branches decided only now (a null test of a phi whose null input jump threading
+        // routed elsewhere) are folded too; checks stay as they are.
         g.nonnull_input = marked.into_iter().collect();
+        if !folds.is_empty() {
+            for (b, keep, gone) in folds {
+                fold_branch(g, b, keep, gone);
+            }
+            remove_unreachable(g);
+        }
         return;
     }
     if drop.is_empty() && folds.is_empty() {
