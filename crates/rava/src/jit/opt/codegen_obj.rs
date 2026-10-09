@@ -287,8 +287,7 @@ impl Gen<'_> {
         }
         match *self.g.inst(r) {
             Inst::NewArray(k, ..) => Some(k),
-            Inst::Const(o) if o != 0 && self.g.ty(r) == Ty::A => Some(crate::jit::fold::class_of(o as usize)),
-            _ => None,
+            _ => self.g.constant_value(r).filter(|&o| o != 0 && self.g.ty(r) == Ty::A).map(|o| crate::jit::fold::class_of(o as usize)),
         }
     }
 

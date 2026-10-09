@@ -419,6 +419,16 @@ impl Graph {
     }
 
     /// The value `v` stands for.
+    /// The constant `v` holds, also through the copies that keep a wide constant in a register
+    /// (`reload.rs`): for code that only needs to know the value, not where it is.
+    pub fn constant_value(&self, v: V) -> Option<i64> {
+        let mut v = self.resolve(v);
+        while let Inst::Copy(x) = self.values[v as usize].inst {
+            v = self.resolve(x);
+        }
+        self.constant(v)
+    }
+
     pub fn resolve(&self, mut v: V) -> V {
         while let Some(&a) = self.alias.get(v as usize).filter(|&&a| a != v) {
             v = a;
