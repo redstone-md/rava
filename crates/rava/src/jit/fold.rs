@@ -141,6 +141,13 @@ pub(super) fn stable_element(a: usize, i: i64, ty: BasicType) -> Option<i64> {
     (v != 0).then(|| embedded(v, ty))
 }
 
+/// The length of the constant array `o`.
+pub(super) fn array_length(o: usize) -> i32 {
+    let _heap = crate::gc::safepoint::heap_access();
+    // SAFETY: a live array (an embedded constant, which never moves).
+    unsafe { obj::array_length(o as crate::heap::Oop) }
+}
+
 /// The class of the constant object `o`.
 pub(super) fn class_of(o: usize) -> &'static Klass {
     // SAFETY: a live object's header holds its immortal class.

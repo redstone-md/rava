@@ -240,23 +240,29 @@ fn walk(g: &mut Graph, mark_only: bool) {
         blk.insts.retain(|v| !drop.contains(v));
     }
     for (b, keep, gone) in folds {
-        drop_pred(g, gone, b);
-        // A block that only deoptimizes is not laid out (branches go to its stub): take its exit.
-        let kb = &g.blocks[keep as usize];
-        if let (true, Term::Deopt(s)) = (kb.insts.is_empty(), &kb.term) {
-            g.blocks[b as usize].term = Term::Deopt(s.clone());
-            drop_pred(g, keep, b);
-        } else {
-            g.blocks[b as usize].term = Term::Goto(keep);
-        }
+        fold_branch(g, b, keep, gone);
     }
     remove_unreachable(g);
+}
+
+/// Makes `b`'s branch go to `keep` only (`gone` loses `b` as a predecessor); the caller
+/// removes what became unreachable (`remove_unreachable`).
+pub(super) fn fold_branch(g: &mut Graph, b: B, keep: B, gone: B) {
+    drop_pred(g, gone, b);
+    // A block that only deoptimizes is not laid out (branches go to its stub): take its exit.
+    let kb = &g.blocks[keep as usize];
+    if let (true, Term::Deopt(s)) = (kb.insts.is_empty(), &kb.term) {
+        g.blocks[b as usize].term = Term::Deopt(s.clone());
+        drop_pred(g, keep, b);
+    } else {
+        g.blocks[b as usize].term = Term::Goto(keep);
+    }
 }
 
 /// Empties the blocks no path from the entry reaches any more (a folded branch's other side),
 /// taking them out of their successors' predecessors, so none is laid out jumping to a block
 /// that is not.
-fn remove_unreachable(g: &mut Graph) {
+pub(super) fn remove_unreachable(g: &mut Graph) {
     let mut seen = vec![false; g.blocks.len()];
     let mut stack = vec![0 as B];
     while let Some(b) = stack.pop() {
