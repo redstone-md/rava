@@ -158,6 +158,7 @@ pub fn next_run_in(meta: &mut PageMeta, page: usize) -> Option<(usize, usize, us
     meta.set_alloc((end - page) / cell, last, false);
     // SAFETY: free cells of a page in use, handed to the caller only now.
     unsafe { zero(start, end) };
+    prefetch_chunk(end, stop);
     Some((start, end, stop))
 }
 
@@ -168,8 +169,25 @@ pub fn next_chunk(meta: &mut PageMeta, page: usize, from: usize, stop: usize) ->
     let end = chunk_end(from, stop, cell);
     // SAFETY: cells of a run this thread owns, not yet handed to the allocator.
     unsafe { zero(from, end) };
+    prefetch_chunk(end, stop);
     meta.set_alloc((from - page) / cell, (end - page) / cell, true);
     end
+}
+
+/// Asks for the lines of the run's next chunk, `[from, stop)` up to `ZERO_CHUNK` bytes, for
+/// writing (HotSpot's allocation prefetch, a chunk at a time): memory reused by allocation was
+/// last touched a collection ago and comes from DRAM, and clearing a chunk whose lines are
+/// not on their way stalled on every one of them (~3000 cycles a 4 KiB chunk). By the time
+/// allocation reaches the chunk, its lines are here.
+#[inline]
+fn prefetch_chunk(from: usize, stop: usize) {
+    let end = (from + ZERO_CHUNK).min(stop);
+    let mut p = from & !63;
+    while p < end {
+        // SAFETY: a prefetch never faults.
+        unsafe { std::arch::x86_64::_mm_prefetch::<{ std::arch::x86_64::_MM_HINT_ET0 }>(p as *const i8) };
+        p += 64;
+    }
 }
 
 /// The end of the chunk of a run of `cell`-sized cells from `start`: whole cells, `ZERO_CHUNK`
