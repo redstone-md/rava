@@ -23,6 +23,17 @@ pub(super) fn known_destination(g: &Graph, src: V, dst: V) -> Option<&'static Kl
     (matches!(k.kind, KlassKind::TypeArray { .. }) && g.resolve(src) != d).then_some(k)
 }
 
+/// Whether int `v` is never negative by its definition: an array length, or masked or shifted
+/// down to a non-negative range.
+fn non_negative(g: &Graph, v: V) -> bool {
+    match *g.inst(g.resolve(v)) {
+        Inst::ArrayLength(_) => true,
+        Inst::Bin(BinOp::And, a, b) => [a, b].into_iter().any(|x| g.constant(g.resolve(x)).is_some_and(|c| c as i32 >= 0)),
+        Inst::Bin(BinOp::Ushr, _, b) => g.constant(g.resolve(b)).is_some_and(|c| c & 31 != 0),
+        _ => false,
+    }
+}
+
 impl Gen<'_> {
     /// `arraycopy(src, sp, dst, dp, len)` into `dst` of class `k` (`known_destination`).
     pub(super) fn array_copy_inline(&mut self, args: &[V], k: &'static Klass, fail: Label) {
@@ -48,7 +59,7 @@ impl Gen<'_> {
         }
         // No negative position or length.
         for x in [sp, dp, len] {
-            if self.int_const(x).is_none() {
+            if self.int_const(x).is_none() && !non_negative(self.g, x) {
                 let r = self.reg(x, R::Rcx);
                 self.a.test_rr(false, r, r);
                 self.a.jcc(Cond::S, fail);
