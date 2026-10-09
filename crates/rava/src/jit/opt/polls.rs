@@ -1,5 +1,5 @@
-//! Where optimized code can do without safepoint polls. A frameless body (no loops, no calls)
-//! needs none at all. Short counted loops need none on their back edges (C2 drops polls from
+//! Where optimized code can do without safepoint polls. A body without loops or Java calls (a
+//! frameless one among them) needs none at all, not even on entry. Short counted loops need none on their back edges (C2 drops polls from
 //! counted loops below its strip-mining length): an int or long induction variable stepping by
 //! a constant from a constant start, tested against a constant bound in the loop header, with
 //! at most `MAX_TRIPS` iterations. Time to a safepoint stays bounded by the polls around the loop

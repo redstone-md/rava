@@ -447,7 +447,11 @@ impl Gen<'_> {
             a.store(true, mem(R::R12, offsets::TOP), R::Rcx);
             self.top_published = true;
         }
-        self.poll();
+        // A body without loops or Java calls runs for a bounded time: the polls of its callers
+        // bound the time to a safepoint (`polls.rs`).
+        if !self.lazy_header || self.g.blocks.iter().any(|b| b.loop_header && !matches!(b.term, Term::None)) {
+            self.poll();
+        }
         if let Some((mon, at)) = self.lock {
             match mon {
                 Monitor::Receiver => self.a.load(true, R::Rcx, self.slot(0)),
