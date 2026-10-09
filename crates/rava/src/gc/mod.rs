@@ -22,6 +22,7 @@ mod prefault;
 pub(crate) mod recent;
 pub mod safepoint;
 mod space;
+mod statics;
 
 use crate::thread::Thread;
 use space::{class_of, Space, CLASSES, CLASS_SIZES, LARGE_THRESHOLD, PAGE_SIZE};
