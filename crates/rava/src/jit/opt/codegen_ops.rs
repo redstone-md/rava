@@ -340,25 +340,27 @@ impl Gen<'_> {
 
     fn convert(&mut self, v: V, op: u8, x: V) {
         let r = self.out(v);
+        // A narrowing or widening move reads a source register straight into the result.
+        let src = match self.loc[x as usize] {
+            Loc::Reg(s) => s,
+            _ => {
+                if matches!(op, 0x85 | 0x88 | 0x91 | 0x92 | 0x93) {
+                    self.load(r, x);
+                }
+                r
+            }
+        };
         match op {
             0x85 => {
-                self.load(r, x);
                 if !self.sign_extended(x) {
-                    self.a.movsxd(r, r);
+                    self.a.movsxd(r, src);
+                } else if src != r {
+                    self.a.mov_rr(true, r, src);
                 }
             }
-            0x88 => {
-                self.load(r, x);
-                self.a.movsxd(r, r);
-            }
-            0x91 | 0x93 => {
-                self.load(r, x);
-                self.a.movsx_rr(if op == 0x91 { 1 } else { 2 }, r, r);
-            }
-            0x92 => {
-                self.load(r, x);
-                self.a.movzx16_rr(r, r);
-            }
+            0x88 => self.a.movsxd(r, src),
+            0x91 | 0x93 => self.a.movsx_rr(if op == 0x91 { 1 } else { 2 }, r, src),
+            0x92 => self.a.movzx16_rr(r, src),
             0x86 | 0x87 | 0x89 | 0x8a => {
                 let from_long = op >= 0x89;
                 let to_double = op == 0x87 || op == 0x8a;
