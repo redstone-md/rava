@@ -1483,3 +1483,42 @@ process's own data addresses, take 3.65-3.9 ns a call, as HotSpot's do. In that 
 after it), a hazard only memory-passed arguments and per-call BCI stores have. Padding
 branches off 32-byte boundaries (HotSpot's JCC-erratum mitigation, worth 10 % to `java` here)
 and 32/64-byte code alignment changed nothing measurable: reverted.
+
+## 2026-10-09 (cont.) — the frame protocol, home slots, declared types
+
+Measured with the same instruction and data-reference counts (`SystemTickBench` per tick; a
+`ConcurrentHashMap.get` loop with `String` keys per get), `java -Xbatch` alongside:
+
+| change | tick instr | tick data refs | CHM get instr |
+|---|---|---|---|
+| before | 34,812 | 13,921 | 68 |
+| lazy frame header | 34,736 | 13,764 | |
+| no entry poll in bounded methods | 34,652 | 13,720 | |
+| evicted values without home slots | 34,376 | 13,444 | |
+| declared parameter types | 33,838 | 13,225 | 66 |
+| scaled Unsafe addresses | 33,839 | 13,225 | 64 |
+| `java` | 33,500 | 11,238 | 50 |
+
+- **Lazy frame header.** A method that calls no Java code (a leaf with slow paths) wrote its
+  `Method` and caller link on entry and restored `Thread::top` on exit. The first slow path that
+  publishes the frame now writes the header; an exit unlinks only a published frame: four
+  memory operations fewer per call.
+- **No entry poll** in a method without loops or Java calls (its callers' polls bound the time
+  to a safepoint).
+- **Evicted values**: linear scan left a spilled value's register in its location until slots
+  were assigned, so a value states read past its last use also got a home slot (two stores of
+  the same value).
+- **Declared parameter types**: the compiled method's parameters declared with a final class or
+  an array of one have that class (a `String[]` element is a `String`). Inlined bodies' parameters
+  are not typed: one is a caller value, and `KeySet.iterator()` inlined behind a class guard
+  passes its receiver on as a `KeySet`, which typed the caller's `Collection` everywhere and broke
+  Paper's start (an iterator rebuilt on deoptimization from the wrong object).
+  `RAVA_OPT_IR_STATES` (states, aliases and virtual objects in the IR dump) traced it.
+- **Scaled Unsafe addresses**: `base + ((long) i << k) + c` is one addressing mode.
+
+Not kept: preferring a phi's slot for its input's spill (no change), hoisting `FlagCheck`s out of
+loops (a class loaded mid-loop would leave the inlined target running; HotSpot deoptimizes the
+frame instead).
+
+Wall time stays noisy on this host; the CHM loop is 1.26 ms against `java`'s 0.87 per 200k gets,
+in line with the instruction counts (IPC is similar).
