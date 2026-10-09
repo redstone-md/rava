@@ -185,7 +185,8 @@ enum Task {
     Thread(&'static safepoint::Record),
     /// The roots of a range of classes.
     Classes(usize, usize),
-    /// The statics of a range of classes (a young collection: their other roots are old).
+    /// The listed static slots `[from, to)` whose value changed since the last collection (a
+    /// young collection: the other roots of those classes are old; `statics.rs`).
     Statics(usize, usize),
     /// Objects stored into write-once VM roots since the last collection (`recent.rs`).
     Noted,
@@ -217,16 +218,14 @@ impl Shared<'_> {
     /// Runs a root task: what it finds is marked and queued on `out` (a card task queues the
     /// reference slots of old objects instead); reference statics are marked too, or, when
     /// evacuating, their slots queued on `statics` to follow moves.
-    fn run(&self, task: &Task, classes: &[&'static Klass], noted: &[usize], out: &mut Vec<usize>, statics: &mut Vec<usize>) {
-        let mut static_slots = |from: usize, to: usize, out: &mut Vec<usize>| {
-            crate::vm::vm().class_statics(&classes[from..to], &mut |slot| {
-                if self.evacuate {
-                    statics.push(slot);
-                } else {
-                    // SAFETY: a static slot holds a full-width reference.
-                    self.precise(unsafe { *(slot as *const usize) }, out);
-                }
-            });
+    fn run(&self, task: &Task, roots: &Roots, out: &mut Vec<usize>, statics: &mut Vec<usize>, changed: &mut Vec<usize>) {
+        let classes = roots.classes;
+        let mut static_slot = |slot: usize, out: &mut Vec<usize>| {
+            if self.evacuate {
+                statics.push(slot);
+            } else {
+                self.precise(super::statics::read(slot), out);
+            }
         };
         match *task {
             Task::Thread(rec) => {
@@ -257,10 +256,18 @@ impl Shared<'_> {
                 let mut refs = Vec::new();
                 crate::vm::vm().class_roots(&classes[from..to], &mut |o| refs.push(o as usize));
                 refs.into_iter().for_each(|r| self.precise(r, out));
-                static_slots(from, to, out);
+                crate::vm::vm().class_statics(&classes[from..to], &mut |slot| static_slot(slot, out));
             }
-            Task::Statics(from, to) => static_slots(from, to, out),
-            Task::Noted => noted.iter().for_each(|&r| self.precise(r, out)),
+            Task::Statics(from, to) => {
+                let (addr, seen) = &roots.statics;
+                for i in from..to {
+                    if super::statics::read(addr[i]) != seen[i] {
+                        changed.push(i);
+                        static_slot(addr[i], out);
+                    }
+                }
+            }
+            Task::Noted => roots.noted.iter().for_each(|&r| self.precise(r, out)),
             Task::Other(young) => {
                 let mut refs = Vec::new();
                 crate::vm::vm().other_roots(young, &mut |o| refs.push(o as usize));
@@ -349,8 +356,9 @@ impl Shared<'_> {
 /// The root tasks of a collection: (young) the card table in chunks, which come first, then
 /// the noted and embedded roots, threads, classes in chunks and other roots. A young collection
 /// scans only the statics of the first `old` classes.
-fn tasks(space: &Space, classes: usize, old: usize, young: bool) -> Vec<Task> {
+fn tasks(space: &Space, classes: usize, old: usize, young: bool, statics: usize) -> Vec<Task> {
     const CLASS_CHUNK: usize = 512;
+    const SLOT_CHUNK: usize = 1 << 14;
     let old = if young { old.min(classes) } else { 0 };
     let chunks = |from: usize, to: usize| (from..to).step_by(CLASS_CHUNK).map(move |c| (c, (c + CLASS_CHUNK).min(to)));
     let mut tasks = Vec::new();
@@ -365,7 +373,9 @@ fn tasks(space: &Space, classes: usize, old: usize, young: bool) -> Vec<Task> {
     }
     tasks.push(Task::Noted);
     tasks.extend(safepoint::all_threads().into_iter().map(Task::Thread));
-    tasks.extend(chunks(0, old).map(|(a, b)| Task::Statics(a, b)));
+    if young {
+        tasks.extend((0..statics).step_by(SLOT_CHUNK).map(|c| Task::Statics(c, (c + SLOT_CHUNK).min(statics))));
+    }
     tasks.extend(chunks(old, classes).map(|(a, b)| Task::Classes(a, b)));
     tasks.push(Task::Other(young));
     tasks
@@ -399,7 +409,11 @@ pub(super) fn mark(space: &mut Space, young: bool) -> usize {
     };
     let classes = crate::vm::vm().all_classes();
     let (noted, old) = super::recent::take(classes.len());
-    let tasks = tasks(shared.space, classes.len(), old, young);
+    let old = if young { old.min(classes.len()) } else { 0 };
+    let statics = if young { super::statics::listed(&classes, old) } else { Default::default() };
+    let roots = Roots { classes: &classes, noted: &noted, statics };
+    let tasks = tasks(shared.space, classes.len(), old, young, roots.statics.0.len());
+    let changed = Mutex::new(Vec::new());
     // The card tasks run first, and nothing is marked until all are done: a mark set meanwhile
     // would make a young object look old, to be scanned again as a card root.
     let cards = tasks.iter().take_while(|t| matches!(t, Task::Cards(..) | Task::LargeCards(..))).count();
@@ -410,10 +424,10 @@ pub(super) fn mark(space: &mut Space, young: bool) -> usize {
     let worker = || {
         let mut found = Vec::with_capacity(4 * PACKET);
         let mut runs = super::evacuate::Runs::default();
-        let (mut slots, mut statics) = (Vec::new(), Vec::new());
+        let (mut slots, mut statics, mut changes) = (Vec::new(), Vec::new(), Vec::new());
         if cards > 0 {
             while let Some(task) = tasks[..cards].get(next_card.fetch_add(1, Ordering::Relaxed)) {
-                shared.run(task, &classes, &noted, &mut slots, &mut statics);
+                shared.run(task, &roots, &mut slots, &mut statics, &mut changes);
             }
             barrier.wait();
             if !shared.evacuate {
@@ -424,8 +438,9 @@ pub(super) fn mark(space: &mut Space, young: bool) -> usize {
         loop {
             let i = next.fetch_add(1, Ordering::Relaxed);
             let Some(task) = tasks.get(i) else { break };
-            shared.run(task, &classes, &noted, &mut found, &mut statics);
+            shared.run(task, &roots, &mut found, &mut statics, &mut changes);
         }
+        changed.lock().unwrap().extend(changes);
         if shared.evacuate {
             barrier.wait();
             slots.into_iter().for_each(|s| shared.update(s, &mut found, &mut runs));
@@ -435,5 +450,15 @@ pub(super) fn mark(space: &mut Space, young: bool) -> usize {
         shared.finish_runs(&runs);
     };
     super::pool::run(workers - 1, &worker);
+    // The statics hold their final values now (moved objects followed).
+    super::statics::settle(&classes, young.then(|| changed.into_inner().unwrap()).as_deref());
     shared.marked.into_inner()
+}
+
+/// What root tasks read: every class, the noted objects, and for a young collection the listed
+/// static slots with their values when the last collection ended (`statics.rs`).
+struct Roots<'a> {
+    classes: &'a [&'static Klass],
+    noted: &'a [usize],
+    statics: (Vec<usize>, Vec<usize>),
 }
