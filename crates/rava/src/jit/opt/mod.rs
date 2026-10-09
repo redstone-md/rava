@@ -237,7 +237,8 @@ fn compile_timed(m: &'static Method, osr: Option<u32>) -> Option<CompiledMethod>
         }).collect();
         eprintln!("[opt-alloc] {}", locs.join(" "));
     }
-    let (code, main, faults) = codegen::generate(&g, &al, m, extent, monitor, osr);
+    let dumped = env_once!("RAVA_JIT_DUMP").is_some_and(|f| m.to_string().contains(f.to_str().unwrap_or("")));
+    let (code, main, faults, trace) = codegen::generate(&g, &al, m, extent, monitor, osr, dumped);
     let entry = code_cache::install(&code);
     if !faults.is_empty() {
         super::fault::register(faults.into_iter().map(|(at, to)| (entry + at, entry + to)));
@@ -247,10 +248,13 @@ fn compile_timed(m: &'static Method, osr: Option<u32>) -> Option<CompiledMethod>
     if log {
         eprintln!("[opt] {m}{tag}: {} values, {} blocks, {} spill slots -> {} bytes ({main} main)", g.values.len(), al.order.len(), al.spill_slots, code.len());
     }
-    if env_once!("RAVA_JIT_DUMP").is_some_and(|f| m.to_string().contains(f.to_str().unwrap_or(""))) {
+    if dumped {
         let file = format!("/tmp/rava-opt-{entry:x}.bin");
         // SAFETY: the code just installed (calls resolved).
         let _ = std::fs::write(&file, unsafe { std::slice::from_raw_parts(entry as *const u8, code.len()) });
+        // Where each value's code starts, for attributing samples to bytecode.
+        let lines: Vec<String> = trace.iter().map(|(at, d)| format!("{at:x} {d}")).collect();
+        let _ = std::fs::write(format!("/tmp/rava-opt-{entry:x}.map"), lines.join("\n") + "\n");
         eprintln!("[opt-dump] {m} -> {file}");
     }
     Some(CompiledMethod { entry, unresolved_deferrals: Default::default(), size: main, blocks: Vec::new(), frame_slots: extent as usize, tier: 2, optimized: true, deopts: Default::default() })
