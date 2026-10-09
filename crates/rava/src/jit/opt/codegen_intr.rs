@@ -56,7 +56,7 @@ impl Gen<'_> {
             Intrinsic::ArrayCopy => {
                 let fail = self.deopt(s.expect("arraycopy has a deopt state"));
                 if let Some(k) = super::codegen_copy::known_destination(self.g, args[0], args[2], false) {
-                    self.array_copy_inline(args, k, fail);
+                    self.array_copy_inline(v, args, k, fail);
                     return;
                 }
                 // A destination of a known class from a field or parameter may be null.
@@ -64,7 +64,7 @@ impl Gen<'_> {
                     let rd = self.reg(args[2], R::R11);
                     self.a.test_rr(true, rd, rd);
                     self.a.jcc(Cond::E, fail);
-                    self.array_copy_inline(args, k, fail);
+                    self.array_copy_inline(v, args, k, fail);
                     return;
                 }
                 // References into a fresh array of the source's exact class need no card mark
@@ -73,7 +73,7 @@ impl Gen<'_> {
                 let mut done = None;
                 if let Some(k) = super::codegen_copy::known_destination(self.g, args[0], args[2], true).filter(|_| self.unbarriered[v as usize]) {
                     let (slow, end) = (self.a.new_label(), self.a.new_label());
-                    self.array_copy_inline(args, k, slow);
+                    self.array_copy_inline(v, args, k, slow);
                     self.a.jmp(end);
                     self.a.bind(slow);
                     done = Some(end);

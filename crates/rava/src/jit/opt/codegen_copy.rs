@@ -41,19 +41,26 @@ fn non_negative(g: &Graph, v: V) -> bool {
 }
 
 impl Gen<'_> {
-    /// `arraycopy(src, sp, dst, dp, len)` into `dst` of class `k` (`known_destination`).
-    pub(super) fn array_copy_inline(&mut self, args: &[V], k: &'static Klass, fail: Label) {
+    /// The copy `v`, `arraycopy(src, sp, dst, dp, len)`, into `dst` of class `k`
+    /// (`known_destination`, `Graph::copy_into`).
+    pub(super) fn array_copy_inline(&mut self, v: V, args: &[V], k: &'static Klass, fail: Label) {
         let [src, sp, dst, dp, len] = args[..] else { unreachable!("arraycopy takes five arguments") };
         let es = k.elem_size() as u8;
         let scale = es.trailing_zeros() as u8;
         // The source: non-null and of the destination's class; a constant one (a literal's
-        // bytes) is checked here, its length known.
+        // bytes) is checked here, its length known. A source proved non-null, or whose class
+        // the compiler knew to be the destination's, skips that test.
         let constant = self.int_const(src).filter(|&o| o != 0 && std::ptr::eq(crate::jit::fold::class_of(o as usize), k));
         let src_len = constant.map(|o| crate::jit::fold::array_length(o as usize) as i64);
         if constant.is_none() {
             let rs = self.reg(src, R::Rax);
-            self.a.test_rr(true, rs, rs);
-            self.a.jcc(Cond::E, fail);
+            if !self.g.nonnull_input.contains(&v) {
+                self.a.test_rr(true, rs, rs);
+                self.a.jcc(Cond::E, fail);
+            }
+        }
+        if constant.is_none() && !self.g.copy_from.get(&v).is_some_and(|&c| std::ptr::eq(c, k)) {
+            let rs = self.reg(src, R::Rax);
             let addr = k as *const Klass as usize;
             if crate::low::is_low(addr) {
                 self.a.alu_mi(false, Alu::Cmp, mem(rs, 0), addr as i32);
@@ -87,8 +94,30 @@ impl Gen<'_> {
             }
         }
         self.end_within(dp, len, dst, None, fail);
-        // from = rcx, to = r11, bytes = rdx.
         let base = ARRAY_BASE_OFFSET as i32;
+        let primitive = matches!(k.kind, KlassKind::TypeArray { .. });
+        if let Some(bytes) = self.stable_bytes(v, constant.filter(|_| primitive), sp, len, es) {
+            // A few constant bytes (a literal's separator): stored as immediates.
+            let rd = self.reg(dst, R::R11);
+            match self.int_const(dp) {
+                Some(c) => self.a.lea(R::R11, mem(rd, base + c as i32 * es as i32)),
+                None => {
+                    self.zext(R::Rax, dp);
+                    let rd = self.reg(dst, R::R11);
+                    self.a.lea(R::R11, mem_idx(rd, R::Rax, es, base));
+                }
+            }
+            let mut at = 0;
+            for chunk in bytes.chunks(4) {
+                match *chunk {
+                    [a, b, c, d] => self.a.store_imm32(mem(R::R11, at), i32::from_le_bytes([a, b, c, d])),
+                    _ => chunk.iter().enumerate().for_each(|(i, &x)| self.a.store8_imm(mem(R::R11, at + i as i32), x)),
+                }
+                at += chunk.len() as i32;
+            }
+            return;
+        }
+        // from = rcx, to = r11, bytes = rdx.
         let rs = self.reg(src, R::Rax);
         match self.int_const(sp) {
             Some(c) => self.a.lea(R::Rcx, mem(rs, base + c as i32 * es as i32)),
@@ -116,6 +145,21 @@ impl Gen<'_> {
                 self.copy_variable();
             }
         }
+    }
+
+    /// The bytes copy `v` moves when they are known now: up to 16 from constant positions of a
+    /// constant `@Stable` source (`Graph::copy_stable`), all non-zero (a stable array's zero
+    /// elements may still be set once).
+    fn stable_bytes(&self, v: V, constant: Option<i64>, sp: V, len: V, es: u8) -> Option<Vec<u8>> {
+        let o = constant.filter(|_| self.g.copy_stable.contains(&v))? as usize;
+        let (p, n) = (self.int_const(sp)? as usize * es as usize, self.int_const(len)? as usize * es as usize);
+        if n == 0 || n > 16 || p + n > crate::jit::fold::array_length(o) as usize * es as usize {
+            return None;
+        }
+        let _heap = crate::gc::safepoint::heap_access();
+        // SAFETY: a live constant array (embedded in the code), its range checked above.
+        let bytes = unsafe { std::slice::from_raw_parts((o + ARRAY_BASE_OFFSET as usize + p) as *const u8, n) }.to_vec();
+        bytes.iter().all(|&b| b != 0).then_some(bytes)
     }
 
     /// Fails unless `pos + len` (both non-negative) is at most the length of array `a`, known

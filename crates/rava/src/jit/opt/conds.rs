@@ -272,6 +272,8 @@ fn walk(g: &mut Graph, mark_only: bool, phis: std::collections::HashSet<V>) {
             let obj = match g.inst(v) {
                 Inst::CheckCast(x, ..) | Inst::InstanceOf(x, _) => Some(*x),
                 Inst::Intrinsic(crate::jit::intrinsics::Intrinsic::IdentityHash, xs, _) => xs.first().copied(),
+                // An arraycopy's source (`codegen_copy`).
+                Inst::Intrinsic(crate::jit::intrinsics::Intrinsic::ArrayCopy, xs, _) => xs.first().copied(),
                 _ => None,
             };
             if obj.is_some_and(|x| facts.nonnull(g, x)) {

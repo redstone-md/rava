@@ -228,10 +228,19 @@ impl Builder {
             }
             let s = matches!(k, crate::jit::intrinsics::Intrinsic::GetClass | crate::jit::intrinsics::Intrinsic::ArrayCopy).then_some(pre);
             // A copy into a primitive array of a known class copies inline (`codegen_copy`).
-            let into = matches!(k, crate::jit::intrinsics::Intrinsic::ArrayCopy).then(|| self.exact_class(args[2])).flatten();
+            let copy = matches!(k, crate::jit::intrinsics::Intrinsic::ArrayCopy);
+            let into = copy.then(|| self.exact_class(args[2])).flatten();
+            let from = copy.then(|| self.exact_class(args[0])).flatten();
+            let stable_src = copy && self.constant_object(args[0]).is_some_and(|c| self.stable.get(&c).is_some_and(|&d| d >= 1));
             let v = self.intrinsic_inst(k, args, s, if ret == BasicType::Void { Ty::I } else { Ty::of(ret) });
             if let Some(into) = into.filter(|k| matches!(k.kind, crate::klass::KlassKind::TypeArray { .. })) {
                 self.g.copy_into.insert(v, into);
+            }
+            if let Some(from) = from {
+                self.g.copy_from.insert(v, from);
+            }
+            if stable_src {
+                self.g.copy_stable.insert(v);
             }
             if ret != BasicType::Void {
                 self.push(v);

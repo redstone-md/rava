@@ -352,6 +352,11 @@ pub struct Graph {
     /// `System.arraycopy`s into a primitive array whose class the compiler knew (a field or
     /// parameter declared with it), by the copy: they copy inline (`codegen_copy.rs`).
     pub copy_into: std::collections::HashMap<V, &'static crate::klass::Klass>,
+    /// `System.arraycopy`s whose source's class the compiler knew exactly, by the copy.
+    pub copy_from: std::collections::HashMap<V, &'static crate::klass::Klass>,
+    /// `System.arraycopy`s from a constant array read out of a `@Stable` field (a literal's
+    /// bytes): its non-zero elements never change, so a short copy stores them as immediates.
+    pub copy_stable: std::collections::HashSet<V>,
 }
 
 impl Graph {
