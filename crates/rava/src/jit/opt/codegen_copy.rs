@@ -13,14 +13,20 @@ use crate::heap::{ARRAY_BASE_OFFSET, ARRAY_LENGTH_OFFSET};
 use crate::jit::asm::{mem, mem_idx, Alu, Cond, Label, Shift, R};
 use crate::klass::{Klass, KlassKind};
 
-/// The class of the destination when it is a primitive array allocated in this code.
-pub(super) fn known_destination(g: &Graph, src: V, dst: V) -> Option<&'static Klass> {
+/// The class of the destination when it is a primitive array allocated in this code, or (with
+/// `refs`) a reference array.
+pub(super) fn known_destination(g: &Graph, src: V, dst: V, refs: bool) -> Option<&'static Klass> {
     let mut d = g.resolve(dst);
     if let Inst::CheckCast(x, ..) = *g.inst(d) {
         d = g.resolve(x);
     }
     let Inst::NewArray(k, ..) = *g.inst(d) else { return None };
-    (matches!(k.kind, KlassKind::TypeArray { .. }) && g.resolve(src) != d).then_some(k)
+    let kind = match k.kind {
+        KlassKind::TypeArray { .. } => true,
+        KlassKind::ObjArray { .. } => refs,
+        _ => false,
+    };
+    (kind && g.resolve(src) != d).then_some(k)
 }
 
 /// Whether int `v` is never negative by its definition: an array length, or masked or shifted

@@ -55,13 +55,27 @@ impl Gen<'_> {
             }
             Intrinsic::ArrayCopy => {
                 let fail = self.deopt(s.expect("arraycopy has a deopt state"));
-                if let Some(k) = super::codegen_copy::known_destination(self.g, args[0], args[2]) {
+                if let Some(k) = super::codegen_copy::known_destination(self.g, args[0], args[2], false) {
                     self.array_copy_inline(args, k, fail);
                     return;
+                }
+                // References into a fresh array of the source's exact class need no card mark
+                // and no element check; anything else (a subclass's array, a bad range) takes
+                // the runtime copy, which deoptimizes only to throw.
+                let mut done = None;
+                if let Some(k) = super::codegen_copy::known_destination(self.g, args[0], args[2], true).filter(|_| self.unbarriered[v as usize]) {
+                    let (slow, end) = (self.a.new_label(), self.a.new_label());
+                    self.array_copy_inline(args, k, slow);
+                    self.a.jmp(end);
+                    self.a.bind(slow);
+                    done = Some(end);
                 }
                 self.call_preserving_vals(runtime::arraycopy_fast as *const () as usize, args);
                 self.a.test_rr(false, R::Rax, R::Rax);
                 self.a.jcc(Cond::E, fail);
+                if let Some(end) = done {
+                    self.a.bind(end);
+                }
             }
             Intrinsic::Round(mode) => {
                 let a = self.xreg(args[0], X(1));

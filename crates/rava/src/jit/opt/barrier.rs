@@ -24,6 +24,15 @@ pub fn unbarriered(g: &Graph) -> Vec<bool> {
         for &v in &b.insts {
             match &g.values[v as usize].inst {
                 Inst::StoreField(o, ..) | Inst::StoreIndexed(o, ..) => out[v as usize] = fresh.contains(&g.resolve(*o)),
+                // A copy into a fresh array: the inline copy (`codegen_copy`) stops nowhere.
+                Inst::Intrinsic(crate::jit::intrinsics::Intrinsic::ArrayCopy, args, _) => {
+                    let mut d = g.resolve(args[2]);
+                    if let Inst::CheckCast(x, ..) = *g.inst(d) {
+                        d = g.resolve(x);
+                    }
+                    out[v as usize] = fresh.contains(&d);
+                    fresh.clear();
+                }
                 Inst::New(..) | Inst::NewArray(..) | Inst::NewMulti(..) => {
                     // The allocation may collect, promoting what was allocated before it.
                     fresh.clear();
