@@ -37,13 +37,15 @@ pub fn main() -> ExitCode {
             crate::jdk::OLDEST
         )));
     }
-    std::thread::Builder::new()
+    let code = std::thread::Builder::new()
         .name("main".into())
         .stack_size(1 << 30)
         .spawn(move || run(line, java_home))
         .expect("spawn main thread")
         .join()
-        .unwrap_or(ExitCode::from(70))
+        .unwrap_or(ExitCode::from(70));
+    crate::jit::code_cache::flush_perf_map();
+    code
 }
 
 fn fail(e: LaunchError) -> ExitCode {
