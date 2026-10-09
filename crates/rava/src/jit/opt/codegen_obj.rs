@@ -126,6 +126,10 @@ impl Gen<'_> {
                         if dst != Loc::None {
                             super::moves::mov(&mut self.a, dst, Loc::Reg(rx));
                         }
+                        // So is its home slot, which states on the null side may read.
+                        if let Some(h @ Loc::Stack(_)) = self.home[v as usize] {
+                            super::moves::mov(&mut self.a, h, Loc::Reg(rx));
+                        }
                         let to = self.edge_target(b, null);
                         self.a.test_rr(true, rx, rx);
                         self.a.jcc(Cond::E, to);

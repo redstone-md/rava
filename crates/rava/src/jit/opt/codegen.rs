@@ -54,7 +54,7 @@ pub(super) struct Gen<'a> {
     pub g: &'a Graph,
     pub loc: &'a [Loc],
     /// Home slots (`Allocation::home`), written at each value's definition.
-    home: &'a [Option<Loc>],
+    pub(super) home: &'a [Option<Loc>],
     pub max_locals: i32,
     labels: Vec<Label>,
     pub epilogue: Label,
@@ -315,7 +315,7 @@ pub(super) fn generate(g: &Graph, al: &Allocation, m: &'static Method, frame_slo
         rotations: rotations(g),
         faults: Vec::new(),
         fused: fused_type_tests(g),
-        cast_branch: cast_branches(g),
+        cast_branch: cast_branches(g, &al.loc),
         arrays: arrays(g),
         frame_slots,
         root: m,
@@ -1019,8 +1019,8 @@ fn arrays(g: &Graph) -> std::collections::HashSet<V> {
 
 /// Casts (of a final class, a primitive array or a class at a primary depth, whose code tests
 /// null inline) that end their block's code before a branch on the result being null, by
-/// `Gen::cast_branch`.
-fn cast_branches(g: &Graph) -> HashMap<V, (B, B, B)> {
+/// `Gen::cast_branch`, unless the result is in a register the class test uses.
+fn cast_branches(g: &Graph, loc: &[Loc]) -> HashMap<V, (B, B, B)> {
     let mut out = HashMap::new();
     for (bi, blk) in g.blocks.iter().enumerate() {
         let Term::If { cmp: cmp @ (Cmp::Eq | Cmp::Ne), ty: Ty::A, a, b: y, then, other, .. } = blk.term else { continue };
@@ -1038,6 +1038,11 @@ fn cast_branches(g: &Graph) -> HashMap<V, (B, B, B)> {
             || matches!(k.kind, crate::klass::KlassKind::Instance) && k.access & crate::klass::ACC_FINAL != 0
             || crate::jit::emit_obj::primary_depth(k).is_some();
         let Some(at) = blk.insts.iter().position(|&x| x == v) else { continue };
+        // The result is moved into place before the class test, which loads the class word into
+        // rcx and may compare through rdx.
+        if matches!(loc[v as usize], Loc::Reg(R::Rcx | R::Rdx)) {
+            continue;
+        }
         if !inline || g.nonnull_input.contains(&v) || !blk.insts[at + 1..].iter().all(|&x| g.resolve(x) != x || matches!(g.inst(x), Inst::Const(_))) {
             continue;
         }
