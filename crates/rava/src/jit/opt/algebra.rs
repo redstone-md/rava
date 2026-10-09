@@ -55,6 +55,101 @@ pub fn simplify(g: &mut Graph) {
         }
     }
     fold_unsafe_addresses(g);
+    fold_constant_branches(g);
+}
+
+/// Branches between two constants (operands folded here or after the builder's tests) go one
+/// way.
+fn fold_constant_branches(g: &mut Graph) {
+    let mut folded = false;
+    for b in 0..g.blocks.len() {
+        let Term::If { cmp, ty: ty @ (Ty::I | Ty::J | Ty::A), a, b: y, then, other, .. } = g.blocks[b].term else { continue };
+        let (Some(x), Some(z)) = (g.constant(g.resolve(a)), g.constant(g.resolve(y))) else { continue };
+        if then == other {
+            continue;
+        }
+        let (keep, gone) = if super::canon::branch(cmp, ty, x, z) { (then, other) } else { (other, then) };
+        super::conds::fold_branch(g, b as B, keep, gone);
+        folded = true;
+    }
+    if folded {
+        super::conds::remove_unreachable(g);
+    }
+}
+
+/// `simplify`, after range check elimination (which matches `ArrayLength` instructions): then also
+/// the length of an array allocated here is its size operand (non-negative once allocated), a
+/// constant array's length is a constant, and a bounds check of a constant index against a
+/// known length goes.
+pub fn simplify_late(g: &mut Graph) {
+    let mut changed = false;
+    let mut gone = Vec::new();
+    for b in 0..g.blocks.len() {
+        for &v in &g.blocks[b].insts {
+            if g.resolve(v) != v {
+                continue;
+            }
+            match *g.inst(v) {
+                Inst::ArrayLength(a) => match length_of(g, a) {
+                    Some(Len::Value(n)) => {
+                        g.alias[v as usize] = g.resolve(n);
+                        gone.push(v);
+                        changed = true;
+                    }
+                    Some(Len::Const(n)) => {
+                        g.values[v as usize].inst = Inst::Const(n);
+                        changed = true;
+                    }
+                    None => {}
+                },
+                Inst::BoundsCheck(a, i, _) => {
+                    let len = match length_of(g, a) {
+                        Some(Len::Const(n)) => Some(n),
+                        Some(Len::Value(n)) => g.constant(g.resolve(n)),
+                        None => None,
+                    };
+                    if let (Some(n), Some(i)) = (len, g.constant(g.resolve(i))) {
+                        if (0..n).contains(&i) {
+                            gone.push(v);
+                            changed = true;
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    if !gone.is_empty() {
+        for blk in &mut g.blocks {
+            blk.insts.retain(|v| !gone.contains(v));
+        }
+    }
+    if changed {
+        simplify(g);
+    } else {
+        fold_unsafe_addresses(g);
+        fold_constant_branches(g);
+    }
+}
+
+enum Len {
+    Value(V),
+    Const(i64),
+}
+
+/// The length of array `a` when known: an allocation's size operand, or a constant array's.
+fn length_of(g: &Graph, a: V) -> Option<Len> {
+    let mut r = g.resolve(a);
+    if let Inst::CheckCast(x, ..) = *g.inst(r) {
+        r = g.resolve(x);
+    }
+    match *g.inst(r) {
+        Inst::NewArray(_, n, _) => Some(Len::Value(n)),
+        Inst::Const(o) if o != 0 && g.ty(r) == Ty::A && !matches!(crate::jit::fold::class_of(o as usize).kind, crate::klass::KlassKind::Instance) => {
+            Some(Len::Const(crate::jit::fold::array_length(o as usize) as i64))
+        }
+        _ => None,
+    }
 }
 
 /// Unsafe accesses at `base + ((long) i << k) + c` (an array element, as `ConcurrentHashMap`'s

@@ -168,7 +168,7 @@ fn compile_timed(m: &'static Method, osr: Option<u32>) -> Option<CompiledMethod>
     thread::thread(&mut g);
     g.merge_chains();
     unroll::unroll(&mut g);
-    algebra::simplify(&mut g);
+    algebra::simplify_late(&mut g);
     consts::hoist(&mut g);
     g.prune_unreachable();
     dce::eliminate(&mut g);
