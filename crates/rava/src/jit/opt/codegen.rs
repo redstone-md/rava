@@ -126,6 +126,10 @@ pub(super) struct Gen<'a> {
     /// `instanceof` tests of final classes and class-word loads emitted as their block's branch
     /// (`fused_type_tests`).
     pub(super) fused: std::collections::HashSet<V>,
+    /// Casts whose block then branches on the result being null: the cast's own null test
+    /// takes the branch's null side (block, null successor, non-null successor), and the branch
+    /// tests nothing.
+    pub(super) cast_branch: HashMap<V, (B, B, B)>,
     /// Values the code uses as arrays (`arrays`): an Unsafe access based on one is in the heap.
     pub(super) arrays: std::collections::HashSet<V>,
 }
@@ -311,6 +315,7 @@ pub(super) fn generate(g: &Graph, al: &Allocation, m: &'static Method, frame_slo
         rotations: rotations(g),
         faults: Vec::new(),
         fused: fused_type_tests(g),
+        cast_branch: cast_branches(g),
         arrays: arrays(g),
         frame_slots,
         root: m,
@@ -776,6 +781,10 @@ impl Gen<'_> {
                 if then == other {
                     return self.edge(b, then, next == Some(then));
                 }
+                if let Some(&(_, _, on)) = [a, y].into_iter().find_map(|x| self.cast_branch.get(&self.g.resolve(x))).filter(|(cb, ..)| *cb == b) {
+                    // The cast just before already sent null to the other side.
+                    return self.edge(b, on, next == Some(on));
+                }
                 if let Some((x, k)) = [a, y].into_iter().map(|v| self.g.resolve(v)).find(|v| self.fused.contains(v)).and_then(|v| match *self.g.inst(v) {
                     Inst::InstanceOf(x, k) => Some((x, k)),
                     _ => None,
@@ -1006,6 +1015,36 @@ fn arrays(g: &Graph) -> std::collections::HashSet<V> {
         }
     }
     arrays
+}
+
+/// Casts (of a final class, a primitive array or a class at a primary depth, whose code tests
+/// null inline) that end their block's code before a branch on the result being null, by
+/// `Gen::cast_branch`.
+fn cast_branches(g: &Graph) -> HashMap<V, (B, B, B)> {
+    let mut out = HashMap::new();
+    for (bi, blk) in g.blocks.iter().enumerate() {
+        let Term::If { cmp: cmp @ (Cmp::Eq | Cmp::Ne), ty: Ty::A, a, b: y, then, other, .. } = blk.term else { continue };
+        if then == other {
+            continue;
+        }
+        let (a, y) = (g.resolve(a), g.resolve(y));
+        let v = match (g.constant(a), g.constant(y)) {
+            (None, Some(0)) => a,
+            (Some(0), None) => y,
+            _ => continue,
+        };
+        let Inst::CheckCast(_, k, _) = *g.inst(v) else { continue };
+        let inline = matches!(k.kind, crate::klass::KlassKind::TypeArray { .. })
+            || matches!(k.kind, crate::klass::KlassKind::Instance) && k.access & crate::klass::ACC_FINAL != 0
+            || crate::jit::emit_obj::primary_depth(k).is_some();
+        let Some(at) = blk.insts.iter().position(|&x| x == v) else { continue };
+        if !inline || g.nonnull_input.contains(&v) || !blk.insts[at + 1..].iter().all(|&x| g.resolve(x) != x || matches!(g.inst(x), Inst::Const(_))) {
+            continue;
+        }
+        let (null, on) = if cmp == Cmp::Eq { (then, other) } else { (other, then) };
+        out.insert(v, (bi as B, null, on));
+    }
+    out
 }
 
 fn fused_type_tests(g: &Graph) -> std::collections::HashSet<V> {

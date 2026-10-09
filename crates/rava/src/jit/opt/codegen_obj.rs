@@ -119,7 +119,17 @@ impl Gen<'_> {
                     // A final class or primitive array is only itself; a class at a primary
                     // depth is the object's class or its ancestor there. Null passes.
                     let rx = self.reg(x, R::Rax);
-                    if !self.g.nonnull_input.contains(&v) {
+                    let branch = self.cast_branch.get(&v).copied();
+                    if let Some((b, null, _)) = branch {
+                        // The result is in place before null leaves for the branch's null side.
+                        let dst = self.loc[v as usize];
+                        if dst != Loc::None {
+                            super::moves::mov(&mut self.a, dst, Loc::Reg(rx));
+                        }
+                        let to = self.edge_target(b, null);
+                        self.a.test_rr(true, rx, rx);
+                        self.a.jcc(Cond::E, to);
+                    } else if !self.g.nonnull_input.contains(&v) {
                         self.a.test_rr(true, rx, rx);
                         self.a.jcc(Cond::E, done);
                     }
@@ -142,7 +152,7 @@ impl Gen<'_> {
                 }
                 self.a.bind(done);
                 let (dst, src) = (self.loc[v as usize], self.loc[x as usize]);
-                if dst != Loc::None {
+                if dst != Loc::None && !self.cast_branch.contains_key(&v) {
                     super::moves::mov(&mut self.a, dst, src);
                 }
             }
