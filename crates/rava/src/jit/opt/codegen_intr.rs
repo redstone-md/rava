@@ -59,6 +59,14 @@ impl Gen<'_> {
                     self.array_copy_inline(args, k, fail);
                     return;
                 }
+                // A destination of a known class from a field or parameter may be null.
+                if let Some(&k) = self.g.copy_into.get(&v) {
+                    let rd = self.reg(args[2], R::R11);
+                    self.a.test_rr(true, rd, rd);
+                    self.a.jcc(Cond::E, fail);
+                    self.array_copy_inline(args, k, fail);
+                    return;
+                }
                 // References into a fresh array of the source's exact class need no card mark
                 // and no element check; anything else (a subclass's array, a bad range) takes
                 // the runtime copy, which deoptimizes only to throw.

@@ -349,6 +349,9 @@ pub struct Graph {
     /// Casts, instance tests and identity hashes whose object a dominating test proved non-null
     /// (`conds.rs`): their code skips its own null test.
     pub nonnull_input: std::collections::HashSet<V>,
+    /// `System.arraycopy`s into a primitive array whose class the compiler knew (a field or
+    /// parameter declared with it), by the copy: they copy inline (`codegen_copy.rs`).
+    pub copy_into: std::collections::HashMap<V, &'static crate::klass::Klass>,
 }
 
 impl Graph {
