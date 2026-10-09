@@ -61,6 +61,9 @@ pub struct Allocation {
     /// Where a register-allocated value is also kept for states: a spill slot it is stored to
     /// at its definition, or for a parameter the frame slot it arrived in.
     pub home: Vec<Option<Loc>>,
+    /// Values kept in their register past their last real use for deoptimization states to read
+    /// there (`extend_for_states`): such a register must hold the full reference.
+    pub state_regs: Vec<bool>,
 }
 
 /// The values an instruction reads, aliases resolved.
@@ -196,8 +199,8 @@ pub fn allocate(g: &Graph) -> Allocation {
     let loops = LoopMap::new(g, &order, &range);
     let mut reads = StateReads::new();
     let full = intervals(g, &order, &pos, &range, &loops.depth, &mut reads, true);
-    let iv = intervals(g, &order, &pos, &range, &loops.depth, &mut reads, false);
-    let (mut loc, spill_slots, home) = scan(g, &iv, &full, &loops);
+    let mut iv = intervals(g, &order, &pos, &range, &loops.depth, &mut reads, false);
+    let (mut loc, spill_slots, home, state_regs) = scan(g, &mut iv, &full, &loops);
     // Registers a call clobbers that hold values live across it.
     let mut saves = std::collections::HashMap::new();
     let mut most = 0;
@@ -226,7 +229,39 @@ pub fn allocate(g: &Graph) -> Allocation {
     for v in 0..g.values.len() as V {
         home[v as usize] = home[g.resolve(v) as usize];
     }
-    Allocation { loc, order, spill_slots: spill_slots + most, saves, save_base: spill_slots, home, live_at, live_at_end }
+    let state_regs = (0..g.values.len()).map(|v| state_regs[g.resolve(v as V) as usize]).collect();
+    Allocation { loc, order, spill_slots: spill_slots + most, saves, save_base: spill_slots, home, live_at, live_at_end, state_regs }
+}
+
+/// Keeps in its register a value that only deoptimization states read after its last real use,
+/// up to the last of those reads, where nothing else takes that register in between (and no
+/// call clobbers it, nor an instruction writing it as scratch): the states read it there, and
+/// the store to a home slot at its definition, on the path that does not deoptimize, goes.
+fn extend_for_states(g: &Graph, iv: &mut Intervals, full: &Intervals, loc: &[Loc]) -> Vec<bool> {
+    let mut extended = vec![false; g.values.len()];
+    let n = g.values.len();
+    let held: Vec<usize> = (0..n).filter(|&v| iv.used[v] && matches!(loc[v], Loc::Reg(_) | Loc::Xmm(_))).collect();
+    for &v in &held {
+        let (from, to) = (iv.end[v], full.end[v]);
+        if to <= from {
+            continue;
+        }
+        let caller_saved = !matches!(loc[v], Loc::Reg(r) if CALLEE_SAVED.contains(&r));
+        if caller_saved && iv.calls.iter().any(|&p| p >= from && p < to) {
+            continue;
+        }
+        if let Loc::Reg(r @ (R::Rcx | R::Rdx)) = loc[v] {
+            if iv.dirty[(r == R::Rdx) as usize].iter().any(|&p| p >= from && p <= to) {
+                continue;
+            }
+        }
+        if held.iter().any(|&u| u != v && loc[u] == loc[v] && iv.start[u] <= to && iv.end[u] >= from) {
+            continue;
+        }
+        iv.end[v] = to;
+        extended[v] = true;
+    }
+    extended
 }
 
 /// The registers runtime calls must preserve at each instruction and block end (`Allocation::
@@ -354,7 +389,7 @@ fn few_regs() -> Option<usize> {
 /// may share its first operand's register when that operand dies at its definition.
 /// `iv` has the intervals of real uses, `full` those including state uses: a value only states
 /// read lives in a spill slot, one read beyond its real uses gets a home slot as well.
-fn scan(g: &Graph, iv: &Intervals, full: &Intervals, loops: &LoopMap) -> (Vec<Loc>, i32, Vec<Option<Loc>>) {
+fn scan(g: &Graph, iv: &mut Intervals, full: &Intervals, loops: &LoopMap) -> (Vec<Loc>, i32, Vec<Option<Loc>>, Vec<bool>) {
     let n = g.values.len();
     let mut loc = vec![Loc::None; n];
     let mut todo = Vec::new();
@@ -450,6 +485,7 @@ fn scan(g: &Graph, iv: &Intervals, full: &Intervals, loops: &LoopMap) -> (Vec<Lo
         }
     }
     // Home slots of values states read after their register is free.
+    let read_by_states = extend_for_states(g, iv, full, &loc);
     let homed: Vec<usize> = (0..n).filter(|&v| matches!(loc[v], Loc::Reg(_) | Loc::Xmm(_)) && full.end[v] > iv.end[v]).collect();
     let mut home = vec![None; n];
     // Parameters stay in their frame slots, which optimized code never writes: those are their
@@ -490,5 +526,5 @@ fn scan(g: &Graph, iv: &Intervals, full: &Intervals, loops: &LoopMap) -> (Vec<Lo
             loc[v] = Loc::Stack(slot as i32);
         }
     }
-    (loc, slot_end.len() as i32, home)
+    (loc, slot_end.len() as i32, home, read_by_states)
 }
