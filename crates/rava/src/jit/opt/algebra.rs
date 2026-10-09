@@ -54,6 +54,60 @@ pub fn simplify(g: &mut Graph) {
             }
         }
     }
+    fold_unsafe_addresses(g);
+}
+
+/// Unsafe accesses at `base + ((long) i << k) + c` (an array element, as `ConcurrentHashMap`'s
+/// `tabAt` reads one) take `i`, `1 << k` and `c` as their last three operands, for one scaled
+/// address (`[base + i * 2^k + c]`) instead of a shift and an add.
+fn fold_unsafe_addresses(g: &mut Graph) {
+    use crate::jit::intrinsics::Intrinsic;
+    for b in 0..g.blocks.len() {
+        let mut i = 0;
+        while i < g.blocks[b].insts.len() {
+            let v = g.blocks[b].insts[i];
+            i += 1;
+            if g.resolve(v) != v {
+                continue;
+            }
+            let Inst::Intrinsic(k, args, _) = g.inst(v) else { continue };
+            let arity = match k {
+                Intrinsic::UnsafeGet(..) => 3,
+                Intrinsic::UnsafePut(..) => 4,
+                Intrinsic::CompareAndSet(_) => 5,
+                _ => continue,
+            };
+            if args.len() != arity {
+                continue;
+            }
+            let Some((x, scale, disp)) = scaled(g, g.resolve(args[2])) else { continue };
+            let (s, d) = (g.add(b as B, Inst::Const(scale), Ty::J), g.add(b as B, Inst::Const(disp), Ty::J));
+            // The constants go before the access.
+            let blk = &mut g.blocks[b].insts;
+            blk.truncate(blk.len() - 2);
+            blk.splice(i - 1..i - 1, [s, d]);
+            i += 2;
+            if let Inst::Intrinsic(_, args, _) = &mut g.values[v as usize].inst {
+                args[2] = x;
+                args.extend([s, d]);
+            }
+        }
+    }
+}
+
+/// `(x, 1 << k, c)` for an offset `(x << k) + c` with `k` up to 3 and `c` an `i32`.
+fn scaled(g: &Graph, off: V) -> Option<(V, i64, i64)> {
+    let Inst::Bin(BinOp::Add, a, b) = *g.inst(off) else { return None };
+    let (a, b) = (g.resolve(a), g.resolve(b));
+    let (shifted, c) = match (g.constant(a), g.constant(b)) {
+        (None, Some(c)) => (a, c),
+        (Some(c), None) => (b, c),
+        _ => return None,
+    };
+    i32::try_from(c).ok()?;
+    let Inst::Bin(BinOp::Shl, x, k) = *g.inst(shifted) else { return None };
+    let k = g.constant(g.resolve(k)).filter(|k| (0..=3).contains(k))?;
+    (g.ty(shifted) == Ty::J).then(|| (g.resolve(x), 1 << k, c))
 }
 
 /// The operand `a op b` equals, when the other is an identity constant of `op`.
