@@ -124,33 +124,127 @@ extern "C" fn vectorized_mismatch(a: usize, ao: i64, b: usize, bo: i64, length: 
     }
 }
 
-/// `31^4`, `31^3`, `31^2` and `31`: four elements fold into a hash at once.
-const P: [i32; 4] = [923521, 29791, 961, 31];
-
-fn fold(init: i32, mut xs: impl ExactSizeIterator<Item = i32>) -> i32 {
-    let mut h = init;
-    while xs.len() >= 4 {
-        let (a, b, c, d) = (xs.next().unwrap(), xs.next().unwrap(), xs.next().unwrap(), xs.next().unwrap());
-        h = h.wrapping_mul(P[0]).wrapping_add(a.wrapping_mul(P[1])).wrapping_add(b.wrapping_mul(P[2])).wrapping_add(c.wrapping_mul(P[3])).wrapping_add(d);
+/// `31^k` (wrapping) for `k` in `0..=32`.
+const POW31: [i32; 33] = {
+    let mut p = [1i32; 33];
+    let mut k = 1;
+    while k < 33 {
+        p[k] = p[k - 1].wrapping_mul(31);
+        k += 1;
     }
-    xs.fold(h, |h, x| h.wrapping_mul(31).wrapping_add(x))
+    p
+};
+
+/// `31^n * init + sum(e(i) * 31^(n-1-i))` for `i` in `0..n`, element `i` read by `e`.
+#[inline(always)]
+fn fold_scalar(mut h: i32, n: usize, e: impl Fn(usize) -> i32) -> i32 {
+    let mut i = 0;
+    while i + 4 <= n {
+        h = h.wrapping_mul(POW31[4]).wrapping_add(e(i).wrapping_mul(POW31[3])).wrapping_add(e(i + 1).wrapping_mul(POW31[2])).wrapping_add(e(i + 2).wrapping_mul(31)).wrapping_add(e(i + 3));
+        i += 4;
+    }
+    while i < n {
+        h = h.wrapping_mul(31).wrapping_add(e(i));
+        i += 1;
+    }
+    h
+}
+
+/// The same fold with AVX2, as HotSpot's `vectorizedHashCode` intrinsic: eight 32-bit lanes per
+/// accumulator, four accumulators over 32-element blocks (each lane times `31^32` per block), then
+/// 8-element chunks; the lanes are weighted by their remaining powers of 31 and summed. `load`
+/// widens the 8 elements at `p` to 32-bit lanes; `size` is the element size in bytes.
+#[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
+#[inline(always)]
+unsafe fn fold_avx2(h: i32, p: *const u8, n: usize, size: usize, load: impl Fn(*const u8) -> std::arch::x86_64::__m256i, e: impl Fn(usize) -> i32) -> i32 {
+    use std::arch::x86_64::*;
+    // Lane l of a chunk of 8 weighs 31^(7-l); of block j of 4, 31^(31-8j-l).
+    let weights = |top: usize| _mm256_setr_epi32(POW31[top], POW31[top - 1], POW31[top - 2], POW31[top - 3], POW31[top - 4], POW31[top - 5], POW31[top - 6], POW31[top - 7]);
+    let hsum = |v: __m256i| {
+        let s = _mm_add_epi32(_mm256_castsi256_si128(v), _mm256_extracti128_si256::<1>(v));
+        let s = _mm_add_epi32(s, _mm_shuffle_epi32::<0b01_00_11_10>(s));
+        let s = _mm_add_epi32(s, _mm_shuffle_epi32::<0b10_11_00_01>(s));
+        _mm_cvtsi128_si32(s)
+    };
+    let mut h = h;
+    let mut i = 0;
+    if n >= 32 {
+        let step = _mm256_set1_epi32(POW31[32]);
+        let mut acc = [_mm256_setzero_si256(); 4];
+        while i + 32 <= n {
+            for (j, a) in acc.iter_mut().enumerate() {
+                *a = _mm256_add_epi32(_mm256_mullo_epi32(*a, step), load(p.add((i + 8 * j) * size)));
+            }
+            i += 32;
+        }
+        let mut sum = _mm256_setzero_si256();
+        for (j, a) in acc.iter().enumerate() {
+            sum = _mm256_add_epi32(sum, _mm256_mullo_epi32(*a, weights(31 - 8 * j)));
+        }
+        h = h.wrapping_mul(pow31(i)).wrapping_add(hsum(sum));
+    }
+    while i + 8 <= n {
+        let v = _mm256_mullo_epi32(load(p.add(i * size)), weights(7));
+        h = h.wrapping_mul(POW31[8]).wrapping_add(hsum(v));
+        i += 8;
+    }
+    fold_scalar(h, n - i, |k| e(i + k))
+}
+
+/// `31^k`, wrapping.
+#[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
+fn pow31(mut k: usize) -> i32 {
+    let (mut r, mut b) = (1i32, 31i32);
+    while k > 0 {
+        if k & 1 != 0 {
+            r = r.wrapping_mul(b);
+        }
+        b = b.wrapping_mul(b);
+        k >>= 1;
+    }
+    r
 }
 
 /// `31^n * init + sum(a[from + i] * 31^(n-1-i))` over `n = len` elements of the kind `ty`
 /// names (`ArraysSupport.T_BOOLEAN` unsigned bytes, `T_CHAR` chars of a `char[]` or of a UTF-16
 /// `byte[]`, `T_BYTE` signed bytes, `T_SHORT`, `T_INT`).
 extern "C" fn vectorized_hash_code(a: Oop, from: i32, len: i32, init: i32, ty: i32) -> i64 {
-    // SAFETY: a live array (null-checked by the caller) of the kind the JDK names.
+    let size = match ty {
+        4 | 8 => 1,
+        5 | 9 => 2,
+        10 => 4,
+        _ => return init as i64,
+    };
+    // SAFETY: a live array (null-checked by the caller) of the kind the JDK names; the slice
+    // bounds every read below. A UTF-16 `byte[]` and a `char[]` both hold 2-byte chars in
+    // native order.
     let h = unsafe {
-        // A UTF-16 `byte[]` and a `char[]` both hold 2-byte chars in native order.
-        match ty {
-            4 => fold(init, bytes(a, 1, from, len).iter().map(|&x| x as i32)),
-            8 => fold(init, bytes(a, 1, from, len).iter().map(|&x| x as i8 as i32)),
-            5 => fold(init, bytes(a, 2, from, len).chunks_exact(2).map(|c| u16::from_ne_bytes([c[0], c[1]]) as i32)),
-            9 => fold(init, bytes(a, 2, from, len).chunks_exact(2).map(|c| i16::from_ne_bytes([c[0], c[1]]) as i32)),
-            10 => fold(init, bytes(a, 4, from, len).chunks_exact(4).map(|c| i32::from_ne_bytes([c[0], c[1], c[2], c[3]]))),
-            _ => init,
+        let b = bytes(a, size, from, len);
+        let (p, n) = (b.as_ptr(), b.len() / size);
+        let rd = |k: usize| -> i32 {
+            match ty {
+                4 => *p.add(k) as i32,
+                8 => *p.add(k) as i8 as i32,
+                5 => (p.add(2 * k) as *const u16).read_unaligned() as i32,
+                9 => (p.add(2 * k) as *const i16).read_unaligned() as i32,
+                _ => (p.add(4 * k) as *const i32).read_unaligned(),
+            }
+        };
+        #[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
+        {
+            use std::arch::x86_64::*;
+            let lo = |q: *const u8| _mm_loadl_epi64(q as *const __m128i);
+            let full = |q: *const u8| _mm_loadu_si128(q as *const __m128i);
+            match ty {
+                4 => fold_avx2(init, p, n, 1, |q| _mm256_cvtepu8_epi32(lo(q)), |k| *p.add(k) as i32),
+                8 => fold_avx2(init, p, n, 1, |q| _mm256_cvtepi8_epi32(lo(q)), |k| *p.add(k) as i8 as i32),
+                5 => fold_avx2(init, p, n, 2, |q| _mm256_cvtepu16_epi32(full(q)), rd),
+                9 => fold_avx2(init, p, n, 2, |q| _mm256_cvtepi16_epi32(full(q)), rd),
+                _ => fold_avx2(init, p, n, 4, |q| _mm256_loadu_si256(q as *const __m256i), rd),
+            }
         }
+        #[cfg(not(all(target_arch = "x86_64", target_feature = "avx2")))]
+        fold_scalar(init, n, rd)
     };
     h as i64
 }
