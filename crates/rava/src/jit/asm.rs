@@ -83,6 +83,9 @@ pub struct Asm {
     /// Relative calls to absolute addresses: (displacement position, target), resolved when the
     /// code is installed (`code_cache::install`).
     relocs: Vec<(u32, usize)>,
+    /// The spill store just emitted: (end, rsp displacement, register, width), so that a reload
+    /// of that slot right after it becomes a register move (`load`).
+    last_spill: Option<(u32, i32, R, bool)>,
 }
 
 /// Finished machine code and the call displacements its installation resolves.
@@ -267,10 +270,26 @@ impl Asm {
         self.op_rr(w, &[0x89], src as u8, dst as u8);
     }
     pub fn load(&mut self, w: bool, dst: R, m: M) {
+        // A reload of the stack slot just stored (no label in between): the register still has it.
+        if let (Some((end, disp, src, sw)), true) = (self.last_spill, Self::stack_slot(m)) {
+            if end == self.pos() && disp == m.disp && sw == w && !(self.bound_at == end && !self.bound.is_empty()) {
+                if dst != src {
+                    self.mov_rr(w, dst, src);
+                }
+                return;
+            }
+        }
         self.op_rm(w, &[0x8B], dst as u8, m);
     }
     pub fn store(&mut self, w: bool, m: M, src: R) {
         self.op_rm(w, &[0x89], src as u8, m);
+        if Self::stack_slot(m) {
+            self.last_spill = Some((self.pos(), m.disp, src, w));
+        }
+    }
+    /// `[rsp + disp]`: a spill slot, which only this code's own moves write.
+    fn stack_slot(m: M) -> bool {
+        m.base == R::Rsp && m.index.is_none() && m.rip.is_none() && !m.nobase
     }
     pub fn store16(&mut self, m: M, src: R) {
         self.b(0x66);
