@@ -1655,3 +1655,19 @@ reverted.
 
 On this host, two servers each: `java` 1215 / 1796 and 1249 / 1840 tps, rava 1344 / 1508 and
 1412 / 1689: rava leads the first sprint by ~11 % and trails the warm one by ~12 %.
+
+### Mixed old pages (tried, not kept)
+
+Segregated size classes keep an object and its fields' objects of other sizes on different
+pages. A walk of a million small heterogeneous graphs (holder, array, values, string, arrays)
+in random order takes rava ~165 ns per graph against `java`'s ~131 (whose full collection
+slides objects in allocation order). An experiment moved objects up to 2 KiB into "mixed" old
+pages (8-byte granules, bits at object starts, filled by bump in trace order, reused only when
+empty, with card scanning and interior-pointer lookup by bitmap): copying each object's
+references right after it (depth first) brought the walk to ~129 ns, copying on discovery (G1's
+young order) only to ~168. On ATM10, three-way sprint A/B over three rounds: off 1395 / 1593,
+depth first 1457 / 1579, G1 order 1366 / 1530; another three rounds of depth first against off
+were +2 % / −6 %. Depth-first copying also serialized marking (subtrees are copied by the
+marker that found them, outside the shared stack and the prefetch ring): full collections at
+the start took 4-8 s instead of 0.4-0.8 s. Not kept; the warm sprint's hot data does not
+behave like the microbenchmark.
