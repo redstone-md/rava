@@ -296,6 +296,22 @@ pub fn select_method(recv: &'static Klass, m: &'static Method) -> Option<&'stati
     find_implementation(recv, m)
 }
 
+/// Notes `iface`'s itable block as the one `k` matched last (`Klass::itable_hit`), which
+/// generated code checks before anything else.
+pub(crate) fn note_itable_hit(k: &'static Klass, iface: &'static Klass) {
+    use std::sync::atomic::Ordering;
+    if k.is_interface() || matches!(k.kind, crate::klass::KlassKind::ObjArray { .. } | crate::klass::KlassKind::TypeArray { .. }) {
+        return;
+    }
+    itable_of(k);
+    let raw = k.itable_raw.load(Ordering::Acquire);
+    // SAFETY: the flattened itable: its count, then (interface, block) pairs.
+    let pairs = unsafe { std::slice::from_raw_parts(raw.add(1), 2 * *raw) };
+    if let Some(p) = pairs.chunks(2).find(|p| p[0] == iface as *const Klass as usize) {
+        k.itable_hit.store(p[1] as *mut usize, Ordering::Relaxed);
+    }
+}
+
 /// `k`'s itable, built on first use and then also published flat for generated code.
 pub(crate) fn itable_of(k: &'static Klass) -> &'static [crate::klass::Itable] {
     let itable = k.itable.get_or_init(|| build_itable(k));

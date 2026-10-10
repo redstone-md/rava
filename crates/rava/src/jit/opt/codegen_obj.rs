@@ -630,12 +630,34 @@ impl Gen<'_> {
         self.a.bind(done);
     }
 
-    /// rdx := the implementation of the `Method*` in `t` for the receiver at frame slot `base`.
+    /// rdx := the implementation of the `Method*` in `t` for the receiver at frame slot `base`:
+    /// the receiver class's vtable entry for a method with a vtable slot, the entry of the
+    /// class's last itable hit for an interface's method of that interface (as interface calls
+    /// check it, `interface_target`), else the runtime's answer.
     fn select_target(&mut self, t: V, base: i32, fail: crate::jit::asm::Label) {
-        let found = self.a.new_label();
+        let (found, slow, iface, have) = (self.a.new_label(), self.a.new_label(), self.a.new_label(), self.a.new_label());
         self.load(R::R11, t);
         self.a.load(true, R::Rcx, self.slot(base));
         self.a.load(false, R::Rdi, mem(R::Rcx, 0));
+        // `Method::vtable_index`: a vtable slot, -1, or -2 - an interface method's itable slot.
+        self.a.load_sx(4, R::Rax, mem(R::R11, offset_of!(Method, vtable_index) as i32));
+        self.a.test_rr(false, R::Rax, R::Rax);
+        self.a.jcc(Cond::S, iface);
+        self.a.load(true, R::Rdx, crate::jit::asm::mem_idx(R::Rdi, R::Rax, 8, crate::klass::VTABLE_OFFSET as i32));
+        self.a.jmp(have);
+        self.a.bind(iface);
+        self.a.alu_ri(false, Alu::Cmp, R::Rax, -1);
+        self.a.jcc(Cond::E, slow);
+        self.a.load(true, R::Rsi, mem(R::Rdi, offset_of!(Klass, itable_hit) as i32));
+        self.a.load(true, R::Rdx, mem(R::R11, offset_of!(Method, holder) as i32));
+        self.a.alu_rm(true, Alu::Cmp, R::Rdx, mem(R::Rsi, -8));
+        self.a.jcc(Cond::Ne, slow);
+        self.a.neg(true, R::Rax);
+        self.a.load(true, R::Rdx, crate::jit::asm::mem_idx(R::Rsi, R::Rax, 8, -16));
+        self.a.bind(have);
+        self.a.test_rr(true, R::Rdx, R::Rdx);
+        self.a.jcc(Cond::Ne, found);
+        self.a.bind(slow);
         self.a.mov_rr(true, R::Rsi, R::R11);
         // The method stays on the stack across the call for the error path.
         self.a.push(R::R11);
@@ -643,14 +665,16 @@ impl Gen<'_> {
         self.a.call_abs(runtime::select_linked as *const () as usize);
         self.a.pop(R::Rsi);
         self.a.pop(R::Rsi);
+        let done_rax = self.a.new_label();
         self.a.test_rr(true, R::Rax, R::Rax);
-        self.a.jcc(Cond::Ne, found);
+        self.a.jcc(Cond::Ne, done_rax);
         self.publish_sp();
         self.a.mov_rr(true, R::Rdi, R::R12);
         self.a.call_abs(runtime::no_target as *const () as usize);
         self.a.jmp(fail);
-        self.a.bind(found);
+        self.a.bind(done_rax);
         self.a.mov_rr(true, R::Rdx, R::Rax);
+        self.a.bind(found);
     }
 
     /// rdx := the implementation of interface method `m` for `receiver`:
