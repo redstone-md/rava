@@ -1634,3 +1634,24 @@ checks and the loads before them (`CheckCast` 13 %, class constants compared in 
 18 %, field loads 14 %), callee entries 10 %, virtual and interface calls 14 %. The hottest
 cast (xycraft's `ISystemData`, megamorphic) waits on the object's class word and then on the
 class's `super_hit` line; on this host `java` runs the warm sprint at ~1825 tps, rava ~1600.
+
+### Metadata on huge pages
+
+The low arena (classes with their vtables, methods, hierarchy flags, inline-cache cells, statics)
+held ~400 MB on 4 KiB pages on ATM10, and the card table was on 4 KiB pages too, while the heap
+and the code cache already used huge pages. With `MADV_HUGEPAGE` on both (and inline-cache pairs
+and flattened itables moved into the arena): about +4 % on each, noisy over three to four rounds
+each. Aligning `Klass` to 64 bytes (before the arena was on huge pages) cost 5 % and was
+reverted.
+
+- **Interface casts** compare the class first-tier code saw pass (`profile::cast_cell`) before
+  reading the class's `super_hit`; the compare with the interface itself is gone. Neutral.
+- **Not kept:** calling a devirtualized target that was not inlined directly instead of through
+  the vtable or inline cache (first sprint −3 % and −11 %).
+- **Locality is not the gap:** a 2-million-element walk of small objects of mixed sizes after
+  collections takes rava ~35 ns per element against `java`'s ~57 (evacuation packs survivors in
+  trace order). Allocation rates in the warm sprint are alike (~400-470 MB/s), and so are the
+  young pauses (~45 ms every ~3 s against G1's 15-60 ms every ~5 s).
+
+On this host, two servers each: `java` 1215 / 1796 and 1249 / 1840 tps, rava 1344 / 1508 and
+1412 / 1689: rava leads the first sprint by ~11 % and trails the warm one by ~12 %.
