@@ -1569,3 +1569,36 @@ ticking ~6 %, NeoForge event dispatch ~4 %, and ~6 % in `java.lang.invoke` build
 per event (one mod calls `unreflect(m).bindTo(o).invokeWithArguments(a)` for each): 652 against
 431 ns, a third of it in the runtime (`Array.newInstance` behind `Arrays.copyOf`, which HotSpot
 allocates inline).
+
+### Copies, subtype tests, statics as roots
+
+- **arraycopy inline** in more cases: references into an array allocated in the same code (no card
+  mark: nothing between could collect; a copy itself never collects, so a run of copies into one
+  new array, as `MethodType.insertParameterTypes` makes, all qualify); primitives into an array
+  whose class a field or parameter declares (`[B`, `[J`: exact by type), with a null test on it;
+  a source proved non-null, or declared with the destination's class, skips that test; a few
+  non-zero bytes of a constant `@Stable` array (a literal separator) are stored as immediates.
+- **Subtype tests against a run-time class** (`Class.isInstance`, `aastore` into a non-`Object[]`)
+  check the primary display and the last-matched interface inline; the runtime notes a confirmed
+  interface for the next test.
+- **Young collections visit only static slots whose value changed** since the last collection
+  (`gc/statics.rs`): walking every class's static fields and updating each was the largest part
+  of a young pause's fixed cost on ATM10 (~25 of ~40 ms of marker CPU). No write barrier.
+- **Diagnostics**: `RAVA_GC_LOG` reports page faults per collection; `RAVA_JIT_DUMP` writes a
+  `.map` of each IR value's code offset with its bytecode position, to attribute samples inside a
+  large compiled method.
+
+Findings that did not turn into gains yet:
+- Allocation refills clear 4 KiB chunks of memory last touched a collection ago: ~2500 cycles a
+  chunk on ATM10 (~5 % of the server thread). Prefetching the next chunk took ~12 % off. Clearing
+  is 3× cheaper when the allocation area fits in L3 (≤64 MiB), but a young collection's fixed
+  cost (~15 ms with a 3.6 GiB old generation: cards, statics, threads, sweep) rules out a small
+  young generation for now.
+- xycraft's level systems spend ~25 % of their time building `level.dimension().location()
+  .toLanguageKey()` for an inactive profiler's `push`; the `String` is scalar-replaced already,
+  the `byte[]` and its copies are not (as with C2).
+- Hot code size is the same as HotSpot's (99 % of samples in ~1.35 MB of code on both).
+
+ATM10 `/tick sprint 1d` on a 2.8 GHz Xeon (33 MiB L3), two servers each: before these commits
+1365 / 1472 and 1317 / 1469 tps, after 1357 / 1509 and 1225 / 1433, `java` 1482 / 1968 and
+1446 / 1904. The first sprint is within ~8 % of `java`; the warm one ~25 % behind.
