@@ -53,9 +53,12 @@ call site is missing (another version of the program), rava prints which edit ha
 and leaves the class unchanged. Edits never change code length, so stack maps and exception
 tables stay valid and the edited class verifies and compiles as any other.
 
-A patch's own classes are defined in the class loader of the code that first names them,
-which is the loader of the edited class: they see the program's classes as that class does.
-Put them in a package of their own (`dev/rava/patches/<id>/`).
+A patch's own classes are defined lazily, once each, by the class loader of the code that
+first names them (normally the loader of the edited class), and they see the program's
+classes as that code does. Code of any other loader naming the class gets the same class, so
+its static state is shared: a patch editing classes of two loaders can coordinate through
+it, provided the class only names classes its defining loader sees. Put them in a package of
+their own (`dev/rava/patches/<id>/`).
 
 ## Writing a patch
 

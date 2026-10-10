@@ -7,3 +7,4 @@ redirect ravatest/app/PatchApp.run()V ravatest/app/PatchApp$Shape.area()I -> rav
 redirect ravatest/app/PatchApp.run()V ravatest/app/Peek.peek(Ljava/lang/Object;)Ljava/lang/String; -> ravatest/hooks/Hooks.peek
 open ravatest/app/Box
 open ravatest/app/Box v
+redirect ravatest/app/Other.run()I ravatest/app/Other.local()I -> ravatest/hooks/Shared.next

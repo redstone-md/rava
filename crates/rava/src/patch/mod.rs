@@ -5,8 +5,9 @@
 //!
 //! A patch is a descriptor (`rava-patch.txt`, see `descriptor.rs`) and class files. Its edits
 //! are applied when a class loader other than the boot loader defines a target class: all of
-//! a class's edits apply, or none do. Its own classes are defined lazily, into whichever
-//! loader first resolves one of their names (the loader of the edited code).
+//! a class's edits apply, or none do. Its own classes are defined lazily, once each: by the
+//! loader that first resolves the name, and code of any other loader resolving it gets the
+//! same class, so a patch can share state between code of several loaders.
 
 mod archive;
 mod descriptor;
@@ -34,11 +35,17 @@ struct Patch {
 #[derive(Default)]
 struct Patches {
     list: Vec<Patch>,
-    /// The patches' own classes: name → (patch index, class file).
-    classes: HashMap<String, (usize, &'static [u8])>,
+    /// The patches' own classes by name.
+    classes: HashMap<String, Own>,
     /// Where target classes are written before (`.orig.class`) and after their edits
     /// (`RAVA_PATCH_DUMP`).
     dump: Option<PathBuf>,
+}
+
+/// A patch's own class: its class file, and the class once defined.
+struct Own {
+    bytes: &'static [u8],
+    defined: OnceLock<&'static Klass>,
 }
 
 static PATCHES: OnceLock<Patches> = OnceLock::new();
@@ -103,7 +110,7 @@ fn load(p: &mut Patches, mut entries: archive::Entries) -> Result<usize, String>
         if class != stem || p.classes.contains_key(&class) {
             return Err(format!("{name}: misplaced or duplicate class {class}"));
         }
-        p.classes.insert(class, (index, Box::leak(bytes.into_boxed_slice())));
+        p.classes.insert(class, Own { bytes: Box::leak(bytes.into_boxed_slice()), defined: OnceLock::new() });
     }
     p.list.push(Patch { id: d.id, version: d.version, edits });
     Ok(index)
@@ -157,13 +164,17 @@ fn dump(dir: &Path, name: &str, bytes: &[u8]) {
     }
 }
 
-/// Defines the patch class `name` for `loader` when one exists (`load_class`, before asking
-/// the loader itself).
+/// The patch class `name` as resolved from `loader`, when one exists (`load_class`, before
+/// asking the loader itself): defined for `loader` unless some loader defined it already.
 pub(crate) fn define_own(t: &mut Thread, loader: Oop, name: Symbol) -> Option<LinkResult<&'static Klass>> {
-    let &(_, bytes) = patches().classes.get(name.as_str())?;
-    let cf = match ClassFile::parse(bytes) {
+    let own = patches().classes.get(name.as_str())?;
+    if let Some(&k) = own.defined.get() {
+        return Some(Ok(k));
+    }
+    let cf = match ClassFile::parse(own.bytes) {
         Ok(cf) => cf,
         Err(e) => return Some(Err(crate::loader::LoadError { kind: "java/lang/ClassFormatError", message: format!("{name}: {}", e.0) }.into())),
     };
-    Some(vm().define_class(t, cf, loader))
+    // Two loaders racing both define it; the first to finish is the class everyone gets.
+    Some(vm().define_class(t, cf, loader).map(|k| *own.defined.get_or_init(|| k)))
 }
