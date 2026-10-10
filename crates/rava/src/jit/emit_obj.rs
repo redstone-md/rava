@@ -338,7 +338,7 @@ pub(crate) fn store_typed_from(a: &mut Asm, src: R, ty: BasicType, m: M) {
 
 /// Asks for the lines a few objects past the bump pointer at `next` for writing (HotSpot's
 /// allocation prefetch: three lines from 192 bytes on), so later allocations find them here.
-fn prefetch_ahead(a: &mut Asm, next: M) {
+pub(crate) fn prefetch_ahead(a: &mut Asm, next: M) {
     for d in [192, 256, 320] {
         a.prefetchw(M { disp: next.disp + d, ..next });
     }

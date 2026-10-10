@@ -478,6 +478,7 @@ impl Gen<'_> {
         let fail = self.deopt(s);
         let (done, slow) = (self.a.new_label(), self.a.new_label());
         let elem = k.elem_size() as usize;
+        let uninit = self.g.uninit.contains(&v);
         let alloc = offset_of!(crate::thread::Thread, alloc);
         match self.g.constant(len).map(|n| n as i32) {
             Some(n) if n < 0 => self.a.jmp(fail),
@@ -490,7 +491,8 @@ impl Gen<'_> {
                     self.a.jcc(Cond::A, slow);
                     self.a.store(true, at(bump), R::Rdx);
                     self.a.store_imm32(mem(R::Rax, crate::heap::ARRAY_LENGTH_OFFSET as i32), n);
-                    crate::jit::emit_obj::clear(&mut self.a, R::Rax, 8, crate::heap::array_bytes(elem as u32, n).next_multiple_of(8) as i32, R::Rdx, R::Rcx);
+                    let to = if uninit { crate::heap::ARRAY_BASE_OFFSET as i32 } else { crate::heap::array_bytes(elem as u32, n).next_multiple_of(8) as i32 };
+                    crate::jit::emit_obj::clear(&mut self.a, R::Rax, 8, to, R::Rdx, R::Rcx);
                     self.a.store_imm32(mem(R::Rax, 0), crate::heap::klass_word(k) as i32);
                     self.a.jmp(done);
                 }
@@ -520,9 +522,15 @@ impl Gen<'_> {
                 self.a.jcc(Cond::A, slow);
                 self.a.store(true, at(bump), R::Rdx);
                 self.a.store(false, mem(R::Rax, crate::heap::ARRAY_LENGTH_OFFSET as i32), R::R11);
-                // The whole cell from the mark word on (rdx is its end).
-                self.a.lea(R::Rcx, mem(R::Rax, 8));
-                crate::jit::emit_obj::clear_to(&mut self.a, R::Rcx, R::Rdx, R::R11);
+                if uninit {
+                    // Only the mark word (`ARRAY_BASE_OFFSET` is 16).
+                    crate::jit::emit_obj::prefetch_ahead(&mut self.a, mem(R::Rdx, 0));
+                    self.a.store_imm(mem(R::Rax, 8), 0);
+                } else {
+                    // The whole cell from the mark word on (rdx is its end).
+                    self.a.lea(R::Rcx, mem(R::Rax, 8));
+                    crate::jit::emit_obj::clear_to(&mut self.a, R::Rcx, R::Rdx, R::R11);
+                }
                 self.a.store_imm32(mem(R::Rax, 0), crate::heap::klass_word(k) as i32);
                 self.a.jmp(done);
             }
