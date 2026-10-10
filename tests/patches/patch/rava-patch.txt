@@ -1,0 +1,9 @@
+# The semantics test's patch (tests/patches/run.sh).
+id test-hooks
+version 1
+redirect ravatest/app/PatchApp.run()V ravatest/app/PatchApp.greet(Ljava/lang/String;)Ljava/lang/String; -> ravatest/hooks/Hooks.greet
+redirect ravatest/app/PatchApp.run()V ravatest/app/PatchApp.twice(I)I -> ravatest/hooks/Hooks.twice
+redirect ravatest/app/PatchApp.run()V ravatest/app/PatchApp$Shape.area()I -> ravatest/hooks/Hooks.area
+redirect ravatest/app/PatchApp.run()V ravatest/app/Peek.peek(Ljava/lang/Object;)Ljava/lang/String; -> ravatest/hooks/Hooks.peek
+open ravatest/app/Box
+open ravatest/app/Box v

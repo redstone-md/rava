@@ -161,7 +161,7 @@ fn defined(t: &mut Thread, k: &'static Klass, pd: Oop) -> JResult<u64> {
 
 /// Parses and defines `bytes` for `loader`, with Java's errors for bad or duplicate classes.
 pub(crate) fn define_from_bytes(t: &mut Thread, loader: Oop, bytes: Vec<u8>, expected: Option<String>) -> JResult<&'static Klass> {
-    let cf = ClassFile::parse_owned(bytes).map_err(|e| throw_new(t, "java/lang/ClassFormatError", e.0))?;
+    let cf = ClassFile::parse_owned(crate::patch::transform(bytes)).map_err(|e| throw_new(t, "java/lang/ClassFormatError", e.0))?;
     if let Some(n) = expected.filter(|n| cf.name != n.as_str()) {
         let msg = format!("{} (wrong name: {})", n, cf.name);
         return Err(throw_new(t, "java/lang/NoClassDefFoundError", &msg));

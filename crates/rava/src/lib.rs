@@ -18,6 +18,7 @@ pub mod low;
 pub mod method;
 pub mod natives;
 pub mod parker;
+pub(crate) mod patch;
 pub mod runtime;
 pub mod symbol;
 pub mod sync;

@@ -62,6 +62,7 @@ fn run(mut line: CommandLine, java_home: PathBuf) -> ExitCode {
         Ok(vm) => vm,
         Err(e) => return fail(LaunchError::Vm(format!("Could not reserve space for the heap: {e}"))),
     };
+    crate::patch::discover();
     let mut t = Thread::new();
     t.attach();
     let result = boot::boot(&mut t).and_then(|_| {

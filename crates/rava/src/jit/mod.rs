@@ -19,6 +19,7 @@ macro_rules! env_once {
 
 pub mod asm;
 mod analysis;
+pub(crate) use analysis::insn_len;
 pub(crate) mod code_cache;
 mod compile;
 mod emit;
