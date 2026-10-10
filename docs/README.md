@@ -10,6 +10,7 @@
 | natives | Rust implementations registered by `(class, name, descriptor)`, the HotSpot native set | these are VM natives, not library replacements |
 | execution | interpreter → baseline compiler emitting x86-64 directly with register caching, inline caches and method-handle folding → SSA optimizing tier with receiver-profile inlining and deoptimization ([opt-tier.md](opt-tier.md)) | a boot is compile-latency bound, so the first compiler must be cheap; the hot minority gets the expensive one |
 | launcher | the `java` command line, with version, help and main-class resolution delegated to the JDK's `LauncherHelper` | rava replaces `java` without changing how anything is started |
+| patches | jars in `rava-patches/` next to the program redirect calls and open members of the classes it defines ([patches.md](patches.md)) | program-specific changes live in code the owner installs, never in the VM |
 
 The rules (no workload-specific tuning, no snapshots) are in the top-level
 [README](../README.md#rules). What was measured and changed, session by session, is in

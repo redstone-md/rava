@@ -74,6 +74,9 @@ impl Vm {
         if let Some(k) = self.find_loaded(loader, name) {
             return Ok(k);
         }
+        if let Some(k) = crate::patch::define_own(t, loader, name) {
+            return k;
+        }
         if let Some(comp) = name.as_str().strip_prefix('[') {
             let elem = match comp.as_bytes()[0] {
                 b'L' => self.load_class(t, loader, Symbol::intern(&comp[1..comp.len() - 1]))?,
