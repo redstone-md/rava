@@ -1686,3 +1686,9 @@ behave like the microbenchmark.
 - `bench/tick_sprint.py` reports one sprint per server by default (the first after the start):
   on this host, three rounds, `java` 1286 / 1170 / 1221 tps and rava 1257 / 1240 / 1221. The
   warm second sprint still favours `java` by ~10 %.
+- **Allocation prefetch depth** (four rounds each against three lines): one line for instances
+  (HotSpot's `AllocateInstancePrefetchLines`) −6 % first sprint and −7 % warm; five lines for
+  everything −6 % and −2.5 %. Three lines from 192 bytes stay.
+- **Not kept:** compressed references kept compressed across checks (deoptimizing guards
+  between a load and its uses): `[r*8 + disp]` operands load no faster on this core than a
+  shift and a plain load, and `SystemTickBench` got slower.
