@@ -74,7 +74,7 @@ pub struct Thread {
     cards: [usize; 4],
     /// See `offsets::POLL`; written by the collecting thread.
     pub(crate) poll: std::sync::atomic::AtomicU8,
-    stack: Box<[u64]>,
+    stack: ValueStack,
     pub java_thread: Oop,
     /// `Thread.scopedValueCache` of the current thread.
     pub(crate) scoped_value_cache: Oop,
@@ -98,10 +98,45 @@ pub struct Thread {
 
 const _: () = assert!(std::mem::offset_of!(Thread, poll) == offsets::POLL as usize);
 
+/// A thread's value stack: its own lazily committed mapping, so only the slots a thread
+/// reaches take memory (whatever the allocator does with large zeroed blocks), and unmapped
+/// when the thread ends.
+struct ValueStack(*mut u64);
+
+impl ValueStack {
+    fn new() -> ValueStack {
+        // SAFETY: a fresh anonymous mapping, zero-filled when touched.
+        let p = unsafe {
+            libc::mmap(std::ptr::null_mut(), STACK_SLOTS * 8, libc::PROT_READ | libc::PROT_WRITE, libc::MAP_PRIVATE | libc::MAP_ANONYMOUS | libc::MAP_NORESERVE, -1, 0)
+        };
+        assert!(p != libc::MAP_FAILED, "cannot map a value stack");
+        ValueStack(p as *mut u64)
+    }
+
+    fn as_ptr(&self) -> *const u64 {
+        self.0
+    }
+
+    fn len(&self) -> usize {
+        STACK_SLOTS
+    }
+}
+
+impl Drop for ValueStack {
+    fn drop(&mut self) {
+        // SAFETY: the mapping `new` made, no longer used.
+        unsafe { libc::munmap(self.0 as *mut libc::c_void, STACK_SLOTS * 8) };
+    }
+}
+
+// The mapping belongs to its thread's `Thread`, which moves between threads only whole.
+unsafe impl Send for ValueStack {}
+unsafe impl Sync for ValueStack {}
+
 impl Thread {
     pub fn new() -> Thread {
-        let mut stack = vec![0u64; STACK_SLOTS].into_boxed_slice();
-        let sp = stack.as_mut_ptr();
+        let stack = ValueStack::new();
+        let sp = stack.as_ptr() as *mut u64;
         // SAFETY: inside the owned slice.
         let limit = unsafe { sp.add(stack.len() - RESERVE_SLOTS) };
         Thread {
