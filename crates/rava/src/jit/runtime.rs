@@ -230,8 +230,9 @@ pub extern "sysv64" fn ic_miss(k: *const Klass, m: *const Method, cell: *const I
     use std::sync::atomic::Ordering;
     // Megamorphic sites stop counting, so they do not keep writing a shared line.
     if !target.is_null() && cell.misses.load(Ordering::Relaxed) < IC_MAX_UPDATES && cell.misses.fetch_add(1, Ordering::Relaxed) < IC_MAX_UPDATES {
-        let pair = Box::leak(Box::new(IcPair { klass: k as usize, target: target as usize }));
-        cell.pair.store(pair, Ordering::Release);
+        // In the low arena with the cells (huge pages): a hit loads the pair after the cell.
+        let pair = crate::low::leak(IcPair { klass: k as usize, target: target as usize });
+        cell.pair.store(pair as *const IcPair as *mut IcPair, Ordering::Release);
     }
     target
 }
