@@ -187,7 +187,7 @@ fn fill_method(t: &mut Thread, mn: Oop, m: &'static Method, requested: i32) -> J
         obj::write_ref(mn, mn_method(), rmn);
         obj::write::<i32>(mn, mn_flags(), flags);
         obj::write_ref(mn, mn_clazz(), holder);
-        obj::write::<i64>(mn, mn_vmindex(), m.vtable_index() as i64);
+        obj::write::<i64>(mn, mn_vmindex(), m.vtable_index().max(-1) as i64);
     }
     Ok(())
 }

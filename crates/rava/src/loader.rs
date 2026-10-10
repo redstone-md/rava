@@ -175,6 +175,13 @@ impl Vm {
                 Method::new(klass, m.name, m.desc, m.access, m.code.as_ref(), stub)
             }).collect();
         let _ = klass.methods.set(crate::low::leak_slice(methods));
+        if klass.is_interface() {
+            // An interface's methods have no vtable slot: their index there is -2 - their slot in
+            // an itable block, for dispatch on a `Method*` known only at run time.
+            for (i, m) in klass.methods().iter().enumerate() {
+                m.set_vtable_index(-2 - i as i32);
+            }
+        }
         klass.set_vtable(build_vtable(klass));
         if hidden_name.is_some() {
             return Ok(klass);

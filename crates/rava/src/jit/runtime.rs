@@ -265,6 +265,11 @@ pub extern "sysv64" fn select_linked(k: *const Klass, m: *const Method) -> *cons
     if target.is_private() || target.access & crate::klass::ACC_FINAL != 0 {
         return target;
     }
+    // The next dispatch of this interface's methods on this class stays inline.
+    if target.holder.is_interface() {
+        // SAFETY: a live (immortal) receiver class.
+        crate::link::note_itable_hit(unsafe { &*k }, target.holder);
+    }
     select(k, m)
 }
 

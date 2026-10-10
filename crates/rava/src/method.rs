@@ -15,8 +15,10 @@ pub struct Method {
     pub access: u16,
     pub sig: MethodSig,
     pub code: Option<&'static CodeInfo>,
-    /// Index in the holder's (and every subclass's) vtable; -1 when not virtually dispatched.
-    vtable_index: AtomicI32,
+    /// Index in the holder's (and every subclass's) vtable; -1 when not virtually dispatched;
+    /// for an interface's method, -2 - its slot in an itable block of the interface (what
+    /// generated code dispatching a `Method*` known only at run time reads).
+    pub(crate) vtable_index: AtomicI32,
     pub(crate) native: OnceLock<NativeFn>,
     /// Whether this native runs without an interpreter frame of its own (`jit::leaf_native`).
     pub(crate) leaf_native: OnceLock<bool>,
