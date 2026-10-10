@@ -1671,3 +1671,18 @@ were +2 % / −6 %. Depth-first copying also serialized marking (subtrees are co
 marker that found them, outside the shared stack and the prefetch ring): full collections at
 the start took 4-8 s instead of 0.4-0.8 s. Not kept; the warm sprint's hot data does not
 behave like the microbenchmark.
+
+### Method-handle dispatch, stale code, the benchmark's own metric
+
+- **`linkToVirtual` / `linkToInterface` inline** (`codegen_obj::select_target`): an interface's
+  methods keep `-2 - itable slot` in `Method::vtable_index`, so a `Method*` known only at run
+  time (the shared `DirectMethodHandle` forms behind `unreflect(..).bindTo(..)
+  .invokeWithArguments(..)`, which one mod runs per event) dispatches through the receiver
+  class's vtable or last itable hit; the runtime only on a miss, noting the hit. `select_method`
+  was ~0.4 % of the server thread. `MhDispatchSem`.
+- **Not kept:** retiring optimized code at its first deoptimization at an instruction that
+  started trapping after the code was compiled (HotSpot's not-entrant), instead of after eight:
+  ~4x fewer deoptimizations on a probe, but the first sprint −2 % over four rounds.
+- `bench/tick_sprint.py` reports one sprint per server by default (the first after the start):
+  on this host, three rounds, `java` 1286 / 1170 / 1221 tps and rava 1257 / 1240 / 1221. The
+  warm second sprint still favours `java` by ~10 %.
