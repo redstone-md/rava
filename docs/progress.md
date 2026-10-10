@@ -1694,3 +1694,33 @@ behave like the microbenchmark.
   shift and a plain load, and `SystemTickBench` got slower.
 - **Not kept:** reusing only holes of at least 4 KiB in allocation pages (`MIN_RUN`, 256 bytes):
   longer bump runs, but −1 % first sprint and −6 % warm over four rounds.
+
+## 2026-10-10 (cont.) — memory, cores, and the compiler keeping up
+
+**Memory.** Resident set at the end of two ATM10 sprints: `java` 8.24 GB, rava 7.03 GB with glibc's
+malloc, 7.26 GB now (mimalloc). Per-thread CPU over a start and two sprints: four compiler
+threads ~28 s each, the prefault thread ~21 s, three GC helpers ~10 s each.
+
+**The compile queue fell behind in the first sprint.** With a log of each job's wait: ~190 jobs
+queued, 3759 waits over 50 ms (0.3 s on average, up to 1 s), while their methods ran slower code.
+Four changes, each measured by the compiler threads' summed CPU over a start and two sprints
+(`RAVA_PROFILE`, which moves ±15 % between runs):
+
+| change | compile CPU | class parsing |
+|---|---|---|
+| before | 199 s | 10.8 s |
+| class hierarchy analysis walks an index of subtypes, not every class (`cha.rs`) | 178 s | 9.7 s |
+| mimalloc instead of glibc malloc (half the compiler threads' time was in malloc's lists) | 152 s | 7.3 s |
+| mimalloc keeps freed memory 100 ms (purging at once had the kernel clear the same pages again for every compilation) | 130 s | 6.9 s |
+
+- **Hottest job first** (`queue.rs`, HotSpot's `select_task`): the most invocations and back-edges
+  per millisecond since queued, OSR and deoptimization recompilations before anything; first
+  sprint +1.7 % over four rounds.
+- **Value stacks** are their own lazily committed mappings: under mimalloc the zeroed 64 MiB
+  `Vec`s were committed whole (+1.4 GB resident).
+
+Afterwards: 483 waits over 50 ms in the first sprint, 0.12 s on average, at most 0.35 s.
+
+Against `java` on this host, three rounds of two sprints: `java` 1168 / 1801, 1397 / 1718,
+1245 / 1645 tps; rava 1302 / 1449, 1226 / 1549, 1435 / 1646. The first sprint (the benchmark's
+default) averages 1321 against 1270 (+4 %), the warm one 1548 against 1721 (−10 %).
