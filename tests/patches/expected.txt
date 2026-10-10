@@ -3,4 +3,6 @@ hello world (patched)
 10
 peeked 7
 99
+shared 1
 hello again 2
+shared 2 true

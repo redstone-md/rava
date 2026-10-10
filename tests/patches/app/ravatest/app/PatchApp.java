@@ -34,6 +34,7 @@ public class PatchApp {
         Box box = new Box(7);
         System.out.println(Peek.peek(box));
         System.out.println(box.value());
+        System.out.println("shared " + Other.run());
     }
 
     public static void main(String[] args) {
@@ -41,6 +42,14 @@ public class PatchApp {
         app.run();
         // Not redirected: only calls inside `run` are.
         System.out.println(app.greet("again") + " " + twice(1));
+        // A second copy of Other, in a loader of its own, gets the same patch classes.
+        java.net.URL dir = PatchApp.class.getProtectionDomain().getCodeSource().getLocation();
+        try (java.net.URLClassLoader l = new java.net.URLClassLoader(new java.net.URL[] {dir}, ClassLoader.getPlatformClassLoader())) {
+            Class<?> other = l.loadClass("ravatest.app.Other");
+            System.out.println("shared " + other.getMethod("run").invoke(null) + " " + (other != Other.class));
+        } catch (Exception e) {
+            System.out.println(e);
+        }
     }
 }
 
