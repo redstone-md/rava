@@ -32,6 +32,9 @@ pub(super) fn init(base: usize, span: usize) {
             libc::mmap(std::ptr::null_mut(), len, libc::PROT_READ | libc::PROT_WRITE, libc::MAP_PRIVATE | libc::MAP_ANONYMOUS | libc::MAP_NORESERVE, -1, 0)
         };
         assert!(p != libc::MAP_FAILED, "cannot reserve the card table");
+        // Huge pages, as the heap: barriers dirty cards all over the table.
+        // SAFETY: the mapping just made.
+        unsafe { libc::madvise(p, len, libc::MADV_HUGEPAGE) };
         Table { base, span, bytes: p as *mut u8 }
     });
 }
