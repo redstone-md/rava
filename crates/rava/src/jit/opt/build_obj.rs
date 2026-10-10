@@ -363,17 +363,30 @@ impl Builder {
 
     /// `Array.newArray` (behind `Array.newInstance` and `Arrays.copyOf`) of a constant class whose
     /// array class exists: an ordinary allocation (C2's `_newArray`), deoptimizing to the call for
-    /// a negative length.
+    /// a negative length. `Unsafe.allocateUninitializedArray0` of a primitive class (string
+    /// concatenation's buffer, which its caller fills completely) is one whose elements are not
+    /// cleared (C2's `_allocateUninitializedArray`).
     fn new_array_reflective(&mut self, m: &'static Method, args: &[V], pre: &Rc<State>) -> bool {
-        if m.holder.name != "java/lang/reflect/Array" || m.name != "newArray" || args.len() != 2 {
+        let uninit = m.holder.name == "jdk/internal/misc/Unsafe" && m.name == "allocateUninitializedArray0" && args.len() == 3;
+        if !uninit && (m.holder.name != "java/lang/reflect/Array" || m.name != "newArray" || args.len() != 2) {
             return false;
         }
-        let Some(elem) = self.g.constant(args[0]).filter(|&c| c != 0).and_then(|c| crate::runtime::klass_of_mirror(c as crate::heap::Oop)) else { return false };
-        if elem.name == "void" {
-            return false;
+        let (class, len) = (args[args.len() - 2], args[args.len() - 1]);
+        let Some(mirror) = self.g.constant(class).filter(|&c| c != 0).map(|c| c as crate::heap::Oop) else { return false };
+        let k = if uninit {
+            // A primitive class's array class (any other class is left to the call).
+            let Some(t) = crate::runtime::primitive_type_of_mirror(mirror).filter(|&t| t != BasicType::Void) else { return false };
+            let Ok(k) = crate::vm::vm().primitive_array_class(t) else { return false };
+            k
+        } else {
+            let Some(elem) = crate::runtime::klass_of_mirror(mirror).filter(|e| e.name != "void") else { return false };
+            let Some(&k) = elem.array_klass.get() else { return false };
+            k
+        };
+        let v = self.add(Inst::NewArray(k, len, pre.clone()), Ty::A);
+        if uninit {
+            self.g.uninit.insert(v);
         }
-        let Some(&k) = elem.array_klass.get() else { return false };
-        let v = self.add(Inst::NewArray(k, args[1], pre.clone()), Ty::A);
         self.exact.push((v, k));
         self.push(v);
         true

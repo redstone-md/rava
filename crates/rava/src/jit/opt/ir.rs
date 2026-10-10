@@ -357,6 +357,8 @@ pub struct Graph {
     /// `System.arraycopy`s from a constant array read out of a `@Stable` field (a literal's
     /// bytes): its non-zero elements never change, so a short copy stores them as immediates.
     pub copy_stable: std::collections::HashSet<V>,
+    /// Primitive arrays allocated without clearing their elements (`allocateUninitializedArray`).
+    pub uninit: std::collections::HashSet<V>,
 }
 
 impl Graph {
