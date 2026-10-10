@@ -32,11 +32,34 @@ pub(super) fn unique_target(m: &'static Method) -> Option<&'static Method> {
     t
 }
 
+/// The concrete classes defined so far, by each of their superclasses and interfaces (and
+/// themselves): what `compute` walks instead of every class.
+fn subtypes() -> &'static Mutex<HashMap<usize, Vec<&'static Klass>>> {
+    static S: OnceLock<Mutex<HashMap<usize, Vec<&'static Klass>>>> = OnceLock::new();
+    S.get_or_init(Default::default)
+}
+
+/// Adds a newly defined class to the index of `subtypes`.
+pub(crate) fn note_class(k: &'static Klass) {
+    if !matches!(k.kind, KlassKind::Instance) || k.is_interface() || k.access & crate::klass::ACC_ABSTRACT != 0 {
+        return;
+    }
+    let mut index = subtypes().lock().unwrap();
+    let mut s = Some(k);
+    while let Some(c) = s {
+        index.entry(c as *const Klass as usize).or_default().push(k);
+        s = c.super_klass;
+    }
+    for &i in k.all_interfaces.iter() {
+        index.entry(i as *const Klass as usize).or_default().push(k);
+    }
+}
+
 fn compute(m: &'static Method) -> Option<&'static Method> {
     let holder = m.holder;
-    let all = crate::vm::vm().all_classes.lock().unwrap().clone();
+    let index = subtypes().lock().unwrap();
     let mut target: Option<&'static Method> = None;
-    for k in all {
+    for &k in index.get(&(holder as *const Klass as usize)).into_iter().flatten() {
         // Only classes with instances can be receivers.
         if !matches!(k.kind, KlassKind::Instance) || k.is_interface() || k.access & crate::klass::ACC_ABSTRACT != 0 {
             continue;
