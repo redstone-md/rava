@@ -4,11 +4,12 @@
 //! hierarchy flags of methods (tested where calls were inlined), and methods (stored in frames
 //! and passed to calls), as HotSpot keeps classes in
 //! its compressed class space. Nothing here is freed; without low memory left, values go to the
-//! ordinary heap.
+//! ordinary heap. The arena is on transparent huge pages: dispatch and type checks read the
+//! metadata of thousands of classes per tick, which 4 KiB pages spread over as many TLB entries.
 
 use std::sync::Mutex;
 
-const CHUNK: usize = 4 << 20;
+const CHUNK: usize = 32 << 20;
 
 /// `size` bytes aligned to `align` in low memory, or None (none left, or too large).
 fn reserve(size: usize, align: usize) -> Option<usize> {
@@ -27,6 +28,8 @@ fn reserve(size: usize, align: usize) -> Option<usize> {
         if p == libc::MAP_FAILED {
             return None;
         }
+        // SAFETY: the mapping just made.
+        unsafe { libc::madvise(p, CHUNK, libc::MADV_HUGEPAGE) };
         *arena = (p as usize, p as usize + CHUNK);
         at = arena.0;
     }
