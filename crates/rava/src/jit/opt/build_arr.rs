@@ -76,13 +76,19 @@ impl Builder {
             return;
         }
         if let Some((c, _)) = range.filter(|&(lo, hi)| lo == hi && lo >= 0) {
-            let first = self.bounds.iter().find(|&&(a, i, _)| a == arr && self.g.constant(i).is_some_and(|k| k >= 0)).copied();
-            if let Some((_, i, check)) = first {
-                if c > self.g.constant(i).unwrap_or(0) {
-                    let Inst::BoundsCheck(_, index, _) = &mut self.g.values[check as usize].inst else { unreachable!() };
-                    *index = idx;
-                    self.bounds.iter_mut().find(|b| b.2 == check).unwrap().1 = idx;
-                }
+            let constant = |b: &Self, i: V| b.g.constant(i).filter(|&k| k >= 0);
+            // A check of a larger constant index already passed.
+            if self.bounds.iter().any(|&(a, i, _)| a == arr && constant(self, i).is_some_and(|k| k >= c)) {
+                return;
+            }
+            // Widened only within this block: a check before a branch would fail on paths that
+            // never reach this access (a one-element list's `toArray`).
+            let here = self.bounds.iter().position(|&(a, i, check)| a == arr && constant(self, i).is_some() && self.g.blocks[self.cur as usize].insts.contains(&check));
+            if let Some(at) = here {
+                let check = self.bounds[at].2;
+                let Inst::BoundsCheck(_, index, _) = &mut self.g.values[check as usize].inst else { unreachable!() };
+                *index = idx;
+                self.bounds[at].1 = idx;
                 return;
             }
         }
