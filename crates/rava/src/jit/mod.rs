@@ -34,6 +34,11 @@ mod inline_plan;
 mod intrinsics;
 mod leaf;
 mod opt;
+
+/// Indexes a newly defined class for class hierarchy analysis (`opt/cha.rs`).
+pub(crate) fn note_class(k: &'static crate::klass::Klass) {
+    opt::cha::note_class(k);
+}
 pub(crate) use opt::osr::OsrCode;
 mod profile;
 pub mod queue;

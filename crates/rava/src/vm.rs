@@ -166,6 +166,7 @@ impl Vm {
 
     pub(crate) fn record_class(&self, k: &'static Klass) {
         self.all_classes.lock().unwrap().push(k);
+        crate::jit::note_class(k);
     }
 
     pub fn loaded_class_count(&self) -> usize {
