@@ -154,8 +154,8 @@ impl Emitter {
         self.a.store(true, self.stk(depth as i32), R::Rax);
     }
 
-    /// rax := a new instance of `k` bumped from this thread's allocation cache (zeroed memory,
-    /// class word written), or a jump to `slow` when the cache's bump range is exhausted.
+    /// rax := a new instance of `k` bumped from this thread's allocation cache (cleared, class
+    /// word written), or a jump to `slow` when the cache's bump range is exhausted.
     pub(super) fn alloc_inline(&mut self, k: &'static Klass, slow: Label) {
         let Some((size, bump, end)) = crate::gc::bump_layout(k.instance_size() as usize) else { return self.a.jmp(slow) };
         let at = |off: usize| mem(R::R12, (std::mem::offset_of!(crate::thread::Thread, alloc) + off) as i32);
@@ -164,6 +164,7 @@ impl Emitter {
         self.a.alu_rm(true, Alu::Cmp, R::Rdx, at(end));
         self.a.jcc(Cond::A, slow);
         self.a.store(true, at(bump), R::Rdx);
+        clear(&mut self.a, R::Rax, 4, k.instance_size() as i32, R::Rdx, R::Rcx);
         self.a.mov_ri(R::Rdx, k as *const Klass as i64);
         self.a.store(false, mem(R::Rax, 0), R::Rdx);
     }
@@ -333,6 +334,55 @@ pub(crate) fn store_typed_from(a: &mut Asm, src: R, ty: BasicType, m: M) {
     if ty == BasicType::Reference {
         card_mark(a, m);
     }
+}
+
+/// Asks for the lines a few objects past the bump pointer at `next` for writing (HotSpot's
+/// allocation prefetch: three lines from 192 bytes on), so later allocations find them here.
+fn prefetch_ahead(a: &mut Asm, next: M) {
+    for d in [192, 256, 320] {
+        a.prefetchw(M { disp: next.disp + d, ..next });
+    }
+}
+
+/// Clears `[obj + from, obj + to)` of a new object (`from` 4 or a multiple of 8, `to` a
+/// multiple of 8): the heap hands out cells as dead objects left them (`gc::space`). Clobbers
+/// `zero` and, past 128 bytes, `cursor`; leaves the flags changed.
+pub(crate) fn clear(a: &mut Asm, obj: R, mut from: i32, to: i32, zero: R, cursor: R) {
+    prefetch_ahead(a, mem(obj, to));
+    if from >= to {
+        return;
+    }
+    a.alu_rr(false, Alu::Xor, zero, zero);
+    if from % 8 != 0 {
+        a.store(false, mem(obj, from), zero);
+        from += 4;
+    }
+    if to - from <= 128 {
+        for off in (from..to).step_by(8) {
+            a.store(true, mem(obj, off), zero);
+        }
+        return;
+    }
+    // cursor runs from `from - to` up to 0.
+    let top = a.new_label();
+    a.mov_ri(cursor, (from - to) as i64);
+    a.bind(top);
+    a.store(true, super::asm::mem_idx(obj, cursor, 1, to), zero);
+    a.alu_ri(true, Alu::Add, cursor, 8);
+    a.jcc(Cond::Ne, top);
+}
+
+/// Clears `[from, end)` (registers, both multiples of 8, `from < end`) of a new object with
+/// `zero` (clobbered); leaves the flags changed.
+pub(crate) fn clear_to(a: &mut Asm, from: R, end: R, zero: R) {
+    prefetch_ahead(a, mem(end, 0));
+    let top = a.new_label();
+    a.alu_rr(false, Alu::Xor, zero, zero);
+    a.bind(top);
+    a.store(true, mem(from, 0), zero);
+    a.alu_ri(true, Alu::Add, from, 8);
+    a.alu_rr(true, Alu::Cmp, from, end);
+    a.jcc(Cond::B, top);
 }
 
 /// The write barrier of a reference store to `m`, inside the heap: marks its card

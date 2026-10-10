@@ -28,7 +28,7 @@ use crate::thread::Thread;
 use space::{class_of, Space, CLASSES, CLASS_SIZES, LARGE_THRESHOLD, PAGE_SIZE};
 use std::sync::Mutex;
 
-/// A thread's allocation cache for one size class: a zeroed bump range (a run of free cells) in
+/// A thread's allocation cache for one size class: a bump range (a run of free cells) in
 /// an owned page, `page` being that page's index + 1 (0 = none yet), and where the run started
 /// (what was bumped since is counted as allocated when the run is retired).
 #[derive(Clone, Copy, Default)]
@@ -41,9 +41,6 @@ pub struct ClassCache {
 
 pub struct AllocCache {
     classes: [ClassCache; CLASSES],
-    /// Where each class's current run ends; past the bump limit its cells are not zeroed yet
-    /// (`space::next_chunk`).
-    stops: [usize; CLASSES],
     /// Bytes of retired runs not yet added to `Heap::small_allocated` (flushed per MiB and
     /// when taking a page, so refills within a page touch no shared counter).
     pending: usize,
@@ -51,7 +48,7 @@ pub struct AllocCache {
 
 /// For inline allocation in compiled code: the size of a cell for an object of `bytes` (at
 /// most `LARGE_THRESHOLD`), and the offsets within `AllocCache` of that size class's bump
-/// pointer and bump limit. Bump memory is already zeroed.
+/// pointer and bump limit. Bump memory is not cleared: the allocation clears what it takes.
 pub(crate) fn bump_layout(bytes: usize) -> Option<(usize, usize, usize)> {
     if bytes > LARGE_THRESHOLD {
         return None;
@@ -77,7 +74,7 @@ pub(crate) fn step_cache_offsets() -> (usize, usize) {
 
 impl Default for AllocCache {
     fn default() -> Self {
-        AllocCache { classes: [ClassCache::default(); CLASSES], stops: [0; CLASSES], pending: 0 }
+        AllocCache { classes: [ClassCache::default(); CLASSES], pending: 0 }
     }
 }
 
@@ -124,6 +121,8 @@ impl Heap {
             if c.bump + size <= c.end {
                 let cell = c.bump;
                 c.bump += size;
+                // SAFETY: the cell just taken from this thread's run.
+                unsafe { std::ptr::write_bytes(cell as *mut u8, 0, bytes) };
                 return Some(cell as *mut u8);
             }
             self.refill(t, class)?;
@@ -134,15 +133,6 @@ impl Heap {
     #[cold]
     fn refill(&self, t: &mut Thread, class: usize) -> Option<()> {
         let retired = t.alloc.classes[class];
-        if retired.page != 0 && t.alloc.stops[class] > retired.end {
-            // The run goes on: zero its next chunk.
-            let index = retired.page - 1;
-            // SAFETY: as below, the page is owned by this thread's cache.
-            let meta = unsafe { (*self.pages.add(index)).as_mut().expect("owned page") };
-            let end = space::next_chunk(meta, self.base + (index << space::PAGE_SHIFT), retired.end, t.alloc.stops[class]);
-            t.alloc.classes[class].end = end;
-            return Some(());
-        }
         t.alloc.pending += retired.bump - retired.start;
         if t.alloc.pending >= 1 << 20 {
             self.flush_pending(t);
@@ -152,9 +142,8 @@ impl Heap {
             // SAFETY: the page is owned by this thread's cache, so outside collections (which
             // cannot run while this thread allocates) only this thread touches its metadata.
             let meta = unsafe { (*self.pages.add(index)).as_mut().expect("owned page") };
-            if let Some((bump, end, stop)) = space::next_run_in(meta, self.base + (index << space::PAGE_SHIFT)) {
+            if let Some((bump, end)) = space::next_run_in(meta, self.base + (index << space::PAGE_SHIFT)) {
                 t.alloc.classes[class] = ClassCache { bump, end, page: retired.page, start: bump };
-                t.alloc.stops[class] = stop;
                 return Some(());
             }
         }
@@ -162,7 +151,7 @@ impl Heap {
         self.flush_pending(t);
         self.maybe_collect(t);
         let mut space = self.space.lock().unwrap();
-        let (page, bump, end, stop) = match space.take_run(class) {
+        let (page, bump, end) = match space.take_run(class) {
             Some(r) => r,
             None => {
                 drop(space);
@@ -172,8 +161,15 @@ impl Heap {
             }
         };
         t.alloc.classes[class] = ClassCache { bump, end, page: page + 1, start: bump };
-        t.alloc.stops[class] = stop;
         Some(())
+    }
+
+    /// Gives back what `t`'s allocation cache holds unused, as the thread stops taking part in
+    /// collections (before a collection could reset the cache itself).
+    pub fn retire_cache(&self, t: &mut Thread) {
+        release_unused(&mut self.space.lock().unwrap(), &t.alloc);
+        self.flush_pending(t);
+        t.alloc = AllocCache::default();
     }
 
     fn flush_pending(&self, t: &mut Thread) {
@@ -236,6 +232,7 @@ impl Heap {
             for rec in safepoint::all_threads() {
                 // SAFETY: every registered thread is stopped (or is us); its cache is ours to reset.
                 let th = unsafe { &mut *rec.thread.load(std::sync::atomic::Ordering::SeqCst) };
+                release_unused(&mut space, &th.alloc);
                 th.alloc = AllocCache::default();
             }
             for m in space.pages.iter_mut().flatten() {
@@ -384,7 +381,6 @@ fn sweep(space: &mut Space) -> usize {
         // The marks stay: survivors are old from now on.
         meta.alloc.copy_from_slice(&meta.marks);
         meta.cursor = 0;
-        meta.zeroed = false;
         live += live_cells * meta.cell_size as usize;
         // Allocation reuses pages up to nine tenths full (holes too short for a run are passed
         // over, `MIN_RUN`). Reusing only pages at most half full left the free cells of fuller
@@ -416,5 +412,18 @@ fn minor_faults() -> i64 {
         let mut u: libc::rusage = std::mem::zeroed();
         libc::getrusage(libc::RUSAGE_SELF, &mut u);
         u.ru_minflt as i64
+    }
+}
+
+/// Gives back the cells of `cache`'s runs no object took: they were marked allocated with the
+/// run but hold whatever dead objects left there, which the conservative scan must not take
+/// for objects (`space::next_run_in`).
+fn release_unused(space: &mut Space, cache: &AllocCache) {
+    for c in cache.classes.iter().filter(|c| c.page != 0 && c.bump < c.end) {
+        let index = c.page - 1;
+        let page = space.page_addr(index);
+        let meta = space.pages[index].as_mut().expect("owned page");
+        let cell = meta.cell_size as usize;
+        meta.set_alloc((c.bump - page) / cell, (c.end - page) / cell, false);
     }
 }

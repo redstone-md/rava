@@ -350,6 +350,10 @@ impl Asm {
             }
         }
     }
+    /// `prefetchw [m]`: the line for writing.
+    pub fn prefetchw(&mut self, m: M) {
+        self.op_rm(false, &[0x0F, 0x0D], 1, m);
+    }
     /// `mov qword [m], imm32` (sign-extended).
     pub fn store_imm(&mut self, m: M, imm: i32) {
         self.op_rm(true, &[0xC7], 0, m);

@@ -94,6 +94,8 @@ pub fn attach(t: &mut Thread) {
 pub fn detach(t: &mut Thread) {
     ATTACHED.with(|a| a.set(false));
     if let Some(rec) = t.gc_record.take() {
+        // Still in Java: no collection runs meanwhile to reset the cache itself.
+        crate::vm::vm().heap.retire_cache(t);
         enter_native(rec);
         registry().threads.lock().unwrap().retain(|r| !std::ptr::eq(*r, rec));
     }
