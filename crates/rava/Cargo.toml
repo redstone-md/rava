@@ -10,3 +10,4 @@ libc = "0.2"
 miniz_oxide = "0.8"
 crc32fast = "1.4"
 adler2 = "2"
+mimalloc = { version = "0.1.52", default-features = false }
