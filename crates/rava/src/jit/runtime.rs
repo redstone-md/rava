@@ -396,10 +396,11 @@ pub extern "sysv64" fn safepoint(t: *mut Thread) {
 }
 
 /// `System.arraycopy` for optimized code: copies and returns 1 when every check passes (non-null
-/// arrays of the same kind, the range within both, for reference arrays a source class that
-/// is a subtype of the destination's, so no element needs a store check); otherwise returns 0
-/// having changed nothing, and the caller deoptimizes for the interpreter to throw (or copy
-/// element by element). Never collects.
+/// arrays of the same kind, the range within both, for reference arrays each element storable
+/// in the destination); otherwise returns 0, and the caller deoptimizes for the interpreter to
+/// throw. A failed range or kind check changes nothing; a failed element check leaves the
+/// elements before it copied, which the interpreter copies again (the arrays differ, so the
+/// same values) before it throws. Never collects.
 pub extern "sysv64" fn arraycopy_fast(src: crate::heap::Oop, sp: u64, dst: crate::heap::Oop, dp: u64, len: u64) -> u64 {
     use crate::heap::obj;
     use crate::klass::KlassKind;
@@ -409,15 +410,35 @@ pub extern "sysv64" fn arraycopy_fast(src: crate::heap::Oop, sp: u64, dst: crate
     }
     // SAFETY: both are live objects.
     let (sk, dk) = unsafe { (obj::klass(src), obj::klass(dst)) };
-    let refs = match (&sk.kind, &dk.kind) {
-        (KlassKind::TypeArray { elem: x }, KlassKind::TypeArray { elem: y }) if x == y => false,
-        (KlassKind::ObjArray { .. }, KlassKind::ObjArray { .. }) if std::ptr::eq(sk, dk) || sk.is_subtype_of(dk) => true,
+    let (refs, checked) = match (&sk.kind, &dk.kind) {
+        (KlassKind::TypeArray { elem: x }, KlassKind::TypeArray { elem: y }) if x == y => (false, None),
+        (KlassKind::ObjArray { .. }, KlassKind::ObjArray { .. }) if std::ptr::eq(sk, dk) || sk.is_subtype_of(dk) => (true, None),
+        (KlassKind::ObjArray { .. }, KlassKind::ObjArray { elem }) => (true, Some(*elem)),
         _ => return 0,
     };
     // SAFETY: both are arrays.
     let (sl, dl) = unsafe { (obj::array_length(src), obj::array_length(dst)) };
     if sp as u32 + len as u32 > sl as u32 || dp as u32 + len as u32 > dl as u32 {
         return 0;
+    }
+    if let Some(elem) = checked {
+        // Each element checked against the destination's element class (HotSpot's
+        // checkcast arraycopy); distinct arrays, as the classes differ.
+        let es = crate::heap::REF_SIZE as usize;
+        // SAFETY: checked bounds; elements of live reference arrays.
+        unsafe {
+            let (from, to) = (obj::array_data::<u8>(src).add(sp as usize * es), obj::array_data::<u8>(dst).add(dp as usize * es));
+            for i in 0..len as usize {
+                let o = obj::load_ref_at(from as usize + i * es);
+                if !o.is_null() && !obj::klass(o).is_subtype_of(elem) {
+                    crate::gc::cards::dirty_range(to as usize, i * es);
+                    return 0;
+                }
+                std::ptr::copy_nonoverlapping(from.add(i * es), to.add(i * es), es);
+            }
+            crate::gc::cards::dirty_range(to as usize, len as usize * es);
+        }
+        return 1;
     }
     let es = sk.elem_size() as usize;
     let n = len as usize * es;
