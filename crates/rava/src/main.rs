@@ -13,8 +13,10 @@ extern "C" {
 const MI_OPTION_PURGE_DELAY: i32 = 15;
 
 fn main() -> std::process::ExitCode {
-    // Freed memory goes back at once (~90 MB less resident on a modded server, no slower).
+    // Freed memory goes back after 100 ms: compilations, back to back, reuse what the last one
+    // freed (at once, the kernel cleared those pages again for each: compile CPU on All The
+    // Mods 10 152 s; 100 ms 130 s and 7.26 GB resident, against 7.09 at once and 7.37 at 1 s).
     // SAFETY: a plain option setter, safe at any time.
-    unsafe { mi_option_set(MI_OPTION_PURGE_DELAY, 0) };
+    unsafe { mi_option_set(MI_OPTION_PURGE_DELAY, 100) };
     rava::launcher::main()
 }
