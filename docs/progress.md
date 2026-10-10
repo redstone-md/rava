@@ -1724,3 +1724,5 @@ Afterwards: 483 waits over 50 ms in the first sprint, 0.12 s on average, at most
 Against `java` on this host, three rounds of two sprints: `java` 1168 / 1801, 1397 / 1718,
 1245 / 1645 tps; rava 1302 / 1449, 1226 / 1549, 1435 / 1646. The first sprint (the benchmark's
 default) averages 1321 against 1270 (+4 %), the warm one 1548 against 1721 (−10 %).
+- **Not kept:** with compilation cheaper, doubling the hot inlining limits again (`FreqInlineSize`
+  650, `InlineSmallCode` 7000, budget 32000): 1284 / 1503 → 1313 / 1505 over four rounds, noise.
