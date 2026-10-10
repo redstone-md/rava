@@ -22,8 +22,50 @@ pub(super) enum Job {
 }
 
 struct Queue {
-    jobs: Mutex<VecDeque<Job>>,
+    jobs: Mutex<VecDeque<Queued>>,
     ready: Condvar,
+}
+
+/// A job with when it was queued and its method's invocation and back-edge counts then.
+struct Queued {
+    job: Job,
+    at: std::time::Instant,
+    events: u64,
+}
+
+impl Job {
+    fn method(&self) -> &'static Method {
+        match *self {
+            Job::Baseline(m) | Job::TierUp(m) | Job::Recompile(m) | Job::Reprofile(m) | Job::Osr(m, _) => m,
+        }
+    }
+
+    /// Whether the job goes before any by hotness: a loop waiting for its OSR version, or a
+    /// method that kept deoptimizing and runs baseline code until it is recompiled.
+    fn urgent(&self) -> bool {
+        matches!(self, Job::Osr(..) | Job::Recompile(_))
+    }
+}
+
+/// Invocations and back-edges `m` has counted (lower tiers keep counting while it waits).
+fn events(m: &'static Method) -> u64 {
+    use std::sync::atomic::Ordering::Relaxed;
+    m.invocations.load(Relaxed) as u64 + m.backedges.load(Relaxed) as u64
+}
+
+/// Takes the job to compile next (HotSpot's `select_task`): the first urgent one, else the
+/// one whose method counted the most events per millisecond since it was queued, plus a
+/// little for each second waited so that none starves.
+fn select(jobs: &mut VecDeque<Queued>) -> Option<Queued> {
+    if let Some(i) = jobs.iter().position(|q| q.job.urgent()) {
+        return jobs.remove(i);
+    }
+    let score = |q: &Queued| {
+        let ms = q.at.elapsed().as_secs_f64() * 1e3;
+        events(q.job.method()).saturating_sub(q.events) as f64 / (ms + 1.0) + ms / 1000.0
+    };
+    let best = (0..jobs.len()).max_by(|&a, &b| score(&jobs[a]).total_cmp(&score(&jobs[b])))?;
+    jobs.remove(best)
 }
 
 fn background() -> bool {
@@ -58,11 +100,8 @@ pub(super) fn submit(job: Job) {
         return run(job);
     }
     let q = queue();
-    // A loop waiting for its OSR version goes first: the frame runs slow code until it is in.
-    match job {
-        Job::Osr(..) => q.jobs.lock().unwrap().push_front(job),
-        _ => q.jobs.lock().unwrap().push_back(job),
-    }
+    let queued = Queued { events: events(job.method()), job, at: std::time::Instant::now() };
+    q.jobs.lock().unwrap().push_back(queued);
     q.ready.notify_one();
 }
 
@@ -72,8 +111,8 @@ fn work() {
         let job = {
             let mut jobs = q.jobs.lock().unwrap();
             loop {
-                match jobs.pop_front() {
-                    Some(j) => break j,
+                match select(&mut jobs) {
+                    Some(q) => break q.job,
                     None => jobs = q.ready.wait(jobs).unwrap(),
                 }
             }
