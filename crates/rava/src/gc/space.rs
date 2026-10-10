@@ -7,8 +7,8 @@
 //! survived it) and `marks` (reached by the current collection). A cell holds an object iff its
 //! `alloc` bit is set and its first word (the class pointer) is non-zero. Sweeping only swaps and
 //! counts bitmaps; dead cells are never touched until they are handed out again, as part of a
-//! run of free cells that is zeroed then and bump-allocated (so compiled code allocates from any
-//! run the same way). Fresh and recycled pages are handed out whole.
+//! run of free cells that is bump-allocated, each object cleared as it is made (so compiled code
+//! allocates from any run the same way). Fresh and recycled pages are handed out whole.
 
 use super::large::LargeArea;
 use std::collections::BTreeMap;
@@ -55,8 +55,6 @@ pub struct PageMeta {
     pub marks: Box<[u64]>,
     /// Next cell to look for a free run from.
     pub cursor: usize,
-    /// Free cells are known to be zero (a fresh or recycled page), so runs need no clearing.
-    pub zeroed: bool,
     /// Owned by a thread's allocation cache.
     pub owned: bool,
     /// Holds objects a young collection moved out of allocation pages (`mark.rs`): only
@@ -94,7 +92,7 @@ impl PageMeta {
     }
 
     /// Sets (or clears) the allocation bits of cells `first..end`.
-    fn set_alloc(&mut self, first: usize, end: usize, set: bool) {
+    pub(super) fn set_alloc(&mut self, first: usize, end: usize, set: bool) {
         let mut i = first;
         while i < end {
             let (w, b) = (i / 64, i % 64);
@@ -137,79 +135,16 @@ impl PageMeta {
     }
 }
 
-/// How much of a run of reused cells is cleared at a time, just before it is bump-allocated:
-/// clearing a whole run (up to a page) at once streams it out of the cache, and allocation
-/// then misses on every line again.
-const ZERO_CHUNK: usize = 4096;
-
-/// The next run of free cells of the page at `page` (metadata `meta`): `(start, end, stop)`,
-/// the cells `start..stop` handed to the caller, of which `start..end` are zeroed and ready to
-/// bump-allocate. On a reused page only a first chunk is zeroed; the cells after it are left
-/// out of the allocation bitmap until `next_chunk` zeroes them (a cell marked allocated always
-/// holds an object or zeros, which the collector's conservative scan relies on).
-pub fn next_run_in(meta: &mut PageMeta, page: usize) -> Option<(usize, usize, usize)> {
+/// The next run of free cells of the page at `page` (metadata `meta`): `(start, stop)`, marked
+/// allocated and handed to the caller as they are. Allocation clears each object as it makes
+/// it (HotSpot's TLAB allocation), so the cells are written once, as their objects are
+/// initialized; clearing whole runs ahead of allocation stalled on every line of memory
+/// last touched a collection ago. Cells a run hands out but no object took yet are released
+/// before the collector's conservative scan could take them for objects (`Heap::collect_as`).
+pub fn next_run_in(meta: &mut PageMeta, page: usize) -> Option<(usize, usize)> {
     let (first, last) = meta.next_free_run()?;
     let cell = meta.cell_size as usize;
-    let (start, stop) = (page + first * cell, page + last * cell);
-    if meta.zeroed {
-        return Some((start, stop, stop));
-    }
-    let end = chunk_end(start, stop, cell);
-    meta.set_alloc((end - page) / cell, last, false);
-    // SAFETY: free cells of a page in use, handed to the caller only now.
-    unsafe { zero(start, end) };
-    prefetch_chunk(end, stop);
-    Some((start, end, stop))
-}
-
-/// Zeroes the next chunk of a run from `from` (a cell boundary below `stop`) and marks its
-/// cells allocated; returns the chunk's end.
-pub fn next_chunk(meta: &mut PageMeta, page: usize, from: usize, stop: usize) -> usize {
-    let cell = meta.cell_size as usize;
-    let end = chunk_end(from, stop, cell);
-    // SAFETY: cells of a run this thread owns, not yet handed to the allocator.
-    unsafe { zero(from, end) };
-    prefetch_chunk(end, stop);
-    meta.set_alloc((from - page) / cell, (end - page) / cell, true);
-    end
-}
-
-/// Asks for the lines of the run's next chunk, `[from, stop)` up to `ZERO_CHUNK` bytes, for
-/// writing (HotSpot's allocation prefetch, a chunk at a time): memory reused by allocation was
-/// last touched a collection ago and comes from DRAM, and clearing a chunk whose lines are
-/// not on their way stalled on every one of them (~3000 cycles a 4 KiB chunk). By the time
-/// allocation reaches the chunk, its lines are here.
-#[inline]
-fn prefetch_chunk(from: usize, stop: usize) {
-    let end = (from + ZERO_CHUNK).min(stop);
-    let mut p = from & !63;
-    while p < end {
-        // SAFETY: a prefetch never faults.
-        unsafe { std::arch::x86_64::_mm_prefetch::<{ std::arch::x86_64::_MM_HINT_ET0 }>(p as *const i8) };
-        p += 64;
-    }
-}
-
-/// The end of the chunk of a run of `cell`-sized cells from `start`: whole cells, `ZERO_CHUNK`
-/// bytes or at least one cell, within `stop`.
-fn chunk_end(start: usize, stop: usize, cell: usize) -> usize {
-    (start + (ZERO_CHUNK / cell).max(1) * cell).min(stop)
-}
-
-/// # Safety
-/// `start..stop` must be heap memory no object occupies.
-unsafe fn zero(start: usize, stop: usize) {
-    if stop - start <= 256 {
-        // Short runs are common in reused pages: clear them without a call (volatile, so the
-        // loop is not turned back into one).
-        let mut p = start;
-        while p < stop {
-            (p as *mut u64).write_volatile(0);
-            p += 8;
-        }
-    } else {
-        std::ptr::write_bytes(start as *mut u8, 0, stop - start);
-    }
+    Some((page + first * cell, page + last * cell))
 }
 
 pub struct Large {
@@ -302,23 +237,23 @@ impl Space {
     }
 
     /// A page of size class `class` with a free run, owned by the caller from now on, and that
-    /// run (`next_run_in`): `(page, start, end, stop)`. A reused page with only short holes left goes back
+    /// run (`next_run_in`): `(page, start, end)`. A reused page with only short holes left goes back
     /// unowned until the next collection sweeps it again.
-    pub fn take_run(&mut self, class: usize) -> Option<(usize, usize, usize, usize)> {
+    pub fn take_run(&mut self, class: usize) -> Option<(usize, usize, usize)> {
         while let Some(p) = self.partial[class].pop() {
             let addr = self.page_addr(p);
             let meta = self.pages[p].as_mut().expect("partial page");
             if meta.owned {
                 continue;
             }
-            if let Some((start, end, stop)) = next_run_in(meta, addr) {
+            if let Some((start, end)) = next_run_in(meta, addr) {
                 meta.owned = true;
-                return Some((p, start, end, stop));
+                return Some((p, start, end));
             }
         }
         let p = self.take_page(class, false)?;
-        let (start, end, stop) = self.next_run(p).expect("a fresh or empty page has free cells");
-        Some((p, start, end, stop))
+        let (start, end) = self.next_run(p).expect("a fresh or empty page has free cells");
+        Some((p, start, end))
     }
 
     /// A run of free cells of class `class` in an old page, for objects a collection moves:
@@ -348,15 +283,14 @@ impl Space {
     /// page, for `old_run`, if `old`).
     fn take_page(&mut self, class: usize, old: bool) -> Option<usize> {
         let cell = CLASS_SIZES[class] as usize;
-        // A recycled page keeps its memory committed (cheaper to clear than to fault in again)
-        // and is cleared chunk by chunk as it is allocated; a fresh one is zero already.
-        let (addr, zeroed) = match self.empty.pop() {
-            Some(a) => (a, false),
-            None if !self.released.is_empty() => (self.released.pop().unwrap(), true),
+        // A recycled page keeps its memory committed (cheaper to clear than to fault in again).
+        let addr = match self.empty.pop() {
+            Some(a) => a,
+            None if !self.released.is_empty() => self.released.pop().unwrap(),
             None if self.fresh + PAGE_SIZE <= self.end => {
                 self.fresh += PAGE_SIZE;
                 super::prefault::advanced(super::prefault::Region::Small, self.fresh);
-                (self.fresh - PAGE_SIZE, true)
+                self.fresh - PAGE_SIZE
             }
             None => return None,
         };
@@ -369,7 +303,6 @@ impl Space {
             alloc: vec![0u64; cells.div_ceil(64)].into_boxed_slice(),
             marks: vec![0u64; cells.div_ceil(64)].into_boxed_slice(),
             cursor: 0,
-            zeroed,
             owned: !old,
             old,
         });
@@ -394,7 +327,7 @@ impl Space {
     }
 
     /// The next run of free cells of owned page `index` (`next_run_in`).
-    pub fn next_run(&mut self, index: usize) -> Option<(usize, usize, usize)> {
+    pub fn next_run(&mut self, index: usize) -> Option<(usize, usize)> {
         let page = self.page_addr(index);
         next_run_in(self.pages[index].as_mut().expect("owned page"), page)
     }
@@ -445,7 +378,6 @@ mod tests {
             alloc: vec![0b10_0011, 0b11_1111].into_boxed_slice(),
             marks: vec![0, 0].into_boxed_slice(),
             cursor: 0,
-            zeroed: false,
             owned: true,
             old: false,
         };
@@ -466,7 +398,6 @@ mod tests {
                 alloc: Box::new([]),
                 marks: Box::new([]),
                 cursor: 0,
-                zeroed: true,
                 owned: false,
                 old: false,
             };

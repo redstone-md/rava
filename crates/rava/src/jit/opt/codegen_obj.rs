@@ -460,6 +460,7 @@ impl Gen<'_> {
                 self.a.alu_rm(true, Alu::Cmp, R::Rdx, at(end));
                 self.a.jcc(Cond::A, slow);
                 self.a.store(true, at(bump), R::Rdx);
+                crate::jit::emit_obj::clear(&mut self.a, R::Rax, 4, k.instance_size() as i32, R::Rdx, R::Rcx);
                 self.a.store_imm32(mem(R::Rax, 0), crate::heap::klass_word(k) as i32);
             }
             None => self.a.jmp(slow),
@@ -489,6 +490,7 @@ impl Gen<'_> {
                     self.a.jcc(Cond::A, slow);
                     self.a.store(true, at(bump), R::Rdx);
                     self.a.store_imm32(mem(R::Rax, crate::heap::ARRAY_LENGTH_OFFSET as i32), n);
+                    crate::jit::emit_obj::clear(&mut self.a, R::Rax, 8, crate::heap::array_bytes(elem as u32, n).next_multiple_of(8) as i32, R::Rdx, R::Rcx);
                     self.a.store_imm32(mem(R::Rax, 0), crate::heap::klass_word(k) as i32);
                     self.a.jmp(done);
                 }
@@ -518,6 +520,9 @@ impl Gen<'_> {
                 self.a.jcc(Cond::A, slow);
                 self.a.store(true, at(bump), R::Rdx);
                 self.a.store(false, mem(R::Rax, crate::heap::ARRAY_LENGTH_OFFSET as i32), R::R11);
+                // The whole cell from the mark word on (rdx is its end).
+                self.a.lea(R::Rcx, mem(R::Rax, 8));
+                crate::jit::emit_obj::clear_to(&mut self.a, R::Rcx, R::Rdx, R::R11);
                 self.a.store_imm32(mem(R::Rax, 0), crate::heap::klass_word(k) as i32);
                 self.a.jmp(done);
             }
