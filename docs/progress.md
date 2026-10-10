@@ -1726,3 +1726,10 @@ Against `java` on this host, three rounds of two sprints: `java` 1168 / 1801, 13
 default) averages 1321 against 1270 (+4 %), the warm one 1548 against 1721 (−10 %).
 - **Not kept:** with compilation cheaper, doubling the hot inlining limits again (`FreqInlineSize`
   650, `InlineSmallCode` 7000, budget 32000): 1284 / 1503 → 1313 / 1505 over four rounds, noise.
+- **Tier-2 threshold 1000** (was 1500): with the compiler a third cheaper, the first sprint went
+  1276 → 1443 tps over three rounds (1441 / 1428 / 1460), warm 1560 → 1587; 700 lost the warm
+  sprint. The game thread's first sprint, by category: 89 % optimized code, 3.6 % interpreter and
+  baseline code, ~4 % VM runtime (natives, allocation slow paths, helpers, dispatch), 0.5 % GC on
+  the thread itself (plus ~1.6 % of wall time in young pauses).
+- **Not kept:** a young generation of half the live data instead of a third: 1368 / 1525 →
+  1343 / 1541, noise, for more memory.
