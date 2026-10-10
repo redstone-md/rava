@@ -1692,3 +1692,5 @@ behave like the microbenchmark.
 - **Not kept:** compressed references kept compressed across checks (deoptimizing guards
   between a load and its uses): `[r*8 + disp]` operands load no faster on this core than a
   shift and a plain load, and `SystemTickBench` got slower.
+- **Not kept:** reusing only holes of at least 4 KiB in allocation pages (`MIN_RUN`, 256 bytes):
+  longer bump runs, but −1 % first sprint and −6 % warm over four rounds.
