@@ -1602,3 +1602,35 @@ Findings that did not turn into gains yet:
 ATM10 `/tick sprint 1d` on a 2.8 GHz Xeon (33 MiB L3), two servers each: before these commits
 1365 / 1472 and 1317 / 1469 tps, after 1357 / 1509 and 1225 / 1433, `java` 1482 / 1968 and
 1446 / 1904. The first sprint is within ~8 % of `java`; the warm one ~25 % behind.
+
+## 2026-10-10 — clearing at allocation, uninitialized buffers, checked copies
+
+- **Each object is cleared as it is made** (compiled code and the runtime, from the word after
+  the class word to the cell's end), with HotSpot's allocation prefetch (`prefetchw` 192, 256
+  and 320 bytes past the new bump pointer), instead of clearing 4 KiB runs ahead of the bump
+  pointer: those runs were last touched a collection ago and cost ~2500 cycles each. A run a
+  thread leaves unused goes back to its page's bitmap before a collection and when the thread
+  detaches (a dead thread's untouched cells marked allocated sent a trace into garbage).
+  `ThreadChurnGcSem` covers threads that die while collections run. Sprint A/B: +4-7 % first
+  sprint, +2-3 % warm.
+- **`Unsafe.allocateUninitializedArray0`** of a constant primitive class (string
+  concatenation's buffer) allocates without clearing the elements (C2's
+  `_allocateUninitializedArray`): a two-piece concatenation 12.3 → 11.2 ns; sprint +2-6 % /
+  +1-4 % (two rounds).
+- **Reference copies that need element checks** (`Object[]` into `String[]`:
+  `Arrays.copyOf(.., Class)`, `ArrayList.toArray(T[])`, `SpinedBuffer.copyInto`) copy in the
+  runtime with a check per element, as HotSpot's checkcast arraycopy, instead of deoptimizing:
+  they were the four most frequent deoptimization sites of an ATM10 run, and
+  `Arrays.copyOfRange` ended its recompilations at baseline code. `CheckedCopySem`.
+- **Bounds-check smearing stays in its block**: a store to element 1 behind a branch widened the
+  dominating check of element 0, so a one-element `List12.toArray` deoptimized on every call.
+
+The ATM10 deoptimization log (`RAVA_DEOPT_LOG`) of a start and two sprints: 38k
+deoptimizations, almost all during the start; the arraycopy and `toArray` sites were ~4k of
+them.
+
+Where the warm sprint's server thread goes now (dumped code, samples by IR operation): type
+checks and the loads before them (`CheckCast` 13 %, class constants compared in guards
+18 %, field loads 14 %), callee entries 10 %, virtual and interface calls 14 %. The hottest
+cast (xycraft's `ISystemData`, megamorphic) waits on the object's class word and then on the
+class's `super_hit` line; on this host `java` runs the warm sprint at ~1825 tps, rava ~1600.
