@@ -15,11 +15,13 @@ use std::sync::atomic::Ordering;
 /// `Tier4InvocationThreshold` / `Tier4BackEdgeThreshold`); `RAVA_TIER2_THRESHOLD` sets the
 /// invocation count (back-edges scale with it). Lower than HotSpot's 5000: the compiler threads
 /// run on cores the application leaves idle (`queue.rs`), so compiling earlier mostly costs
-/// nothing (All The Mods 10: 1500 started 2-4 s sooner than 5000, 600 was slower again).
+/// nothing (All The Mods 10: 1500 started 2-4 s sooner than 5000, 600 was slower again; with
+/// the compiler a third cheaper, 1000 ran the first sprint 13 % faster than 1500 over three
+/// rounds, 700 lost the warm one).
 fn thresholds() -> (i32, i32) {
     static T: std::sync::OnceLock<(i32, i32)> = std::sync::OnceLock::new();
     *T.get_or_init(|| {
-        let n = std::env::var("RAVA_TIER2_THRESHOLD").ok().and_then(|v| v.parse::<i32>().ok()).unwrap_or(1500).max(1);
+        let n = std::env::var("RAVA_TIER2_THRESHOLD").ok().and_then(|v| v.parse::<i32>().ok()).unwrap_or(1000).max(1);
         (n, n * 8)
     })
 }
