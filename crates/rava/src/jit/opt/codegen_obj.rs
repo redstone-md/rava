@@ -150,7 +150,7 @@ impl Gen<'_> {
                         }
                     }
                 } else {
-                    self.subtype_check(x, k, done, false, self.g.nonnull_input.contains(&v));
+                    self.subtype_check(x, k, done, false, self.g.nonnull_input.contains(&v), Some((s.method, s.bci as usize)));
                     self.a.test_rr(true, R::Rax, R::Rax);
                     self.a.jcc(Cond::E, fail);
                 }
@@ -169,7 +169,7 @@ impl Gen<'_> {
                     self.a.test_rr(true, rx, rx);
                     self.a.jcc(Cond::E, null);
                 }
-                self.subtype_check(x, k, done, true, true);
+                self.subtype_check(x, k, done, true, true, None);
                 self.a.jmp(done);
                 self.a.bind(null);
                 self.a.alu_rr(false, Alu::Xor, R::Rax, R::Rax);
@@ -329,7 +329,9 @@ impl Gen<'_> {
     /// for null), else the runtime's answer. Without `answer`, the jumps to `done` leave rax
     /// as it is (a cast only tests rax on the way that falls through).
     /// `nonnull`: `x` is known not to be null here, so the null test is left out.
-    fn subtype_check(&mut self, x: V, k: &'static Klass, done: crate::jit::asm::Label, answer: bool, nonnull: bool) {
+    /// `site`: the check's method and bytecode index, whose first-tier profile may name a class
+    /// to compare first (`profile::cast_seen`).
+    fn subtype_check(&mut self, x: V, k: &'static Klass, done: crate::jit::asm::Label, answer: bool, nonnull: bool, site: Option<(&'static Method, usize)>) {
         // The class seen last (in low memory, compared as an absolute operand).
         let cell: &'static std::sync::atomic::AtomicUsize = crate::low::leak(std::sync::atomic::AtomicUsize::new(0));
         let null_ok = self.a.new_label();
@@ -343,8 +345,15 @@ impl Gen<'_> {
             self.a.mov_ri(R::Rax, 1);
         }
         let kk = self.class_operand(k);
-        self.cmp_class(None, kk);
-        self.a.jcc(Cond::E, done);
+        // An object's class is never an interface; the class the site's profile saw pass is
+        // compared before the class's own metadata is read.
+        if !k.is_interface() {
+            self.cmp_class(None, kk);
+            self.a.jcc(Cond::E, done);
+        } else if let Some(seen) = site.and_then(|(m, bci)| crate::jit::profile::cast_seen(m, bci)).filter(|p| p.is_subtype_of(k)) {
+            self.a.alu_ri(true, Alu::Cmp, R::Rcx, seen as *const Klass as usize as i32);
+            self.a.jcc(Cond::E, done);
+        }
         let after = self.a.new_label();
         let leaf = matches!(k.kind, crate::klass::KlassKind::Instance) && k.access & crate::klass::ACC_FINAL != 0;
         if leaf {

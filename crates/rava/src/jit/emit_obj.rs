@@ -69,9 +69,10 @@ impl Emitter {
     }
 
     /// With the object's class in `rdi`: sets `rax` to 1 if it is a subtype of `k`, else 0.
-    /// The exact class and the last class that passed at this site are checked inline.
-    fn subtype_rdi(&mut self, k: &'static Klass) {
-        let cell: &'static std::sync::atomic::AtomicUsize = Box::leak(Box::new(std::sync::atomic::AtomicUsize::new(0)));
+    /// The exact class and the last class that passed at this site (`profile::cast_cell`, which
+    /// the optimizing tier reads) are checked inline.
+    fn subtype_rdi(&mut self, k: &'static Klass, pc: usize) {
+        let cell = super::profile::cast_cell(self.m, pc);
         let done = self.a.new_label();
         self.a.mov_ri(R::Rsi, k as *const Klass as i64);
         self.a.mov_ri(R::Rax, 1);
@@ -113,7 +114,7 @@ impl Emitter {
         self.a.test_rr(true, R::Rax, R::Rax);
         self.a.jcc(Cond::E, done);
         self.a.load(false, R::Rdi, mem(R::Rax, 0));
-        self.subtype_rdi(k);
+        self.subtype_rdi(k, pc);
         self.a.test_rr(true, R::Rax, R::Rax);
         self.a.jcc(Cond::E, slow);
         self.a.bind(done);
@@ -127,7 +128,7 @@ impl Emitter {
         self.a.test_rr(true, R::Rax, R::Rax);
         self.a.jcc(Cond::E, done);
         self.a.load(false, R::Rdi, mem(R::Rax, 0));
-        self.subtype_rdi(k);
+        self.subtype_rdi(k, pc);
         self.a.bind(done);
         self.a.store(true, slot, R::Rax);
     }
