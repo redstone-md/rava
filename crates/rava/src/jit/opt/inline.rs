@@ -128,10 +128,15 @@ impl Builder {
             if !ok {
                 // A receiver class the profile names, whose target is not inlined: tested
                 // and called directly (HotSpot's monomorphic inline cache), the dispatch left
-                // to the other receivers.
+                // to the other receivers. So is the only implementation of a method nothing
+                // overrides (behind its dependency), without a vtable load.
                 let virtual_site = matches!(callee, Callee::Virtual(_) | Callee::Interface(_));
-                if let (Guard::Klass(c), true) = (&guard, virtual_site && intrinsic.is_none() && !target.is_abstract()) {
-                    let c = *c;
+                let class = match &guard {
+                    Guard::Klass(c) => Some(Some(*c)),
+                    Guard::Unique(_) => Some(None),
+                    _ => None,
+                };
+                if let (Some(c), true) = (class, virtual_site && intrinsic.is_none() && !target.is_abstract()) {
                     let slow = self.guard(guard.clone(), target, receiver);
                     let r = self.call(Callee::Direct(target), args.clone(), s.clone(), ret);
                     self.g.blocks[self.cur as usize].term = Term::Goto(k);
@@ -140,8 +145,8 @@ impl Builder {
                     inlined = true;
                     done += 1;
                     proved = match proved {
-                        None => Some(Some(c)),
-                        Some(p) => Some(p.filter(|p| std::ptr::eq(*p, c))),
+                        None => Some(c),
+                        Some(p) => Some(p.zip(c).filter(|(p, c)| std::ptr::eq(*p, *c)).map(|(p, _)| p)),
                     };
                     match slow {
                         Some(b) => {
