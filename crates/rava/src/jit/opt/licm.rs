@@ -90,6 +90,10 @@ pub fn hoist(g: &mut Graph) {
                             Inst::Bin(op, ..) => !matches!(op, BinOp::Div | BinOp::Rem) || matches!(g.ty(v), Ty::F | Ty::D),
                             Inst::Neg(_) | Inst::Convert(..) | Inst::Compare(..) | Inst::Select(..) => true,
                             Inst::Intrinsic(k, _, None) => k.is_pure() && !k.reads_mutable(),
+                            // Class metadata (vtable entries, the supers display) read
+                            // through a class word: never written, so no store or call in the
+                            // loop can change it, and a class word is never null.
+                            Inst::LoadField(o, ..) if class_word(g, *o) => true,
                             Inst::ArrayLength(o) => known.contains(&g.resolve(*o)) && !typed.contains(&g.resolve(*o)),
                             Inst::LoadField(o, off, _) => {
                                 let o = g.resolve(*o);
@@ -112,6 +116,13 @@ pub fn hoist(g: &mut Graph) {
             g.blocks[pre as usize].insts.extend(moved);
         }
     }
+}
+
+/// Whether `x` is an object's class word (`LoadField(object, 0)` read as a pointer, as the
+/// builder's `klass_of` makes it).
+fn class_word(g: &Graph, x: V) -> bool {
+    let x = g.resolve(x);
+    matches!(g.inst(x), Inst::LoadField(_, 0, crate::types::BasicType::Int)) && g.ty(x) == Ty::J
 }
 
 /// Gives each loop entered by one forward edge from a branch (`if (hi > a.length) ...; for
