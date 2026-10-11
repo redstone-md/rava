@@ -3,3 +3,4 @@
 bench/results/
 /logs/
 /dist/out/
+patches/*/*.jar
