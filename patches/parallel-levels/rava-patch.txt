@@ -1,0 +1,22 @@
+# Ticks a NeoForge 1.21.1 server's levels (dimensions) on parallel threads: README.md.
+id parallel-levels
+version 1
+# MinecraftServer.tickChildren ticks each level in turn: fire LevelTickEvent.Pre, tick the
+# level, fire LevelTickEvent.Post. The hooks queue the level instead, and the next profiler
+# section switch after the loop runs the queued levels: every Pre event, the level ticks in
+# parallel, every Post event.
+redirect net/minecraft/server/MinecraftServer.tickChildren(Ljava/util/function/BooleanSupplier;)V net/neoforged/neoforge/event/EventHooks.fireLevelTickPre(Lnet/minecraft/world/level/Level;Ljava/util/function/BooleanSupplier;)V -> dev/rava/patches/levels/Hooks.pre
+redirect net/minecraft/server/MinecraftServer.tickChildren(Ljava/util/function/BooleanSupplier;)V net/minecraft/server/level/ServerLevel.tick(Ljava/util/function/BooleanSupplier;)V -> dev/rava/patches/levels/Hooks.tick
+redirect net/minecraft/server/MinecraftServer.tickChildren(Ljava/util/function/BooleanSupplier;)V net/neoforged/neoforge/event/EventHooks.fireLevelTickPost(Lnet/minecraft/world/level/Level;Ljava/util/function/BooleanSupplier;)V -> dev/rava/patches/levels/Hooks.post
+redirect net/minecraft/server/MinecraftServer.tickChildren(Ljava/util/function/BooleanSupplier;)V net/minecraft/util/profiling/ProfilerFiller.popPush(Ljava/lang/String;)V -> dev/rava/patches/levels/Hooks.popPush
+# Portals reach into the destination level: a level thread leaves them to the server thread.
+redirect net/minecraft/world/entity/Entity.baseTick()V net/minecraft/world/entity/Entity.handlePortal()V -> dev/rava/patches/levels/Portals.handlePortal
+open net/minecraft/world/entity/Entity handlePortal
+# A level's ticking thread owns it: Level.getBlockEntity and ServerChunkCache.getChunk
+# compare the current thread with these.
+open net/minecraft/world/level/Level thread
+open net/minecraft/server/level/ServerChunkCache mainThread
+# Events fired while levels tick in parallel are dispatched one at a time.
+open net/neoforged/bus/EventBus post
+redirect net/neoforged/bus/EventBus.post(Lnet/neoforged/bus/api/Event;)Lnet/neoforged/bus/api/Event; net/neoforged/bus/EventBus.post(Lnet/neoforged/bus/api/Event;[Lnet/neoforged/bus/api/EventListener;)Lnet/neoforged/bus/api/Event; -> dev/rava/patches/levels/bus/EventLock.post
+redirect net/neoforged/bus/EventBus.post(Lnet/neoforged/bus/api/EventPriority;Lnet/neoforged/bus/api/Event;)Lnet/neoforged/bus/api/Event; net/neoforged/bus/EventBus.post(Lnet/neoforged/bus/api/Event;[Lnet/neoforged/bus/api/EventListener;)Lnet/neoforged/bus/api/Event; -> dev/rava/patches/levels/bus/EventLock.post
