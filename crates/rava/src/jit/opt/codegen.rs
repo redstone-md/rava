@@ -923,15 +923,20 @@ impl Gen<'_> {
 /// The order to emit `order`'s blocks in (the entry first): each block is followed by its most
 /// frequent successor not yet placed, so the hot path falls through and the rarer side of a
 /// branch jumps (C2's block layout); a block whose successors are all placed is followed by
-/// the next unplaced block in build order. Values keep their locations whatever the order.
+/// the most frequent unplaced block (build order among equals), so rarely run code gathers at
+/// the end instead of between hot chains. Values keep their locations whatever the order.
 fn layout(g: &Graph, order: &[B]) -> Vec<B> {
     let mut rank = vec![usize::MAX; g.blocks.len()];
     for (i, &b) in order.iter().enumerate() {
         rank[b as usize] = i;
     }
+    let entry = order.first().copied();
+    let mut seeds = order.to_vec();
+    seeds.sort_by(|&x, &y| g.blocks[y as usize].freq.partial_cmp(&g.blocks[x as usize].freq).unwrap_or(std::cmp::Ordering::Equal).then(rank[x as usize].cmp(&rank[y as usize])));
+    let order = &seeds[..];
     let mut placed = vec![false; g.blocks.len()];
     let (mut out, mut seed) = (Vec::with_capacity(order.len()), 0);
-    let mut next = order.first().copied();
+    let mut next = entry;
     while out.len() < order.len() {
         let b = match next {
             Some(b) => b,
