@@ -1,0 +1,8 @@
+# Targeting checks with the condition's own filter first, for NeoForge 1.21.1 (README.md).
+id targeting
+version 1
+# EntityGetter's searches (getNearestEntity, getNearbyEntities, getNearbyPlayers) test each
+# candidate with TargetingConditions.test, which runs canBeSeenByAnyone (and every mod hook on
+# it) before the condition's selector. The hook asks the selector first.
+open net/minecraft/world/entity/ai/targeting/TargetingConditions selector
+redirect net/minecraft/world/level/EntityGetter.* net/minecraft/world/entity/ai/targeting/TargetingConditions.test(Lnet/minecraft/world/entity/LivingEntity;Lnet/minecraft/world/entity/LivingEntity;)Z -> dev/rava/patches/targeting/Targeting.test
