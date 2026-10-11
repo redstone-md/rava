@@ -41,6 +41,10 @@ with no single bad method. What was ruled out, what was fixed, and what is left,
   block emitted was the next in build order, often a rare one, so cold code sat between hot
   chains. Chains now start at the most frequent unplaced block. `mobs` warm sprints 113.2 →
   108.7 ms per tick (two rounds of three won).
+- **Direct calls to the only implementation** (`opt/inline.rs`): a virtual call of a method
+  nothing overrides, not inlined (too large, recursive), went through the vtable; it now calls
+  the target directly behind its class-hierarchy dependency. `mobs` warm sprints 103.6 →
+  101.1 ms per tick (two rounds won, one even).
 
 ## Where the time goes (`mobs`, all optimized code dumped, samples by instruction)
 Of the server thread, 93 % is in optimized code. By the instruction a sample stalls on: loads
