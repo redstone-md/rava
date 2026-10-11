@@ -11,6 +11,9 @@ with no single bad method. What was ruled out, what was fixed, and what is left,
   entities with small parts, rava takes 37 ns per entity, `java` 100.
 - **Mixin allocations**: escape analysis removes the `CallbackInfoReturnable` of an inlined
   handler.
+- **Trampolines on direct calls**: calling a known method's entry directly, the call sites
+  repointed when the entry changes (as HotSpot), left `mobs` unchanged (114.3 against 112.2
+  ms per tick); the method-entry samples are the callee's code arriving, not the jump.
 - **Call-site bookkeeping**: removing the BCI store and the pending-exception test after a
   call (as an experiment) saves 3 % on `MegaCallBench`.
 
