@@ -1,0 +1,6 @@
+# 9600 TNT on obsidian, lit from the top centre: a chain of explosions over a few hundred
+# ticks. Sprint with -s 600.
+#include arena.txt
+fill -24 199 -24 23 199 23 minecraft:obsidian
+fill -20 200 -20 19 205 19 minecraft:tnt
+setblock 0 206 0 minecraft:redstone_block

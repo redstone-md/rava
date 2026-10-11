@@ -1,0 +1,7 @@
+# The mobs scenario with every animal and villager under five endless effects.
+#include mobs.txt
+effect give @e[x=-20,y=195,z=-20,dx=40,dy=20,dz=40] minecraft:speed infinite 1
+effect give @e[x=-20,y=195,z=-20,dx=40,dy=20,dz=40] minecraft:regeneration infinite 1
+effect give @e[x=-20,y=195,z=-20,dx=40,dy=20,dz=40] minecraft:resistance infinite 1
+effect give @e[x=-20,y=195,z=-20,dx=40,dy=20,dz=40] minecraft:jump_boost infinite 1
+effect give @e[x=-20,y=195,z=-20,dx=40,dy=20,dz=40] minecraft:glowing infinite 0

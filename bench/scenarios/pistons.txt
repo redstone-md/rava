@@ -1,0 +1,22 @@
+# 195 observer clocks, each pushing a block back and forth with a piston: 5 per row, 39 rows.
+#include arena.txt
+#for z -38 38 2 setblock -40 200 {z} minecraft:observer[facing=east]
+#for z -38 38 2 setblock -38 200 {z} minecraft:piston[facing=east]
+#for z -38 38 2 setblock -37 200 {z} minecraft:stone
+#for z -38 38 2 setblock -39 200 {z} minecraft:observer[facing=west]
+#for z -38 38 2 setblock -34 200 {z} minecraft:observer[facing=east]
+#for z -38 38 2 setblock -32 200 {z} minecraft:piston[facing=east]
+#for z -38 38 2 setblock -31 200 {z} minecraft:stone
+#for z -38 38 2 setblock -33 200 {z} minecraft:observer[facing=west]
+#for z -38 38 2 setblock -28 200 {z} minecraft:observer[facing=east]
+#for z -38 38 2 setblock -26 200 {z} minecraft:piston[facing=east]
+#for z -38 38 2 setblock -25 200 {z} minecraft:stone
+#for z -38 38 2 setblock -27 200 {z} minecraft:observer[facing=west]
+#for z -38 38 2 setblock -22 200 {z} minecraft:observer[facing=east]
+#for z -38 38 2 setblock -20 200 {z} minecraft:piston[facing=east]
+#for z -38 38 2 setblock -19 200 {z} minecraft:stone
+#for z -38 38 2 setblock -21 200 {z} minecraft:observer[facing=west]
+#for z -38 38 2 setblock -16 200 {z} minecraft:observer[facing=east]
+#for z -38 38 2 setblock -14 200 {z} minecraft:piston[facing=east]
+#for z -38 38 2 setblock -13 200 {z} minecraft:stone
+#for z -38 38 2 setblock -15 200 {z} minecraft:observer[facing=west]

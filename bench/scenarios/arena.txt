@@ -1,0 +1,10 @@
+# Shared by the scenarios: a fixed, quiet test area of 8 x 8 chunks around 0,0, high above
+# the terrain, with no time, weather or natural spawning changing the load between runs.
+gamerule doMobSpawning false
+gamerule doDaylightCycle false
+gamerule doWeatherCycle false
+time set midnight
+weather clear
+forceload add -64 -64 63 63
+#wait 30
+fill -48 199 -48 47 199 47 minecraft:stone

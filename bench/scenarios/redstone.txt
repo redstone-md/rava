@@ -1,0 +1,5 @@
+# 39 observer clocks, each driving a line of 29 redstone dust: dust power updates.
+#include arena.txt
+#for z -38 38 2 fill 2 200 {z} 30 200 {z} minecraft:redstone_wire
+#for z -38 38 2 setblock 0 200 {z} minecraft:observer[facing=east]
+#for z -38 38 2 setblock 1 200 {z} minecraft:observer[facing=west]
