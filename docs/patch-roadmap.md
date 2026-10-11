@@ -28,6 +28,28 @@ Under these loads rava itself is about 30 % slower than HotSpot, in optimized co
 samples are `[opt]`), unlike the idle tick where it leads: a VM task of its own, apart from the
 patches.
 
+Patches so far (each measured alone against rava without patches; all verify against vanilla
+or give vanilla's results by construction):
+
+| patch | what it does | effect |
+|---|---|---|
+| `explosions` | exposure rays walk their chunk directly, air without shape queries | `tnt` 320 → 196 ms |
+| `chunk-cache` | a level's last chunk answers `Level.getChunk(x, z)` again | `redstone` −7.5 %, `mobs` −5 % |
+| `targeting` | target searches ask the goal's selector before mod-hooked visibility | `mobs` −35 %, `effects` −27 % |
+| `game-events` | game events skip sections without listeners instead of creating empty registries | `redstone` −6 % |
+| `mod-fixes` | Iron Furnaces' per-entity explosion handler reads the block before its block entity | with `chunk-cache`: `tnt` 196 → 160 ms over `explosions` alone |
+
+All of them together, one round each (ms per tick, first sprint after setup):
+
+| scenario | `java` | rava | rava + patches |
+|---|---|---|---|
+| `tnt` (600 ticks) | 217.9 | 362.0 | 159.6 |
+| `mobs` | 53.8 | 88.2 | 64.0 |
+| `effects` | 66.7 | 92.5 | 65.9 |
+| `redstone` | 24.4 | 33.8 | 30.4 |
+| `pistons` | 11.9 | 13.5 | 12.4 |
+
+
 | area | scenario | where the time goes | plan | threads |
 |---|---|---|---|---|
 | TNT | `tnt` | exposure rays of `Explosion.getSeenPercent`; then mods' `ExplosionEvent` handlers | `explosions` (done: 320 → 196 ms/tick); next: one block lookup per ray step in `Explosion.explode` | the exposure of each entity is read-only, but there are too few rays per explosion to be worth handing out |

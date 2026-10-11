@@ -1764,3 +1764,14 @@ a patch installed are the patch's, not the VM's):
   (`-Drava.parallelLevels.busyMicros=0`) it ran both sprints without errors.
 
 The single-threaded part of this benchmark is the mods' event handlers themselves.
+
+## 2026-10-11 — load scenarios, patches against them, the VM under load
+
+`bench/tick_sprint.py -c` builds a load before the sprint (`bench/scenarios/`: TNT, mobs,
+effects, redstone, pistons). Under them rava trailed `java` by about 1.5× in steady state, in
+optimized code throughout ([vm-roadmap.md](vm-roadmap.md)); two compiler changes so far (a
+shared target inlined at megamorphic sites, frames published at fallback calls) gave about
+−2.5 % and −4 % on `mobs`. Patches ([patch-roadmap.md](patch-roadmap.md)) took rava from
+behind `java` to ahead of it on `tnt` and level with it on `effects`; `mobs`, `redstone` and
+`pistons` remain behind. The patch format gained `redirect C.*` (calls Mixin moved into
+bridge methods) and `field` (state per object).

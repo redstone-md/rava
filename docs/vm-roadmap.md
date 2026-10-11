@@ -18,7 +18,6 @@ with no single bad method. What was ruled out, what was fixed, and what is left,
 - **Inlining by shared target** (`opt/inline.rs`): at a megamorphic site whose recorded
   receivers select one implementation, that implementation is inlined behind a vtable test.
   `MixinBench` 19.8 → 11.5 ns (`java` 7.0); `mobs` about −2.5 %.
-
 - **Lazy frame for fallback calls** (`opt/codegen.rs`): a method whose only Java calls are the
   ones made when no inlined target's guard admits the receiver publishes its frame at those
   calls, not on entry. `mobs` 81.2 → 78.0 ms per tick over four rounds (three won).
