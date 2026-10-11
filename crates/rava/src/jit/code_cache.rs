@@ -73,81 +73,32 @@ pub fn install(code: &super::asm::Code) -> usize {
         unsafe { std::ptr::write_unaligned((at + pos as usize) as *mut i32, rel) };
     }
     r.top = at + code.len();
-    drop(r);
-    if !code.sites.is_empty() {
-        install_sites(at, &code.sites);
-    }
     at
 }
 
-/// The call sites (displacement addresses) of each method (by address) that `repoint` keeps
-/// pointed at its entry.
-fn sites() -> &'static Mutex<std::collections::HashMap<usize, Vec<usize>>> {
-    static SITES: std::sync::OnceLock<Mutex<std::collections::HashMap<usize, Vec<usize>>>> = std::sync::OnceLock::new();
-    SITES.get_or_init(Default::default)
-}
-
-/// Points the `call rel32`s of code just installed at `at` (`Asm::call_method`, not yet
-/// running) at their methods' entries, HotSpot's direct calls: no trampoline jump on the way,
-/// one code line fewer per call. A displacement within one aligned 8-byte word is repointed
-/// later by an atomic store of that word; the others call the method's trampoline for good.
-fn install_sites(at: usize, list: &[(u32, usize)]) {
-    use std::sync::atomic::Ordering::Acquire;
-    let _g = TRAMPOLINES.lock().unwrap();
-    let mut map = sites().lock().unwrap();
-    for &(pos, m) in list {
-        let d = at + pos as usize;
-        // SAFETY: methods are immortal.
-        let method: &'static crate::method::Method = unsafe { &*(m as *const crate::method::Method) };
-        let target = if d % 8 <= 4 {
-            map.entry(m).or_default().push(d);
-            method.entry.load(Acquire)
-        } else {
-            trampoline(method)
-        };
-        let rel = i32::try_from(target as i64 - (d + 4) as i64).expect("call within reach");
-        // SAFETY: a displacement of code no thread runs yet.
-        unsafe { std::ptr::write_unaligned(d as *mut i32, rel) };
-    }
-}
-
-/// Stores `rel` into the displacement at `d` (within one aligned 8-byte word) atomically, for
-/// threads running the call meanwhile to see the old target or the new one.
-fn patch(d: usize, rel: i32) {
-    use std::sync::atomic::{AtomicU64, Ordering};
-    let word = d & !7;
-    let shift = 8 * (d - word) as u32;
-    let mask = 0xFFFF_FFFFu64 << shift;
-    // SAFETY: an aligned word of installed code, which stays mapped.
-    let cell = unsafe { &*(word as *const AtomicU64) };
-    let mut old = cell.load(Ordering::Acquire);
-    loop {
-        let new = (old & !mask) | ((rel as u32 as u64) << shift);
-        match cell.compare_exchange_weak(old, new, Ordering::AcqRel, Ordering::Acquire) {
-            Ok(_) => return,
-            Err(x) => old = x,
-        }
-    }
-}
-
-/// Serializes making and repointing trampolines and direct call sites (`install_sites`,
-/// `repoint`).
+/// Serializes making and repointing trampolines (`direct_entry`, `repoint`).
 static TRAMPOLINES: Mutex<()> = Mutex::new(());
 
-/// The address of a `jmp rel32` to `m`'s current entry, made on first use (HotSpot's static
-/// call stubs): what a direct call site whose displacement cannot be repointed atomically
-/// calls instead (`install_sites`). Under the trampolines' lock.
-fn trampoline(m: &'static crate::method::Method) -> usize {
+/// The address of a `jmp rel32` to `m`'s current entry, for compiled code to call `m` with a
+/// direct `call rel32` (HotSpot's static call stubs): the target is known as the call decodes,
+/// where an indirect call through `Method::entry` waits for its load whenever the branch
+/// predictor has lost it. Made on first use; None when the code cache is out of reach of rava's
+/// text (the adapters an entry may be).
+pub fn direct_entry(m: &'static crate::method::Method) -> Option<usize> {
     use std::sync::atomic::Ordering::{Acquire, Release};
+    if !near() {
+        return None;
+    }
+    let _g = TRAMPOLINES.lock().unwrap();
     let t = m.trampoline.load(Acquire);
     if t != 0 {
-        return t;
+        return Some(t);
     }
     // A 3-byte nop puts the displacement at offset 4: aligned, so a repoint writes it whole.
-    let code = super::asm::Code { bytes: vec![0x0F, 0x1F, 0x00, 0xE9, 0, 0, 0, 0], relocs: vec![(4, m.entry.load(Acquire))], sites: Vec::new() };
+    let code = super::asm::Code { bytes: vec![0x0F, 0x1F, 0x00, 0xE9, 0, 0, 0, 0], relocs: vec![(4, m.entry.load(Acquire))] };
     let t = install(&code);
     m.trampoline.store(t, Release);
-    t
+    Some(t)
 }
 
 /// Points `m`'s trampoline (if any) at its current entry, after `Method::entry` changed.
@@ -157,19 +108,11 @@ pub fn repoint(m: &crate::method::Method) {
         return;
     }
     let _g = TRAMPOLINES.lock().unwrap();
-    let entry = m.entry.load(Acquire);
     let t = m.trampoline.load(Acquire);
-    if t != 0 {
-        let rel = i32::try_from(entry as i64 - (t + 8) as i64).expect("entry within reach");
-        // SAFETY: the aligned displacement of the trampoline's jump; an aligned 4-byte store is
-        // atomic, so a thread executing the jump meanwhile goes to the old entry or the new one.
-        unsafe { (*((t + 4) as *const std::sync::atomic::AtomicI32)).store(rel, std::sync::atomic::Ordering::Release) };
-    }
-    if let Some(list) = sites().lock().unwrap().get(&(m as *const crate::method::Method as usize)) {
-        for &d in list {
-            patch(d, i32::try_from(entry as i64 - (d + 4) as i64).expect("entry within reach"));
-        }
-    }
+    let rel = i32::try_from(m.entry.load(Acquire) as i64 - (t + 8) as i64).expect("entry within reach");
+    // SAFETY: the aligned displacement of the trampoline's jump; an aligned 4-byte store is
+    // atomic, so a thread executing the jump meanwhile goes to the old entry or the new one.
+    unsafe { (*((t + 4) as *const std::sync::atomic::AtomicI32)).store(rel, std::sync::atomic::Ordering::Release) };
 }
 
 /// Appends `address size name` to `/tmp/perf-<pid>.map` when `RAVA_PERF_MAP` is set, so
