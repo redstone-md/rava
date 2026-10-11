@@ -46,6 +46,13 @@ pub(super) fn receivers(m: &'static Method, bci: usize) -> Vec<&'static Klass> {
     cell.receivers().unwrap_or_default().into_iter().map(|k| unsafe { &*(k as *const Klass) }).collect()
 }
 
+/// The first two receiver classes `m`'s call at `bci` saw, whether or not it saw more.
+pub(super) fn recorded_receivers(m: &'static Method, bci: usize) -> Vec<&'static Klass> {
+    let Some(cell) = sites().lock().unwrap().get(&(m as *const Method as usize, bci as u32)).copied() else { return Vec::new() };
+    // SAFETY: cached classes are immortal.
+    cell.recorded().into_iter().map(|k| unsafe { &*(k as *const Klass) }).collect()
+}
+
 /// The class at least 90% of the receivers counted at `m`'s call at `bci` had, if any.
 pub(super) fn major_receiver(m: &'static Method, bci: usize) -> Option<&'static Klass> {
     let cell = *sites().lock().unwrap().get(&(m as *const Method as usize, bci as u32))?;

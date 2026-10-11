@@ -258,6 +258,15 @@ impl Builder {
             return vec![(t, Guard::None)];
         }
         let profiled = || -> Vec<(&'static Method, Guard)> {
+            // A megamorphic site whose recorded receivers share their implementation (entity
+            // subclasses inheriting one method): that implementation, behind a test that the
+            // receiver's class selects it, which admits every class sharing it.
+            if crate::jit::profile::megamorphic(self.sc.m, pc) {
+                let by_target = self.target_plans(pc, op, m);
+                if !by_target.is_empty() {
+                    return by_target;
+                }
+            }
             let mut receivers = crate::jit::profile::receivers(self.sc.m, pc);
             // A megamorphic site still inlines a receiver class it nearly always sees, with a
             // call for the others (C2's major receiver), else the recorded classes that each
@@ -295,6 +304,28 @@ impl Builder {
             Some(plan) => vec![plan],
             None => Vec::new(),
         }
+    }
+
+    /// The implementation of `m` both receiver classes recorded at this megamorphic site
+    /// select, when they agree on one, with a guard testing the receiver's class selects it (a
+    /// vtable entry, or for an interface method a class and its vtable entry). Receivers that
+    /// differ in class but share an inherited method (entity subclasses) all pass it.
+    fn target_plans(&self, pc: usize, op: u8, m: &'static Method) -> Vec<(&'static Method, Guard)> {
+        let recorded = crate::jit::profile::recorded_receivers(self.sc.m, pc);
+        let targets: Vec<&'static Method> = recorded.iter().filter_map(|&k| crate::link::select_method(k, m)).collect();
+        let [a, b] = targets.as_slice() else { return Vec::new() };
+        if !std::ptr::eq(*a, *b) || a.is_abstract() {
+            return Vec::new();
+        }
+        let guard = if op == 0xb6 && m.vtable_index() >= 0 && !m.holder.is_interface() {
+            Guard::Vtable(m.vtable_index())
+        } else {
+            match super::cha::interface_guard(a) {
+                Some((c, i)) => Guard::Subclass(c, i),
+                None => return Vec::new(),
+            }
+        };
+        vec![(*a, guard)]
     }
 
     /// Ends the current block with the guard's test; returns the failure block, and continues in
