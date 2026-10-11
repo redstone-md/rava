@@ -1775,3 +1775,6 @@ shared target inlined at megamorphic sites, frames published at fallback calls) 
 behind `java` to ahead of it on `tnt` and level with it on `effects`; `mobs`, `redstone` and
 `pistons` remain behind. The patch format gained `redirect C.*` (calls Mixin moved into
 bridge methods) and `field` (state per object).
+Loops inside inlined Mixin handlers now get their invariant guards hoisted (escape analysis had
+left their loop-entry states naming the replaced `CallbackInfoReturnable`): `MixinBench`
+14.5 → 12.4 ns per call, `mobs` unchanged within noise.

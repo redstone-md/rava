@@ -21,6 +21,14 @@ with no single bad method. What was ruled out, what was fixed, and what is left,
 - **Lazy frame for fallback calls** (`opt/codegen.rs`): a method whose only Java calls are the
   ones made when no inlined target's guard admits the receiver publishes its frame at those
   calls, not on entry. `mobs` 81.2 → 78.0 ms per tick over four rounds (three won).
+- **Loop-invariant guards in inlined Mixin handlers** (`opt/escape.rs`, `opt/rce.rs`): the
+  state a loop's entry deoptimizes to mentioned the handler's scalar-replaced
+  `CallbackInfoReturnable`, so no guard or predicate of the loop could be hoisted. Escape
+  analysis now rewrites loop-entry states too, and the hoisting passes accept replaced objects
+  in them. With a deopt (not a call) when a receiver fails a shared-target guard
+  (`opt/inline.rs`) and class metadata loads hoisted (`opt/licm.rs`), the slot loop of
+  `MixinBench` keeps only its load, compare and increment: 14.5 → 12.4 ns (`java` 9.2 on the
+  same host). `mobs` unchanged (108.9 against 109.3 ms per tick, three rounds on a slower host).
 
 ## To do
 1. **Register calling convention.** Arguments go through the value stack in memory and the
