@@ -1,7 +1,7 @@
-//! In-place class file edits for patches. Every edit keeps the length of what it touches, so
-//! branch offsets, exception tables and stack maps stay valid: new constants are appended to
-//! the pool, access flags are rewritten, and a call instruction becomes `invokestatic` of the
-//! same length (an `invokeinterface` is padded with `nop`s).
+//! In-place class file edits for patches. No edit changes code, so branch offsets, exception
+//! tables and stack maps stay valid: new constants are appended to the pool, new fields to
+//! the field table, access flags are rewritten, and a call instruction becomes `invokestatic`
+//! of the same length (an `invokeinterface` is padded with `nop`s).
 
 use std::collections::HashMap;
 
@@ -13,6 +13,7 @@ const NAME_AND_TYPE: u8 = 12;
 const ACC_PUBLIC: u16 = 0x0001;
 const ACC_PRIVATE: u16 = 0x0002;
 const ACC_PROTECTED: u16 = 0x0004;
+const ACC_STATIC: u16 = 0x0008;
 const ACC_FINAL: u16 = 0x0010;
 
 const INVOKEVIRTUAL: u8 = 0xb6;
@@ -52,6 +53,12 @@ pub(crate) struct ClassBytes {
     pub name: String,
     fields: Vec<Member>,
     methods: Vec<Member>,
+    /// Where the fields count is, and where the fields end.
+    fields_at: usize,
+    fields_end: usize,
+    /// Serialized `field_info`s of added fields.
+    added: Vec<u8>,
+    added_count: u16,
 }
 
 #[derive(Debug)]
@@ -119,6 +126,10 @@ impl ClassBytes {
             name: String::new(),
             fields: Vec::new(),
             methods: Vec::new(),
+            fields_at: 0,
+            fields_end: 0,
+            added: Vec::new(),
+            added_count: 0,
         };
         c.bytes = bytes;
         for i in 1..count {
@@ -134,7 +145,9 @@ impl ClassBytes {
         let interfaces = r.u2()? as usize;
         r.skip(2 * interfaces)?;
         let mut at = r.at;
+        c.fields_at = at;
         c.fields = c.members(&mut at)?;
+        c.fields_end = at;
         c.methods = c.members(&mut at)?;
         Ok(c)
     }
@@ -233,7 +246,8 @@ impl ClassBytes {
     pub(crate) fn open(&mut self, member: Option<&str>) -> bool {
         let at: Vec<usize> = match member {
             None => vec![self.class_flags_at],
-            Some(m) => self.fields.iter().chain(&self.methods).filter(|x| x.name == m).map(|x| x.flags_at).collect(),
+            // Added fields (flags_at 0) are public already.
+            Some(m) => self.fields.iter().chain(&self.methods).filter(|x| x.name == m && x.flags_at != 0).map(|x| x.flags_at).collect(),
         };
         for &a in &at {
             let flags = self.u2_at(a) & !(ACC_PRIVATE | ACC_PROTECTED | ACC_FINAL) | ACC_PUBLIC;
@@ -283,14 +297,34 @@ impl ClassBytes {
         Some(sites.len())
     }
 
+    /// Adds a public field `name` of type `desc` (static when `is_static`), initially zero.
+    /// False when the class already has a field of that name.
+    pub(crate) fn add_field(&mut self, name: &str, desc: &str, is_static: bool) -> bool {
+        if self.fields.iter().any(|f| f.name == name) || self.added_count == u16::MAX {
+            return false;
+        }
+        let (Ok(n), Ok(d)) = (self.add_utf8(name), self.add_utf8(desc)) else { return false };
+        let flags = ACC_PUBLIC | if is_static { ACC_STATIC } else { 0 };
+        for v in [flags, n, d, 0] {
+            self.added.extend_from_slice(&v.to_be_bytes());
+        }
+        self.fields.push(Member { flags_at: 0, name: name.to_string(), desc: desc.to_string(), code: None });
+        self.added_count += 1;
+        true
+    }
+
     /// The edited class file.
     pub(crate) fn finish(self) -> Vec<u8> {
-        let mut out = Vec::with_capacity(self.bytes.len() + self.extra.len());
+        let mut out = Vec::with_capacity(self.bytes.len() + self.extra.len() + self.added.len());
         out.extend_from_slice(&self.bytes[..8]);
         out.extend_from_slice(&(self.count as u16).to_be_bytes());
         out.extend_from_slice(&self.bytes[10..self.cp_end]);
         out.extend_from_slice(&self.extra);
-        out.extend_from_slice(&self.bytes[self.cp_end..]);
+        out.extend_from_slice(&self.bytes[self.cp_end..self.fields_at]);
+        out.extend_from_slice(&(self.u2_at(self.fields_at) + self.added_count).to_be_bytes());
+        out.extend_from_slice(&self.bytes[self.fields_at + 2..self.fields_end]);
+        out.extend_from_slice(&self.added);
+        out.extend_from_slice(&self.bytes[self.fields_end..]);
         out
     }
 }

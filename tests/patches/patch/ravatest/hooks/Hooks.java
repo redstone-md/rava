@@ -19,13 +19,17 @@ public final class Hooks {
         return s.area() + Counter.next();
     }
 
-    /** Reads and rewrites `Box.v`, which the patch opens: no setAccessible needed. */
+    /** Reads and rewrites `Box.v`, which the patch opens (no setAccessible needed), and the
+     *  field `tag` the patch adds. */
     public static String peek(Object box) {
         try {
             Field f = box.getClass().getDeclaredField("v");
             int was = f.getInt(box);
             f.setInt(box, 99);
-            return "peeked " + was;
+            // `tag` is a field the patch adds to Box.
+            Field tag = box.getClass().getField("tag");
+            tag.setLong(box, tag.getLong(box) + 5);
+            return "peeked " + was + " tag " + tag.getLong(box);
         } catch (ReflectiveOperationException e) {
             return "failed: " + e;
         }

@@ -5,6 +5,7 @@
 //! id parallel-levels
 //! version 1
 //! open net/minecraft/server/level/ServerChunkCache mainThread
+//! field net/minecraft/world/level/Level cachedChunk Lnet/minecraft/world/level/chunk/LevelChunk;
 //! redirect a/Target.method(I)V b/Callee.call(J)V -> my/patch/Hooks.call
 //! redirect a/Target.* b/Callee.call(J)V -> my/patch/Hooks.call
 //! ```
@@ -16,6 +17,8 @@ use super::rewrite::MemberRef;
 pub(crate) enum Edit {
     /// Make the class (no member) or its members of that name public and not final.
     Open(Option<String>),
+    /// Add a public field: name, descriptor, static.
+    Field(String, String, bool),
     /// In `method desc` (every method for `*`), call `to_owner.to_name` (static) instead of
     /// `call`.
     Redirect { method: String, desc: String, call: MemberRef, to_owner: String, to_name: String },
@@ -48,6 +51,8 @@ impl Descriptor {
                 ["version", v] => d.version = v.to_string(),
                 ["open", class] => d.edits.push((class.to_string(), Edit::Open(None))),
                 ["open", class, m] => d.edits.push((class.to_string(), Edit::Open(Some(m.to_string())))),
+                ["field", class, name, desc] => d.edits.push((class.to_string(), Edit::Field(name.to_string(), desc.to_string(), false))),
+                ["static-field", class, name, desc] => d.edits.push((class.to_string(), Edit::Field(name.to_string(), desc.to_string(), true))),
                 ["redirect", target, call, "->", to] => {
                     let target = match target.strip_suffix(".*") {
                         Some(owner) => MemberRef { owner: owner.to_string(), name: "*".into(), desc: String::new() },
@@ -91,6 +96,9 @@ mod tests {
         assert_eq!(call, &MemberRef { owner: "c/D".into(), name: "n".into(), desc: "(J)V".into() });
         let d = Descriptor::parse("id p\nversion 1\nredirect a/B.* c/D.n(J)V -> e/F.g\n").unwrap();
         assert!(matches!(&d.edits[0].1, Edit::Redirect { method, .. } if method == "*"));
+        let d = Descriptor::parse("id p\nversion 1\nfield a/B x J\nstatic-field a/B y I\n").unwrap();
+        assert_eq!(d.edits[0].1, Edit::Field("x".into(), "J".into(), false));
+        assert_eq!(d.edits[1].1, Edit::Field("y".into(), "I".into(), true));
         assert!(Descriptor::parse("open a/B").is_err());
         assert!(Descriptor::parse("id x").is_err());
         assert!(Descriptor::parse("id x\nversion 1\nfrobnicate").is_err());
