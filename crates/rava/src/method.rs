@@ -29,7 +29,7 @@ pub struct Method {
     /// Machine-code entry with the compiled-code ABI (`jit::EntryFn`): compiled code, or an
     /// adapter into the interpreter / native. Generated code calls through this field.
     pub(crate) entry: AtomicUsize,
-    /// A `jmp rel32` to `entry` for direct calls from compiled code (`code_cache::direct_entry`),
+    /// A `jmp rel32` to `entry` for direct calls from compiled code (`code_cache::install_sites`),
     /// repointed whenever `entry` changes; 0 until a call site wants one.
     pub(crate) trampoline: AtomicUsize,
     /// The `ResolvedMethodName` naming this method, made once and kept for good (HotSpot's
