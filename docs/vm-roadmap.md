@@ -44,6 +44,14 @@ frame slots 2 %, the thread word 2 %. The code waits on memory far more than it 
 protocol: what is left is the number of objects touched per tick and the work between, not
 call or register overhead alone.
 
+The same classification for `java` (C2 code copied out of the process after the sprint), the
+same sprint, absolute samples at 500 Hz: loads about equal (rava ~38800, `java` ~41000), so
+neither the heap layout nor the number of objects touched is the difference. rava's excess
+is at method entry (~5400 samples, 4200 of them on the first instruction: the frontend
+arriving through a call, which `java` pays ~800 for), branches (+2800) and frame, thread-word
+and spill traffic (+~500). rava's sampled code also spans 40 % more cache lines (7900 against
+5700). Three rounds of three sprints: `java` 87-100 ms per tick warm, rava 114-118.
+
 Per-process timing on this host varies by up to 2× for `java` and rava alike (4 shared vCPUs):
 compare with the minimum or median of many runs, never one.
 
