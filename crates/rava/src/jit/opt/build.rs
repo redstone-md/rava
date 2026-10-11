@@ -161,6 +161,8 @@ pub(super) struct Builder {
     pub unprofiled_call: bool,
     /// The call about to be made was refused inlining as cold.
     pub cold_call: bool,
+    /// The next call is the one made when no inlined target's guard admits the receiver.
+    pub fallback_call: bool,
     /// Bounds checks of the current block: (array, index, check).
     pub bounds: Vec<(V, V, V)>,
     /// The three caches above as each finished block left them, for a block whose only
@@ -231,7 +233,7 @@ impl Builder {
     fn new(sc: Scope) -> Builder {
         let m = sc.m;
         let speculate = m.deopt_recompiles.load(std::sync::atomic::Ordering::Relaxed) < super::SPECULATIVE_RECOMPILES;
-        Builder { g: Graph::default(), extent: sc.frame_end(), sc, cur: 0, spent: 0, chain: vec![(m, None)], seq: 0, speculate, facts: Default::default(), stable: HashMap::new(), numbered: HashMap::new(), loads: HashMap::new(), exact: Vec::new(), declared: HashMap::new(), boxes: HashMap::new(), complete_phis: Default::default(), unprofiled_call: false, cold_call: false, bounds: Vec::new(), exits: HashMap::new() }
+        Builder { g: Graph::default(), extent: sc.frame_end(), sc, cur: 0, spent: 0, chain: vec![(m, None)], seq: 0, speculate, facts: Default::default(), stable: HashMap::new(), numbered: HashMap::new(), loads: HashMap::new(), exact: Vec::new(), declared: HashMap::new(), boxes: HashMap::new(), complete_phis: Default::default(), unprofiled_call: false, cold_call: false, fallback_call: false, bounds: Vec::new(), exits: HashMap::new() }
     }
 
     /// Makes `block` the current one, next in code order, with the caches of its single

@@ -196,6 +196,7 @@ impl Builder {
             open = false;
         }
         if open {
+            self.fallback_call = inlined;
             let r = self.call(callee, args, s, ret);
             if !inlined {
                 if let Some(v) = r {
@@ -247,6 +248,9 @@ impl Builder {
         }
         if std::mem::take(&mut self.cold_call) {
             self.g.cold_calls.insert(v);
+        }
+        if std::mem::take(&mut self.fallback_call) {
+            self.g.fallback_calls.insert(v);
         }
         (ret != BasicType::Void).then_some(v)
     }

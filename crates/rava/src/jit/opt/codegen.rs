@@ -476,8 +476,9 @@ impl Gen<'_> {
             self.top_published = true;
         }
         // A body without loops or Java calls runs for a bounded time: the polls of its callers
-        // bound the time to a safepoint (`polls.rs`).
-        if !self.lazy_header || self.g.blocks.iter().any(|b| b.loop_header && !matches!(b.term, Term::None)) {
+        // bound the time to a safepoint (`polls.rs`). Fallback calls still poll here, so a
+        // recursion through them reaches a safepoint at every level.
+        if !self.lazy_header || !self.g.fallback_calls.is_empty() || self.g.blocks.iter().any(|b| b.loop_header && !matches!(b.term, Term::None)) {
             self.poll();
         }
         if let Some((mon, at)) = self.lock {
@@ -1111,6 +1112,12 @@ fn fused_type_tests(g: &Graph) -> std::collections::HashSet<V> {
 }
 
 /// Whether the body calls a Java method (an `Inst::Call` left in a reachable block).
+/// Whether the method makes Java calls on its usual paths: calls made only when every inlined
+/// target's guard failed do not count (their frame is published at the call, `link`).
 fn calls_java(g: &Graph) -> bool {
-    g.blocks.iter().filter(|b| !matches!(b.term, Term::None)).flat_map(|b| &b.insts).any(|&v| g.resolve(v) == v && matches!(g.inst(v), Inst::Call(..)))
+    g.blocks
+        .iter()
+        .filter(|b| !matches!(b.term, Term::None))
+        .flat_map(|b| &b.insts)
+        .any(|&v| g.resolve(v) == v && matches!(g.inst(v), Inst::Call(..)) && !g.fallback_calls.contains(&v))
 }
