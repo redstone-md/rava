@@ -1,0 +1,12 @@
+# A per-level cache of the last chunk looked up, for NeoForge 1.21.1 (README.md).
+id chunk-cache
+version 1
+# Level.getBlockState, getFluidState, getChunkAt and others find their chunk through
+# Level.getChunk(int, int): the server's chunk source with a thread check, a profiler counter
+# and a four-entry cache behind three calls. The hook answers from the level's own last chunk
+# while that chunk is still loaded.
+field net/minecraft/world/level/Level ravaChunk Lnet/minecraft/world/level/chunk/LevelChunk;
+field net/minecraft/world/level/Level ravaChunkKey J
+open net/minecraft/world/level/Level thread
+open net/minecraft/world/level/chunk/LevelChunk loaded
+redirect net/minecraft/world/level/Level.* net/minecraft/world/level/Level.getChunk(II)Lnet/minecraft/world/level/chunk/LevelChunk; -> dev/rava/patches/chunks/ChunkCache.get
