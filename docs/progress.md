@@ -1733,3 +1733,34 @@ default) averages 1321 against 1270 (+4 %), the warm one 1548 against 1721 (−1
   the thread itself (plus ~1.6 % of wall time in young pauses).
 - **Not kept:** a young generation of half the live data instead of a third: 1368 / 1525 →
   1343 / 1541, noise, for more memory.
+
+## 2026-10-10 (cont.) — patches, and where a modded tick goes
+
+**Patches** (`patch/`, [patches.md](patches.md)): jars in `rava-patches/` next to the program
+redirect calls inside named methods and open members of the classes the program defines;
+their own classes are defined once, by the first loader resolving them, and shared with the
+others. Program-specific changes live in code the owner installs, never in the VM.
+`tests/patches/run.sh` covers each kind of edit.
+
+**Where All The Mods 10's tick goes** (29 levels, no players, warm sprint, measured by the
+`parallel-levels` patch with levels in turn): of ~630 µs per tick, ~440 µs are the mods'
+`LevelTickEvent.Pre`/`Post` handlers (58 posts, ~7.6 µs each), ~90 µs all 29 `ServerLevel.tick`
+calls together (a few µs per idle level), the rest connections, players and server tasks.
+
+**`patches/parallel-levels`**, ticking levels on several threads, three versions (results with
+a patch installed are the patch's, not the VM's):
+
+- Everything per level in parallel (handlers included): 1636 / 1942 tps over three rounds
+  against 1488 / 1602 without the patch (`java` 1330 / 1757), but not usable: in a later run In
+  Control's shared `HashMap` threw `ConcurrentModificationException` in the first sprint.
+  Mods share state between levels, so their handlers must stay on one thread.
+- Handlers on the server thread, `ServerLevel.tick` in parallel with events inside it
+  serialized: stable, but 1361 / 1469 — 90 µs split over 29 levels costs more in hand-offs than
+  it saves.
+- Kept: the same, used only when at least two levels took over 0.1 ms last tick (players in
+  several dimensions), with no per-tick allocation and level times sampled once a second while
+  in turn. On this benchmark it stays in turn and costs nothing: 1460 / 1614 tps installed
+  against 1428 / 1594 without, three rounds. Forced on for every level
+  (`-Drava.parallelLevels.busyMicros=0`) it ran both sprints without errors.
+
+The single-threaded part of this benchmark is the mods' event handlers themselves.
