@@ -46,10 +46,18 @@ public class MixinBench {
         long check = 0;
         for (int round = 0; round < 12; round++) {
             long t0 = System.nanoTime();
-            for (int rep = 0; rep < 500; rep++)
-                for (Living a : arr) for (int k = 0; k < 5; k++) if (a.hasEffect(hs[(rep + k) % 20])) check++;
+            check += round(arr, hs);
             System.out.printf("%.2f ns/call%n", (System.nanoTime() - t0) / (500.0 * arr.length * 5));
         }
         System.out.println(check);
+    }
+
+    /** One timed round, in a method of its own: `main` deoptimizing at its printf does not
+     *  throw the round back into slower code. */
+    static long round(Living[] arr, Holder[] hs) {
+        long check = 0;
+        for (int rep = 0; rep < 500; rep++)
+            for (Living a : arr) for (int k = 0; k < 5; k++) if (a.hasEffect(hs[(rep + k) % 20])) check++;
+        return check;
     }
 }
