@@ -467,6 +467,7 @@ impl Builder {
             slot += if self.g.ty(a).wide() { 2 } else { 1 };
         }
         sc.cont = Some(k);
+        self.note_declared_params(target, args, true);
         // A synchronized method takes its monitor (the receiver, already null-checked, or the
         // class's mirror) before its body, at the call; each return releases it, and a
         // deoptimization inside releases it once the interpreter finishes the method (`deopt.rs`).
