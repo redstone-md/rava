@@ -120,6 +120,7 @@ fn load(p: &mut Patches, mut entries: archive::Entries) -> Result<usize, String>
 fn apply(c: &mut rewrite::ClassBytes, edit: &Edit) -> bool {
     match edit {
         Edit::Open(member) => c.open(member.as_deref()),
+        Edit::Field(name, desc, is_static) => c.add_field(name, desc, *is_static),
         Edit::Redirect { method, desc, call, to_owner, to_name } => c.redirect(method, desc, call, to_owner, to_name).is_some_and(|n| n > 0),
     }
 }

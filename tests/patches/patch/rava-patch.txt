@@ -8,3 +8,4 @@ redirect ravatest/app/PatchApp.run()V ravatest/app/Peek.peek(Ljava/lang/Object;)
 open ravatest/app/Box
 open ravatest/app/Box v
 redirect ravatest/app/Other.* ravatest/app/Other.local()I -> ravatest/hooks/Shared.next
+field ravatest/app/Box tag J

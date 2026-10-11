@@ -36,6 +36,8 @@ version 1                 # required
 open <class> [member]
 redirect <class>.<method><desc> <owner>.<name><desc> -> <hook-class>.<hook-method>
 redirect <class>.* <owner>.<name><desc> -> <hook-class>.<hook-method>
+field <class> <name> <descriptor>
+static-field <class> <name> <descriptor>
 ```
 
 Class names are internal names (`net/minecraft/server/MinecraftServer`), descriptors JVM
@@ -43,6 +45,9 @@ descriptors (`(Ljava/util/function/BooleanSupplier;)V`).
 
 - **`open C`** makes class `C` public and not final; **`open C m`** does the same for every
   field and method of `C` named `m`. Patch code can then use them directly.
+- **`field C f D`** adds a public instance field `f` of type `D` to `C` (`static-field` a
+  static one), initially zero or null: state a patch keeps per object, such as a cache. The
+  edit fails if `C` already has a field `f`.
 - **`redirect C.m(D) O.n(E) -> H.h`** replaces, inside the method `C.m(D)` only, every call
   of `O.n(E)` by a call of the static method `H.h`. For an instance call, `h` takes the
   receiver first: `static R h(O receiver, E...)`; for a static call it has `n`'s descriptor.
