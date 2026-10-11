@@ -238,6 +238,9 @@ fn compile_timed(m: &'static Method, osr: Option<u32>) -> Option<CompiledMethod>
         eprintln!("[opt-alloc] {}", locs.join(" "));
     }
     let dumped = env_once!("RAVA_JIT_DUMP").is_some_and(|f| m.to_string().contains(f.to_str().unwrap_or("")));
+    // `RAVA_JIT_DUMP_RAW`: the code alone, generated exactly as without a dump (the trace's
+    // labels would stop peepholes across them).
+    let raw = env_once!("RAVA_JIT_DUMP_RAW").is_some_and(|f| m.to_string().contains(f.to_str().unwrap_or("")));
     // `RAVA_PERF_MAP=inline`: name the code of each inlined method after it, so samples are
     // attributed to the innermost method as HotSpot's profilers do.
     let by_leaf = env_once!("RAVA_PERF_MAP").is_some_and(|v| v == "inline");
@@ -254,6 +257,12 @@ fn compile_timed(m: &'static Method, osr: Option<u32>) -> Option<CompiledMethod>
     }
     if log {
         eprintln!("[opt] {m}{tag}: {} values, {} blocks, {} spill slots -> {} bytes ({main} main)", g.values.len(), al.order.len(), al.spill_slots, code.len());
+    }
+    if raw {
+        let file = format!("/tmp/rava-opt-{entry:x}.bin");
+        // SAFETY: the code just installed (calls resolved).
+        let _ = std::fs::write(&file, unsafe { std::slice::from_raw_parts(entry as *const u8, code.len()) });
+        eprintln!("[opt-dump] {m} -> {file}");
     }
     if dumped {
         let file = format!("/tmp/rava-opt-{entry:x}.bin");
