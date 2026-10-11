@@ -6,6 +6,7 @@
 //! version 1
 //! open net/minecraft/server/level/ServerChunkCache mainThread
 //! redirect a/Target.method(I)V b/Callee.call(J)V -> my/patch/Hooks.call
+//! redirect a/Target.* b/Callee.call(J)V -> my/patch/Hooks.call
 //! ```
 
 use super::rewrite::MemberRef;
@@ -15,7 +16,8 @@ use super::rewrite::MemberRef;
 pub(crate) enum Edit {
     /// Make the class (no member) or its members of that name public and not final.
     Open(Option<String>),
-    /// In `method desc`, call `to_owner.to_name` (static) instead of `call`.
+    /// In `method desc` (every method for `*`), call `to_owner.to_name` (static) instead of
+    /// `call`.
     Redirect { method: String, desc: String, call: MemberRef, to_owner: String, to_name: String },
 }
 
@@ -47,7 +49,10 @@ impl Descriptor {
                 ["open", class] => d.edits.push((class.to_string(), Edit::Open(None))),
                 ["open", class, m] => d.edits.push((class.to_string(), Edit::Open(Some(m.to_string())))),
                 ["redirect", target, call, "->", to] => {
-                    let target = member(target).map_err(|e| err(&e))?;
+                    let target = match target.strip_suffix(".*") {
+                        Some(owner) => MemberRef { owner: owner.to_string(), name: "*".into(), desc: String::new() },
+                        None => member(target).map_err(|e| err(&e))?,
+                    };
                     let call = member(call).map_err(|e| err(&e))?;
                     let dot = to.rfind('.').ok_or_else(|| err("expected Class.method after ->"))?;
                     if call.name == "<init>" {
@@ -84,6 +89,8 @@ mod tests {
         let Edit::Redirect { method, desc, call, to_owner, to_name } = &d.edits[1].1 else { panic!() };
         assert_eq!((method.as_str(), desc.as_str(), to_owner.as_str(), to_name.as_str()), ("m", "(I)V", "e/F", "g"));
         assert_eq!(call, &MemberRef { owner: "c/D".into(), name: "n".into(), desc: "(J)V".into() });
+        let d = Descriptor::parse("id p\nversion 1\nredirect a/B.* c/D.n(J)V -> e/F.g\n").unwrap();
+        assert!(matches!(&d.edits[0].1, Edit::Redirect { method, .. } if method == "*"));
         assert!(Descriptor::parse("open a/B").is_err());
         assert!(Descriptor::parse("id x").is_err());
         assert!(Descriptor::parse("id x\nversion 1\nfrobnicate").is_err());

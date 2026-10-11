@@ -242,23 +242,30 @@ impl ClassBytes {
         !at.is_empty()
     }
 
-    /// In the method `name desc`, turns every call of `call` into `invokestatic` of
-    /// `to_owner.to_name`, whose descriptor takes the receiver first for an instance call.
-    /// Returns how many calls were redirected (None: no such method).
+    /// In the method `name desc` (every method with code for `name` `*`), turns every call of
+    /// `call` into `invokestatic` of `to_owner.to_name`, whose descriptor takes the receiver
+    /// first for an instance call. Returns how many calls were redirected (None: no such
+    /// method).
     pub(crate) fn redirect(&mut self, name: &str, desc: &str, call: &MemberRef, to_owner: &str, to_name: &str) -> Option<usize> {
-        let (start, len) = self.methods.iter().find(|m| m.name == name && m.desc == desc)?.code?;
+        let bodies: Vec<(usize, usize)> = if name == "*" {
+            self.methods.iter().filter_map(|m| m.code).collect()
+        } else {
+            vec![self.methods.iter().find(|m| m.name == name && m.desc == desc)?.code?]
+        };
         let mut sites = Vec::new();
-        let mut pc = 0;
-        while pc < len {
-            let code = &self.bytes[start..start + len];
-            let op = code[pc];
-            if matches!(op, INVOKEVIRTUAL | INVOKESPECIAL | INVOKESTATIC | INVOKEINTERFACE) {
-                let index = u16::from_be_bytes([code[pc + 1], code[pc + 2]]);
-                if self.method_ref(index).ok().as_ref() == Some(call) {
-                    sites.push((start + pc, op));
+        for (start, len) in bodies {
+            let mut pc = 0;
+            while pc < len {
+                let code = &self.bytes[start..start + len];
+                let op = code[pc];
+                if matches!(op, INVOKEVIRTUAL | INVOKESPECIAL | INVOKESTATIC | INVOKEINTERFACE) {
+                    let index = u16::from_be_bytes([code[pc + 1], code[pc + 2]]);
+                    if self.method_ref(index).ok().as_ref() == Some(call) {
+                        sites.push((start + pc, op));
+                    }
                 }
+                pc += crate::jit::insn_len(code, pc);
             }
-            pc += crate::jit::insn_len(code, pc);
         }
         if sites.is_empty() {
             return Some(0);
