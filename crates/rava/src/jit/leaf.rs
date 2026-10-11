@@ -205,6 +205,10 @@ fn pow31(mut k: usize) -> i32 {
     r
 }
 
+/// Elements below which `vectorized_hash_code` folds without vectors.
+#[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
+const SHORT_HASH: usize = 32;
+
 /// `31^n * init + sum(a[from + i] * 31^(n-1-i))` over `n = len` elements of the kind `ty`
 /// names (`ArraysSupport.T_BOOLEAN` unsigned bytes, `T_CHAR` chars of a `char[]` or of a UTF-16
 /// `byte[]`, `T_BYTE` signed bytes, `T_SHORT`, `T_INT`).
@@ -230,8 +234,16 @@ extern "C" fn vectorized_hash_code(a: Oop, from: i32, len: i32, init: i32, ty: i
                 _ => (p.add(4 * k) as *const i32).read_unaligned(),
             }
         };
+        // Short arrays (most strings) fold faster in scalar steps of four than through a vector
+        // multiply and a horizontal sum.
         #[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
-        {
+        if n < SHORT_HASH {
+            match ty {
+                4 => fold_scalar(init, n, |k| *p.add(k) as i32),
+                8 => fold_scalar(init, n, |k| *p.add(k) as i8 as i32),
+                _ => fold_scalar(init, n, rd),
+            }
+        } else {
             use std::arch::x86_64::*;
             let lo = |q: *const u8| _mm_loadl_epi64(q as *const __m128i);
             let full = |q: *const u8| _mm_loadu_si128(q as *const __m128i);
