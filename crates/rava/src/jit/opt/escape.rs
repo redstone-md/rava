@@ -244,6 +244,12 @@ impl<'g> Replace<'g> {
     /// Rewrites block `b`: drops the candidates' allocations, stores and loads (loads become
     /// aliases of the current values), and gives states that mention a candidate snapshots.
     fn walk(&mut self, b: B, cur: &mut Current) {
+        // The state a loop's entry deopts to (`loop_entry`), as of the header's start.
+        if let Some(s) = self.g.loop_entry.get(&b).cloned() {
+            if let Some(r) = self.snapshot(&s, cur) {
+                self.g.loop_entry.insert(b, r);
+            }
+        }
         let insts = std::mem::take(&mut self.g.blocks[b as usize].insts);
         let mut kept = Vec::with_capacity(insts.len());
         for v in insts {
