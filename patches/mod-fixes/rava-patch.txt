@@ -1,0 +1,6 @@
+# Fixes for costly code in popular mods, each with vanilla-equal results (README.md).
+id mod-fixes
+version 1
+# Iron Furnaces 4.3: its ExplosionKnockbackEvent handler (fired once per entity per explosion)
+# looks for a million furnace's block entity at every block the explosion destroys.
+redirect ironfurnaces/util/EventHandler.explosionEvent(Lnet/neoforged/neoforge/event/level/ExplosionKnockbackEvent;)V net/minecraft/world/level/Level.getBlockEntity(Lnet/minecraft/core/BlockPos;)Lnet/minecraft/world/level/block/entity/BlockEntity; -> dev/rava/patches/modfixes/IronFurnaces.millionFurnaceAt
