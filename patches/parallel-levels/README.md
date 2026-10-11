@@ -8,7 +8,7 @@ levels.
 ## Install
 
 ```
-patches/parallel-levels/build.sh <server dir>           # compiles against the server's jars
+patches/build.sh patches/parallel-levels <server dir>   # compiles against the server's jars
 mkdir -p <server dir>/rava-patches
 cp patches/parallel-levels/parallel-levels.jar <server dir>/rava-patches/
 ```
