@@ -116,14 +116,17 @@ measured and changed is in [docs/progress.md](docs/progress.md).
 ```sh
 cargo build --release          # target/release/rava
 tests/semantics/run.sh         # every probe's output against java's
+tests/patches/run.sh           # patches end to end
 bench/paper_ab.sh HEAD java    # server start, A/B against HotSpot
 ```
 
 ```
 crates/rava/       the VM: loader, interpreter, JIT, GC, natives, launcher
 tests/semantics/   probes whose output must match java's
+tests/patches/     a program and a patch exercising every kind of edit
+patches/           official patches (rava-patches/ jars, docs/patches.md)
 bench/             microbenchmarks, world-generation benchmarks, the server A/B harness
-docs/              architecture, the optimizing tier, the progress log
+docs/              architecture, the optimizing tier, patches, the progress log
 ```
 
 <br>
@@ -136,6 +139,9 @@ docs/              architecture, the optimizing tier, the progress log
   intrinsics for `java.*` methods.
 - **No snapshots.** Every launch starts from class files: no heap or class archive, no
   checkpoint/restore, no AOT cache. A cold start is the only start that counts.
+- **Program-specific changes are patches.** Code that knows one program lives in a patch the
+  owner installs in `rava-patches/` ([docs/patches.md](docs/patches.md)), never in the VM;
+  results with patches are reported apart from VM comparisons.
 
 <br>
 
