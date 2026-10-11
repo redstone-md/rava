@@ -343,6 +343,9 @@ pub struct Graph {
     /// Calls not inlined because their site looked cold: the code counts them and marks the
     /// site hot (and asks for a recompilation) if it runs often after all.
     pub cold_calls: std::collections::HashSet<V>,
+    /// Calls made only when no inlined target's guard admitted the receiver: off the hot path,
+    /// so the method's frame is published there rather than on entry (`codegen.rs`).
+    pub fallback_calls: std::collections::HashSet<V>,
     /// The interpreter state on entering each loop header whose bytecode has not trapped (its
     /// phis as the locals): where predicates hoisted out of the loop deoptimize (`rce.rs`).
     pub loop_entry: std::collections::HashMap<B, std::rc::Rc<State>>,

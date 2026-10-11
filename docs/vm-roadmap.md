@@ -19,19 +19,18 @@ with no single bad method. What was ruled out, what was fixed, and what is left,
   receivers select one implementation, that implementation is inlined behind a vtable test.
   `MixinBench` 19.8 → 11.5 ns (`java` 7.0); `mobs` about −2.5 %.
 
+- **Lazy frame for fallback calls** (`opt/codegen.rs`): a method whose only Java calls are the
+  ones made when no inlined target's guard admits the receiver publishes its frame at those
+  calls, not on entry. `mobs` 81.2 → 78.0 ms per tick over four rounds (three won).
+
 ## To do
-1. **Publish the frame lazily when Java calls are only on cold paths.** A method publishes its
-   frame (`Thread::top`), polls and links its caller at entry whenever it contains a Java
-   call, even one reached only when a guard fails (`opt/codegen.rs`, `lazy_header`). Marking
-   guard-failure calls as cold and publishing at those calls instead would make such methods'
-   hot path as cheap as a call-free one. Expected: a few percent.
-2. **Register calling convention.** Arguments go through the value stack in memory and the
+1. **Register calling convention.** Arguments go through the value stack in memory and the
    callee reads them back; every entry checks the value-stack limit, links the frame and pushes
    callee-saved registers. 10–14 % of optimized-code samples fall in the first bytes of
    methods; megamorphic calls cost 6–8 ns against HotSpot's 3.5. Passing arguments in
    registers and slimming the prologue needs the register allocator's cooperation:
    a multi-day project, potentially 10–20 %.
-3. **Register allocation quality.** Values spilled around calls and reloaded at block starts
+2. **Register allocation quality.** Values spilled around calls and reloaded at block starts
    (`mov %rax,0x50(%rsp); mov 0x50(%rsp),%rax` across a label), loop-carried values kept in
    stack slots across calls.
 
