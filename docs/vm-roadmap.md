@@ -37,6 +37,10 @@ with no single bad method. What was ruled out, what was fixed, and what is left,
   only at null checks, then kept the loads through that value in the loop. Since 89c8e980 a
   stream pipeline's sink chain was reloaded per element again (bisected): `Kern` stream 15.5 →
   7.8-9.6 ms (`java` 7.6). LICM now takes `conds.rs`'s facts.
+- **Block layout** (`opt/codegen.rs`): when a chain of fall-through successors ended, the next
+  block emitted was the next in build order, often a rare one, so cold code sat between hot
+  chains. Chains now start at the most frequent unplaced block. `mobs` warm sprints 113.2 →
+  108.7 ms per tick (two rounds of three won).
 
 ## Where the time goes (`mobs`, all optimized code dumped, samples by instruction)
 Of the server thread, 93 % is in optimized code. By the instruction a sample stalls on: loads
