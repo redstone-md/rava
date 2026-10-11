@@ -83,9 +83,6 @@ pub struct Asm {
     /// Relative calls to absolute addresses: (displacement position, target), resolved when the
     /// code is installed (`code_cache::install`).
     relocs: Vec<(u32, usize)>,
-    /// Calls of Java methods among `relocs`: (displacement position, `Method` address), which
-    /// `code_cache::install_sites` keeps pointed at the method's current entry.
-    sites: Vec<(u32, usize)>,
     /// The spill store just emitted: (end, rsp displacement, register, width), so that a reload
     /// of that slot right after it becomes a register move (`load`).
     last_spill: Option<(u32, i32, R, bool)>,
@@ -95,7 +92,6 @@ pub struct Asm {
 pub struct Code {
     pub bytes: Vec<u8>,
     pub relocs: Vec<(u32, usize)>,
-    pub sites: Vec<(u32, usize)>,
 }
 
 impl std::ops::Deref for Code {
@@ -159,7 +155,7 @@ impl Asm {
     pub fn finish_at(mut self, l: Label) -> (Code, u32) {
         self.resolve();
         let at = self.labels[l.0 as usize].expect("bound label");
-        (Code { bytes: self.buf, relocs: self.relocs, sites: self.sites }, at)
+        (Code { bytes: self.buf, relocs: self.relocs }, at)
     }
 
     /// `finish_at`, also with the final positions of `more` (bound labels).
@@ -167,12 +163,12 @@ impl Asm {
         self.resolve();
         let pos = |l: &Label| self.labels[l.0 as usize].expect("bound label");
         let (at, rest) = (pos(&l), more.iter().map(pos).collect());
-        (Code { bytes: self.buf, relocs: self.relocs, sites: self.sites }, at, rest)
+        (Code { bytes: self.buf, relocs: self.relocs }, at, rest)
     }
 
     pub fn finish(mut self) -> Code {
         self.resolve();
-        Code { bytes: self.buf, relocs: self.relocs, sites: self.sites }
+        Code { bytes: self.buf, relocs: self.relocs }
     }
 
     fn resolve(&mut self) {
@@ -515,14 +511,6 @@ impl Asm {
     }
     /// Calls an absolute address: `call rel32` when the code cache is within reach of it
     /// (resolved at installation), else through `rax`.
-    /// Calls the Java method at `method` (a `Method` address) whose entry is now `entry`: a
-    /// `call rel32` that `code_cache::install_sites` repoints whenever the entry changes.
-    pub fn call_method(&mut self, method: usize, entry: usize) {
-        self.b(0xE8);
-        self.relocs.push((self.pos(), entry));
-        self.sites.push((self.pos(), method));
-        self.d32(0);
-    }
     pub fn call_abs(&mut self, addr: usize) {
         if super::code_cache::near() {
             self.b(0xE8);
