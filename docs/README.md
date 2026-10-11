@@ -14,4 +14,4 @@
 
 The rules (no workload-specific tuning, no snapshots) are in the top-level
 [README](../README.md#rules). What was measured and changed, session by session, is in
-[progress.md](progress.md).
+[progress.md](progress.md); what is planned for the VM in [vm-roadmap.md](vm-roadmap.md), for the patches in [patch-roadmap.md](patch-roadmap.md).
