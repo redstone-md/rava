@@ -29,6 +29,23 @@ with no single bad method. What was ruled out, what was fixed, and what is left,
   (`opt/inline.rs`) and class metadata loads hoisted (`opt/licm.rs`), the slot loop of
   `MixinBench` keeps only its load, compare and increment: 14.5 → 12.4 ns (`java` 9.2 on the
   same host). `mobs` unchanged (108.9 against 109.3 ms per tick, three rounds on a slower host).
+- **Non-null facts for LICM** (`opt/conds.rs`, `opt/licm.rs`): a null check that a dominating
+  test or a phi of non-null values proves was dropped by `conds.rs`, and LICM, which looked
+  only at null checks, then kept the loads through that value in the loop. Since 89c8e980 a
+  stream pipeline's sink chain was reloaded per element again (bisected): `Kern` stream 15.5 →
+  7.8-9.6 ms (`java` 7.6). LICM now takes `conds.rs`'s facts.
+
+## Where the time goes (`mobs`, all optimized code dumped, samples by instruction)
+Of the server thread, 93 % is in optimized code. By the instruction a sample stalls on: loads
+from memory 60 % (of which an object's first word, its class, 38 %; small-offset fields 37 %;
+array elements 9 %; class metadata 9 %), branches 15 %, the first instructions of a method
+(pushes of callee-saved registers: the cost of arriving through a call) 8 %, spill slots 2 %,
+frame slots 2 %, the thread word 2 %. The code waits on memory far more than it executes
+protocol: what is left is the number of objects touched per tick and the work between, not
+call or register overhead alone.
+
+Per-process timing on this host varies by up to 2× for `java` and rava alike (4 shared vCPUs):
+compare with the minimum or median of many runs, never one.
 
 ## To do
 1. **Register calling convention.** Arguments go through the value stack in memory and the

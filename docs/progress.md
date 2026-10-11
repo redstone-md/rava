@@ -1778,3 +1778,7 @@ bridge methods) and `field` (state per object).
 Loops inside inlined Mixin handlers now get their invariant guards hoisted (escape analysis had
 left their loop-entry states naming the replaced `CallbackInfoReturnable`): `MixinBench`
 14.5 → 12.4 ns per call, `mobs` unchanged within noise.
+A bisection found the stream kernel twice as slow as on 10-08: `conds.rs` dropped null checks
+that LICM needed to see (fixed, back to `java`'s speed). An instruction-level profile of all
+optimized code under `mobs` puts 60 % of its samples on loads, 38 % of those on an object's
+first word ([vm-roadmap.md](vm-roadmap.md)).
