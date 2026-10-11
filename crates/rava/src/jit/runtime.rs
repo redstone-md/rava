@@ -118,6 +118,12 @@ impl IcCell {
         (k != 0 && self.misses.load(Ordering::Relaxed) <= 1).then_some(k)
     }
 
+    /// The first two receiver classes seen, whether or not there were more.
+    pub(super) fn recorded(&self) -> Vec<usize> {
+        use std::sync::atomic::Ordering;
+        self.seen.iter().map(|s| s.load(Ordering::Relaxed)).filter(|&k| k != 0).collect()
+    }
+
     /// The receiver classes seen, when there were at most two.
     pub(super) fn receivers(&self) -> Option<Vec<usize>> {
         use std::sync::atomic::Ordering;
