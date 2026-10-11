@@ -10,6 +10,11 @@ with the binary, waits for "Done (" and 20 s more, sends `tick sprint SPRINT` (d
 fast its single game thread runs flat out. With -r, each server runs that many sprints in a row
 (later ones show the speed once compilation has caught up). Binaries run in the given order
 each round.
+
+With -c SCENARIO (a file in bench/scenarios/), its console commands build a load before the
+sprints: one command per line, `#` comments, `#wait N` pauses N seconds, and
+`#for VAR FROM TO STEP COMMAND` repeats COMMAND with `{VAR}` replaced by FROM, FROM+STEP, ...
+up to TO inclusive, and `#include FILE` reads another scenario file of the same directory.
 """
 import argparse, os, re, shutil, subprocess, tempfile, time
 
@@ -18,8 +23,26 @@ ap.add_argument('-n', type=int, default=2)
 ap.add_argument('-s', default='1d')
 ap.add_argument('-r', type=int, default=1)
 ap.add_argument('-b', required=True)
+ap.add_argument('-c')
 ap.add_argument('bins', nargs='+')
 a = ap.parse_args()
+
+
+def scenario(path):
+    """The console commands of a scenario file, with `('wait', seconds)` for pauses."""
+    out = []
+    for line in open(path):
+        line = line.strip()
+        if line.startswith('#include '):
+            out += scenario(os.path.join(os.path.dirname(path), line.split()[1]))
+        elif line.startswith('#wait '):
+            out.append(('wait', float(line.split()[1])))
+        elif line.startswith('#for '):
+            _, var, lo, hi, step, cmd = line.split(None, 5)
+            out += [cmd.replace('{' + var + '}', str(v)) for v in range(int(lo), int(hi) + 1, int(step))]
+        elif line and not line.startswith('#'):
+            out.append(line)
+    return out
 
 
 def run(binary):
@@ -43,6 +66,12 @@ def run(binary):
             time.sleep(1)
         if 'Done (' in log():
             time.sleep(20)
+            for c in scenario(a.c) if a.c else []:
+                if isinstance(c, tuple):
+                    time.sleep(c[1])
+                else:
+                    fifo.write(c + '\n')
+                    fifo.flush()
             for _ in range(a.r):
                 fifo.write(f'tick sprint {a.s}\n')
                 fifo.flush()

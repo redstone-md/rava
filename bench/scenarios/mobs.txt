@@ -1,0 +1,8 @@
+# 250 cows and 100 villagers in a glass pen (pathfinding, villager brains, collisions).
+#include arena.txt
+fill -20 200 -20 19 203 19 minecraft:glass hollow
+fill -19 203 -19 18 203 18 minecraft:air
+#for i 1 250 1 summon minecraft:cow 0 201 0
+#for i 1 100 1 summon minecraft:villager 0 201 0
+spreadplayers 0 0 1 18 false @e[type=!minecraft:player,x=-20,y=195,z=-20,dx=40,dy=20,dz=40]
+#wait 10
