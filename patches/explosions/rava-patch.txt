@@ -1,0 +1,8 @@
+# Faster explosions for NeoForge 1.21.1, same results as vanilla: README.md.
+id explosions
+version 1
+# Explosion.getSeenPercent casts up to 27 rays from an entity to the explosion and only asks
+# whether each one misses: a dedicated ray walk, the same steps as BlockGetter.traverseBlocks.
+# Every method of Explosion: mods wrap this call (Mixin moves it into a bridge method), and
+# getSeenPercent is the only place Explosion casts rays.
+redirect net/minecraft/world/level/Explosion.* net/minecraft/world/level/Level.clip(Lnet/minecraft/world/level/ClipContext;)Lnet/minecraft/world/phys/BlockHitResult; -> dev/rava/patches/explosions/ExposureRay.clip
