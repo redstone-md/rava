@@ -67,9 +67,12 @@ impl Builder {
         // A complete receiver profile (every class the site saw is guarded): a receiver of
         // another class deoptimizes (C2's uncommon trap), noting its class for recompilation;
         // a site that trapped before calls instead.
+        // So does a receiver failing the test of the one implementation the site's receivers
+        // (or all loaded classes) share: no call is left on the path, so the code around it
+        // (a loop over the receivers' fields) has no call to keep its loads in place.
+        let shared = matches!(plans.as_slice(), [(_, Guard::Vtable(_) | Guard::Subclass(..))]);
         let profiled = !plans.is_empty()
-            && plans.iter().all(|(_, g)| matches!(g, Guard::Klass(_)))
-            && !crate::jit::profile::megamorphic(self.sc.m, pc)
+            && (plans.iter().all(|(_, g)| matches!(g, Guard::Klass(_))) && !crate::jit::profile::megamorphic(self.sc.m, pc) || shared)
             && self.speculates(self.sc.m, pc);
         self.unprofiled_call = plans.is_empty() && matches!(callee, Callee::Virtual(_) | Callee::Interface(_)) && crate::jit::profile::unprofiled(self.sc.m, pc);
         let boxed = (op == 0xb8 && super::build_obj::box_value_of(m)).then(|| args[0]);
