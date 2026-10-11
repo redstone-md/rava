@@ -123,12 +123,21 @@ pub(super) fn entry_state_at(g: &Graph, s: &Rc<State>, h: usize, entry: usize) -
             defined[v as usize] = true;
         }
     }
-    let live = |x: V| defined.get(x as usize).copied().unwrap_or(false) && !g.virtuals.contains_key(&x);
+    let header_phi = |x: V| matches!(g.inst(x), Inst::Phi(_)) && g.blocks[h].insts.contains(&x);
+    // A defined value, or an object escape analysis replaced whose fields are defined values
+    // other than the header's phis (those would need a marker of their own).
+    let live = |x: V| match g.virtuals.get(&x) {
+        Some(o) => o.fields.iter().all(|&(_, _, f)| {
+            let f = g.resolve(f);
+            !header_phi(f) && (defined.get(f as usize).copied().unwrap_or(false) || matches!(g.inst(f), Inst::Const(_)))
+        }),
+        None => defined.get(x as usize).copied().unwrap_or(false),
+    };
     let map = |x: &Option<V>| -> Option<Option<V>> {
         let Some(x) = *x else { return Some(None) };
         let x = g.resolve(x);
         let x = match g.inst(x) {
-            Inst::Phi(inputs) if g.blocks[h].insts.contains(&x) => g.resolve(inputs[entry]),
+            Inst::Phi(inputs) if header_phi(x) => g.resolve(inputs[entry]),
             _ => x,
         };
         live(x).then_some(Some(x))
