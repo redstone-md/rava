@@ -35,6 +35,7 @@ id parallel-levels        # required, unique among installed patches
 version 1                 # required
 open <class> [member]
 redirect <class>.<method><desc> <owner>.<name><desc> -> <hook-class>.<hook-method>
+redirect <class>.* <owner>.<name><desc> -> <hook-class>.<hook-method>
 ```
 
 Class names are internal names (`net/minecraft/server/MinecraftServer`), descriptors JVM
@@ -46,6 +47,9 @@ descriptors (`(Ljava/util/function/BooleanSupplier;)V`).
   of `O.n(E)` by a call of the static method `H.h`. For an instance call, `h` takes the
   receiver first: `static R h(O receiver, E...)`; for a static call it has `n`'s descriptor.
   The hook may call the original method itself. Constructor calls cannot be redirected.
+  **`redirect C.* ...`** does it in every method of `C`: when other mods have wrapped the
+  call (Mixin's `@WrapOperation` moves it into a generated bridge method with an unstable
+  name), the redirect still reaches it and their wrappers keep running around the hook.
 
 Edits are applied when a class loader other than the boot loader defines the class (JDK
 classes are never edited). All edits of one class apply or none do: if a method, member or
