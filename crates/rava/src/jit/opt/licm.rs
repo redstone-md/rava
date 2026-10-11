@@ -94,10 +94,10 @@ pub fn hoist(g: &mut Graph) {
                             // through a class word: never written, so no store or call in the
                             // loop can change it, and a class word is never null.
                             Inst::LoadField(o, ..) if class_word(g, *o) => true,
-                            Inst::ArrayLength(o) => known.contains(&g.resolve(*o)) && !typed.contains(&g.resolve(*o)),
+                            Inst::ArrayLength(o) => known_nonnull(g, known, *o) && !typed.contains(&g.resolve(*o)),
                             Inst::LoadField(o, off, _) => {
                                 let o = g.resolve(*o);
-                                !barrier && (g.final_loads.contains(&v) || !stored.contains(off)) && !g.ordered.contains(&v) && known.contains(&o) && (*off == 0 || !typed.contains(&o))
+                                !barrier && (g.final_loads.contains(&v) || !stored.contains(off)) && !g.ordered.contains(&v) && known_nonnull(g, known, o) && (*off == 0 || !typed.contains(&o))
                             }
                             _ => false,
                         };
@@ -114,6 +114,20 @@ pub fn hoist(g: &mut Graph) {
                 break;
             }
             g.blocks[pre as usize].insts.extend(moved);
+        }
+    }
+}
+
+/// Whether `x` is in `known`, or a cast of a value that is (a cast passes its object through).
+fn known_nonnull(g: &Graph, known: &HashSet<V>, x: V) -> bool {
+    let mut x = g.resolve(x);
+    loop {
+        if known.contains(&x) {
+            return true;
+        }
+        match *g.inst(x) {
+            Inst::CheckCast(y, ..) => x = g.resolve(y),
+            _ => return false,
         }
     }
 }
@@ -186,14 +200,20 @@ fn type_tests(g: &Graph, l: &super::dom::Loop) -> HashSet<V> {
 }
 
 /// For each block (by rpo position), the values non-null at its end: checked by a null check in
-/// it or a dominator, allocated there, or the receiver.
+/// it or a dominator, tested non-null on the way, allocated there, the receiver, or a phi of
+/// non-null values.
 pub(super) fn nonnull_by_block(g: &Graph, dom: &Dom) -> Vec<HashSet<V>> {
+    // What `conds.rs` proved (and so dropped the checks of): tested branches, merged
+    // non-null values.
+    let (proved, phis) = super::conds::nonnull_facts(g);
     let mut out: Vec<HashSet<V>> = vec![HashSet::new(); dom.rpo.len()];
     for (i, &b) in dom.rpo.iter().enumerate() {
         let mut set = if i == 0 || dom.idom[i] == usize::MAX { HashSet::new() } else { out[dom.idom[i]].clone() };
         if i == 0 {
             set.extend(g.receiver);
+            set.extend(phis.iter().copied());
         }
+        set.extend(proved[b as usize].iter().copied());
         for &v in &g.blocks[b as usize].insts {
             match g.inst(v) {
                 Inst::NullCheck(x, _) => {
