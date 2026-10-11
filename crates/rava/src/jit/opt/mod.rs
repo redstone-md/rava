@@ -238,13 +238,20 @@ fn compile_timed(m: &'static Method, osr: Option<u32>) -> Option<CompiledMethod>
         eprintln!("[opt-alloc] {}", locs.join(" "));
     }
     let dumped = env_once!("RAVA_JIT_DUMP").is_some_and(|f| m.to_string().contains(f.to_str().unwrap_or("")));
-    let (code, main, faults, trace) = codegen::generate(&g, &al, m, extent, monitor, osr, dumped);
+    // `RAVA_PERF_MAP=inline`: name the code of each inlined method after it, so samples are
+    // attributed to the innermost method as HotSpot's profilers do.
+    let by_leaf = env_once!("RAVA_PERF_MAP").is_some_and(|v| v == "inline");
+    let (code, main, faults, trace) = codegen::generate(&g, &al, m, extent, monitor, osr, dumped || by_leaf);
     let entry = code_cache::install(&code);
     if !faults.is_empty() {
         super::fault::register(faults.into_iter().map(|(at, to)| (entry + at, entry + to)));
     }
     let tag = osr.map_or(String::new(), |b| format!(" at bci {b}"));
-    code_cache::perf_map(entry, code.len(), &format!("{m} [opt{}]", if osr.is_some() { " osr" } else { "" }));
+    if by_leaf {
+        perf_map_by_leaf(entry, code.len(), m, &trace);
+    } else {
+        code_cache::perf_map(entry, code.len(), &format!("{m} [opt{}]", if osr.is_some() { " osr" } else { "" }));
+    }
     if log {
         eprintln!("[opt] {m}{tag}: {} values, {} blocks, {} spill slots -> {} bytes ({main} main)", g.values.len(), al.order.len(), al.spill_slots, code.len());
     }
@@ -258,4 +265,28 @@ fn compile_timed(m: &'static Method, osr: Option<u32>) -> Option<CompiledMethod>
         eprintln!("[opt-dump] {m} -> {file}");
     }
     Some(CompiledMethod { entry, unresolved_deferrals: Default::default(), size: main, blocks: Vec::new(), frame_slots: extent as usize, tier: 2, optimized: true, deopts: Default::default() })
+}
+
+/// Perf map entries for `m`'s optimized code at `entry` (`size` bytes), one per run of code
+/// generated for the same method (`trace`: where each value's code starts, described as
+/// codegen does, ending with `@ holder.name:bci`), named after that method.
+fn perf_map_by_leaf(entry: usize, size: usize, m: &'static Method, trace: &[(usize, String)]) {
+    let mut runs: Vec<(usize, String)> = Vec::new();
+    for (at, d) in trace {
+        let leaf = d.rsplit_once(" @ ").and_then(|(_, w)| w.rsplit_once(':')).map_or(String::new(), |(n, _)| n.to_string());
+        let leaf = if leaf.is_empty() { format!("{}.{}", m.holder.name, m.name) } else { leaf };
+        if runs.last().is_none_or(|r| r.1 != leaf) {
+            runs.push((*at, leaf));
+        }
+    }
+    runs.sort_by_key(|r| r.0);
+    let starts: Vec<usize> = runs.iter().map(|r| r.0).chain(std::iter::once(size)).collect();
+    if runs.first().is_none_or(|r| r.0 > 0) {
+        code_cache::perf_map(entry, starts[0], &format!("{}.{} [opt]", m.holder.name, m.name));
+    }
+    for (i, (at, leaf)) in runs.iter().enumerate() {
+        if starts[i + 1] > *at {
+            code_cache::perf_map(entry + at, starts[i + 1] - at, &format!("{leaf} [opt]"));
+        }
+    }
 }
