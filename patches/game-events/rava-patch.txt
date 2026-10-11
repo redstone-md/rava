@@ -1,0 +1,8 @@
+# Game events without empty listener registries, for NeoForge 1.21.1 (README.md).
+id game-events
+version 1
+# GameEventDispatcher.post visits the listener registry of every chunk section near the event;
+# LevelChunk.getListenerRegistry creates one for a section that has none. The hook visits a
+# section's registry only if it exists, else the shared empty one.
+open net/minecraft/world/level/chunk/LevelChunk gameEventListenerRegistrySections
+redirect net/minecraft/world/level/gameevent/GameEventDispatcher.* net/minecraft/world/level/chunk/ChunkAccess.getListenerRegistry(I)Lnet/minecraft/world/level/gameevent/GameEventListenerRegistry; -> dev/rava/patches/gameevents/Registries.get
