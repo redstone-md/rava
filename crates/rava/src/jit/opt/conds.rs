@@ -163,10 +163,25 @@ pub fn mark_nonnull_inputs(g: &mut Graph) {
     walk(g, true, phis);
 }
 
+/// What the dominator-tree walk proves non-null: for each block (by number) the values tested
+/// or checked non-null on every path to its end, and the phis non-null wherever they are
+/// defined. A null check this pass drops stays known to later passes (`licm.rs`) through it.
+pub(super) fn nonnull_facts(g: &Graph) -> (Vec<Vec<V>>, std::collections::HashSet<V>) {
+    let phis = nonnull_phis(g);
+    let mut ends = vec![Vec::new(); g.blocks.len()];
+    walk_with(g, &mut Facts(Vec::new(), Default::default()), &mut |facts, _, b| {
+        ends[b as usize] = facts.0.iter().filter_map(|f| match (f.cmp, f.ty, f.a, f.b) {
+            (Cmp::Ne, Ty::A, Key::Val(x), Key::Const(0)) => Some(x),
+            _ => None,
+        }).collect();
+    });
+    (ends, phis)
+}
+
 /// The reference phis whose every input is non-null at the end of its edge's predecessor (a
 /// lookup's result merged from paths that each tested it), other such phis included: the
 /// greatest set closed under that rule.
-fn nonnull_phis(g: &mut Graph) -> std::collections::HashSet<V> {
+fn nonnull_phis(g: &Graph) -> std::collections::HashSet<V> {
     let mut edges = Vec::new();
     walk_with(g, &mut Facts(Vec::new(), Default::default()), &mut |facts, g, b| {
         for s in g.blocks[b as usize].term.successors() {
