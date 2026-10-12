@@ -22,6 +22,8 @@ pub struct Method {
     pub(crate) native: OnceLock<NativeFn>,
     /// Whether this native runs without an interpreter frame of its own (`jit::leaf_native`).
     pub(crate) leaf_native: OnceLock<bool>,
+    /// The native code JNI bound this native method to (`jni::entry`), 0 until bound.
+    pub(crate) jni_entry: AtomicUsize,
     /// Invocation and loop back-edge counters feeding tier-up and on-stack replacement
     /// (generic JVM adaptivity). Racy increments are acceptable: they only time the tier-up.
     pub invocations: AtomicU32,
@@ -77,6 +79,7 @@ impl Method {
             vtable_index: AtomicI32::new(-1),
             native: OnceLock::new(),
             leaf_native: OnceLock::new(),
+            jni_entry: AtomicUsize::new(0),
             invocations: AtomicU32::new(0),
             backedges: AtomicU32::new(0),
             entry: AtomicUsize::new(if native { crate::jit::native_entry() } else { crate::jit::interpreter_entry() }),

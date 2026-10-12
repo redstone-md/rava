@@ -1,7 +1,7 @@
 //! Class-loader natives: defining classes from bytes, boot lookups, `Class.forName0`,
 //! and native-library bookkeeping (all VM natives are built in).
 
-use super::{ret_bool, ret_ref, ret_void, NativeRegistry};
+use super::{ret_bool, ret_long, ret_ref, ret_void, NativeRegistry};
 use crate::classfile::ClassFile;
 use crate::heap::{obj, Oop};
 use crate::klass::Klass;
@@ -87,13 +87,19 @@ pub(super) fn register(r: &mut NativeRegistry) {
         "jdk/internal/loader/NativeLibraries",
         "load",
         "(Ljdk/internal/loader/NativeLibraries$NativeLibraryImpl;Ljava/lang/String;ZZ)Z",
-        |_, a| {
-            // A library other than the JDK's (not built in): no JNI here, so it does not load.
-            if a[2] == 0 {
-                return ret_bool(false);
-            }
-            // The VM supplies the natives itself. JDK 25 checks the library got a handle: an
-            // opaque non-zero one, and the JNI version JNI_OnLoad would have reported (1.8).
+        |t, a| {
+            // The JDK's libraries: the VM supplies their natives itself, so the handle is an
+            // opaque non-zero one, with the JNI version JNI_OnLoad would have reported (1.8),
+            // which JDK 25 checks. Any other library is opened and its JNI_OnLoad run (`jni`).
+            let (handle, version) = if a[2] != 0 {
+                (1, 0x0001_0008)
+            } else {
+                let path = rt::java_string_to_rust(a[1] as Oop);
+                match crate::jni::load_for_java(t, &path, a[3] != 0)? {
+                    Some((h, v)) => (h as i64, v),
+                    None => return ret_bool(false),
+                }
+            };
             let lib = crate::jdk::library();
             let impl_class = "jdk/internal/loader/NativeLibraries$NativeLibraryImpl";
             static HANDLE: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
@@ -101,15 +107,20 @@ pub(super) fn register(r: &mut NativeRegistry) {
             // SAFETY: a live NativeLibraryImpl; offsets from its layout.
             unsafe {
                 if let Some(off) = lib.optional_field(&HANDLE, impl_class, "handle", "J") {
-                    obj::write::<i64>(a[0] as Oop, off, 1);
+                    obj::write::<i64>(a[0] as Oop, off, handle);
                 }
                 if let Some(off) = lib.optional_field(&VERSION, impl_class, "jniVersion", "I") {
-                    obj::write::<i32>(a[0] as Oop, off, 0x0001_0008);
+                    obj::write::<i32>(a[0] as Oop, off, version);
                 }
             }
             ret_bool(true)
         },
     );
+    r.add("jdk/internal/loader/NativeLibrary", "findEntry0", "(JLjava/lang/String;)J", |_, a| {
+        // The VM's own libraries (handle 1) export nothing.
+        let name = rt::java_string_to_rust(a[2] as Oop);
+        ret_long(if a[0] > 1 { crate::jni::symbol(a[0] as usize, &name) as i64 } else { 0 })
+    });
     r.add("jdk/internal/loader/NativeLibraries", "unload", "(Ljava/lang/String;ZJ)V", |_, _| ret_void());
     r.add(
         "java/lang/Class",

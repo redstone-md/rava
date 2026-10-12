@@ -9,6 +9,7 @@ pub mod heap;
 pub mod interp;
 pub mod jdk;
 pub mod jit;
+pub mod jni;
 pub mod jimage;
 pub mod klass;
 pub mod launcher;

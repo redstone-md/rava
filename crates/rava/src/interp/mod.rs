@@ -79,16 +79,20 @@ fn sync_target(t: &mut Thread, m: &'static Method, locals: *mut u64) -> JResult<
 }
 
 pub(crate) fn call_native(t: &mut Thread, m: &'static Method, locals: *mut u64) -> JResult<u64> {
+    // The VM's own body, else native code a loaded library binds to it (JNI).
     let f = match m.native.get() {
-        Some(f) => *f,
+        Some(f) => Ok(*f),
         None => match vm().natives.lookup(m) {
-            Some(f) => *m.native.get_or_init(|| f),
-            None => {
-                if std::env::var_os("RAVA_TRACE_ULE").is_some() {
-                    eprintln!("[ULE] {m}");
+            Some(f) => Ok(*m.native.get_or_init(|| f)),
+            None => match crate::jni::entry(m) {
+                Some(addr) => Err(addr),
+                None => {
+                    if std::env::var_os("RAVA_TRACE_ULE").is_some() {
+                        eprintln!("[ULE] {m}");
+                    }
+                    return Err(throw_new(t, "java/lang/UnsatisfiedLinkError", &m.to_string()));
                 }
-                return Err(throw_new(t, "java/lang/UnsatisfiedLinkError", &m.to_string()));
-            }
+            },
         },
     };
     let params = m.param_slots() as usize;
@@ -99,7 +103,10 @@ pub(crate) fn call_native(t: &mut Thread, m: &'static Method, locals: *mut u64) 
     let hdr = unsafe { locals.add(params) }.max(t.sp);
     unsafe { t.push_frame(hdr, m, NATIVE_BCI) };
     t.sp = unsafe { hdr.add(header::SLOTS) };
-    let r = f(t, args);
+    let r = match f {
+        Ok(f) => f(t, args),
+        Err(addr) => crate::jni::invoke(t, m, addr, args),
+    };
     if let Some(o) = lock {
         crate::sync::exit(o);
     }

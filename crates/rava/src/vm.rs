@@ -162,6 +162,7 @@ impl Vm {
         crate::natives::thread::for_each_starting(precise);
         crate::natives::module_roots(precise);
         crate::natives::jfr_roots(precise);
+        crate::jni::roots(precise);
     }
 
     pub(crate) fn record_class(&self, k: &'static Klass) {

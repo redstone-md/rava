@@ -245,7 +245,7 @@ impl Shared<'_> {
                         p += 8;
                     }
                 }
-                for r in [t.java_thread, t.scoped_value_cache, t.pending] {
+                for r in [t.java_thread, t.scoped_value_cache, t.pending, t.jni.exception] {
                     self.precise(r as usize, out);
                 }
                 for &h in t.handles.iter() {
