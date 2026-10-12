@@ -1,5 +1,5 @@
 //! Networking natives over POSIX sockets (IPv4): `java.net.InetAddress` resolution,
-//! `sun.nio.ch.Net`, socket dispatchers, `EPoll` and `EventFD`. Blocking calls (accept, epoll
+//! `sun.nio.ch.Net` and socket dispatchers (the selectors are in `linux` and `bsd`). Blocking calls (accept, selector
 //! waits, socket reads) run in the native state so the collector can proceed.
 
 use super::io::{fd_int, io_error};
@@ -15,14 +15,14 @@ vm_field!(holder_address, "java/net/InetAddress$InetAddressHolder", "address", "
 
 const NET: &str = "sun/nio/ch/Net";
 const UNAVAILABLE: i32 = -2;
-const INTERRUPTED: i32 = -3;
+pub(super) const INTERRUPTED: i32 = -3;
 
 pub(super) fn fd(fdo: u64) -> i32 {
     // SAFETY: a live java.io.FileDescriptor.
     unsafe { obj::read::<i32>(fdo as Oop, fd_int()) }
 }
 
-fn errno() -> i32 {
+pub(super) fn errno() -> i32 {
     std::io::Error::last_os_error().raw_os_error().unwrap_or(libc::EIO)
 }
 
@@ -33,12 +33,7 @@ pub(super) fn ipv4_of(addr: Oop) -> u32 {
 }
 
 fn sockaddr(addr: Oop, port: u64) -> libc::sockaddr_in {
-    libc::sockaddr_in {
-        sin_family: libc::AF_INET as u16,
-        sin_port: (port as u16).to_be(),
-        sin_addr: libc::in_addr { s_addr: ipv4_of(addr).to_be() },
-        sin_zero: [0; 8],
-    }
+    super::posix::sockaddr_in(ipv4_of(addr), port as u16)
 }
 
 /// `new Inet4Address(host, bytes)`.
@@ -64,7 +59,7 @@ fn socket_name(t: &mut Thread, f: i32, peer: bool) -> JResult<(u32, u16)> {
     Ok((u32::from_be(sa.sin_addr.s_addr), u16::from_be(sa.sin_port)))
 }
 
-fn check(t: &mut Thread, r: i32, what: &str) -> JResult<i32> {
+pub(super) fn check(t: &mut Thread, r: i32, what: &str) -> JResult<i32> {
     if r < 0 {
         Err(io_error(t, what))
     } else {
@@ -102,7 +97,7 @@ pub(super) fn register(r: &mut NativeRegistry) {
     r.add(NET, "pollconnValue", "()S", |_, _| ret_int(libc::POLLOUT as i32));
     r.add(NET, "socket0", "(ZZZZ)I", |t, a| {
         let ty = if a[1] != 0 { libc::SOCK_STREAM } else { libc::SOCK_DGRAM };
-        let s = check(t, unsafe { libc::socket(libc::AF_INET, ty | libc::SOCK_CLOEXEC, 0) }, "Socket creation failed")?;
+        let s = check(t, super::posix::socket(libc::AF_INET, ty), "Socket creation failed")?;
         if a[2] != 0 {
             let one: libc::c_int = 1;
             unsafe { libc::setsockopt(s, libc::SOL_SOCKET, libc::SO_REUSEADDR, &one as *const _ as *const libc::c_void, 4) };
@@ -195,9 +190,7 @@ fn accept(t: &mut Thread, a: &[u64]) -> JResult<u64> {
     let mut len = std::mem::size_of::<libc::sockaddr_in>() as libc::socklen_t;
     let sa_addr = &mut sa as *mut libc::sockaddr_in as usize;
     let len_addr = &mut len as *mut libc::socklen_t as usize;
-    let s = crate::gc::safepoint::blocking(t, || unsafe {
-        libc::accept4(listener, sa_addr as *mut libc::sockaddr, len_addr as *mut libc::socklen_t, libc::SOCK_CLOEXEC)
-    });
+    let s = crate::gc::safepoint::blocking(t, || super::posix::accept(listener, sa_addr as *mut libc::sockaddr, len_addr as *mut libc::socklen_t));
     if s < 0 {
         return match errno() {
             libc::EAGAIN => ret_int(UNAVAILABLE),
@@ -258,28 +251,6 @@ fn register_dispatch(r: &mut NativeRegistry) {
     r.add("sun/nio/ch/UnixDispatcher", "preClose0", "(Ljava/io/FileDescriptor;)V", |_, a| {
         unsafe { libc::shutdown(fd(a[0]), libc::SHUT_RDWR) };
         ret_void()
-    });
-    const EP: &str = "sun/nio/ch/EPoll";
-    r.add(EP, "eventSize", "()I", |_, _| ret_int(std::mem::size_of::<libc::epoll_event>() as i32));
-    r.add(EP, "eventsOffset", "()I", |_, _| ret_int(0));
-    r.add(EP, "dataOffset", "()I", |_, _| ret_int(4));
-    r.add(EP, "create", "()I", |t, _| ret_int(check(t, unsafe { libc::epoll_create1(libc::EPOLL_CLOEXEC) }, "epoll_create failed")?));
-    r.add(EP, "ctl", "(IIII)I", |_, a| {
-        let mut ev = libc::epoll_event { events: a[3] as u32, u64: a[2] as i32 as u64 };
-        let r = unsafe { libc::epoll_ctl(a[0] as i32, a[1] as i32, a[2] as i32, &mut ev) };
-        ret_int(if r == 0 { 0 } else { errno() })
-    });
-    r.add(EP, "wait", "(IJII)I", |t, a| {
-        let n = crate::gc::safepoint::blocking(t, || unsafe { libc::epoll_wait(a[0] as i32, a[1] as *mut libc::epoll_event, a[3] as i32, a[4] as i32) });
-        if n < 0 {
-            return if errno() == libc::EINTR { ret_int(INTERRUPTED) } else { Err(io_error(t, "epoll_wait failed")) };
-        }
-        ret_int(n)
-    });
-    r.add("sun/nio/ch/EventFD", "eventfd0", "()I", |t, _| ret_int(check(t, unsafe { libc::eventfd(0, libc::EFD_CLOEXEC | libc::EFD_NONBLOCK) }, "eventfd failed")?));
-    r.add("sun/nio/ch/EventFD", "set0", "(I)I", |_, a| {
-        let one: u64 = 1;
-        ret_int(unsafe { libc::write(a[0] as i32, &one as *const u64 as *const libc::c_void, 8) } as i32)
     });
 }
 

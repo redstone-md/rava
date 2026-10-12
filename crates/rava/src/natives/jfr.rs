@@ -111,9 +111,7 @@ pub(super) fn register(r: &mut NativeRegistry) {
     });
     r.add(J, "isContainerized", "()Z", |_, _| ret_bool(false));
     r.add(J, "hostTotalMemory", "()J", |_, _| {
-        let mut si: libc::sysinfo = unsafe { std::mem::zeroed() };
-        let ok = unsafe { libc::sysinfo(&mut si) } == 0;
-        ret_long(if ok { si.totalram as i64 * si.mem_unit.max(1) as i64 } else { -1 })
+        ret_long(super::posix::memory().0)
     });
     // Settings only matter to a recording.
     for (name, desc) in [("setEnabled", "(JZ)V"), ("setStackTraceEnabled", "(JZ)V"), ("setMethodSamplingPeriod", "(JJ)V"), ("setFileNotification", "(J)V"),

@@ -107,7 +107,11 @@ fn interfaces() -> Vec<Iface> {
             let v4 = |sa: *mut libc::sockaddr| u32::from_be((*(sa as *const libc::sockaddr_in)).sin_addr.s_addr);
             let ip = v4(ifa.ifa_addr);
             let prefix = if ifa.ifa_netmask.is_null() { 0 } else { v4(ifa.ifa_netmask).count_ones() as u16 };
-            let broadcast = (ifa.ifa_flags & libc::IFF_BROADCAST as u32 != 0 && !ifa.ifa_ifu.is_null()).then(|| v4(ifa.ifa_ifu));
+            #[cfg(target_os = "linux")]
+            let peer = ifa.ifa_ifu;
+            #[cfg(not(target_os = "linux"))]
+            let peer = ifa.ifa_dstaddr;
+            let broadcast = (ifa.ifa_flags & libc::IFF_BROADCAST as u32 != 0 && !peer.is_null()).then(|| v4(peer));
             let index = libc::if_nametoindex(ifa.ifa_name) as i32;
             add(&mut out, &name, index, ifa.ifa_flags, Addr::V4(ip, prefix, broadcast));
         }

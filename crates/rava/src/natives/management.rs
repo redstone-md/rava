@@ -206,12 +206,7 @@ fn register_os(r: &mut NativeRegistry) {
 
 /// Total and free memory, total and free swap, in bytes.
 fn sys() -> (i64, i64, i64, i64) {
-    let mut si: libc::sysinfo = unsafe { std::mem::zeroed() };
-    if unsafe { libc::sysinfo(&mut si) } != 0 {
-        return (-1, -1, -1, -1);
-    }
-    let unit = si.mem_unit.max(1) as i64;
-    (si.totalram as i64 * unit, si.freeram as i64 * unit, si.totalswap as i64 * unit, si.freeswap as i64 * unit)
+    super::posix::memory()
 }
 
 fn empty_array(t: &mut Thread, elem: &str) -> JResult<u64> {

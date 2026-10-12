@@ -1,24 +1,50 @@
-//! The rest of `sun.nio.fs.UnixNativeDispatcher` (timestamps, ownership, special files, name
-//! lookups) and `sun.nio.fs.LinuxNativeDispatcher` (kernel-side file copies).
+//! The rest of `sun.nio.fs.UnixNativeDispatcher`: timestamps, ownership, special files, name
+//! lookups, extended attributes and buffered copies.
 
 use super::unixfs::{check, cstr, errno, unix_error};
-use super::{byte_array, ret_int, ret_long, ret_void, NativeRegistry};
-use crate::heap::{obj, Oop};
+use super::{ret_int, ret_void, NativeRegistry};
 use crate::thread::{JResult, Thread};
 
-crate::runtime::vm_field!(mnt_name, "sun/nio/fs/UnixMountEntry", "name", "[B");
-crate::runtime::vm_field!(mnt_dir, "sun/nio/fs/UnixMountEntry", "dir", "[B");
-crate::runtime::vm_field!(mnt_fstype, "sun/nio/fs/UnixMountEntry", "fstype", "[B");
-crate::runtime::vm_field!(mnt_opts, "sun/nio/fs/UnixMountEntry", "opts", "[B");
-crate::runtime::vm_field!(mnt_dev, "sun/nio/fs/UnixMountEntry", "dev", "J");
 
 const D: &str = "sun/nio/fs/UnixNativeDispatcher";
-const L: &str = "sun/nio/fs/LinuxNativeDispatcher";
 /// `sun.nio.ch.IOStatus.UNSUPPORTED_CASE`: the caller falls back to a buffered copy.
-const UNSUPPORTED_CASE: i32 = -6;
+pub(super) const UNSUPPORTED_CASE: i32 = -6;
+
+/// Extended attributes of open files; macOS's calls take a position and options as well.
+mod xattr {
+    use libc::{c_char, c_int, c_void, ssize_t};
+
+    pub unsafe fn list(fd: c_int, buf: *mut c_char, size: usize) -> ssize_t {
+        #[cfg(target_os = "macos")]
+        return libc::flistxattr(fd, buf, size, 0);
+        #[cfg(not(target_os = "macos"))]
+        return libc::flistxattr(fd, buf, size);
+    }
+
+    pub unsafe fn get(fd: c_int, name: *const c_char, value: *mut c_void, size: usize) -> ssize_t {
+        #[cfg(target_os = "macos")]
+        return libc::fgetxattr(fd, name, value, size, 0, 0);
+        #[cfg(not(target_os = "macos"))]
+        return libc::fgetxattr(fd, name, value, size);
+    }
+
+    pub unsafe fn set(fd: c_int, name: *const c_char, value: *const c_void, size: usize) -> c_int {
+        #[cfg(target_os = "macos")]
+        return libc::fsetxattr(fd, name, value, size, 0, 0);
+        #[cfg(not(target_os = "macos"))]
+        return libc::fsetxattr(fd, name, value, size, 0);
+    }
+
+    pub unsafe fn remove(fd: c_int, name: *const c_char) -> c_int {
+        #[cfg(target_os = "macos")]
+        return libc::fremovexattr(fd, name, 0);
+        #[cfg(not(target_os = "macos"))]
+        return libc::fremovexattr(fd, name);
+    }
+}
 
 fn timeval(micros: i64) -> libc::timeval {
-    libc::timeval { tv_sec: micros.div_euclid(1_000_000), tv_usec: micros.rem_euclid(1_000_000) }
+    libc::timeval { tv_sec: micros.div_euclid(1_000_000), tv_usec: micros.rem_euclid(1_000_000) as libc::suseconds_t }
 }
 
 fn timespec(nanos: i64) -> libc::timespec {
@@ -50,7 +76,7 @@ pub(super) fn register(r: &mut NativeRegistry) {
     r.add(D, "chown0", "(JII)V", |t, a| done(t, unsafe { libc::chown(cstr(a[0]), a[2] as u32, a[3] as u32) }));
     r.add(D, "lchown0", "(JII)V", |t, a| done(t, unsafe { libc::lchown(cstr(a[0]), a[2] as u32, a[3] as u32) }));
     r.add(D, "fchown0", "(III)V", |t, a| done(t, unsafe { libc::fchown(a[0] as i32, a[1] as u32, a[2] as u32) }));
-    r.add(D, "mknod0", "(JIJ)V", |t, a| done(t, unsafe { libc::mknod(cstr(a[0]), a[2] as u32, a[3] as libc::dev_t) }));
+    r.add(D, "mknod0", "(JIJ)V", |t, a| done(t, unsafe { libc::mknod(cstr(a[0]), a[2] as libc::mode_t, a[3] as libc::dev_t) }));
     r.add(D, "getpwnam0", "(J)I", |_, a| {
         let pw = unsafe { libc::getpwnam(cstr(a[0])) };
         ret_int(if pw.is_null() { -1 } else { unsafe { (*pw).pw_uid as i32 } })
@@ -59,42 +85,24 @@ pub(super) fn register(r: &mut NativeRegistry) {
         let gr = unsafe { libc::getgrnam(cstr(a[0])) };
         ret_int(if gr.is_null() { -1 } else { unsafe { (*gr).gr_gid as i32 } })
     });
-    r.add(L, "init", "()V", |_, _| ret_void());
-    r.add(L, "posix_fadvise", "(IJJI)I", |_, a| {
-        ret_int(unsafe { libc::posix_fadvise(a[0] as i32, a[1] as i64, a[3] as i64, a[5] as i32) })
-    });
-    r.add(L, "directCopy0", "(IIJ)I", direct_copy);
     // Extended attributes of open files (copied along with a file's attributes).
     r.add(D, "flistxattr", "(IJI)I", |t, a| {
-        let n = unsafe { libc::flistxattr(a[0] as i32, a[1] as *mut libc::c_char, a[3] as usize) };
+        let n = unsafe { xattr::list(a[0] as i32, a[1] as *mut libc::c_char, a[3] as usize) };
         if n == -1 { Err(unix_error(t, errno())) } else { ret_int(n as i32) }
     });
     r.add(D, "fgetxattr0", "(IJJI)I", |t, a| {
-        let n = unsafe { libc::fgetxattr(a[0] as i32, a[1] as *const libc::c_char, a[3] as *mut libc::c_void, a[5] as usize) };
+        let n = unsafe { xattr::get(a[0] as i32, a[1] as *const libc::c_char, a[3] as *mut libc::c_void, a[5] as usize) };
         if n == -1 { Err(unix_error(t, errno())) } else { ret_int(n as i32) }
     });
     r.add(D, "fsetxattr0", "(IJJI)V", |t, a| {
-        let rc = unsafe { libc::fsetxattr(a[0] as i32, a[1] as *const libc::c_char, a[3] as *const libc::c_void, a[5] as usize, 0) };
+        let rc = unsafe { xattr::set(a[0] as i32, a[1] as *const libc::c_char, a[3] as *const libc::c_void, a[5] as usize) };
         if rc == -1 { Err(unix_error(t, errno())) } else { ret_void() }
     });
     r.add(D, "fremovexattr0", "(IJ)V", |t, a| {
-        let rc = unsafe { libc::fremovexattr(a[0] as i32, a[1] as *const libc::c_char) };
+        let rc = unsafe { xattr::remove(a[0] as i32, a[1] as *const libc::c_char) };
         if rc == -1 { Err(unix_error(t, errno())) } else { ret_void() }
     });
     r.add("sun/nio/fs/UnixFileSystem", "bufferedCopy0", "(IIJIJ)V", buffered_copy);
-    // The mount table (`FileStore`s): setmntent / getmntent_r / endmntent.
-    r.add(L, "setmntent0", "(JJ)J", |t, a| {
-        let fp = unsafe { libc::setmntent(cstr(a[0]), cstr(a[2])) };
-        if fp.is_null() {
-            return Err(unix_error(t, errno()));
-        }
-        ret_long(fp as i64)
-    });
-    r.add(L, "getmntent0", "(JLsun/nio/fs/UnixMountEntry;JI)I", get_mount_entry);
-    r.add(L, "endmntent", "(J)V", |_, a| {
-        unsafe { libc::endmntent(a[0] as *mut libc::FILE) };
-        ret_void()
-    });
     // The length of the stream's next line (sizing the mount table); -1 at its end.
     r.add(D, "getlinelen", "(J)I", |t, a| {
         let fp = a[0] as *mut libc::FILE;
@@ -114,48 +122,6 @@ pub(super) fn register(r: &mut NativeRegistry) {
         unsafe { libc::rewind(a[0] as *mut libc::FILE) };
         ret_void()
     });
-}
-
-/// Reads the next mount entry into `entry`; -1 at the end of the table.
-fn get_mount_entry(t: &mut Thread, a: &[u64]) -> JResult<u64> {
-    let (fp, entry, buf, len) = (a[0] as *mut libc::FILE, a[2] as Oop, a[3] as *mut libc::c_char, a[5] as i32);
-    let mut m: libc::mntent = unsafe { std::mem::zeroed() };
-    if unsafe { libc::getmntent_r(fp, &mut m, buf, len) }.is_null() {
-        return ret_int(-1);
-    }
-    // SAFETY: getmntent_r filled `m` with strings in `buf`.
-    let field = |p: *const libc::c_char| unsafe { std::ffi::CStr::from_ptr(p) }.to_bytes().to_vec();
-    let (name, dir, fstype, opts) = (field(m.mnt_fsname), field(m.mnt_dir), field(m.mnt_type), field(m.mnt_opts));
-    let mut st: libc::stat = unsafe { std::mem::zeroed() };
-    let dev = if unsafe { libc::stat(m.mnt_dir, &mut st) } == 0 { st.st_dev as i64 } else { 0 };
-    for (f, v) in [(mnt_name(), name), (mnt_dir(), dir), (mnt_fstype(), fstype), (mnt_opts(), opts)] {
-        let arr = byte_array(t, Some(&v))?;
-        // SAFETY: a live UnixMountEntry.
-        unsafe { obj::write_ref(entry, f, arr) };
-    }
-    // SAFETY: a live UnixMountEntry.
-    unsafe { obj::write::<i64>(entry, mnt_dev(), dev) };
-    ret_int(0)
-}
-
-/// Copies all of `src` to `dst` in the kernel, polling the cancel flag between chunks.
-fn direct_copy(t: &mut Thread, a: &[u64]) -> JResult<u64> {
-    let (dst, src, cancel) = (a[0] as i32, a[1] as i32, a[2] as *const i32);
-    loop {
-        let n = unsafe { libc::copy_file_range(src, std::ptr::null_mut(), dst, std::ptr::null_mut(), 1 << 30, 0) };
-        match n {
-            0 => return ret_int(0),
-            -1 => {
-                let err = errno();
-                return match err {
-                    libc::EINVAL | libc::ENOSYS | libc::EXDEV | libc::EOPNOTSUPP | libc::EPERM => ret_int(UNSUPPORTED_CASE),
-                    _ => Err(unix_error(t, err)),
-                };
-            }
-            _ if !cancel.is_null() && unsafe { *cancel } != 0 => return Err(unix_error(t, libc::ECANCELED)),
-            _ => {}
-        }
-    }
 }
 
 /// Copies all of `src` to `dst` through the caller's buffer (when the kernel cannot copy

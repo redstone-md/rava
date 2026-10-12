@@ -110,7 +110,7 @@ pub(super) fn register(r: &mut NativeRegistry) {
     r.add(IOUTIL, "randomBytes", "([B)Z", |_, _| ret_bool(false));
     r.add(IOUTIL, "makePipe", "(Z)J", |t, a| {
         let mut fds = [0i32; 2];
-        if unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) } != 0 {
+        if super::posix::pipe(&mut fds) != 0 {
             return Err(io_error(t, "Pipe failed"));
         }
         if a[0] == 0 {

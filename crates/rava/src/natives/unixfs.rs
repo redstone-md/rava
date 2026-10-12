@@ -101,11 +101,11 @@ pub(super) fn register(r: &mut NativeRegistry) {
     r.add(D, "link0", "(JJ)V", |t, a| { check(t, unsafe { libc::link(cstr(a[0]), cstr(a[2])) } as i64)?; ret_void() });
     r.add(D, "unlink0", "(J)V", |t, a| { check(t, unsafe { libc::unlink(cstr(a[0])) } as i64)?; ret_void() });
     r.add(D, "rename0", "(JJ)V", |t, a| { check(t, unsafe { libc::rename(cstr(a[0]), cstr(a[2])) } as i64)?; ret_void() });
-    r.add(D, "mkdir0", "(JI)V", |t, a| { check(t, unsafe { libc::mkdir(cstr(a[0]), a[2] as u32) } as i64)?; ret_void() });
+    r.add(D, "mkdir0", "(JI)V", |t, a| { check(t, unsafe { libc::mkdir(cstr(a[0]), a[2] as libc::mode_t) } as i64)?; ret_void() });
     r.add(D, "rmdir0", "(J)V", |t, a| { check(t, unsafe { libc::rmdir(cstr(a[0])) } as i64)?; ret_void() });
     r.add(D, "symlink0", "(JJ)V", |t, a| { check(t, unsafe { libc::symlink(cstr(a[0]), cstr(a[2])) } as i64)?; ret_void() });
-    r.add(D, "chmod0", "(JI)V", |t, a| { check(t, unsafe { libc::chmod(cstr(a[0]), a[2] as u32) } as i64)?; ret_void() });
-    r.add(D, "fchmod0", "(II)V", |t, a| { check(t, unsafe { libc::fchmod(a[0] as i32, a[1] as u32) } as i64)?; ret_void() });
+    r.add(D, "chmod0", "(JI)V", |t, a| { check(t, unsafe { libc::chmod(cstr(a[0]), a[2] as libc::mode_t) } as i64)?; ret_void() });
+    r.add(D, "fchmod0", "(II)V", |t, a| { check(t, unsafe { libc::fchmod(a[0] as i32, a[1] as libc::mode_t) } as i64)?; ret_void() });
     r.add(D, "readlink0", "(J)[B", |t, a| {
         let mut buf = vec![0u8; 4096];
         let n = check(t, unsafe { libc::readlink(cstr(a[0]), buf.as_mut_ptr() as *mut libc::c_char, buf.len()) } as i64)?;
@@ -155,7 +155,7 @@ pub(super) fn register(r: &mut NativeRegistry) {
     r.add(D, "closedir", "(J)V", |t, a| { check(t, unsafe { libc::closedir(a[0] as *mut libc::DIR) } as i64)?; ret_void() });
     r.add(D, "readdir0", "(J)[B", |t, a| loop {
         // SAFETY: a DIR* from opendir0; errno distinguishes the end from a failure.
-        unsafe { *libc::__errno_location() = 0 };
+        unsafe { *super::posix::errno_ptr() = 0 };
         let e = unsafe { libc::readdir(a[0] as *mut libc::DIR) };
         if e.is_null() {
             let err = errno();

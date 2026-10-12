@@ -99,7 +99,7 @@ fn fork_and_exec(t: &mut Thread, a: &[u64]) -> JResult<u64> {
             continue;
         }
         let mut p = [0i32; 2];
-        if unsafe { libc::pipe2(p.as_mut_ptr(), libc::O_CLOEXEC) } == -1 {
+        if super::posix::pipe(&mut p) == -1 {
             close_all(&parent_fd);
             return Err(exec_error(t, errno()));
         }
@@ -109,7 +109,7 @@ fn fork_and_exec(t: &mut Thread, a: &[u64]) -> JResult<u64> {
         parent_fd[i] = p_end;
     }
     let mut fail = [0i32; 2];
-    if unsafe { libc::pipe2(fail.as_mut_ptr(), libc::O_CLOEXEC) } == -1 {
+    if super::posix::pipe(&mut fail) == -1 {
         close_all(&parent_fd);
         close_all(&child_fd);
         return Err(exec_error(t, errno()));
@@ -127,15 +127,17 @@ fn fork_and_exec(t: &mut Thread, a: &[u64]) -> JResult<u64> {
                 libc::dup2(1, 2);
             }
             // Inherited descriptors (other than 0-2 and the failure pipe) close on exec.
-            libc::syscall(libc::SYS_close_range, 3, u32::MAX, 4 /* CLOSE_RANGE_CLOEXEC */);
+            super::posix::cloexec_from_3();
             if let Some(d) = &dir {
                 if libc::chdir(d.as_ptr()) == -1 {
                     child_fail(fail[1]);
                 }
             }
             match &env_ptrs {
-                Some(e) => libc::execvpe(prog.as_ptr(), argv_ptrs.as_ptr(), e.as_ptr()),
-                None => libc::execvp(prog.as_ptr(), argv_ptrs.as_ptr()),
+                Some(e) => super::posix::execvpe(prog.as_ptr(), argv_ptrs.as_ptr(), e.as_ptr()),
+                None => {
+                    libc::execvp(prog.as_ptr(), argv_ptrs.as_ptr());
+                }
             };
             child_fail(fail[1]);
         }
