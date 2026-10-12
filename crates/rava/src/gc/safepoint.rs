@@ -189,6 +189,19 @@ pub fn leave_native(rec: &'static Record) {
     }
 }
 
+const MEMBARRIER_PRIVATE_EXPEDITED: i32 = 8;
+const MEMBARRIER_REGISTER_PRIVATE_EXPEDITED: i32 = 16;
+
+/// Whether the collector makes every thread of the process execute a full barrier after it
+/// requests a stop (Linux `membarrier`, HotSpot's `UseSystemMemoryBarrier`). A thread returning
+/// from native code then needs no fence of its own between publishing that it runs Java and
+/// reading the request: whichever comes first, the collector's barrier orders the two.
+pub fn asymmetric() -> bool {
+    static A: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    // SAFETY: as above.
+    *A.get_or_init(|| unsafe { libc::syscall(libc::SYS_membarrier, MEMBARRIER_REGISTER_PRIVATE_EXPEDITED, 0, 0) } == 0)
+}
+
 /// Runs native code (a JNI call) with the thread in the native state, as `blocking` does but
 /// with one fence: entering publishes the stack pointer and state with a release store (a
 /// collector that reads the state late only waits longer), and only returning needs the
@@ -233,6 +246,10 @@ pub fn stop_the_world<R>(t: &Thread, f: impl FnOnce(usize) -> R) -> Option<R> {
         std::thread::yield_now();
     };
     REQUESTED.store(true, SeqCst);
+    if asymmetric() {
+        // SAFETY: a registered membarrier command without pointers.
+        unsafe { libc::syscall(libc::SYS_membarrier, MEMBARRIER_PRIVATE_EXPEDITED, 0, 0) };
+    }
     arm(true);
     let me = t.gc_record.map(|r| r as *const Record);
     while all_threads().into_iter().any(|r| Some(r as *const Record) != me && r.state.load(SeqCst) == RUNNING) {
