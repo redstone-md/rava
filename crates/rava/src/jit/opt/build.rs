@@ -389,6 +389,12 @@ impl Builder {
             let len = insn_len(code, pc);
             if self.sc.an.depth[pc].is_some() && matches!(code[pc], 0x99..=0xa6 | 0xc6 | 0xc7) {
                 let target = (pc as i64 + crate::jit::analysis::i2(code, pc + 1) as i64) as usize;
+                // A branch to the next instruction (`if (c) {}`) goes there either way: pruning
+                // its untaken direction by address would cut the way it does take.
+                if target == pc + len {
+                    pc += len;
+                    continue;
+                }
                 if self.sc.start != 0 && crate::jit::profile::branch_counts(self.sc.m, pc) == Some((0, 0)) && self.speculates(self.sc.m, pc) {
                     self.sc.unreached.insert(pc);
                 } else if let Some(taken) = self.never_taken(pc, target, pc + len) {
