@@ -174,28 +174,35 @@ fn register_os(r: &mut NativeRegistry) {
     r.add(OS, "getTotalSwapSpaceSize0", "()J", |_, _| ret_long(sys().2));
     r.add(OS, "getFreeSwapSpaceSize0", "()J", |_, _| ret_long(sys().3));
     r.add(OS, "getCommittedVirtualMemorySize0", "()J", |_, _| {
-        let pages = std::fs::read_to_string("/proc/self/statm").ok().and_then(|s| s.split_whitespace().next()?.parse::<i64>().ok());
-        ret_long(pages.map_or(-1, |p| p * unsafe { libc::sysconf(libc::_SC_PAGESIZE) }))
+        #[cfg(target_os = "linux")]
+        let size = std::fs::read_to_string("/proc/self/statm").ok().and_then(|s| s.split_whitespace().next()?.parse::<i64>().ok()).map(|p| p * unsafe { libc::sysconf(libc::_SC_PAGESIZE) } as i64);
+        #[cfg(not(target_os = "linux"))]
+        let size: Option<i64> = None;
+        ret_long(size.unwrap_or(-1))
     });
     r.add(OS, "getMaxFileDescriptorCount0", "()J", |_, _| {
-        let mut rl: libc::rlimit = unsafe { std::mem::zeroed() };
-        let ok = unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut rl) } == 0;
-        ret_long(if ok { rl.rlim_cur as i64 } else { -1 })
+        #[cfg(unix)]
+        let limit = {
+            let mut rl: libc::rlimit = unsafe { std::mem::zeroed() };
+            let ok = unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut rl) } == 0;
+            if ok { rl.rlim_cur as i64 } else { -1 }
+        };
+        #[cfg(not(unix))]
+        let limit = -1;
+        ret_long(limit)
     });
     r.add(OS, "getOpenFileDescriptorCount0", "()J", |_, _| {
         ret_long(std::fs::read_dir("/proc/self/fd").map_or(-1, |d| d.count() as i64))
     });
     r.add(OS, "getProcessCpuTime0", "()J", |_, _| {
-        let mut ts: libc::timespec = unsafe { std::mem::zeroed() };
-        let ok = unsafe { libc::clock_gettime(libc::CLOCK_PROCESS_CPUTIME_ID, &mut ts) } == 0;
-        ret_long(if ok { ts.tv_sec * 1_000_000_000 + ts.tv_nsec } else { -1 })
+        ret_long(crate::os::process_cpu_nanos())
     });
     // Loads are unavailable (-1), which the bean reports as such.
     r.add(OS, "getProcessCpuLoad0", "()D", |_, _| Ok((-1.0f64).to_bits()));
     r.add(OS, "getCpuLoad0", "()D", |_, _| Ok((-1.0f64).to_bits()));
     r.add(OS, "getSingleCpuLoad0", "(I)D", |_, _| Ok((-1.0f64).to_bits()));
-    r.add(OS, "getHostConfiguredCpuCount0", "()I", |_, _| ret_int(unsafe { libc::sysconf(libc::_SC_NPROCESSORS_CONF) } as i32));
-    r.add(OS, "getHostOnlineCpuCount0", "()I", |_, _| ret_int(unsafe { libc::sysconf(libc::_SC_NPROCESSORS_ONLN) } as i32));
+    r.add(OS, "getHostConfiguredCpuCount0", "()I", |_, _| ret_int(crate::os::cpu_counts().0));
+    r.add(OS, "getHostOnlineCpuCount0", "()I", |_, _| ret_int(crate::os::cpu_counts().1));
     r.add(OS, "getHostTotalCpuTicks0", "()J", |_, _| {
         // The first line of /proc/stat: the jiffies all CPUs spent in each state.
         let stat = std::fs::read_to_string("/proc/stat").unwrap_or_default();

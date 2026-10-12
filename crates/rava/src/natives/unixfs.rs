@@ -201,17 +201,4 @@ pub(super) fn register(r: &mut NativeRegistry) {
         set_long(o, S, "f_bavail", sv.f_bavail as i64);
         ret_void()
     });
-    r.add("java/security/AccessController", "getProtectionDomain", "(Ljava/lang/Class;)Ljava/security/ProtectionDomain;", |_, _| {
-        ret_ref(std::ptr::null_mut())
-    });
-    r.add("jdk/internal/jimage/NativeImageBuffer", "getNativeMap", "(Ljava/lang/String;)Ljava/nio/ByteBuffer;", |t, a| {
-        let path = rt::java_string_to_rust(a[0] as Oop);
-        let ours = vm().options.java_home.join("lib/modules");
-        if std::path::Path::new(&path) != ours {
-            return ret_ref(std::ptr::null_mut());
-        }
-        let (addr, len) = vm().image.mapping();
-        let bb = crate::boot::construct(t, "java/nio/DirectByteBuffer", "(JJ)V", &[addr as u64, 0, len as u64, 0])?;
-        ret_ref(bb)
-    });
 }

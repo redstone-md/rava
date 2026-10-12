@@ -14,31 +14,65 @@ pub(super) fn register(r: &mut NativeRegistry) {
 }
 
 fn platform_value(field: &str) -> Option<String> {
-    let env = |k: &str| std::env::var(k).ok();
+    let h = host();
     Some(match field {
-        "display_country" | "format_country" => Some(locale().country.clone()).filter(|c| !c.is_empty())?,
-        "display_language" | "format_language" => locale().language.clone(),
+        "display_country" | "format_country" => Some(h.country.clone()).filter(|c| !c.is_empty())?,
+        "display_language" | "format_language" => h.language.clone(),
         // `native_encoding` is JDK 25's name for `file_encoding`.
-        "file_encoding" | "native_encoding" | "sun_jnu_encoding" => locale().codeset.clone(),
+        "file_encoding" | "native_encoding" | "sun_jnu_encoding" => h.codeset.clone(),
         "stdout_encoding" | "stderr_encoding" | "stdin_encoding" => return None,
-        "file_separator" => "/".into(),
-        "java_io_tmpdir" => tmpdir(),
-        "line_separator" => "\n".into(),
+        "file_separator" => if cfg!(windows) { "\\".into() } else { "/".into() },
+        "java_io_tmpdir" => h.tmpdir.clone(),
+        "line_separator" => if cfg!(windows) { "\r\n".into() } else { "\n".into() },
         "os_arch" => if cfg!(target_arch = "x86_64") { "amd64".into() } else { std::env::consts::ARCH.into() },
-        "os_name" => if cfg!(target_os = "macos") { "Mac OS X".into() } else { "Linux".into() },
-        "os_version" => os_release(),
-        "path_separator" => ":".into(),
+        "os_name" => h.os_name.clone(),
+        "os_version" => h.os_version.clone(),
+        "path_separator" => if cfg!(windows) { ";".into() } else { ":".into() },
         "sun_arch_data_model" => "64".into(),
         "sun_cpu_endian" => "little".into(),
         "sun_io_unicode_encoding" => "UnicodeLittle".into(),
         "sun_os_patch_level" => "unknown".into(),
         "user_dir" => std::env::current_dir().ok()?.to_string_lossy().into_owned(),
-        "user_home" => env("HOME").unwrap_or_else(|| "?".into()),
-        "user_name" => env("USER").unwrap_or_else(|| "?".into()),
+        "user_home" => h.home.clone(),
+        "user_name" => h.user.clone(),
         _ => return None,
     })
 }
 
+/// What the host says about itself, as HotSpot reads it.
+pub(super) struct Host {
+    pub language: String,
+    pub country: String,
+    pub codeset: String,
+    pub tmpdir: String,
+    pub os_name: String,
+    pub os_version: String,
+    pub home: String,
+    pub user: String,
+}
+
+fn host() -> &'static Host {
+    static H: std::sync::OnceLock<Host> = std::sync::OnceLock::new();
+    #[cfg(unix)]
+    return H.get_or_init(|| {
+        let env = |k: &str| std::env::var(k).unwrap_or_else(|_| "?".into());
+        let l = locale();
+        Host {
+            language: l.language.clone(),
+            country: l.country.clone(),
+            codeset: l.codeset.clone(),
+            tmpdir: tmpdir(),
+            os_name: if cfg!(target_os = "macos") { "Mac OS X".into() } else { "Linux".into() },
+            os_version: os_release(),
+            home: env("HOME"),
+            user: env("USER"),
+        }
+    });
+    #[cfg(windows)]
+    return H.get_or_init(super::windows::host);
+}
+
+#[cfg(unix)]
 struct Locale {
     language: String,
     country: String,
@@ -47,6 +81,7 @@ struct Locale {
 
 /// The process locale as HotSpot's `ParseLocale` reads it: `setlocale(LC_ALL, "")`, the
 /// `LC_CTYPE` name (plain `C`/`POSIX` meaning en_US) and `nl_langinfo(CODESET)`.
+#[cfg(unix)]
 fn locale() -> &'static Locale {
     static L: std::sync::OnceLock<Locale> = std::sync::OnceLock::new();
     L.get_or_init(|| {
@@ -76,6 +111,7 @@ fn locale() -> &'static Locale {
 }
 
 /// The temporary directory: `/tmp`, or on macOS the per-user directory HotSpot reports.
+#[cfg(unix)]
 fn tmpdir() -> String {
     #[cfg(target_os = "macos")]
     {
@@ -90,6 +126,7 @@ fn tmpdir() -> String {
 }
 
 /// The system's version: the kernel release on Linux, the product version on macOS.
+#[cfg(unix)]
 fn os_release() -> String {
     #[cfg(target_os = "macos")]
     {

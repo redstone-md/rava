@@ -167,10 +167,10 @@ fn registered(k: &'static Klass) -> bool {
     true
 }
 
+/// Monotonic nanoseconds (from the first call).
 fn now_nanos() -> i64 {
-    let mut ts: libc::timespec = unsafe { std::mem::zeroed() };
-    unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut ts) };
-    ts.tv_sec * 1_000_000_000 + ts.tv_nsec
+    static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+    START.get_or_init(std::time::Instant::now).elapsed().as_nanos() as i64
 }
 
 /// The type id of a type named in binary form: a boot class's own id, else one for the name.
