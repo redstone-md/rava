@@ -260,7 +260,11 @@ pub(super) fn register(r: &mut NativeRegistry) {
         let f = interfaces().into_iter().find(|f| f.addrs.iter().any(same));
         maybe(t, f)
     });
-    r.add(NI, "isUp0", "(Ljava/lang/String;I)Z", |_, a| has_flag(a, libc::IFF_UP));
+    // Up and running, as the JDK has it: an interface without a carrier is down.
+    r.add(NI, "isUp0", "(Ljava/lang/String;I)Z", |_, a| {
+        let both = (libc::IFF_UP | libc::IFF_RUNNING) as u32;
+        ret_bool(named(a).is_some_and(|f| f.flags & both == both))
+    });
     r.add(NI, "isLoopback0", "(Ljava/lang/String;I)Z", |_, a| has_flag(a, libc::IFF_LOOPBACK));
     r.add(NI, "supportsMulticast0", "(Ljava/lang/String;I)Z", |_, a| has_flag(a, libc::IFF_MULTICAST));
     r.add(NI, "isP2P0", "(Ljava/lang/String;I)Z", |_, a| has_flag(a, libc::IFF_POINTOPOINT));
