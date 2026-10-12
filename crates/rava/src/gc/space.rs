@@ -186,9 +186,9 @@ impl Space {
         // above the low 4 GiB (classes and code, `crate::low`), as HotSpot places it.
         // The first free range from 4 GiB up in steps of 1 GiB (the binary itself may sit there).
         let raw = if crate::heap::COMPRESSED {
-            (NARROW_BASE..=NARROW_END.saturating_sub(reserve + PAGE_SIZE)).step_by(1 << 30).find_map(|at| crate::os::reserve(reserve + PAGE_SIZE, Some(at), false))
+            (NARROW_BASE..=NARROW_END.saturating_sub(reserve + PAGE_SIZE)).step_by(1 << 30).find_map(|at| crate::os::reserve_uncommitted(reserve + PAGE_SIZE, Some(at)))
         } else {
-            crate::os::reserve(reserve + PAGE_SIZE, None, false)
+            crate::os::reserve_uncommitted(reserve + PAGE_SIZE, None)
         };
         let raw = raw.unwrap_or_else(|| panic!("cannot reserve {reserve} bytes of heap"));
         assert!(!crate::heap::COMPRESSED || raw as usize + reserve + PAGE_SIZE <= NARROW_END, "heap reservation above 32 GiB");
@@ -278,6 +278,7 @@ impl Space {
             Some(a) => a,
             None if !self.released.is_empty() => self.released.pop().unwrap(),
             None if self.fresh + PAGE_SIZE <= self.end => {
+                crate::os::commit(self.fresh, PAGE_SIZE);
                 self.fresh += PAGE_SIZE;
                 super::prefault::advanced(super::prefault::Region::Small, self.fresh);
                 self.fresh - PAGE_SIZE
