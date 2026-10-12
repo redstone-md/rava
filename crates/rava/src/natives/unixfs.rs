@@ -2,10 +2,10 @@
 //! Paths arrive as addresses of NUL-terminated native strings; failures throw
 //! `sun.nio.fs.UnixException(errno)`.
 
+use super::fields::{set_int, set_long};
 use super::{ret_int, ret_long, ret_ref, ret_void, NativeRegistry};
 use crate::heap::{obj, Oop};
 use crate::runtime as rt;
-use crate::symbol::Symbol;
 use crate::thread::{JResult, Thread, Throw};
 use crate::types::BasicType;
 use crate::vm::vm;
@@ -43,20 +43,6 @@ fn bytes(t: &mut Thread, b: &[u8]) -> JResult<Oop> {
     // SAFETY: fresh byte[] of the same length.
     unsafe { obj::array_slice::<u8>(arr).copy_from_slice(b) };
     Ok(arr)
-}
-
-fn set_long(o: Oop, class: &str, field: &str, v: i64) {
-    let k = crate::loader::load(class).expect("attrs class");
-    let f = k.declared_field(Symbol::intern(field), Symbol::intern("J")).unwrap_or_else(|| panic!("{class}.{field}"));
-    // SAFETY: live instance of `class`.
-    unsafe { obj::write::<i64>(o, f.offset, v) };
-}
-
-fn set_int(o: Oop, class: &str, field: &str, v: i32) {
-    let k = crate::loader::load(class).expect("attrs class");
-    let f = k.declared_field(Symbol::intern(field), Symbol::intern("I")).unwrap_or_else(|| panic!("{class}.{field}"));
-    // SAFETY: live instance of `class`.
-    unsafe { obj::write::<i32>(o, f.offset, v) };
 }
 
 fn fill_attrs(attrs: Oop, st: &libc::stat) {
