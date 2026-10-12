@@ -13,5 +13,6 @@ javac -nowarn -cp "$W/app" -d "$W/patch" $(find "$T/patch" -name "*.java") 2>/de
 cp "$T/patch/rava-patch.txt" "$W/patch/"
 jar cf "$W/rava-patches/test-hooks.jar" -C "$W/patch" . 2>/dev/null
 set +e
-got=$(cd "$W" && "$R" -cp app ravatest.app.PatchApp 2>/dev/null)
+# Lines end in CRLF on Windows (line.separator).
+got=$(cd "$W" && "$R" -cp app ravatest.app.PatchApp 2>/dev/null | tr -d '\r')
 if [ "$got" == "$(cat "$T/expected.txt")" ]; then echo "patches: pass"; else echo "patches: FAIL"; diff <(echo "$got") "$T/expected.txt"; exit 1; fi
