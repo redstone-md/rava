@@ -9,6 +9,7 @@ use crate::thread::{JResult, Thread, Throw};
 use crate::types::BasicType;
 
 /// Arguments of one C call, sorted into the registers and stack words that carry them.
+#[cfg(not(windows))]
 #[derive(Default)]
 pub(super) struct CArgs {
     ints: [u64; 6],
@@ -18,6 +19,7 @@ pub(super) struct CArgs {
     stack: Vec<u64>,
 }
 
+#[cfg(not(windows))]
 impl CArgs {
     pub(super) fn int(&mut self, v: u64) {
         if self.n_ints < 6 {
@@ -38,7 +40,7 @@ impl CArgs {
         }
     }
 
-    /// Calls `f`; returns rax and xmm0.
+    /// Calls `f` with the System V convention; returns rax and xmm0.
     ///
     /// # Safety
     /// `f` must be a C function taking these arguments.
@@ -70,6 +72,71 @@ impl CArgs {
             in("r11") f,
             in("r13") self.ints.as_ptr(),
             in("r10") self.fps.as_ptr(),
+            in("r14") self.stack.as_ptr(),
+            in("r15") self.stack.len(),
+            out("r12") _,
+            lateout("rax") rax,
+            lateout("rdx") xmm0,
+            clobber_abi("C"),
+        );
+        (rax, xmm0)
+    }
+}
+
+/// Arguments of one C call in the Win64 convention: by position, the first four in a register
+/// (an integer one or a vector one, by type: both are loaded, the callee reads its own) and the
+/// rest on the stack above the 32 bytes of shadow space.
+#[cfg(windows)]
+#[derive(Default)]
+pub(super) struct CArgs {
+    regs: [u64; 4],
+    n: usize,
+    stack: Vec<u64>,
+}
+
+#[cfg(windows)]
+impl CArgs {
+    pub(super) fn int(&mut self, v: u64) {
+        if self.n < 4 {
+            self.regs[self.n] = v;
+        } else {
+            self.stack.push(v);
+        }
+        self.n += 1;
+    }
+
+    /// A `float` (its bits in the low half) or a `double`.
+    pub(super) fn fp(&mut self, bits: u64) {
+        self.int(bits);
+    }
+
+    /// Calls `f` with the Win64 convention; returns rax and xmm0.
+    ///
+    /// # Safety
+    /// `f` must be a C function taking these arguments.
+    pub(super) unsafe fn call(&self, f: usize) -> (u64, u64) {
+        let (rax, xmm0): (u64, u64);
+        std::arch::asm!(
+            "mov r12, rsp",
+            "lea rax, [r15 * 8 + 32 + 15]",
+            "sub rsp, rax",
+            "and rsp, -16",
+            "mov rcx, r15",
+            "test rcx, rcx",
+            "jz 3f",
+            "2:",
+            "mov rax, [r14 + rcx * 8 - 8]",
+            "mov [rsp + rcx * 8 + 24], rax",
+            "dec rcx",
+            "jnz 2b",
+            "3:",
+            "mov rcx, [r13]", "mov rdx, [r13 + 8]", "mov r8, [r13 + 16]", "mov r9, [r13 + 24]",
+            "movq xmm0, rcx", "movq xmm1, rdx", "movq xmm2, r8", "movq xmm3, r9",
+            "call r11",
+            "mov rsp, r12",
+            "movq rdx, xmm0",
+            in("r11") f,
+            in("r13") self.regs.as_ptr(),
             in("r14") self.stack.as_ptr(),
             in("r15") self.stack.len(),
             out("r12") _,

@@ -41,9 +41,10 @@ pub(super) fn bind(m: &'static Method, f: usize) {
 }
 
 /// Natives the stub serves: unsynchronized, without a VM body (which takes precedence), and
-/// with no invocation statistics to keep.
+/// with no invocation statistics to keep. The stub speaks the System V convention, so Windows
+/// natives take the generic path.
 fn eligible(m: &'static Method) -> bool {
-    !m.is_synchronized() && m.native.get().is_none() && crate::vm::vm().natives.lookup(m).is_none() && crate::jit::stats::get().is_none()
+    !cfg!(windows) && !m.is_synchronized() && m.native.get().is_none() && crate::vm::vm().natives.lookup(m).is_none() && crate::jit::stats::get().is_none()
 }
 
 /// The C arguments of `m`'s native in order: the environment, the receiver or class, then the

@@ -115,6 +115,7 @@ pub(super) fn enter(env: *mut Env) -> (&'static mut Thread, InVm) {
 }
 
 /// A C `va_list` (System V: offsets into the register save area, then the stack).
+#[cfg(not(windows))]
 #[repr(C)]
 pub(super) struct VaList {
     gp_offset: u32,
@@ -123,6 +124,15 @@ pub(super) struct VaList {
     save: *mut u8,
 }
 
+/// A C `va_list` on Windows: the address of the next argument, each in an 8-byte slot (a
+/// `float` promoted to a `double`). The `V` functions receive this address itself.
+#[cfg(windows)]
+#[repr(C)]
+pub(super) struct VaList {
+    _first: u64,
+}
+
+#[cfg(not(windows))]
 impl VaList {
     /// The next integer or pointer argument.
     ///
