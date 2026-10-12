@@ -15,6 +15,9 @@ tiers, and takes the `java` command line unchanged.
 <img src="https://img.shields.io/badge/JIT-baseline%20%2B%20SSA-A855F7?style=flat-square&labelColor=0B0614">
 <img src="https://img.shields.io/badge/GC-generational%20mark--sweep-22D3EE?style=flat-square&labelColor=0B0614">
 <img src="https://img.shields.io/badge/license-MIT-F59E0B?style=flat-square&labelColor=0B0614">
+<br>
+<a href="https://github.com/redstone-md/rava/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/redstone-md/rava/ci.yml?branch=main&label=CI&style=flat-square&labelColor=0B0614"></a>
+<a href="https://github.com/redstone-md/rava/releases"><img src="https://img.shields.io/github/v/release/redstone-md/rava?include_prereleases&label=release&color=A855F7&style=flat-square&labelColor=0B0614"></a>
 
 </div>
 
@@ -23,6 +26,25 @@ tiers, and takes the `java` command line unchanged.
 The benchmark that decides whether this works is a Paper 1.21 Minecraft server, started cold
 and timed to `Done`. rava gets there in about 1.2× the time HotSpot needs, with no snapshot, no
 archive and nothing tuned for the server.
+
+<br>
+
+<picture>
+  <source media="(prefers-color-scheme: light)" srcset="https://gfx.redstone.md/strip?label=INSTALL&note=one%20archive%2C%20no%20JDK&theme=light">
+  <img src="https://gfx.redstone.md/strip?label=INSTALL&note=one%20archive%2C%20no%20JDK&theme=dark" width="100%">
+</picture>
+
+Download the archive for Linux x86-64 from [Releases](https://github.com/redstone-md/rava/releases)
+and unpack it anywhere: it is a complete Java runtime, the VM with the Java class library it runs.
+
+```sh
+tar xzf rava-0.0.1-alpha-linux-x86_64.tar.gz
+export PATH="$PWD/rava-0.0.1-alpha-linux-x86_64/bin:$PATH"
+rava -version
+```
+
+Releases are built by [the release workflow](.github/workflows/release.yml) for every `v*` tag,
+with notes from [docs/releases/](docs/releases/) and the commits since the previous tag.
 
 <br>
 
@@ -115,8 +137,8 @@ measured and changed is in [docs/progress.md](docs/progress.md).
 
 ```sh
 cargo build --release          # target/release/rava
-tests/semantics/run.sh         # every probe's output against java's
-tests/patches/run.sh           # patches end to end
+tests/check.sh                 # what CI runs: probes, JNI and patches against java
+dist/make.sh                   # the release archive: rava with its class library
 bench/paper_ab.sh HEAD java    # server start, A/B against HotSpot
 ```
 
