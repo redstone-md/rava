@@ -34,8 +34,9 @@ archive and nothing tuned for the server.
   <img src="https://gfx.redstone.md/strip?label=INSTALL&note=one%20archive%2C%20no%20JDK&theme=dark" width="100%">
 </picture>
 
-Download the archive for Linux x86-64 from [Releases](https://github.com/redstone-md/rava/releases)
-and unpack it anywhere: it is a complete Java runtime, the VM with the Java class library it runs.
+Download the archive for your system from [Releases](https://github.com/redstone-md/rava/releases)
+(Linux, macOS and Windows on x86-64; Apple Silicon Macs run the macOS one through Rosetta 2) and
+unpack it anywhere: it is a complete Java runtime, the VM with the Java class library it runs.
 
 ```sh
 tar xzf rava-0.0.1-alpha-linux-x86_64.tar.gz
