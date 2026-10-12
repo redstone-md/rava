@@ -88,7 +88,14 @@ pub(super) fn register(r: &mut NativeRegistry) {
     r.add("java/lang/System", "setErr0", "(Ljava/io/PrintStream;)V", |_, a| set_system_stream("err", "Ljava/io/PrintStream;", a[0]));
     r.add("java/lang/System", "mapLibraryName", "(Ljava/lang/String;)Ljava/lang/String;", |t, a| {
         let name = rt::java_string_to_rust(a[0] as Oop);
-        ret_ref(rt::new_string(t, &format!("lib{name}.so"))?)
+        let mapped = if cfg!(windows) {
+            format!("{name}.dll")
+        } else if cfg!(target_os = "macos") {
+            format!("lib{name}.dylib")
+        } else {
+            format!("lib{name}.so")
+        };
+        ret_ref(rt::new_string(t, &mapped)?)
     });
     r.add("java/security/AccessController", "getStackAccessControlContext", "()Ljava/security/AccessControlContext;", |_, _| {
         ret_ref(std::ptr::null_mut())
