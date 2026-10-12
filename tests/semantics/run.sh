@@ -9,6 +9,8 @@
 # JitNpeSiteSem, JitThrowNullSem, NpeSem) are guest-visible output rava does not produce yet.
 R=${R:-$(dirname "$0")/../../target/release/rava}
 W=${1:-$(mktemp -d)}
+# macOS has no timeout(1) unless coreutils is installed.
+command -v timeout >/dev/null || timeout() { shift; "$@"; }
 filter() { grep -v "Picked up" | grep -viE "ms|time|elapsed|ns/"; }
 pass=0; fail=0
 for f in "$(dirname "$0")"/*Sem.java; do
