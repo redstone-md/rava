@@ -37,6 +37,11 @@ Minecraft-specific change is a patch), no snapshots, the `java` command line unc
 3. **The client**: Minecraft 1.21 (vanilla, Fabric, NeoForge) to the title screen and into a
    singleplayer world under Xvfb (software OpenGL here: function, not frame rate), then the
    client's render thread profiled as the server's tick was.
+   - Done for vanilla 1.21.1 (`bench/mc_client.py`, offline account, a world made by the
+     vanilla server on rava, `--quickPlaySingleplayer`): title screen, world, F3 screen. Under
+     Xvfb with llvmpipe both VMs draw 10-11 frames per second and the integrated server ticks
+     in 10 ms: the software renderer is the limit here. An LWJGL GLFW + OpenGL demo renders
+     as on HotSpot.
 4. **Vulkan**: for any OpenGL application, rava can ask Mesa for its GL-on-Vulkan driver
    (Zink) when a Vulkan driver is present. Translation alone does not raise frame rates
    (Minecraft's frame time is mostly the CPU's); it becomes the default only where
