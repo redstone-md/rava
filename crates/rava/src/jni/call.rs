@@ -49,10 +49,16 @@ impl CArgs {
             "lea rax, [r15 * 8 + 15]",
             "sub rsp, rax",
             "and rsp, -16",
+            // Stack arguments, if any (`rep movsq` costs dozens of cycles even for none).
             "mov rcx, r15",
-            "mov rsi, r14",
-            "mov rdi, rsp",
-            "rep movsq",
+            "test rcx, rcx",
+            "jz 3f",
+            "2:",
+            "mov rax, [r14 + rcx * 8 - 8]",
+            "mov [rsp + rcx * 8 - 8], rax",
+            "dec rcx",
+            "jnz 2b",
+            "3:",
             "movq xmm0, [r10]", "movq xmm1, [r10 + 8]", "movq xmm2, [r10 + 16]", "movq xmm3, [r10 + 24]",
             "movq xmm4, [r10 + 32]", "movq xmm5, [r10 + 40]", "movq xmm6, [r10 + 48]", "movq xmm7, [r10 + 56]",
             "mov rdi, [r13]", "mov rsi, [r13 + 8]", "mov rdx, [r13 + 16]",
@@ -99,7 +105,7 @@ pub(crate) fn invoke(t: &mut Thread, m: &'static Method, f: usize, args: &[u64])
     }
     let base = t.jni.frames.len();
     // SAFETY: the symbol a library exported (or RegisterNatives bound) for this method.
-    let (rax, xmm0) = crate::gc::safepoint::blocking(t, || unsafe { c.call(f) });
+    let (rax, xmm0) = crate::gc::safepoint::native_call(t, || unsafe { c.call(f) });
     t.jni.frames.truncate(base);
     t.handles.truncate(mark);
     if let Some(e) = refs::take_exception(t) {
