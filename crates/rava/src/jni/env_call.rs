@@ -27,6 +27,19 @@ impl Args {
     /// The caller passed one of that type.
     unsafe fn next(&mut self, ty: BasicType) -> u64 {
         match self {
+            // On Windows the va_list is the next argument's address, advanced here.
+            #[cfg(windows)]
+            Args::Va(ap) => {
+                let p = *ap as *const u64;
+                let v = *p;
+                *ap = p.add(1) as *mut VaList;
+                match ty {
+                    BasicType::Float => (f64::from_bits(v) as f32).to_bits() as u64,
+                    BasicType::Double => v,
+                    _ => normalize(ty, v),
+                }
+            }
+            #[cfg(not(windows))]
             Args::Va(ap) => {
                 let ap = &mut **ap;
                 match ty {
@@ -159,7 +172,7 @@ extern "C" fn new_object_a(env: *mut Env, c: Oop, m: *const Method, a: *const u6
 macro_rules! variadic {
     ($stub:ident, $gp:literal, $vreg:literal, $target:path) => {
         // ELF and Mach-O differ in the section's name and in the underscore C symbols carry.
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(not(any(target_os = "macos", windows)))]
         std::arch::global_asm!(
             ".pushsection .text",
             ".p2align 4",
@@ -178,6 +191,29 @@ macro_rules! variadic {
             concat!("lea ", $vreg, ", [rsp + 176]"),
             "call {target}",
             "add rsp, 216",
+            "ret",
+            ".popsection",
+            target = sym $target,
+        );
+        // Win64: the fixed arguments stay in their registers; the variadic ones follow them in
+        // the home slots and the caller's stack, so the va_list is the address of the first one
+        // (the four register arguments are first spilled to their home slots). With three fixed
+        // arguments the va_list goes in r9; with four, on the stack as the fifth argument.
+        #[cfg(windows)]
+        std::arch::global_asm!(
+            ".pushsection .text",
+            ".p2align 4",
+            concat!(".globl ", stringify!($stub)),
+            concat!(stringify!($stub), ":"),
+            "mov [rsp + 8], rcx", "mov [rsp + 16], rdx", "mov [rsp + 24], r8", "mov [rsp + 32], r9",
+            concat!("lea rax, [rsp + 8 + ", $gp, "]"),
+            "sub rsp, 56",
+            concat!(".if ", $gp, " == 24"),
+            "mov r9, rax",
+            ".endif",
+            "mov [rsp + 32], rax",
+            "call {target}",
+            "add rsp, 56",
             "ret",
             ".popsection",
             target = sym $target,

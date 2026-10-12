@@ -101,12 +101,15 @@ pub fn all_threads() -> Vec<&'static Record> {
 /// conservative scan from that pointer sees every register-held reference of outer frames.
 #[inline(never)]
 pub fn with_spilled_registers<R>(f: impl FnOnce(usize) -> R) -> R {
-    let mut regs = [0usize; 6];
+    // The callee-saved registers, where callers further up may keep references: rbx, rbp and
+    // r12-r15, and on Windows rdi and rsi too.
+    let mut regs = [0usize; 8];
     // SAFETY: stores registers into a local array.
     unsafe {
         std::arch::asm!(
             "mov [{0}], rbx", "mov [{0} + 8], rbp", "mov [{0} + 16], r12",
             "mov [{0} + 24], r13", "mov [{0} + 32], r14", "mov [{0} + 40], r15",
+            "mov [{0} + 48], rdi", "mov [{0} + 56], rsi",
             in(reg) regs.as_mut_ptr(),
         )
     };
