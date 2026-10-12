@@ -201,6 +201,7 @@ extern "C" fn fatal_error(_env: *mut Env, msg: *const c_char) -> ! {
 
 extern "C" fn push_local_frame(env: *mut Env, _capacity: i32) -> i32 {
     let (t, _g) = enter(env);
+    refs::touch(t);
     let mark = t.handles.len();
     t.jni.frames.push(mark);
     0
@@ -225,7 +226,7 @@ extern "C" fn delete_global_ref(_env: *mut Env, o: Oop) {
 extern "C" fn delete_local_ref(env: *mut Env, o: Oop) {
     let (t, _g) = enter(env);
     // The latest reference to the object within the current local frame.
-    let floor = t.jni.frames.last().copied().unwrap_or(0);
+    let floor = refs::floor(t);
     if let Some(i) = t.handles[floor.min(t.handles.len())..].iter().rposition(|&h| h == o) {
         t.handles.remove(floor + i);
     }

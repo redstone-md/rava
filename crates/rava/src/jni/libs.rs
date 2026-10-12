@@ -67,12 +67,14 @@ pub(crate) fn entry(m: &'static Method) -> Option<usize> {
     let libs = loaded().lock().unwrap().clone();
     let f = libs.iter().find_map(|&h| [symbol(h, &short), symbol(h, &long)].into_iter().find(|&a| a != 0))?;
     m.jni_entry.store(f, Ordering::Release);
+    super::stub::bind(m, f);
     Some(f)
 }
 
 /// Binds `m` to `f` (`RegisterNatives`), or unbinds it with 0.
 pub(crate) fn register(m: &'static Method, f: usize) {
     m.jni_entry.store(f, Ordering::Release);
+    super::stub::bind(m, f);
 }
 
 /// JNI name mangling: `/` becomes `_`, and `_`, `;`, `[` and non-ASCII characters escapes.

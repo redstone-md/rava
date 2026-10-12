@@ -20,6 +20,24 @@ public class JniTest {
     static native int[] makeArray(int n);
 
     static int calls;
+    static volatile boolean done;
+
+    /** One of each kind of call, for compiled callers. */
+    static long hot(int i, JniTest t) {
+        long r = add(i, 1) + mix((byte) i, (short) i, (char) i, i, i, i * 0.5f, i * 0.25, (i & 1) == 0)
+                + (long) many(i, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, i)
+                + greet("y" + (i & 7)).length() + sum(new int[] {i, 1}) + t.bump(1) + registered(i);
+        Object o = new int[i & 7];
+        if (pass(o) != o) r += 1_000_000;
+        if ((i & 4095) == 0) {
+            try {
+                raise("hot");
+            } catch (IllegalStateException e) {
+                r += 7;
+            }
+        }
+        return r;
+    }
     static void onCall(int n, String s) { calls += n; System.out.println("callback " + n + " " + s); }
 
     public static void main(String[] args) {
@@ -54,5 +72,21 @@ public class JniTest {
             if ((i & 1023) == 0) System.gc();
         }
         System.out.println("total " + total);
+        // The same natives from compiled code, with another thread allocating meanwhile so that
+        // collections stop this one around its native calls.
+        Thread churn = new Thread(() -> {
+            Object[] keep = new Object[64];
+            for (int i = 0; !done; i++) keep[i & 63] = new byte[16384 + (i & 255)];
+        });
+        churn.start();
+        long acc = 0;
+        for (int i = 0; i < 300000; i++) acc += hot(i, t);
+        done = true;
+        try {
+            churn.join();
+        } catch (InterruptedException e) {
+            throw new RuntimeException(e);
+        }
+        System.out.println("hot " + acc + " " + t.count);
     }
 }

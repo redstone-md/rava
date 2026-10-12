@@ -18,6 +18,7 @@ mod env_data;
 mod env_field;
 mod libs;
 mod refs;
+mod stub;
 mod vm_iface;
 
 pub(crate) use call::invoke;
@@ -44,11 +45,26 @@ pub(crate) struct JniThread {
     pub(crate) frames: Vec<usize>,
     /// The exception native code has pending (`Throw`, or a Java call that threw); a root.
     pub(crate) exception: crate::heap::Oop,
+    /// The local references of the innermost native call (`refs::open`); generated call stubs
+    /// save, clear and test it at fixed offsets.
+    pub(crate) scope: Scope,
+}
+
+/// Where the innermost native call's local references start, recorded when it makes its first
+/// one (`refs::touch`): a call that makes none has nothing to release.
+#[repr(C)]
+#[derive(Default, Clone, Copy)]
+pub(crate) struct Scope {
+    /// Non-zero once the call made a local reference or frame.
+    touched: u64,
+    /// `Thread::handles` and `JniThread::frames` lengths at that point.
+    mark: usize,
+    frames: usize,
 }
 
 impl JniThread {
     pub(crate) fn new() -> JniThread {
-        JniThread { env: Env { functions: env::table() }, frames: Vec::new(), exception: std::ptr::null_mut() }
+        JniThread { env: Env { functions: env::table() }, frames: Vec::new(), exception: std::ptr::null_mut(), scope: Scope::default() }
     }
 }
 
