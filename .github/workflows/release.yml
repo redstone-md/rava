@@ -6,32 +6,41 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Tag to release, e.g. v0.0.1-alpha (made at the dispatched commit if it does not exist)"
+        description: "Tag to release, e.g. v0.0.2-alpha (made at the dispatched commit if it does not exist)"
         required: true
 
 permissions:
   contents: write
 
+env:
+  TAG: ${{ inputs.tag || github.ref_name }}
+
 jobs:
-  release:
-    name: Build and publish
-    # The oldest supported runner: the binary then runs on glibc 2.35 and newer.
-    runs-on: ubuntu-22.04
+  build:
+    name: Build (${{ matrix.platform }})
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          # The oldest supported Linux runner: the binary then runs on glibc 2.35 and newer.
+          - { os: ubuntu-22.04, platform: linux-x86_64, cc: cc }
+          - { os: macos-15-intel, platform: macos-x86_64, cc: cc }
+          - { os: windows-2022, platform: windows-x86_64, cc: gcc }
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 60
-    env:
-      TAG: ${{ inputs.tag || github.ref_name }}
+    defaults:
+      run:
+        shell: bash
     steps:
       # The tag's commit on a tag push; on a manual run, the dispatched branch's head, where the
       # release then creates the tag.
       - uses: actions/checkout@v5
-        with:
-          fetch-depth: 0
 
       - uses: dtolnay/rust-toolchain@stable
 
       - uses: Swatinem/rust-cache@v2
 
-      # Supplies the Java class library the distribution ships (OpenJDK, GPLv2 with the
+      # Supplies the Java class library each distribution ships (OpenJDK, GPLv2 with the
       # Classpath Exception; its legal notices travel in legal/).
       - uses: actions/setup-java@v5
         with:
@@ -46,7 +55,7 @@ jobs:
 
       - name: Build the distribution
         run: |
-          name="rava-$VERSION-linux-x86_64"
+          name="rava-$VERSION-${{ matrix.platform }}"
           dist/make.sh "$JAVA_HOME" "$PWD/dist/out/$name"
           echo "NAME=$name" >> "$GITHUB_ENV"
 
@@ -54,18 +63,43 @@ jobs:
         run: |
           rava="dist/out/$NAME/bin/rava"
           "$rava" -version
-          printf 'public class Hello { public static void main(String[] a) { System.out.println("Hello from " + System.getProperty("java.vm.name") + " " + System.getProperty("java.vm.version")); } }\n' > /tmp/Hello.java
-          "$rava" /tmp/Hello.java
+          printf 'public class Hello { public static void main(String[] a) { System.out.println("Hello from " + System.getProperty("java.vm.name") + " " + System.getProperty("java.vm.version") + " on " + System.getProperty("os.name")); } }\n' > Hello.java
+          "$rava" Hello.java
 
       - name: Checks against HotSpot
-        run: R="$PWD/dist/out/$NAME/bin/rava" SEM_DIFF=1 tests/check.sh
+        run: R="$PWD/dist/out/$NAME/bin/rava" SEM_DIFF=1 CC=${{ matrix.cc }} tests/check.sh
 
-      - name: Checksums
+      - name: Checksum
         working-directory: dist/out
-        run: sha256sum "$NAME.tar.gz" > "$NAME.tar.gz.sha256" && cat "$NAME.tar.gz.sha256"
+        run: |
+          archive=$(ls "$NAME".tar.gz "$NAME".zip 2>/dev/null | head -1)
+          { sha256sum "$archive" 2>/dev/null || shasum -a 256 "$archive"; } > "$archive.sha256"
+          cat "$archive.sha256"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.platform }}
+          path: |
+            dist/out/*.tar.gz
+            dist/out/*.zip
+            dist/out/*.sha256
+
+  publish:
+    name: Publish
+    needs: build
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist/out
+          merge-multiple: true
 
       - name: Release notes
-        run: python3 .github/scripts/release_notes.py "$TAG" "dist/out/$NAME.tar.gz" > dist/out/notes.md
+        run: python3 .github/scripts/release_notes.py "$TAG" dist/out/*.tar.gz dist/out/*.zip > dist/out/notes.md
 
       - uses: softprops/action-gh-release@v2
         with:
@@ -75,5 +109,6 @@ jobs:
           body_path: dist/out/notes.md
           prerelease: ${{ contains(env.TAG, '-') }}
           files: |
-            dist/out/${{ env.NAME }}.tar.gz
-            dist/out/${{ env.NAME }}.tar.gz.sha256
+            dist/out/*.tar.gz
+            dist/out/*.zip
+            dist/out/*.sha256

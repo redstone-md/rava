@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Release notes for a tag: the hand-written highlights in docs/releases/<tag>.md, the download
-with its checksum, and the commits since the previous tag grouped by Conventional Commits type.
+"""Release notes for a tag: the hand-written highlights in docs/releases/<tag>.md, the downloads
+with their checksums, and the commits since the previous tag grouped by Conventional Commits type.
 
-    .github/scripts/release_notes.py TAG ARCHIVE > notes.md
+    .github/scripts/release_notes.py TAG ARCHIVE... > notes.md
 """
 import hashlib
 import os
@@ -22,6 +22,12 @@ GROUPS = [
     ('build', '📦 Build and CI'),
     ('ci', '📦 Build and CI'),
     ('chore', '🔧 Maintenance'),
+]
+# What each archive runs on, by the platform in its name.
+PLATFORMS = [
+    ('linux-x86_64', 'Linux x86-64', 'glibc 2.35 or newer'),
+    ('macos-x86_64', 'macOS x86-64', 'Intel; Apple Silicon through Rosetta 2'),
+    ('windows-x86_64', 'Windows x86-64', 'Windows 10 or newer'),
 ]
 SUBJECT = re.compile(r'^(\w+)(?:\(([^)]*)\))?(!)?: (.+)$')
 
@@ -68,11 +74,16 @@ def grouped(entries):
     return result
 
 
+def stem(name):
+    for ext in ('.tar.gz', '.zip'):
+        if name.endswith(ext):
+            return name[:-len(ext)]
+    return name
+
+
 def main():
-    tag, archive = sys.argv[1], sys.argv[2]
-    name = os.path.basename(archive)
-    sha = hashlib.sha256(open(archive, 'rb').read()).hexdigest()
-    size = os.path.getsize(archive) / (1 << 20)
+    tag, archives = sys.argv[1], sys.argv[2:]
+    version = tag[1:] if tag.startswith('v') else tag
     rev = revision(tag)
     prev = previous_tag(rev)
     entries = commits(f'{prev}..{rev}' if prev else rev)
@@ -83,26 +94,37 @@ def main():
         out.append(open(highlights).read().strip())
         out.append('')
 
+    out += ['## 📥 Download', '', '| Platform | Archive | Size | SHA-256 |', '|---|---|---:|---|']
+    rows = []
+    for archive in archives:
+        name = os.path.basename(archive)
+        sha = hashlib.sha256(open(archive, 'rb').read()).hexdigest()
+        size = os.path.getsize(archive) / (1 << 20)
+        order, label, note = next(((i, l, n) for i, (key, l, n) in enumerate(PLATFORMS) if key in name), (len(PLATFORMS), name, ''))
+        url = f'https://github.com/{REPO}/releases/download/{tag}/{name}'
+        rows.append((order, f'| {label} ({note}) | [`{name}`]({url}) | {size:.0f} MiB | `{sha[:16]}…` |'))
+    out += [row for _, row in sorted(rows)]
     out += [
-        '## 📥 Download',
         '',
-        '| Platform | Archive | Size |',
-        '|---|---|---:|',
-        f'| Linux x86-64 (glibc 2.35+) | [`{name}`](https://github.com/{REPO}/releases/download/{tag}/{name}) | {size:.0f} MiB |',
-        '',
-        f'SHA-256: `{sha}`',
-        '',
-        'The archive is a complete Java runtime: the `rava` VM and the Java 21 class library it runs '
-        '(OpenJDK, GPLv2 with the Classpath Exception, notices in `legal/`). No JDK needs to be installed.',
+        'Each archive is a complete Java runtime: the `rava` VM and the Java 21 class library it runs '
+        '(OpenJDK, GPLv2 with the Classpath Exception, notices in `legal/`). No JDK needs to be installed. '
+        'Full checksums are in the `.sha256` files beside the archives.',
         '',
         '```sh',
-        f'curl -LO https://github.com/{REPO}/releases/download/{tag}/{name}',
-        f'tar xzf {name}',
-        f'{name[:-len(".tar.gz")]}/bin/rava -version',
-        f'{name[:-len(".tar.gz")]}/bin/rava -jar server.jar --nogui   # wherever you would type java',
+        '# Linux (on a Mac, macos-x86_64)',
+        f'tar xzf rava-{version}-linux-x86_64.tar.gz',
+        f'rava-{version}-linux-x86_64/bin/rava -version',
         '```',
         '',
-        f'## 📝 Changes',
+        '```powershell',
+        '# Windows',
+        f'Expand-Archive rava-{version}-windows-x86_64.zip .',
+        f'.\\rava-{version}-windows-x86_64\\bin\\rava.exe -version',
+        '```',
+        '',
+        'Then wherever you would type `java`, type `rava`.',
+        '',
+        '## 📝 Changes',
         '',
     ]
     if prev:
