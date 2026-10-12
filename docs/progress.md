@@ -1792,3 +1792,6 @@ exceptions, references, calls, fields, strings, arrays and direct buffers. `test
 matches HotSpot's output (200,000 calls interleaved with collections included). Paper and
 ATM10 now take netty's epoll transport (a status ping answers through it). First step of
 running the Minecraft client.
+The vanilla 1.21.1 client runs on rava: title screen, a singleplayer world and the F3 screen
+under Xvfb (software OpenGL: 11 fps against `java`'s 10, both bound by llvmpipe). Its
+integrated server needed `sun.java2d.Disposer.initIDs` for reading a world icon.
