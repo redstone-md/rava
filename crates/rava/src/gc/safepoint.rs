@@ -189,6 +189,21 @@ pub fn leave_native(rec: &'static Record) {
     }
 }
 
+/// Runs native code (a JNI call) with the thread in the native state, as `blocking` does but
+/// with one fence: entering publishes the stack pointer and state with a release store (a
+/// collector that reads the state late only waits longer), and only returning needs the
+/// store-load order against the collector's request (`leave_native`).
+pub fn native_call<R>(t: &Thread, f: impl FnOnce() -> R) -> R {
+    let Some(rec) = t.gc_record else { return f() };
+    with_spilled_registers(|rsp| {
+        rec.rsp.store(rsp, std::sync::atomic::Ordering::Release);
+        rec.state.store(NATIVE, std::sync::atomic::Ordering::Release);
+        let r = f();
+        leave_native(rec);
+        r
+    })
+}
+
 /// Runs a blocking operation with the thread in the native state. `f` runs below the recorded
 /// stack pointer, so it must not be the only holder of a reference it needs afterwards.
 pub fn blocking<R>(t: &Thread, f: impl FnOnce() -> R) -> R {
