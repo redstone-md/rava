@@ -45,6 +45,24 @@ pub fn simplify(g: &mut Graph) {
                             g.alias[v as usize] = g.resolve(same);
                             gone.push(v);
                             changed = true;
+                            continue;
+                        }
+                        // `(x + c1) + c2` is `x + (c1 + c2)` in wrapping arithmetic, and `x` when
+                        // that is 0: the index `(i - 1) + 1` of a loop stepping down is `i`.
+                        if let Some((inner, k)) = offset(g, v) {
+                            if let Some((base, k0)) = offset(g, inner) {
+                                let sum = wrap(ty, k0.wrapping_add(k));
+                                if sum == 0 {
+                                    g.alias[v as usize] = g.resolve(base);
+                                    gone.push(v);
+                                } else {
+                                    g.values.push(Value { inst: Inst::Const(sum), ty });
+                                    let c = g.values.len() as V - 1;
+                                    g.alias.push(c);
+                                    g.values[v as usize].inst = Inst::Bin(BinOp::Add, base, c);
+                                }
+                                changed = true;
+                            }
                         }
                     }
                     Inst::Convert(op, a) => {
@@ -65,6 +83,29 @@ pub fn simplify(g: &mut Graph) {
     }
     fold_unsafe_addresses(g);
     fold_constant_branches(g);
+}
+
+/// `v` as `x + k` when it adds a constant to `x` or subtracts one from it (aliases resolved).
+fn offset(g: &Graph, v: V) -> Option<(V, i64)> {
+    let v = g.resolve(v);
+    let ty = g.ty(v);
+    if !matches!(ty, Ty::I | Ty::J) {
+        return None;
+    }
+    match *g.inst(v) {
+        Inst::Bin(BinOp::Add, a, c) => match (g.constant(g.resolve(a)), g.constant(g.resolve(c))) {
+            (None, Some(k)) => Some((g.resolve(a), k)),
+            (Some(k), None) => Some((g.resolve(c), k)),
+            _ => None,
+        },
+        Inst::Bin(BinOp::Sub, a, c) => g.constant(g.resolve(c)).filter(|_| g.constant(g.resolve(a)).is_none()).map(|k| (g.resolve(a), k.wrapping_neg())),
+        _ => None,
+    }
+}
+
+/// `k` wrapped to the width of `ty` (an int's constants are kept sign-extended).
+fn wrap(ty: Ty, k: i64) -> i64 {
+    if ty == Ty::I { k as i32 as i64 } else { k }
 }
 
 /// Branches between two constants (operands folded here or after the builder's tests) go one
