@@ -104,7 +104,7 @@ impl Heap {
     pub fn new(reserve: usize, max_heap: usize) -> Heap {
         let min_trigger = std::env::var("RAVA_GC_MB").ok().and_then(|v| v.parse::<usize>().ok()).map_or(128 << 20, |mb| mb << 20);
         let mut space = Space::new(reserve);
-        let (pages, base) = (space.pages.as_mut_ptr(), space.base);
+        let (pages, base, max_heap) = (space.pages.as_mut_ptr(), space.base, max_heap.min(space.reserved));
         Heap { space: Mutex::new(space), min_trigger, max_heap, small_allocated: Default::default(), pages, base, created: std::time::Instant::now() }
     }
 
