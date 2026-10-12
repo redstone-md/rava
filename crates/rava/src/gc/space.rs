@@ -184,8 +184,13 @@ impl Space {
         let reserve = reserve.min(if crate::heap::COMPRESSED { NARROW_END - NARROW_BASE - PAGE_SIZE } else { usize::MAX }) & !(PAGE_SIZE - 1);
         // Compressed references need the heap below 32 GiB (zero-based, `heap::NARROW_SHIFT`):
         // above the low 4 GiB (classes and code, `crate::low`), as HotSpot places it.
-        let at = crate::heap::COMPRESSED.then_some(NARROW_BASE);
-        let raw = crate::os::reserve(reserve + PAGE_SIZE, at, false).unwrap_or_else(|| panic!("cannot reserve {reserve} bytes of heap"));
+        // The first free range from 4 GiB up in steps of 1 GiB (the binary itself may sit there).
+        let raw = if crate::heap::COMPRESSED {
+            (NARROW_BASE..=NARROW_END.saturating_sub(reserve + PAGE_SIZE)).step_by(1 << 30).find_map(|at| crate::os::reserve(reserve + PAGE_SIZE, Some(at), false))
+        } else {
+            crate::os::reserve(reserve + PAGE_SIZE, None, false)
+        };
+        let raw = raw.unwrap_or_else(|| panic!("cannot reserve {reserve} bytes of heap"));
         assert!(!crate::heap::COMPRESSED || raw as usize + reserve + PAGE_SIZE <= NARROW_END, "heap reservation above 32 GiB");
         let base = (raw as usize + PAGE_SIZE - 1) & !(PAGE_SIZE - 1);
         let pages_end = base + (reserve / 4 * 3 & !(PAGE_SIZE - 1));

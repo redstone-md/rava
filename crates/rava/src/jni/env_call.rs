@@ -158,11 +158,36 @@ extern "C" fn new_object_a(env: *mut Env, c: Oop, m: *const Method, a: *const u6
 /// it, `vreg`) and calls `target`, the `V` form, whose result returns as it is.
 macro_rules! variadic {
     ($stub:ident, $gp:literal, $vreg:literal, $target:path) => {
+        // ELF and Mach-O differ in the section's name and in the underscore C symbols carry.
+        #[cfg(not(target_os = "macos"))]
         std::arch::global_asm!(
             ".pushsection .text",
             ".p2align 4",
             concat!(".globl ", stringify!($stub)),
             concat!(stringify!($stub), ":"),
+            "sub rsp, 216",
+            "mov [rsp], rdi", "mov [rsp + 8], rsi", "mov [rsp + 16], rdx",
+            "mov [rsp + 24], rcx", "mov [rsp + 32], r8", "mov [rsp + 40], r9",
+            "movaps [rsp + 48], xmm0", "movaps [rsp + 64], xmm1", "movaps [rsp + 80], xmm2", "movaps [rsp + 96], xmm3",
+            "movaps [rsp + 112], xmm4", "movaps [rsp + 128], xmm5", "movaps [rsp + 144], xmm6", "movaps [rsp + 160], xmm7",
+            concat!("mov dword ptr [rsp + 176], ", $gp),
+            "mov dword ptr [rsp + 180], 48",
+            "lea rax, [rsp + 224]",
+            "mov [rsp + 184], rax",
+            "mov [rsp + 192], rsp",
+            concat!("lea ", $vreg, ", [rsp + 176]"),
+            "call {target}",
+            "add rsp, 216",
+            "ret",
+            ".popsection",
+            target = sym $target,
+        );
+        #[cfg(target_os = "macos")]
+        std::arch::global_asm!(
+            ".pushsection __TEXT,__text",
+            ".p2align 4",
+            concat!(".globl _", stringify!($stub)),
+            concat!("_", stringify!($stub), ":"),
             "sub rsp, 216",
             "mov [rsp], rdi", "mov [rsp + 8], rsi", "mov [rsp + 16], rdx",
             "mov [rsp + 24], rcx", "mov [rsp + 32], r8", "mov [rsp + 40], r9",
