@@ -155,6 +155,8 @@ pub struct Large {
 pub struct Space {
     pub base: usize,
     pub end: usize,
+    /// Bytes reserved for the heap (pages and large objects).
+    pub reserved: usize,
     /// Next never-used page.
     pub fresh: usize,
     pub pages: Vec<Option<PageMeta>>,
@@ -179,18 +181,30 @@ pub struct Space {
     pub live_after_full: usize,
 }
 
+/// The smallest heap reservation `Space::new` falls back to.
+const MIN_RESERVE: usize = 256 << 20;
+
 impl Space {
     pub fn new(reserve: usize) -> Space {
         let reserve = reserve.min(if crate::heap::COMPRESSED { NARROW_END - NARROW_BASE - PAGE_SIZE } else { usize::MAX }) & !(PAGE_SIZE - 1);
         // Compressed references need the heap below 32 GiB (zero-based, `heap::NARROW_SHIFT`):
         // above the low 4 GiB (classes and code, `crate::low`), as HotSpot places it.
         // The first free range from 4 GiB up in steps of 1 GiB (the binary itself may sit there).
-        let raw = if crate::heap::COMPRESSED {
-            (NARROW_BASE..=NARROW_END.saturating_sub(reserve + PAGE_SIZE)).step_by(1 << 30).find_map(|at| crate::os::reserve_uncommitted(reserve + PAGE_SIZE, Some(at)))
-        } else {
-            crate::os::reserve_uncommitted(reserve + PAGE_SIZE, None)
+        // Where libraries or stacks break that range up (address space layout randomization),
+        // a smaller reservation, by eighths, down to 256 MiB.
+        let mut reserve = reserve;
+        let raw = loop {
+            let raw = if crate::heap::COMPRESSED {
+                (NARROW_BASE..=NARROW_END.saturating_sub(reserve + PAGE_SIZE)).step_by(1 << 30).find_map(|at| crate::os::reserve_uncommitted(reserve + PAGE_SIZE, Some(at)))
+            } else {
+                crate::os::reserve_uncommitted(reserve + PAGE_SIZE, None)
+            };
+            match raw {
+                Some(raw) => break raw,
+                None if reserve > MIN_RESERVE => reserve = (reserve / 8 * 7).max(MIN_RESERVE) & !(PAGE_SIZE - 1),
+                None => panic!("cannot reserve {reserve} bytes of heap"),
+            }
         };
-        let raw = raw.unwrap_or_else(|| panic!("cannot reserve {reserve} bytes of heap"));
         assert!(!crate::heap::COMPRESSED || raw as usize + reserve + PAGE_SIZE <= NARROW_END, "heap reservation above 32 GiB");
         let base = (raw as usize + PAGE_SIZE - 1) & !(PAGE_SIZE - 1);
         let pages_end = base + (reserve / 4 * 3 & !(PAGE_SIZE - 1));
@@ -201,6 +215,7 @@ impl Space {
         super::prefault::start((base, pages_end), (pages_end, base + reserve));
         Space {
             base,
+            reserved: reserve,
             end: pages_end,
             fresh: base,
             pages: (0..(pages_end - base) / PAGE_SIZE).map(|_| None).collect(),
