@@ -1,8 +1,9 @@
 [package]
 name = "rava"
-version = "0.1.0"
+version = "0.0.1-alpha"
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
 description = "A Java virtual machine: runs real java.base bytecode with tiered compilation."
 
 [dependencies]
