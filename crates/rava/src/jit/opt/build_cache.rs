@@ -67,6 +67,8 @@ impl Builder {
             Inst::Neg(a) => Some((2, 0, a, 0, t)),
             Inst::Convert(op, a) => Some((3, op, a, 0, t)),
             Inst::Compare(op, a, b) => Some((4, op, a, b, t)),
+            // So that `i + c` built twice (with a constant made each time) numbers as one.
+            Inst::Const(bits) => Some((5, 0, bits as u32, (bits >> 32) as u32, t)),
             _ => None,
         };
         if let Some(&v) = key.and_then(|k| self.numbered.get(&k)) {
