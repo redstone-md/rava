@@ -110,7 +110,7 @@ elif args.loader == 'neoforge':
         profiles = f'{args.d}/launcher_profiles.json'
         if not os.path.exists(profiles):
             json.dump({'profiles': {}}, open(profiles, 'w'))
-        subprocess.check_call(['java', '-jar', installer, '--installClient', args.d], stdout=subprocess.DEVNULL)
+        subprocess.check_call(['java', '-jar', installer, '--installClient', args.d], stdout=subprocess.DEVNULL, cwd=args.d)
 
 version = version_json(vid)
 base = version_json(args.v)
