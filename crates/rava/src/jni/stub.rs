@@ -2,7 +2,8 @@
 //! with the compiled-code ABI (`jit::EntryFn`) that does what `call::invoke` does for this one
 //! signature: it pushes the native's frame, moves the argument slots straight into the C
 //! argument registers, switches the thread to the native state around the call with plain
-//! stores (one store-load fence on the way back), and drops the call's local references only
+//! stores (and a store-load fence on the way back unless the collector issues it,
+//! `safepoint::asymmetric`), and drops the call's local references only
 //! when it made any. Whatever it does not cover (synchronized natives, a class without its
 //! mirror yet, a short stack) goes to the generic entry.
 
@@ -186,7 +187,9 @@ fn generate(m: &'static Method, f: usize) -> usize {
     a.test_rr(true, R::R14, R::R14);
     a.jcc(Cond::E, running);
     a.store8_imm(mem(R::R14, rec_state), RUNNING);
-    a.storeload();
+    if !safepoint::asymmetric() {
+        a.storeload();
+    }
     a.mov_ri(R::Rax, &safepoint::REQUESTED as *const _ as i64);
     a.cmp8_mi(mem(R::Rax, 0), 0);
     a.jcc(Cond::E, running);
