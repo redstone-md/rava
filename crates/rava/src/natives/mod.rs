@@ -30,6 +30,10 @@ pub(crate) mod thread;
 pub(crate) mod unsafe_mem;
 mod unixfs;
 mod unixfs_ext;
+#[cfg(target_os = "linux")]
+mod linux;
+mod posix;
+#[cfg(target_os = "linux")]
 mod watch;
 mod datagram;
 mod zip;
@@ -74,7 +78,10 @@ impl NativeRegistry {
         array::register(&mut r);
         unixfs::register(&mut r);
         unixfs_ext::register(&mut r);
+        #[cfg(target_os = "linux")]
         watch::register(&mut r);
+        #[cfg(target_os = "linux")]
+        linux::register(&mut r);
         datagram::register(&mut r);
         zip::register(&mut r);
         nio_ch::register(&mut r);

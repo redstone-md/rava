@@ -222,8 +222,7 @@ fn set_os_thread_name(name: &str) {
         end -= 1;
     }
     if let Ok(c) = std::ffi::CString::new(&name[..end]) {
-        // SAFETY: names the calling thread with a NUL-terminated string.
-        unsafe { libc::pthread_setname_np(libc::pthread_self(), c.as_ptr()) };
+        super::posix::set_thread_name(&c);
     }
 }
 

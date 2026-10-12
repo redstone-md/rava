@@ -179,7 +179,9 @@ pub fn lower_priority(nice: i32) {
     let _ = nice;
 }
 
+#[cfg(target_os = "linux")]
 const MEMBARRIER_PRIVATE_EXPEDITED: i32 = 8;
+#[cfg(target_os = "linux")]
 const MEMBARRIER_REGISTER_PRIVATE_EXPEDITED: i32 = 16;
 
 /// Prepares `process_barrier`; false where the system has none.
