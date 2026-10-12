@@ -146,6 +146,55 @@ pub fn minor_faults() -> i64 {
     }
 }
 
+/// Total and free memory, total and free swap, in bytes (-1 where unknown).
+pub fn memory_status() -> (i64, i64, i64, i64) {
+    #[cfg(target_os = "linux")]
+    {
+        // SAFETY: sysinfo fills the struct.
+        let mut si: libc::sysinfo = unsafe { std::mem::zeroed() };
+        if unsafe { libc::sysinfo(&mut si) } != 0 {
+            return (-1, -1, -1, -1);
+        }
+        let unit = si.mem_unit.max(1) as i64;
+        (si.totalram as i64 * unit, si.freeram as i64 * unit, si.totalswap as i64 * unit, si.freeswap as i64 * unit)
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let total = crate::os::physical_memory() as i64;
+        // Free pages from the VM statistics; swap usage from vm.swapusage.
+        let mut free = -1;
+        // SAFETY: host_statistics64 fills a vm_statistics64 of the given count.
+        unsafe {
+            let mut stats: libc::vm_statistics64 = std::mem::zeroed();
+            let mut count = (std::mem::size_of::<libc::vm_statistics64>() / std::mem::size_of::<libc::integer_t>()) as libc::mach_msg_type_number_t;
+            #[allow(deprecated)]
+            let host = libc::mach_host_self();
+            if libc::host_statistics64(host, libc::HOST_VM_INFO64, &mut stats as *mut _ as libc::host_info64_t, &mut count) == 0 {
+                free = (stats.free_count as i64 + stats.inactive_count as i64) * libc::sysconf(libc::_SC_PAGESIZE) as i64;
+            }
+        }
+        let mut swap: libc::xsw_usage = unsafe { std::mem::zeroed() };
+        let mut len = std::mem::size_of::<libc::xsw_usage>();
+        // SAFETY: sysctlbyname fills an xsw_usage.
+        let ok = unsafe { libc::sysctlbyname(c"vm.swapusage".as_ptr(), &mut swap as *mut _ as *mut libc::c_void, &mut len, std::ptr::null_mut(), 0) } == 0;
+        let (st, sf) = if ok { (swap.xsu_total as i64, swap.xsu_avail as i64) } else { (-1, -1) };
+        (total, free, st, sf)
+    }
+}
+
+/// Names the calling thread (the first 15 bytes, the limit on Linux).
+pub fn set_thread_name(name: &std::ffi::CStr) {
+    // SAFETY: names the calling thread with a NUL-terminated string.
+    #[cfg(target_os = "linux")]
+    unsafe {
+        libc::pthread_setname_np(libc::pthread_self(), name.as_ptr());
+    }
+    #[cfg(target_os = "macos")]
+    unsafe {
+        libc::pthread_setname_np(name.as_ptr());
+    }
+}
+
 /// The lowest address and size of the calling thread's stack.
 pub fn current_stack() -> (usize, usize) {
     #[cfg(target_os = "macos")]
