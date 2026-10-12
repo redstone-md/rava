@@ -8,6 +8,10 @@ on:
       tag:
         description: "Tag to release, e.g. v0.0.2-alpha (made at the dispatched commit if it does not exist)"
         required: true
+      replace:
+        description: "Delete an existing release of this tag and its tag first (rebuilds it at the dispatched commit)"
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -100,6 +104,12 @@ jobs:
 
       - name: Release notes
         run: python3 .github/scripts/release_notes.py "$TAG" dist/out/*.tar.gz dist/out/*.zip > dist/out/notes.md
+
+      - name: Replace the existing release
+        if: inputs.replace
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release delete "$TAG" --cleanup-tag --yes -R "$GITHUB_REPOSITORY" || echo "no release $TAG to replace"
 
       - uses: softprops/action-gh-release@v2
         with:
