@@ -23,8 +23,9 @@ Minecraft-specific change is a patch), no snapshots, the `java` command line unc
      slots, which are scanned conservatively and pinned likewise.
    - `JNIEnv` lives inside `Thread`, so an environment pointer finds its thread. Its functions
      switch the thread back to the running state for their duration. Variadic `Call*Method`
-     functions are a C shim forwarding their `va_list` to the `V` variants, which decode it
-     by the method's signature.
+     functions are assembly stubs that build a `va_list` over the saved argument registers
+     and the caller's stack and call the `V` variants, which decode it by the method's
+     signature.
    - Tested by `tests/jni/` (a C library exercising each part, compared with HotSpot).
    - Done: the above, with the functions a C library commonly uses (classes, exceptions,
      references, calls of every kind, fields, strings, arrays, direct buffers,
