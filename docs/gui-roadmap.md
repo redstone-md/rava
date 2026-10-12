@@ -32,6 +32,12 @@ Minecraft-specific change is a patch), no snapshots, the `java` command line unc
      `RegisterNatives`). A function not provided yet stops the process naming its index.
      With it, Paper and NeoForge servers run netty's native epoll transport instead of the
      NIO fallback.
+   - Call cost as HotSpot's (10-13 ns for a static `add(int, int)`, from 160 ns at first): a
+     native bound to its library function gets a generated entry stub for its signature
+     (`jni/stub.rs`: frame, arguments straight into the C registers, native state by plain
+     stores, local references dropped only when the call made any), and the collector issues
+     the store-load barrier for every thread with `membarrier` (HotSpot's
+     `UseSystemMemoryBarrier`) so the return from native code needs no fence.
 2. **LWJGL**: the functions LWJGL 3 uses (direct buffers, critical arrays, `JavaVM` attach for
    callbacks from native threads); an LWJGL GLFW + OpenGL demo under Xvfb with Mesa.
 3. **The client**: Minecraft 1.21 (vanilla, Fabric, NeoForge) to the title screen and into a
