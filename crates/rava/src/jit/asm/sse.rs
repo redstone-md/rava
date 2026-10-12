@@ -63,10 +63,11 @@ impl Asm {
         self.b(0xF0);
         self.op_rm(w, &[0x0F, 0xB1], src as u8, m);
     }
-    /// The StoreLoad barrier of a volatile store: `lock addl $0, (%rsp)` (as HotSpot; cheaper
-    /// than `mfence`, and as strong for ordinary memory).
+    /// The StoreLoad barrier of a volatile store: `lock addl $0, -64(%rsp)` (as HotSpot; cheaper
+    /// than `mfence`, and as strong for ordinary memory). Below the stack pointer, a cache line
+    /// away, so that it does not wait on the stores and loads of the top of the stack.
     pub fn storeload(&mut self) {
-        for x in [0xF0, 0x83, 0x04, 0x24, 0x00] {
+        for x in [0xF0, 0x83, 0x44, 0x24, 0xC0, 0x00] {
             self.b(x);
         }
     }
