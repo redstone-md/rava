@@ -5,10 +5,14 @@
 R=$(realpath "${R:-$(dirname "$0")/../../target/release/rava}")
 T=$(realpath "$(dirname "$0")")
 W=${1:-$(mktemp -d)}
-J=$(dirname "$(dirname "$(readlink -f "$(which javac)")")")
+J=${JAVA_HOME:-$(dirname "$(dirname "$(readlink -f "$(which javac)")")")}
+case $(uname) in
+  Darwin) lib=libjnitest.dylib; inc=darwin ;;
+  *) lib=libjnitest.so; inc=linux ;;
+esac
 set -e
 javac -nowarn -d "$W" "$T/JniTest.java" 2>/dev/null
-cc -shared -fPIC -O2 -I"$J/include" -I"$J/include/linux" -o "$W/libjnitest.so" "$T/jnitest.c"
+cc -shared -fPIC -O2 -I"$J/include" -I"$J/include/$inc" -o "$W/$lib" "$T/jnitest.c"
 set +e
 want=$(cd "$W" && java -Djava.library.path=. -cp . JniTest 2>&1 | grep -v "Picked up")
 got=$(cd "$W" && "$R" -Djava.library.path=. -cp . JniTest 2>&1 | grep -v "Picked up")
