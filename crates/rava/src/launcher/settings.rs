@@ -21,6 +21,11 @@ impl Settings {
         self.properties.push((key.into(), value.into()));
     }
 
+    /// The value of property `key` on the command line (the last one given).
+    pub fn value(&self, key: &str) -> Option<&str> {
+        self.properties.iter().rev().find(|(k, _)| k == key).map(|(_, v)| v.as_str())
+    }
+
     /// A repeatable module option as HotSpot passes it on: `prefix.0`, `prefix.1`, ...
     pub fn numbered(&mut self, prefix: &'static str, value: &str) {
         let n = self.numbered.entry(prefix).or_default();
