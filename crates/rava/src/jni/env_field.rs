@@ -16,6 +16,12 @@ struct FieldId {
     slot: Option<&'static AtomicU64>,
 }
 
+/// The ID of field `f` declared by `holder`.
+fn id_of(holder: &'static crate::klass::Klass, f: &crate::klass::FieldDesc) -> *const FieldId {
+    let slot: Option<&'static AtomicU64> = f.is_static().then(|| &holder.statics[f.offset as usize]);
+    Box::leak(Box::new(FieldId { ty: f.ty, offset: f.offset, slot }))
+}
+
 fn field_id(env: *mut Env, c: Oop, name: *const c_char, sig: *const c_char, statik: bool) -> *const FieldId {
     let (t, _g) = enter(env);
     let Some(k) = klass(c) else { return std::ptr::null() };
@@ -25,10 +31,7 @@ fn field_id(env: *mut Env, c: Oop, name: *const c_char, sig: *const c_char, stat
     }
     let (n, s) = (Symbol::intern(c_str(name)), Symbol::intern(c_str(sig)));
     match crate::link::find_field(k, n, s).filter(|(_, f)| f.is_static() == statik) {
-        Some((holder, f)) => {
-            let slot: Option<&'static AtomicU64> = statik.then(|| &holder.statics[f.offset as usize]);
-            Box::leak(Box::new(FieldId { ty: f.ty, offset: f.offset, slot }))
-        }
+        Some((holder, f)) => id_of(holder, f),
         None => {
             t.jni.exception = crate::runtime::throw_new(t, "java/lang/NoSuchFieldError", n.as_str()).0;
             std::ptr::null()
@@ -112,7 +115,14 @@ prim!(get_j, set_j, i64, |v: u64| v as i64, |v: i64| v as u64);
 prim!(get_f, set_f, f32, |v: u64| f32::from_bits(v as u32), |v: f32| v.to_bits() as u64);
 prim!(get_d, set_d, f64, f64::from_bits, f64::to_bits);
 
+/// `FromReflectedField`: the ID of a `java.lang.reflect.Field`.
+extern "C" fn from_reflected_field(_env: *mut Env, field: Oop) -> *const FieldId {
+    let (k, i) = crate::natives::reflect::field_of(field);
+    id_of(k, &k.fields[i])
+}
+
 pub(super) fn fill(t: &mut [usize; SIZE]) {
+    t[8] = from_reflected_field as *const () as usize;
     t[94] = get_field_id as *const () as usize;
     t[144] = get_static_field_id as *const () as usize;
     let gets = [get_object as *const () as usize, get_z as *const () as usize, get_b as *const () as usize, get_c as *const () as usize, get_s as *const () as usize, get_i as *const () as usize, get_j as *const () as usize, get_f as *const () as usize, get_d as *const () as usize];
