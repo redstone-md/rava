@@ -20,8 +20,25 @@ env:
   TAG: ${{ inputs.tag || github.ref_name }}
 
 jobs:
+  # Archives go straight into a draft release (no workflow artifacts, which count against the
+  # account's storage); the release is published only when every build has passed its checks.
+  draft:
+    name: Draft
+    runs-on: ubuntu-24.04
+    outputs:
+      id: ${{ steps.draft.outputs.id }}
+    steps:
+      - id: draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Under a tag of its own (a draft makes no tag) while a release of $TAG may still exist.
+          id=$(gh api "repos/$GITHUB_REPOSITORY/releases" -f tag_name="$TAG-draft-$GITHUB_RUN_ID" -f target_commitish="$GITHUB_SHA" -f name="rava $TAG" -F draft=true --jq .id)
+          echo "id=$id" >> "$GITHUB_OUTPUT"
+
   build:
     name: Build (${{ matrix.platform }})
+    needs: draft
     strategy:
       fail-fast: true
       matrix:
@@ -82,45 +99,59 @@ jobs:
           { sha256sum "$archive" 2>/dev/null || shasum -a 256 "$archive"; } > "$archive.sha256"
           cat "$archive.sha256"
 
-      - uses: actions/upload-artifact@v4
-        with:
-          name: ${{ matrix.platform }}
-          path: |
-            dist/out/*.tar.gz
-            dist/out/*.zip
-            dist/out/*.sha256
+      - name: Upload to the draft
+        working-directory: dist/out
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          for f in "$NAME".tar.gz "$NAME".zip "$NAME".*.sha256; do
+            [ -f "$f" ] || continue
+            curl -fsS -H "Authorization: Bearer $GH_TOKEN" -H "Content-Type: application/octet-stream" --data-binary @"$f" \
+              "https://uploads.github.com/repos/$GITHUB_REPOSITORY/releases/${{ needs.draft.outputs.id }}/assets?name=$f" > /dev/null
+            echo "uploaded $f"
+          done
 
   publish:
     name: Publish
-    needs: build
+    needs: [draft, build]
     runs-on: ubuntu-24.04
+    env:
+      GH_TOKEN: ${{ github.token }}
+      ID: ${{ needs.draft.outputs.id }}
     steps:
       - uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
-      - uses: actions/download-artifact@v4
-        with:
-          path: dist/out
-          merge-multiple: true
+      - name: Download the archives
+        run: |
+          mkdir -p dist/out
+          gh api "repos/$GITHUB_REPOSITORY/releases/$ID/assets" --jq '.[] | "\(.id) \(.name)"' | while read -r asset name; do
+            gh api -H "Accept: application/octet-stream" "repos/$GITHUB_REPOSITORY/releases/assets/$asset" > "dist/out/$name"
+          done
+          ls -l dist/out
 
       - name: Release notes
         run: python3 .github/scripts/release_notes.py "$TAG" dist/out/*.tar.gz dist/out/*.zip > dist/out/notes.md
 
+      # Only now, with the new one complete: the old release and its tag go.
       - name: Replace the existing release
         if: inputs.replace
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: gh release delete "$TAG" --cleanup-tag --yes -R "$GITHUB_REPOSITORY" || echo "no release $TAG to replace"
+        run: |
+          old=$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$TAG" --jq .id 2>/dev/null) && gh api -X DELETE "repos/$GITHUB_REPOSITORY/releases/$old" || echo "no release $TAG to replace"
+          gh api -X DELETE "repos/$GITHUB_REPOSITORY/git/refs/tags/$TAG" || echo "no tag $TAG"
 
-      - uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ env.TAG }}
-          target_commitish: ${{ github.sha }}
-          name: rava ${{ env.TAG }}
-          body_path: dist/out/notes.md
-          prerelease: ${{ contains(env.TAG, '-') }}
-          files: |
-            dist/out/*.tar.gz
-            dist/out/*.zip
-            dist/out/*.sha256
+      - name: Publish
+        run: |
+          gh api -X PATCH "repos/$GITHUB_REPOSITORY/releases/$ID" -f tag_name="$TAG" -f target_commitish="$GITHUB_SHA" \
+            -F body=@dist/out/notes.md -F draft=false -F prerelease=${{ contains(env.TAG, '-') }} --jq .html_url
+
+  discard:
+    name: Discard the draft
+    needs: [draft, build]
+    if: failure() && needs.draft.outputs.id != ''
+    runs-on: ubuntu-24.04
+    steps:
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh api -X DELETE "repos/$GITHUB_REPOSITORY/releases/${{ needs.draft.outputs.id }}"
