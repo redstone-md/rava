@@ -98,8 +98,8 @@ impl LargeArea {
             if self.dirty_bytes <= keep {
                 break;
             }
-            // SAFETY: a free block of the area; nothing reads it until it is handed out again.
-            if unsafe { libc::madvise(a as *mut libc::c_void, size, libc::MADV_DONTNEED) } == 0 {
+            // A free block of the area; nothing reads it until it is handed out again.
+            if crate::os::discard(a, size) {
                 self.free.get_mut(&a).expect("free block").dirty = false;
                 self.dirty_bytes -= size;
             }

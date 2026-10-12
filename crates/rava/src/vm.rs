@@ -43,12 +43,10 @@ impl VmOptions {
 }
 
 fn default_max_heap() -> usize {
-    // SAFETY: sysconf has no preconditions.
-    let (pages, size) = unsafe { (libc::sysconf(libc::_SC_PHYS_PAGES), libc::sysconf(libc::_SC_PAGESIZE)) };
-    if pages <= 0 || size <= 0 {
-        return 1 << 30;
+    match crate::os::physical_memory() {
+        0 => 1 << 30,
+        bytes => (bytes as usize / 4).max(128 << 20),
     }
-    (pages as usize * size as usize / 4).max(128 << 20)
 }
 
 /// Classes the VM itself needs by identity. Filled while bootstrapping.

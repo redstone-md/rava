@@ -85,7 +85,7 @@ fn queue() -> &'static Queue {
             std::thread::Builder::new().name(format!("rava-compiler-{i}")).stack_size(64 << 20).spawn(move || {
                 if nice != 0 {
                     // SAFETY: plain syscalls on the calling thread.
-                    unsafe { libc::setpriority(libc::PRIO_PROCESS, libc::gettid() as libc::id_t, nice) };
+                    crate::os::lower_priority(nice);
                 }
                 work()
             }).expect("spawn a compiler thread");

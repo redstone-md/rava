@@ -8,7 +8,6 @@
 
 use std::fs::File;
 use std::io;
-use std::os::unix::io::AsRawFd;
 use std::path::Path;
 
 const MAGIC: u32 = 0xCAFE_DADA;
@@ -38,13 +37,8 @@ impl Mapping {
     fn open(path: &Path) -> io::Result<Self> {
         let file = File::open(path)?;
         let len = file.metadata()?.len() as usize;
-        // SAFETY: a private read-only mapping of a file we keep no writer to.
-        let ptr = unsafe {
-            libc::mmap(std::ptr::null_mut(), len, libc::PROT_READ, libc::MAP_PRIVATE, file.as_raw_fd(), 0)
-        };
-        if ptr == libc::MAP_FAILED {
-            return Err(io::Error::last_os_error());
-        }
+        // A private read-only mapping of a file we keep no writer to.
+        let ptr = crate::os::map_file(&file, len).ok_or_else(io::Error::last_os_error)?;
         Ok(Self { ptr: ptr as *const u8, len })
     }
 
@@ -56,8 +50,8 @@ impl Mapping {
 
 impl Drop for Mapping {
     fn drop(&mut self) {
-        // SAFETY: unmapping exactly what `open` mapped.
-        unsafe { libc::munmap(self.ptr as *mut libc::c_void, self.len) };
+        // Unmapping exactly what `open` mapped.
+        crate::os::unmap_file(self.ptr as usize, self.len);
     }
 }
 

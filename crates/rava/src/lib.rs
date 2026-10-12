@@ -18,6 +18,7 @@ pub mod loader;
 pub mod low;
 pub mod method;
 pub mod natives;
+pub mod os;
 pub mod parker;
 pub(crate) mod patch;
 pub mod runtime;

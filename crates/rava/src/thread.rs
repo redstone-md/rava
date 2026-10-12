@@ -107,11 +107,7 @@ struct ValueStack(*mut u64);
 
 impl ValueStack {
     fn new() -> ValueStack {
-        // SAFETY: a fresh anonymous mapping, zero-filled when touched.
-        let p = unsafe {
-            libc::mmap(std::ptr::null_mut(), STACK_SLOTS * 8, libc::PROT_READ | libc::PROT_WRITE, libc::MAP_PRIVATE | libc::MAP_ANONYMOUS | libc::MAP_NORESERVE, -1, 0)
-        };
-        assert!(p != libc::MAP_FAILED, "cannot map a value stack");
+        let p = crate::os::reserve(STACK_SLOTS * 8, None, false).expect("cannot map a value stack");
         ValueStack(p as *mut u64)
     }
 
@@ -126,8 +122,8 @@ impl ValueStack {
 
 impl Drop for ValueStack {
     fn drop(&mut self) {
-        // SAFETY: the mapping `new` made, no longer used.
-        unsafe { libc::munmap(self.0 as *mut libc::c_void, STACK_SLOTS * 8) };
+        // The mapping `new` made, no longer used.
+        crate::os::release(self.0 as usize, STACK_SLOTS * 8);
     }
 }
 

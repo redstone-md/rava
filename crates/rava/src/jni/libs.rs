@@ -5,7 +5,6 @@
 
 use crate::method::Method;
 use crate::thread::{JResult, Thread};
-use std::ffi::CString;
 use std::sync::atomic::Ordering;
 use std::sync::Mutex;
 
@@ -18,14 +17,8 @@ fn loaded() -> &'static Mutex<Vec<usize>> {
 /// Opens the library at `path` and runs its `JNI_OnLoad`. Returns the handle and the JNI
 /// version it asked for, or the loader's error.
 pub(crate) fn load(t: &mut Thread, path: &str) -> Result<(usize, i32), String> {
-    let c = CString::new(path).map_err(|e| e.to_string())?;
-    // SAFETY: a NUL-terminated path; the handle is kept for the life of the VM.
-    let h = unsafe { libc::dlopen(c.as_ptr(), libc::RTLD_LAZY) } as usize;
-    if h == 0 {
-        // SAFETY: dlerror's message after a failed dlopen.
-        let msg = unsafe { std::ffi::CStr::from_ptr(libc::dlerror()) };
-        return Err(msg.to_string_lossy().into_owned());
-    }
+    // The handle is kept for the life of the VM.
+    let h = crate::os::library_open(path)?;
     {
         let mut l = loaded().lock().unwrap();
         if l.contains(&h) {
@@ -50,9 +43,7 @@ pub(crate) fn load(t: &mut Thread, path: &str) -> Result<(usize, i32), String> {
 
 /// The address of `name` in library `h` (0 if absent).
 pub(crate) fn symbol(h: usize, name: &str) -> usize {
-    let Ok(c) = CString::new(name) else { return 0 };
-    // SAFETY: a handle from dlopen and a NUL-terminated name.
-    unsafe { libc::dlsym(h as *mut libc::c_void, c.as_ptr()) as usize }
+    crate::os::library_symbol(h, name)
 }
 
 /// The native code bound to `m`: registered, else found by its JNI names in a loaded library.
