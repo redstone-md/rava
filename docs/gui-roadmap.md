@@ -56,5 +56,12 @@ Minecraft-specific change is a patch), no snapshots, the `java` command line unc
    (Zink) when a Vulkan driver is present. Translation alone does not raise frame rates
    (Minecraft's frame time is mostly the CPU's); it becomes the default only where
    measurements on real GPUs show a gain.
+   - Done as an option: `-Drava.opengl=vulkan` (or `RAVA_OPENGL=vulkan`) sets Mesa's driver to
+     Zink and Mesa as the GLVND vendor before anything loads `libGL`, when a Vulkan driver
+     manifest is installed (`launcher/graphics.rs`); variables already set win. The vanilla
+     client renders through Zink on Mesa's software Vulkan driver (lavapipe) under Xvfb at the
+     same 8-9 frames per second as llvmpipe's OpenGL. Xvfb has no DRI3 and lavapipe is a CPU
+     device, so there it also takes `LIBGL_KOPPER_DRI2=1 LIBGL_ALWAYS_SOFTWARE=1`; a real
+     display and GPU need neither. The default stays the system driver until GPU measurements.
 5. **Java 8** (1.12.2 with Forge's LaunchWrapper): the Java 8 class library's contract with the
    VM (no modules, its own natives and `Unsafe`), after the modern client works.

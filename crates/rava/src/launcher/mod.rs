@@ -1,6 +1,7 @@
 //! `rava` takes the `java` command line and answers as `java` does: same output, same exit codes.
 
 mod command_line;
+mod graphics;
 mod settings;
 mod tokens;
 
@@ -25,6 +26,7 @@ pub fn main() -> ExitCode {
         Ok(line) => line,
         Err(e) => return fail(e),
     };
+    graphics::select(graphics::property(&line.settings));
     let Some(java_home) = crate::java_home() else {
         return fail(LaunchError::Launcher("no Java class library found: rava reads <prefix>/lib/modules beside <prefix>/bin/rava (dist/make.sh builds that layout); a development build uses JAVA_HOME or the JDK of java on PATH".into()));
     };
