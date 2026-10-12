@@ -9,6 +9,8 @@ mod misc;
 mod nio_ch;
 mod nio_fs;
 mod security;
+mod selector;
+mod sockopt;
 
 pub(super) use host::host;
 
@@ -21,4 +23,6 @@ pub(super) fn register(r: &mut NativeRegistry) {
     nio_ch::register(r);
     nio_fs::register(r);
     security::register(r);
+    selector::register(r);
+    sockopt::register(r);
 }
