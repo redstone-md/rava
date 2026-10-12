@@ -10,11 +10,11 @@
 # Classpath Exception; its notices travel with it). Nothing native comes from it: rava
 # implements the JDK's native methods itself. OUT (default dist/out/rava) gets:
 #
-#   bin/rava                        the VM
+#   bin/rava (rava.exe on Windows)   the VM
 #   lib/modules, lib/*.dat, lib/security/, lib/jfr/   the class library and its data
 #   conf/, legal/, release
 #
-# and dist/out/rava.tar.gz.
+# and dist/out/rava.tar.gz (rava.zip on Windows).
 set -euo pipefail
 REPO=$(cd "$(dirname "$0")/.." && pwd)
 JDK=${1:-${JAVA_HOME:-$(dirname "$(dirname "$(readlink -f "$(command -v java)")")")}}
@@ -23,12 +23,19 @@ OUT=${2:-$REPO/dist/out/rava}
 (cd "$REPO" && cargo build --release -q)
 rm -rf "$OUT"
 mkdir -p "$OUT/bin" "$OUT/lib"
-cp "$REPO/target/release/rava" "$OUT/bin/rava"
+case $(uname -s) in MINGW*|MSYS*|CYGWIN*) EXE=.exe ;; *) EXE= ;; esac
+cp "$REPO/target/release/rava$EXE" "$OUT/bin/rava$EXE"
 cp -L "$JDK/lib/modules" "$OUT/lib/"
 for f in "$JDK"/lib/*.dat "$JDK"/lib/*.properties; do [ -e "$f" ] && cp -L "$f" "$OUT/lib/"; done
 for d in security jfr; do [ -d "$JDK/lib/$d" ] && cp -rL "$JDK/lib/$d" "$OUT/lib/"; done
 cp -rL "$JDK/conf" "$OUT/conf"
 cp -rL "$JDK/legal" "$OUT/legal" 2>/dev/null || true
 [ -f "$JDK/release" ] && cp -L "$JDK/release" "$OUT/release"
-tar -C "$(dirname "$OUT")" -czf "$(dirname "$OUT")/$(basename "$OUT").tar.gz" "$(basename "$OUT")"
-du -sh "$OUT" "$(dirname "$OUT")/$(basename "$OUT").tar.gz"
+if [ -n "$EXE" ]; then
+  ARCHIVE="$(dirname "$OUT")/$(basename "$OUT").zip"
+  (cd "$(dirname "$OUT")" && powershell -NoProfile -Command "Compress-Archive -Force -Path '$(basename "$OUT")' -DestinationPath '$(basename "$ARCHIVE")'")
+else
+  ARCHIVE="$(dirname "$OUT")/$(basename "$OUT").tar.gz"
+  tar -C "$(dirname "$OUT")" -czf "$ARCHIVE" "$(basename "$OUT")"
+fi
+du -sh "$OUT" "$ARCHIVE"
