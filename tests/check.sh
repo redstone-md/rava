@@ -17,6 +17,8 @@ for mode in $modes; do
     all) out=$(RAVA_OPT=all "$T/semantics/run.sh" "$W/sem" 2>&1) ;;
     few) out=$(RAVA_OPT_FEW_REGS=2 RAVA_OPT=all "$T/semantics/run.sh" "$W/sem" 2>&1) ;;
   esac
+  # How each unexpected failure differs from java (with SEM_DIFF=1).
+  echo "$out" | awk -v want=" $want " '/^FAIL / { show = index(want, " " $2 " ") == 0 } /^FAIL / || /^    / { if (show) print }'
   got=$(echo "$out" | grep "^FAIL" | awk '{print $2}' | sort | tr '\n' ' ' | sed 's/ $//')
   echo "semantics ($mode): $(echo "$out" | tail -1) [$got]"
   [ "$got" = "$want" ] || { echo "semantics ($mode): expected exactly [$want] to fail"; status=1; }

@@ -1,7 +1,7 @@
 #!/bin/bash
 # Compiles every *Sem.java here and compares rava's output with HotSpot's (timing lines
 # are ignored). Usage: tests/semantics/run.sh [work-dir]; R overrides the rava binary,
-# SEM_CP adds library jars (guava, fastutil) to the classpath of the probes that import them.
+# SEM_DIFF=1 prints how a failing probe's output differs; SEM_CP adds library jars (guava, fastutil) to the classpath of the probes that import them.
 # HotSpot's output is the reference, computed once per compiled probe and kept in the work
 # dir (runs in other modes reuse it); fast-throw is off so its exception messages do not
 # depend on when C2 compiled the throwing site.
@@ -24,6 +24,9 @@ for f in "$(dirname "$0")"/*Sem.java; do
   fi
   [ -f "$d/expected.txt" ] || timeout 60 java -XX:-OmitStackTraceInFastThrow -cp "$cp" "$n" 2>&1 | filter > "$d/expected.txt"
   got=$(timeout 60 "$R" -cp "$cp" "$n" 2>&1 | filter)
-  if [ "$(cat "$d/expected.txt")" == "$got" ]; then pass=$((pass+1)); else fail=$((fail+1)); echo "FAIL $n"; fi
+  if [ "$(cat "$d/expected.txt")" == "$got" ]; then pass=$((pass+1)); else
+    fail=$((fail+1)); echo "FAIL $n"
+    [ -n "$SEM_DIFF" ] && diff <(echo "$got") "$d/expected.txt" | head -20 | sed 's/^/    /'
+  fi
 done
 echo "pass=$pass fail=$fail"

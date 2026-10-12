@@ -36,3 +36,5 @@ jobs:
 
       - name: Semantics, JNI and patches against HotSpot
         run: tests/check.sh
+        env:
+          SEM_DIFF: "1"
