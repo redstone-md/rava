@@ -5,6 +5,7 @@
 use crate::heap::{obj, Oop};
 use crate::natives::fields::set_long;
 use crate::natives::io_shared::io_error;
+use crate::natives::sock;
 use crate::natives::{ret_bool, ret_int, ret_long, ret_void, NativeRegistry};
 use crate::runtime::vm_field;
 use crate::thread::{JResult, Thread};
@@ -286,6 +287,31 @@ fn ioutil(r: &mut NativeRegistry) {
     r.add(IOUTIL, "writevMax", "()J", |_, _| ret_long(i32::MAX as i64));
     r.add(IOUTIL, "fdLimit", "()I", |_, _| ret_int(i32::MAX));
     r.add(IOUTIL, "randomBytes", "([B)Z", |_, _| ret_bool(false));
+    // Wakeup pipes and selectable channels are sockets on Windows.
+    r.add(IOUTIL, "configureBlocking", "(Ljava/io/FileDescriptor;Z)V", |t, a| {
+        // SAFETY: a live FileDescriptor.
+        let fd = unsafe { obj::read::<i32>(a[0] as Oop, fd_int()) };
+        if sock::set_blocking(fd, a[1] != 0) != 0 {
+            return Err(io_error(t, "Configure blocking failed"));
+        }
+        ret_void()
+    });
+    r.add(IOUTIL, "write1", "(IB)I", |_, a| {
+        let b = a[1] as u8;
+        ret_int(sock::send(a[0] as i32, &b as *const u8 as usize, 1) as i32)
+    });
+    r.add(IOUTIL, "drain1", "(I)I", |_, a| {
+        let mut b = 0u8;
+        ret_int(sock::recv(a[0] as i32, &mut b as *mut u8 as usize, 1) as i32)
+    });
+    r.add(IOUTIL, "drain", "(I)Z", |_, a| {
+        let mut buf = [0u8; 128];
+        let mut any = false;
+        while sock::recv(a[0] as i32, buf.as_mut_ptr() as usize, buf.len()) > 0 {
+            any = true;
+        }
+        ret_bool(any)
+    });
 }
 
 pub(super) fn register(r: &mut NativeRegistry) {
