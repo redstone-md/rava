@@ -1,0 +1,77 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to (re)build the release for, e.g. v0.0.1-alpha"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build and publish
+    # The oldest supported runner: the binary then runs on glibc 2.35 and newer.
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+    env:
+      TAG: ${{ inputs.tag || github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+          fetch-depth: 0
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      # Supplies the Java class library the distribution ships (OpenJDK, GPLv2 with the
+      # Classpath Exception; its legal notices travel in legal/).
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Check the tag against the crate version
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' crates/rava/Cargo.toml | head -1)
+          [ "v$version" = "$TAG" ] || { echo "::error::tag $TAG does not match crate version $version"; exit 1; }
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+
+      - name: Build the distribution
+        run: |
+          name="rava-$VERSION-linux-x86_64"
+          dist/make.sh "$JAVA_HOME" "$PWD/dist/out/$name"
+          echo "NAME=$name" >> "$GITHUB_ENV"
+
+      - name: Smoke test
+        run: |
+          rava="dist/out/$NAME/bin/rava"
+          "$rava" -version
+          printf 'public class Hello { public static void main(String[] a) { System.out.println("Hello from " + System.getProperty("java.vm.name") + " " + System.getProperty("java.vm.version")); } }\n' > /tmp/Hello.java
+          "$rava" /tmp/Hello.java
+
+      - name: Checks against HotSpot
+        run: R="$PWD/dist/out/$NAME/bin/rava" tests/check.sh
+
+      - name: Checksums
+        working-directory: dist/out
+        run: sha256sum "$NAME.tar.gz" > "$NAME.tar.gz.sha256" && cat "$NAME.tar.gz.sha256"
+
+      - name: Release notes
+        run: python3 .github/scripts/release_notes.py "$TAG" "dist/out/$NAME.tar.gz" > dist/out/notes.md
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.TAG }}
+          name: rava ${{ env.TAG }}
+          body_path: dist/out/notes.md
+          prerelease: ${{ contains(env.TAG, '-') }}
+          files: |
+            dist/out/${{ env.NAME }}.tar.gz
+            dist/out/${{ env.NAME }}.tar.gz.sha256
