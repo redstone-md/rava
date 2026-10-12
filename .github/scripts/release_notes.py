@@ -30,9 +30,18 @@ def git(*args):
     return subprocess.run(['git', *args], check=True, capture_output=True, text=True).stdout.strip()
 
 
-def previous_tag(tag):
+def revision(tag):
+    """The tag's commit, or the checked-out one when the release is yet to create the tag."""
     try:
-        return git('describe', '--tags', '--abbrev=0', f'{tag}^')
+        git('rev-parse', '--verify', '--quiet', f'refs/tags/{tag}')
+        return tag
+    except subprocess.CalledProcessError:
+        return 'HEAD'
+
+
+def previous_tag(rev):
+    try:
+        return git('describe', '--tags', '--abbrev=0', f'{rev}^')
     except subprocess.CalledProcessError:
         return None
 
@@ -64,8 +73,9 @@ def main():
     name = os.path.basename(archive)
     sha = hashlib.sha256(open(archive, 'rb').read()).hexdigest()
     size = os.path.getsize(archive) / (1 << 20)
-    prev = previous_tag(tag)
-    entries = commits(f'{prev}..{tag}' if prev else tag)
+    rev = revision(tag)
+    prev = previous_tag(rev)
+    entries = commits(f'{prev}..{rev}' if prev else rev)
     out = []
 
     highlights = f'docs/releases/{tag}.md'

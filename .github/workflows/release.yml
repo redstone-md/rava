@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Existing tag to (re)build the release for, e.g. v0.0.1-alpha"
+        description: "Tag to release, e.g. v0.0.1-alpha (made at the dispatched commit if it does not exist)"
         required: true
 
 permissions:
@@ -21,9 +21,10 @@ jobs:
     env:
       TAG: ${{ inputs.tag || github.ref_name }}
     steps:
+      # The tag's commit on a tag push; on a manual run, the dispatched branch's head, where the
+      # release then creates the tag.
       - uses: actions/checkout@v4
         with:
-          ref: ${{ env.TAG }}
           fetch-depth: 0
 
       - uses: dtolnay/rust-toolchain@stable
@@ -69,6 +70,7 @@ jobs:
       - uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ env.TAG }}
+          target_commitish: ${{ github.sha }}
           name: rava ${{ env.TAG }}
           body_path: dist/out/notes.md
           prerelease: ${{ contains(env.TAG, '-') }}
