@@ -8,6 +8,7 @@ mod classloader;
 mod fs;
 #[cfg(unix)]
 pub(crate) mod io;
+mod fields;
 mod io_shared;
 mod arraycopy;
 mod lang;
