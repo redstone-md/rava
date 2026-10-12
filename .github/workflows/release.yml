@@ -76,7 +76,9 @@ jobs:
       - name: Checksum
         working-directory: dist/out
         run: |
-          archive=$(ls "$NAME".tar.gz "$NAME".zip 2>/dev/null | head -1)
+          # The one archive this system makes: tar.gz on Linux and macOS, zip on Windows.
+          archive=$NAME.tar.gz
+          [ -f "$archive" ] || archive=$NAME.zip
           { sha256sum "$archive" 2>/dev/null || shasum -a 256 "$archive"; } > "$archive.sha256"
           cat "$archive.sha256"
 
