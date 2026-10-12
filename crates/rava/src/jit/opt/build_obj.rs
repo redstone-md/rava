@@ -28,11 +28,10 @@ impl Builder {
 
     /// Records the exact classes of the compiled method `m`'s parameters (`args`, the receiver
     /// first unless static) declared with a final class or an array of one, as C2 types
-    /// parameters by the signature. All of them for the root; for an inlined body
-    /// (`inlined`) only primitive arrays: its other parameters are values of its caller, whose
-    /// type there may hold only on the guarded path the body is inlined on (a receiver passed
-    /// on as `this`), while a value verified as `byte[]` at the call is one wherever it is.
-    pub(super) fn note_declared_params(&mut self, m: &'static Method, args: &[V], inlined: bool) {
+    /// parameters by the signature. Only the root's: an inlined body's parameter is a value of
+    /// its caller, whose type there may hold only on the guarded path the body is inlined on
+    /// (a receiver passed on as `this`).
+    pub(super) fn note_declared_params(&mut self, m: &'static Method, args: &[V]) {
         let desc = m.desc.as_str();
         let Some(params) = desc.strip_prefix('(').and_then(|d| d.split(')').next()) else { return };
         let mut rest = params;
@@ -49,9 +48,6 @@ impl Builder {
             let (one, tail) = rest.split_at(end);
             rest = tail;
             let Some(&v) = args.next() else { return };
-            if inlined && !(dims == 1 && one.len() == 2) {
-                continue;
-            }
             if let Some(k) = declared_class(m.holder, one) {
                 self.declared.insert(self.g.resolve(v), k);
             }
