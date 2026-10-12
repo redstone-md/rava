@@ -83,12 +83,12 @@ impl CArgs {
 
 /// Runs native `m` at `f` on the argument slots `args` (receiver first unless static).
 pub(crate) fn invoke(t: &mut Thread, m: &'static Method, f: usize, args: &[u64]) -> JResult<u64> {
-    let mark = t.handles.len();
+    let mirror = if m.is_static() { crate::runtime::mirror_of(t, m.holder)? } else { std::ptr::null_mut() };
+    let outer = refs::open(t);
     let mut c = CArgs::default();
     c.int(super::env_of(t) as u64);
     let mut slot = 0;
     if m.is_static() {
-        let mirror = crate::runtime::mirror_of(t, m.holder)?;
         c.int(refs::local(t, mirror) as u64);
     } else {
         c.int(args[0]);
@@ -103,11 +103,9 @@ pub(crate) fn invoke(t: &mut Thread, m: &'static Method, f: usize, args: &[u64])
         }
         slot += p.slots() as usize;
     }
-    let base = t.jni.frames.len();
     // SAFETY: the symbol a library exported (or RegisterNatives bound) for this method.
     let (rax, xmm0) = crate::gc::safepoint::native_call(t, || unsafe { c.call(f) });
-    t.jni.frames.truncate(base);
-    t.handles.truncate(mark);
+    refs::close(t, outer);
     if let Some(e) = refs::take_exception(t) {
         return Err(Throw(e));
     }
