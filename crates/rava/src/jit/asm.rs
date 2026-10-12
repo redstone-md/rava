@@ -372,6 +372,10 @@ impl Asm {
         self.op_rm(false, &[0xC7], 0, m);
         self.d32(imm);
     }
+    /// `lea` of width 64 (`w`) or 32 (the result zero-extended, as a 32-bit `add` leaves it).
+    pub fn lea_w(&mut self, w: bool, dst: R, m: M) {
+        self.op_rm(w, &[0x8D], dst as u8, m);
+    }
     pub fn lea(&mut self, dst: R, m: M) {
         self.op_rm(true, &[0x8D], dst as u8, m);
     }

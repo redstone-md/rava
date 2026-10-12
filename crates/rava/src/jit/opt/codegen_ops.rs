@@ -190,6 +190,14 @@ impl Gen<'_> {
             }
             return self.put(v, r);
         }
+        // A constant added to a value in another register: one `lea`, not a move and an add.
+        if let (BinOp::Add | BinOp::Sub, Some(c), Loc::Reg(xr)) = (op, self.g.constant(y), self.loc[x as usize]) {
+            let c = if op == BinOp::Sub { c.checked_neg() } else { Some(c) };
+            if let Some(c) = c.and_then(|c| i32::try_from(c).ok()).filter(|_| xr != r) {
+                self.a.lea_w(w, r, crate::jit::asm::mem(xr, c));
+                return self.put(v, r);
+            }
+        }
         self.load(r, x);
         match op {
             BinOp::Mul => match self.loc[y as usize] {
