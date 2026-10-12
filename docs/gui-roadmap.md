@@ -1,0 +1,44 @@
+# GUI roadmap: the Minecraft client on rava
+
+Goal: rava runs desktop Java applications as `java` does, tested on the Minecraft client
+(vanilla and every mod loader), and renders OpenGL through Vulkan where that pays.
+
+Rules stay as for the server: rava is program-agnostic (nothing keyed to Minecraft; a
+Minecraft-specific change is a patch), no snapshots, the `java` command line unchanged.
+
+## Steps
+
+1. **JNI** (`src/jni/`). The client's natives (LWJGL: GLFW, OpenGL, OpenAL, STB) are shared
+   libraries reached through the Java Native Interface, which every JVM provides. rava
+   supplies the JDK's own natives in Rust and loaded no other library until now.
+   - `NativeLibraries.load` opens libraries with `dlopen` and calls `JNI_OnLoad`.
+   - A native method without a VM body binds to `Java_<class>_<name>[__<signature>]` in a
+     loaded library, or to what `RegisterNatives` gave it.
+   - The call runs with the thread in the native state (the collector proceeds meanwhile),
+     through a generic System V call: arguments from the interpreter's slots into integer and
+     vector registers, the rest on the stack.
+   - `jobject` is the object's address. References handed to native code are roots the
+     collector does not move (local references live in the thread's `handles`, popped when
+     the native returns; global references in a VM table), and arguments sit in value-stack
+     slots, which are scanned conservatively and pinned likewise.
+   - `JNIEnv` lives inside `Thread`, so an environment pointer finds its thread. Its functions
+     switch the thread back to the running state for their duration. Variadic `Call*Method`
+     functions are a C shim forwarding their `va_list` to the `V` variants, which decode it
+     by the method's signature.
+   - Tested by `tests/jni/` (a C library exercising each part, compared with HotSpot).
+   - Done: the above, with the functions a C library commonly uses (classes, exceptions,
+     references, calls of every kind, fields, strings, arrays, direct buffers,
+     `RegisterNatives`). A function not provided yet stops the process naming its index.
+     With it, Paper and NeoForge servers run netty's native epoll transport instead of the
+     NIO fallback.
+2. **LWJGL**: the functions LWJGL 3 uses (direct buffers, critical arrays, `JavaVM` attach for
+   callbacks from native threads); an LWJGL GLFW + OpenGL demo under Xvfb with Mesa.
+3. **The client**: Minecraft 1.21 (vanilla, Fabric, NeoForge) to the title screen and into a
+   singleplayer world under Xvfb (software OpenGL here: function, not frame rate), then the
+   client's render thread profiled as the server's tick was.
+4. **Vulkan**: for any OpenGL application, rava can ask Mesa for its GL-on-Vulkan driver
+   (Zink) when a Vulkan driver is present. Translation alone does not raise frame rates
+   (Minecraft's frame time is mostly the CPU's); it becomes the default only where
+   measurements on real GPUs show a gain.
+5. **Java 8** (1.12.2 with Forge's LaunchWrapper): the Java 8 class library's contract with the
+   VM (no modules, its own natives and `Unsafe`), after the modern client works.

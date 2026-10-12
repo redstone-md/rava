@@ -1782,3 +1782,13 @@ A bisection found the stream kernel twice as slow as on 10-08: `conds.rs` droppe
 that LICM needed to see (fixed, back to `java`'s speed). An instruction-level profile of all
 optimized code under `mobs` puts 60 % of its samples on loads, 38 % of those on an object's
 first word ([vm-roadmap.md](vm-roadmap.md)).
+
+## 2026-10-12 — JNI
+
+rava loads applications' native libraries now (`src/jni/`, [gui-roadmap.md](gui-roadmap.md)):
+`dlopen` and `JNI_OnLoad`, natives bound by their JNI names or `RegisterNatives`, called through
+a generic System V call in the native thread state, and a `JNIEnv` covering classes,
+exceptions, references, calls, fields, strings, arrays and direct buffers. `tests/jni/run.sh`
+matches HotSpot's output (200,000 calls interleaved with collections included). Paper and
+ATM10 now take netty's epoll transport (a status ping answers through it). First step of
+running the Minecraft client.
