@@ -1795,3 +1795,7 @@ running the Minecraft client.
 The vanilla 1.21.1 client runs on rava: title screen, a singleplayer world and the F3 screen
 under Xvfb (software OpenGL: 11 fps against `java`'s 10, both bound by llvmpipe). Its
 integrated server needed `sun.java2d.Disposer.initIDs` for reading a world icon.
+Fabric (with Fabric API and Sodium) and NeoForge (with Sodium) clients reach a world on rava as
+well. Two methods of the client failed to compile: `if (c) {}` compiles to a branch to the next
+instruction, and pruning its never-taken fall-through by address cut both of its directions
+(`EmptyIfSem`).

@@ -42,6 +42,10 @@ Minecraft-specific change is a patch), no snapshots, the `java` command line unc
      Xvfb with llvmpipe both VMs draw 10-11 frames per second and the integrated server ticks
      in 10 ms: the software renderer is the limit here. An LWJGL GLFW + OpenGL demo renders
      as on HotSpot.
+   - Done for Fabric (loader 0.19.5 with Fabric API and Sodium, 55 mods) and NeoForge 21.1.259
+     with Sodium (`--loader`, `--mods`): both reach the world with Sodium's renderer, NeoForge's
+     early loading window included. Two optimizing-compiler failures the client showed were
+     fixed on the way (a branch to the next instruction pruned both ways).
 4. **Vulkan**: for any OpenGL application, rava can ask Mesa for its GL-on-Vulkan driver
    (Zink) when a Vulkan driver is present. Translation alone does not raise frame rates
    (Minecraft's frame time is mostly the CPU's); it becomes the default only where
