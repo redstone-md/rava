@@ -49,15 +49,7 @@ fn current_stack_top() -> usize {
 
 /// The lowest address and size of the calling OS thread's stack.
 pub fn current_stack() -> (usize, usize) {
-    // SAFETY: queries the attributes of the calling thread.
-    unsafe {
-        let mut attr: libc::pthread_attr_t = std::mem::zeroed();
-        libc::pthread_getattr_np(libc::pthread_self(), &mut attr);
-        let (mut addr, mut size) = (std::ptr::null_mut(), 0usize);
-        libc::pthread_attr_getstack(&attr, &mut addr, &mut size);
-        libc::pthread_attr_destroy(&mut attr);
-        (addr as usize, size)
-    }
+    crate::os::current_stack()
 }
 
 thread_local!(static ATTACHED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) });
@@ -189,17 +181,13 @@ pub fn leave_native(rec: &'static Record) {
     }
 }
 
-const MEMBARRIER_PRIVATE_EXPEDITED: i32 = 8;
-const MEMBARRIER_REGISTER_PRIVATE_EXPEDITED: i32 = 16;
-
 /// Whether the collector makes every thread of the process execute a full barrier after it
 /// requests a stop (Linux `membarrier`, HotSpot's `UseSystemMemoryBarrier`). A thread returning
 /// from native code then needs no fence of its own between publishing that it runs Java and
 /// reading the request: whichever comes first, the collector's barrier orders the two.
 pub fn asymmetric() -> bool {
     static A: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    // SAFETY: as above.
-    *A.get_or_init(|| unsafe { libc::syscall(libc::SYS_membarrier, MEMBARRIER_REGISTER_PRIVATE_EXPEDITED, 0, 0) } == 0)
+    *A.get_or_init(crate::os::register_process_barrier)
 }
 
 /// Runs native code (a JNI call) with the thread in the native state, as `blocking` does but
@@ -247,8 +235,7 @@ pub fn stop_the_world<R>(t: &Thread, f: impl FnOnce(usize) -> R) -> Option<R> {
     };
     REQUESTED.store(true, SeqCst);
     if asymmetric() {
-        // SAFETY: a registered membarrier command without pointers.
-        unsafe { libc::syscall(libc::SYS_membarrier, MEMBARRIER_PRIVATE_EXPEDITED, 0, 0) };
+        crate::os::process_barrier();
     }
     arm(true);
     let me = t.gc_record.map(|r| r as *const Record);

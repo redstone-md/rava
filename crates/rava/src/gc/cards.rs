@@ -27,14 +27,9 @@ static TABLE: OnceLock<Table> = OnceLock::new();
 pub(super) fn init(base: usize, span: usize) {
     TABLE.get_or_init(|| {
         let len = span >> CARD_SHIFT;
-        // SAFETY: an anonymous, lazily committed, zero-filled mapping.
-        let p = unsafe {
-            libc::mmap(std::ptr::null_mut(), len, libc::PROT_READ | libc::PROT_WRITE, libc::MAP_PRIVATE | libc::MAP_ANONYMOUS | libc::MAP_NORESERVE, -1, 0)
-        };
-        assert!(p != libc::MAP_FAILED, "cannot reserve the card table");
+        let p = crate::os::reserve(len, None, false).expect("cannot reserve the card table");
         // Huge pages, as the heap: barriers dirty cards all over the table.
-        // SAFETY: the mapping just made.
-        unsafe { libc::madvise(p, len, libc::MADV_HUGEPAGE) };
+        crate::os::huge_pages(p, len);
         Table { base, span, bytes: p as *mut u8 }
     });
 }

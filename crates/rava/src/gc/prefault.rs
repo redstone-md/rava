@@ -13,8 +13,6 @@ use std::sync::OnceLock;
 /// was no faster and kept up to 0.1 GiB of memory resident that nothing used.)
 const AHEAD: usize = 16 << 20;
 const STEP: usize = 2 << 20;
-/// Linux 5.14's `MADV_POPULATE_WRITE`.
-const MADV_POPULATE_WRITE: libc::c_int = 23;
 
 /// The small-object pages and the large-object area.
 #[derive(Clone, Copy)]
@@ -85,8 +83,8 @@ impl Frontier {
                 return;
             }
             let len = STEP.min(goal - at);
-            // SAFETY: inside the heap reservation; populating changes no contents.
-            if unsafe { libc::madvise(at as *mut libc::c_void, len, MADV_POPULATE_WRITE) } != 0 {
+            // Inside the heap reservation; populating changes no contents.
+            if !crate::os::populate(at, len) {
                 // Unsupported (older kernels): allocation faults pages in itself.
                 self.ready.store(self.end, Relaxed);
                 return;

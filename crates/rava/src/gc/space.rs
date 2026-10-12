@@ -182,31 +182,16 @@ pub struct Space {
 impl Space {
     pub fn new(reserve: usize) -> Space {
         let reserve = reserve.min(if crate::heap::COMPRESSED { NARROW_END - NARROW_BASE - PAGE_SIZE } else { usize::MAX }) & !(PAGE_SIZE - 1);
-        let reserve_at = |hint: usize, flags: libc::c_int| {
-            // SAFETY: an anonymous, lazily committed reservation (at `hint` only if that range is
-            // free: MAP_FIXED_NOREPLACE never replaces a mapping).
-            unsafe {
-                libc::mmap(
-                    hint as *mut libc::c_void,
-                    reserve + PAGE_SIZE,
-                    libc::PROT_READ | libc::PROT_WRITE,
-                    libc::MAP_PRIVATE | libc::MAP_ANONYMOUS | libc::MAP_NORESERVE | flags,
-                    -1,
-                    0,
-                )
-            }
-        };
         // Compressed references need the heap below 32 GiB (zero-based, `heap::NARROW_SHIFT`):
         // above the low 4 GiB (classes and code, `crate::low`), as HotSpot places it.
-        let raw = if crate::heap::COMPRESSED { reserve_at(NARROW_BASE, libc::MAP_FIXED_NOREPLACE) } else { reserve_at(0, 0) };
-        assert!(raw != libc::MAP_FAILED, "cannot reserve {reserve} bytes of heap");
+        let at = crate::heap::COMPRESSED.then_some(NARROW_BASE);
+        let raw = crate::os::reserve(reserve + PAGE_SIZE, at, false).unwrap_or_else(|| panic!("cannot reserve {reserve} bytes of heap"));
         assert!(!crate::heap::COMPRESSED || raw as usize + reserve + PAGE_SIZE <= NARROW_END, "heap reservation above 32 GiB");
         let base = (raw as usize + PAGE_SIZE - 1) & !(PAGE_SIZE - 1);
         let pages_end = base + (reserve / 4 * 3 & !(PAGE_SIZE - 1));
         // Transparent huge pages where the system offers them on request: object graphs spread
         // over gigabytes then miss the TLB far less (released pages split them again).
-        // SAFETY: advice on the reservation just made; failure leaves ordinary pages.
-        unsafe { libc::madvise(base as *mut libc::c_void, reserve, libc::MADV_HUGEPAGE) };
+        crate::os::huge_pages(base, reserve);
         super::cards::init(base, reserve);
         super::prefault::start((base, pages_end), (pages_end, base + reserve));
         Space {
@@ -320,8 +305,8 @@ impl Space {
         }
         while self.partial_free + self.empty.len() * PAGE_SIZE > keep + RELEASE_SLACK {
             let Some(page) = self.empty.pop() else { break };
-            // SAFETY: an empty page of the reservation; nothing references it.
-            unsafe { libc::madvise(page as *mut libc::c_void, PAGE_SIZE, libc::MADV_DONTNEED) };
+            // An empty page of the reservation; nothing references it.
+            crate::os::discard(page, PAGE_SIZE);
             self.released.push(page);
         }
     }

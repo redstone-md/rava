@@ -27,29 +27,17 @@ fn region() -> &'static Mutex<Region> {
     static R: std::sync::OnceLock<Mutex<Region>> = std::sync::OnceLock::new();
     R.get_or_init(|| {
         let text = install as *const () as usize;
-        let map = |hint: usize, flags: i32| {
-            // SAFETY: anonymous private mapping, committed lazily; MAP_FIXED_NOREPLACE never
-            // replaces an existing mapping.
-            let p = unsafe {
-                libc::mmap(
-                    hint as *mut libc::c_void,
-                    RESERVE,
-                    libc::PROT_READ | libc::PROT_WRITE | libc::PROT_EXEC,
-                    libc::MAP_PRIVATE | libc::MAP_ANONYMOUS | libc::MAP_NORESERVE | flags,
-                    -1,
-                    0,
-                )
-            };
-            (p != libc::MAP_FAILED).then_some(p as usize)
-        };
         // Just below the text, else anywhere.
         let hint = (text & !((2 << 20) - 1)).saturating_sub(RESERVE + GAP);
-        let p = (hint != 0).then(|| map(hint, libc::MAP_FIXED_NOREPLACE)).flatten().or_else(|| map(0, 0)).expect("cannot reserve the code cache");
+        let p = (hint != 0)
+            .then(|| crate::os::reserve(RESERVE, Some(hint), true))
+            .flatten()
+            .or_else(|| crate::os::reserve(RESERVE, None, true))
+            .expect("cannot reserve the code cache");
         // Transparent huge pages where the system offers them on request: hot code spread over
         // tens of megabytes then takes a few TLB entries instead of thousands. Memory is still
         // committed only as code is written (one huge page at a time).
-        // SAFETY: advice on the mapping just made; failure leaves ordinary pages.
-        unsafe { libc::madvise(p as *mut libc::c_void, RESERVE, libc::MADV_HUGEPAGE) };
+        crate::os::huge_pages(p, RESERVE);
         Mutex::new(Region { base: p, top: p, near: reaches(p, text) })
     })
 }

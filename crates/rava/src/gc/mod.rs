@@ -272,7 +272,7 @@ impl Heap {
                 // So does the malloc heap's free memory: compiler threads free most of what
                 // they allocate, in arenas glibc keeps (~1 ms; -15 MiB on a modded server).
                 // SAFETY: a plain libc call.
-                unsafe { libc::malloc_trim(0) };
+                crate::os::trim_malloc();
             }
             let allocated = space.allocated_since_gc + self.small_allocated.load(std::sync::atomic::Ordering::Relaxed);
             space.allocated_since_gc = 0;
@@ -407,12 +407,7 @@ fn sweep(space: &mut Space) -> usize {
 
 /// The process's minor page faults so far (for `RAVA_GC_LOG`).
 fn minor_faults() -> i64 {
-    // SAFETY: getrusage fills the struct.
-    unsafe {
-        let mut u: libc::rusage = std::mem::zeroed();
-        libc::getrusage(libc::RUSAGE_SELF, &mut u);
-        u.ru_minflt as i64
-    }
+    crate::os::minor_faults()
 }
 
 /// Gives back the cells of `cache`'s runs no object took: they were marked allocated with the

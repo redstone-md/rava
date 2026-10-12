@@ -1,4 +1,4 @@
-//! The low 2 GiB of the address space (`MAP_32BIT`), for VM structures generated code names by
+//! The low 2 GiB of the address space (`os::reserve_low`), for VM structures generated code names by
 //! a 32-bit immediate or an absolute displacement instead of a 64-bit constant loaded into a
 //! register: classes (compared in type guards and stored in object headers) and the class
 //! hierarchy flags of methods (tested where calls were inlined), and methods (stored in frames
@@ -21,16 +21,9 @@ fn reserve(size: usize, align: usize) -> Option<usize> {
     let mut arena = ARENA.lock().unwrap();
     let mut at = arena.0.next_multiple_of(align);
     if arena.0 == 0 || at + size > arena.1 {
-        // SAFETY: a fresh anonymous mapping.
-        let p = unsafe {
-            libc::mmap(std::ptr::null_mut(), CHUNK, libc::PROT_READ | libc::PROT_WRITE, libc::MAP_PRIVATE | libc::MAP_ANONYMOUS | libc::MAP_32BIT, -1, 0)
-        };
-        if p == libc::MAP_FAILED {
-            return None;
-        }
-        // SAFETY: the mapping just made.
-        unsafe { libc::madvise(p, CHUNK, libc::MADV_HUGEPAGE) };
-        *arena = (p as usize, p as usize + CHUNK);
+        let p = crate::os::reserve_low(CHUNK)?;
+        crate::os::huge_pages(p, CHUNK);
+        *arena = (p, p + CHUNK);
         at = arena.0;
     }
     arena.0 = at + size;
