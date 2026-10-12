@@ -94,7 +94,7 @@ unsafe fn bytes<'a>(a: Oop, size: usize, from: i32, count: i32) -> &'a [u8] {
     std::slice::from_raw_parts(obj::array_data::<u8>(a).add(from * size), count * size)
 }
 
-extern "C" fn latin1_equals(a: Oop, b: Oop) -> i64 {
+extern "sysv64" fn latin1_equals(a: Oop, b: Oop) -> i64 {
     // SAFETY: two live byte arrays (null-checked by the caller).
     unsafe {
         let n = obj::array_length(a);
@@ -105,7 +105,7 @@ extern "C" fn latin1_equals(a: Oop, b: Oop) -> i64 {
 /// The index of the first element (of `1 << log2` bytes) at which the `length` elements at
 /// `a + ao` and `b + bo` differ; else `-1`, the complement of no elements left for the caller
 /// to compare (the JDK's contract allows leaving a tail).
-extern "C" fn vectorized_mismatch(a: usize, ao: i64, b: usize, bo: i64, length: i32, log2: i32) -> i64 {
+extern "sysv64" fn vectorized_mismatch(a: usize, ao: i64, b: usize, bo: i64, length: i32, log2: i32) -> i64 {
     let n = (length.max(0) as usize) << log2;
     // SAFETY: the JDK passes a base and offset (or a null base and an address) covering
     // `length` elements, as for `Unsafe` reads.
@@ -212,7 +212,7 @@ const SHORT_HASH: usize = 32;
 /// `31^n * init + sum(a[from + i] * 31^(n-1-i))` over `n = len` elements of the kind `ty`
 /// names (`ArraysSupport.T_BOOLEAN` unsigned bytes, `T_CHAR` chars of a `char[]` or of a UTF-16
 /// `byte[]`, `T_BYTE` signed bytes, `T_SHORT`, `T_INT`).
-extern "C" fn vectorized_hash_code(a: Oop, from: i32, len: i32, init: i32, ty: i32) -> i64 {
+extern "sysv64" fn vectorized_hash_code(a: Oop, from: i32, len: i32, init: i32, ty: i32) -> i64 {
     let size = match ty {
         4 | 8 => 1,
         5 | 9 => 2,
@@ -261,7 +261,7 @@ extern "C" fn vectorized_hash_code(a: Oop, from: i32, len: i32, init: i32, ty: i
     h as i64
 }
 
-extern "C" fn count_positives(a: Oop, off: i32, len: i32) -> i64 {
+extern "sysv64" fn count_positives(a: Oop, off: i32, len: i32) -> i64 {
     // SAFETY: a live byte array (null-checked by the caller).
     let b = unsafe { bytes(a, 1, off, len) };
     let mut i = 0;
@@ -274,27 +274,27 @@ extern "C" fn count_positives(a: Oop, off: i32, len: i32) -> i64 {
     (i + b[i..].iter().take_while(|&&x| x < 0x80).count()) as i64
 }
 
-extern "C" fn is_array(mirror: Oop) -> i64 {
+extern "sysv64" fn is_array(mirror: Oop) -> i64 {
     crate::runtime::klass_of_mirror(mirror).is_some_and(|k| !matches!(k.kind, crate::klass::KlassKind::Instance)) as i64
 }
 
-extern "C" fn is_primitive(mirror: Oop) -> i64 {
+extern "sysv64" fn is_primitive(mirror: Oop) -> i64 {
     crate::runtime::klass_of_mirror(mirror).is_none() as i64
 }
 
-extern "C" fn is_interface(mirror: Oop) -> i64 {
+extern "sysv64" fn is_interface(mirror: Oop) -> i64 {
     crate::runtime::klass_of_mirror(mirror).is_some_and(|k| k.is_interface()) as i64
 }
 
 /// A primitive mirror is assignable only from itself.
-extern "C" fn is_assignable_from(to: Oop, from: Oop) -> i64 {
+extern "sysv64" fn is_assignable_from(to: Oop, from: Oop) -> i64 {
     match (crate::runtime::klass_of_mirror(to), crate::runtime::klass_of_mirror(from)) {
         (Some(to), Some(from)) => from.is_subtype_of(to) as i64,
         _ => (to == from) as i64,
     }
 }
 
-extern "C" fn refers_to(r: Oop, o: Oop) -> i64 {
+extern "sysv64" fn refers_to(r: Oop, o: Oop) -> i64 {
     // SAFETY: a live Reference (the receiver, null-checked by the invoke).
     (unsafe { obj::read_ref(r, crate::natives::misc::referent_offset()) } == o) as i64
 }

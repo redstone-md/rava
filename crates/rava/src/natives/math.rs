@@ -10,19 +10,19 @@ use crate::thread::{JResult, Thread};
 
 /// The functions on raw double bits (the intrinsic passes and returns them in integer
 /// registers), indexed as `NAMES`.
-pub(crate) const FNS: [extern "C" fn(u64) -> u64; 5] = [sin, cos, tan, exp, log];
+pub(crate) const FNS: [extern "sysv64" fn(u64) -> u64; 5] = [sin, cos, tan, exp, log];
 pub(crate) const NAMES: [&str; 5] = ["sin", "cos", "tan", "exp", "log"];
 
 macro_rules! libm {
     ($($name:ident),*) => {$(
-        extern "C" fn $name(x: u64) -> u64 {
+        extern "sysv64" fn $name(x: u64) -> u64 {
             f64::from_bits(x).$name().to_bits()
         }
     )*};
 }
 libm!(sin, cos, tan, exp);
 
-extern "C" fn log(x: u64) -> u64 {
+extern "sysv64" fn log(x: u64) -> u64 {
     f64::from_bits(x).ln().to_bits()
 }
 
