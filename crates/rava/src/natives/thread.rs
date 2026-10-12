@@ -222,7 +222,7 @@ fn set_os_thread_name(name: &str) {
         end -= 1;
     }
     if let Ok(c) = std::ffi::CString::new(&name[..end]) {
-        super::posix::set_thread_name(&c);
+        crate::os::set_thread_name(&c);
     }
 }
 

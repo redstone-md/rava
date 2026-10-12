@@ -206,7 +206,7 @@ fn register_os(r: &mut NativeRegistry) {
 
 /// Total and free memory, total and free swap, in bytes.
 fn sys() -> (i64, i64, i64, i64) {
-    super::posix::memory()
+    crate::os::memory_status()
 }
 
 fn empty_array(t: &mut Thread, elem: &str) -> JResult<u64> {

@@ -111,7 +111,7 @@ pub(super) fn register(r: &mut NativeRegistry) {
     });
     r.add(J, "isContainerized", "()Z", |_, _| ret_bool(false));
     r.add(J, "hostTotalMemory", "()J", |_, _| {
-        ret_long(super::posix::memory().0)
+        ret_long(crate::os::memory_status().0)
     });
     // Settings only matter to a recording.
     for (name, desc) in [("setEnabled", "(JZ)V"), ("setStackTraceEnabled", "(JZ)V"), ("setMethodSamplingPeriod", "(JJ)V"), ("setFileNotification", "(J)V"),
