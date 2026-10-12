@@ -1,9 +1,10 @@
 //! `java.io` file-descriptor natives (the libjava subset the boot needs), over POSIX calls.
 
+pub(crate) use super::io_shared::{checked_range, errno_text, io_error};
 use super::{ret_bool, ret_int, ret_long, ret_void, NativeRegistry};
 use crate::heap::{obj, Oop};
 use crate::runtime::{self as rt, throw_new, vm_field};
-use crate::thread::{JResult, Thread, Throw};
+use crate::thread::{JResult, Thread};
 
 vm_field!(fd_int, "java/io/FileDescriptor", "fd", "I");
 vm_field!(fis_fd, "java/io/FileInputStream", "fd", "Ljava/io/FileDescriptor;");
@@ -129,19 +130,6 @@ fn stream_fd(stream: Oop, field: u32) -> i32 {
     }
 }
 
-/// The `[off, off+len)` byte range of a Java `byte[]`, with Java's exceptions.
-pub(super) fn checked_range<'a>(t: &mut Thread, arr: Oop, off: i32, len: i32) -> JResult<&'a mut [u8]> {
-    if arr.is_null() {
-        return Err(rt::null_pointer(t));
-    }
-    // SAFETY: byte[] array.
-    let data = unsafe { obj::array_slice::<u8>(arr) };
-    if off < 0 || len < 0 || off as usize + len as usize > data.len() {
-        return Err(throw_new(t, "java/lang/IndexOutOfBoundsException", ""));
-    }
-    Ok(&mut data[off as usize..off as usize + len as usize])
-}
-
 pub(super) fn write_all(t: &mut Thread, fd: i32, mut bytes: &[u8]) -> JResult<()> {
     while !bytes.is_empty() {
         // SAFETY: valid byte range.
@@ -174,15 +162,6 @@ pub(super) fn open_into(t: &mut Thread, stream: Oop, field: u32, path: Oop, flag
     // SAFETY: live stream whose FileDescriptor was created by the constructor.
     unsafe { obj::write::<i32>(obj::read_ref(stream, field), fd_int(), fd) };
     ret_void()
-}
-
-pub(crate) fn errno_text() -> String {
-    std::io::Error::last_os_error().to_string().split(" (os error").next().unwrap_or("").to_string()
-}
-
-pub(crate) fn io_error(t: &mut Thread, what: &str) -> Throw {
-    let msg = format!("{what}: {}", errno_text());
-    throw_new(t, "java/io/IOException", &msg)
 }
 
 fn register_raf(r: &mut NativeRegistry) {

@@ -16,10 +16,18 @@ pub(super) fn register(r: &mut NativeRegistry) {
     r.add("jdk/internal/vm/ContinuationSupport", "isSupported0", "()Z", |_, _| ret_bool(false));
     r.add(VM, "initialize", "()V", |_, _| ret_void());
     r.add(VM, "latestUserDefinedLoader0", "()Ljava/lang/ClassLoader;", latest_user_defined_loader);
-    r.add(VM, "getuid", "()J", |_, _| ret_long(unsafe { libc::getuid() } as i64));
-    r.add(VM, "geteuid", "()J", |_, _| ret_long(unsafe { libc::geteuid() } as i64));
-    r.add(VM, "getgid", "()J", |_, _| ret_long(unsafe { libc::getgid() } as i64));
-    r.add(VM, "getegid", "()J", |_, _| ret_long(unsafe { libc::getegid() } as i64));
+    // User and group ids (Windows has none: -1, as the JDK's VM.c reports there).
+    #[cfg(unix)]
+    {
+        r.add(VM, "getuid", "()J", |_, _| ret_long(unsafe { libc::getuid() } as i64));
+        r.add(VM, "geteuid", "()J", |_, _| ret_long(unsafe { libc::geteuid() } as i64));
+        r.add(VM, "getgid", "()J", |_, _| ret_long(unsafe { libc::getgid() } as i64));
+        r.add(VM, "getegid", "()J", |_, _| ret_long(unsafe { libc::getegid() } as i64));
+    }
+    #[cfg(not(unix))]
+    for name in ["getuid", "geteuid", "getgid", "getegid"] {
+        r.add(VM, name, "()J", |_, _| ret_long(-1));
+    }
     r.add(VM, "getNanoTimeAdjustment", "(J)J", |_, a| {
         let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
         let offset = a[0] as i64;
@@ -97,6 +105,19 @@ pub(super) fn register(r: &mut NativeRegistry) {
         };
         ret_ref(rt::new_string(t, &mapped)?)
     });
+    r.add("java/security/AccessController", "getProtectionDomain", "(Ljava/lang/Class;)Ljava/security/ProtectionDomain;", |_, _| {
+        ret_ref(std::ptr::null_mut())
+    });
+    r.add("jdk/internal/jimage/NativeImageBuffer", "getNativeMap", "(Ljava/lang/String;)Ljava/nio/ByteBuffer;", |t, a| {
+        let path = rt::java_string_to_rust(a[0] as Oop);
+        let ours = vm().options.java_home.join("lib/modules");
+        if std::path::Path::new(&path) != ours {
+            return ret_ref(std::ptr::null_mut());
+        }
+        let (addr, len) = vm().image.mapping();
+        let bb = crate::boot::construct(t, "java/nio/DirectByteBuffer", "(JJ)V", &[addr as u64, 0, len as u64, 0])?;
+        ret_ref(bb)
+    });
     r.add("java/security/AccessController", "getStackAccessControlContext", "()Ljava/security/AccessControlContext;", |_, _| {
         ret_ref(std::ptr::null_mut())
     });
@@ -105,6 +126,7 @@ pub(super) fn register(r: &mut NativeRegistry) {
     });
     r.add("java/security/AccessController", "ensureMaterializedForStackWalk", "(Ljava/lang/Object;)V", |_, _| ret_void());
     r.add("jdk/internal/misc/ScopedMemoryAccess", "registerNatives", "()V", |_, _| ret_void());
+    #[cfg(unix)]
     r.add("java/lang/ProcessEnvironment", "environ", "()[[B", environ);
     r.add("java/util/TimeZone", "getSystemTimeZoneID", "(Ljava/lang/String;)Ljava/lang/String;", |t, _| {
         ret_ref(rt::new_string(t, &system_time_zone())?)
@@ -162,6 +184,7 @@ fn latest_user_defined_loader(t: &mut Thread, _: &[u64]) -> JResult<u64> {
 }
 
 /// `ProcessEnvironment.environ`: `byte[][]` of alternating names and values.
+#[cfg(unix)]
 fn environ(t: &mut Thread, _: &[u64]) -> JResult<u64> {
     use std::os::unix::ffi::OsStrExt;
     let bytes_class = vm().primitive_array_class(crate::types::BasicType::Byte).expect("[B");

@@ -27,10 +27,11 @@ extern "sysv64" fn log(x: u64) -> u64 {
 }
 
 /// The `Math` method `name(D)D` the C library computes: its index in `FNS`. macOS's `tan` can
-/// land on the other side of the exact result from fdlibm's, two ulps from it, so there `Math.tan`
-/// keeps its bytecode (fdlibm, as HotSpot's own stub computes it).
+/// land on the other side of the exact result from fdlibm's, two ulps from it, and the Windows C
+/// runtime's are not within an ulp at all, so there these keep their bytecode (fdlibm, as
+/// HotSpot's own stubs compute it).
 pub(crate) fn index(name: &str) -> Option<u8> {
-    if cfg!(target_os = "macos") && name == "tan" {
+    if cfg!(windows) || cfg!(target_os = "macos") && name == "tan" {
         return None;
     }
     NAMES.iter().position(|&n| n == name).map(|i| i as u8)

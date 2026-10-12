@@ -4,22 +4,30 @@
 
 mod array;
 mod classloader;
+#[cfg(unix)]
 mod fs;
+#[cfg(unix)]
 pub(crate) mod io;
+mod io_shared;
 mod arraycopy;
 mod lang;
 pub(crate) mod misc;
+#[cfg(unix)]
 mod nio_ch;
+#[cfg(unix)]
 mod auth;
 mod desktop;
 mod digest;
 mod jfr;
 mod management;
 pub(crate) mod math;
+#[cfg(unix)]
 mod process;
 pub(crate) mod mh;
 mod module;
+#[cfg(unix)]
 mod net;
+#[cfg(unix)]
 mod netif;
 pub(crate) mod props;
 pub(crate) mod reflect;
@@ -28,15 +36,21 @@ mod reflect_class;
 mod stackwalk;
 pub(crate) mod thread;
 pub(crate) mod unsafe_mem;
+#[cfg(unix)]
 mod unixfs;
+#[cfg(unix)]
 mod unixfs_ext;
 #[cfg(target_os = "linux")]
 mod linux;
 #[cfg(target_os = "macos")]
 mod bsd;
+#[cfg(windows)]
+mod windows;
+#[cfg(unix)]
 mod posix;
 #[cfg(target_os = "linux")]
 mod watch;
+#[cfg(unix)]
 mod datagram;
 mod zip;
 mod throwable;
@@ -70,7 +84,9 @@ impl NativeRegistry {
         unsafe_mem::register(&mut r);
         props::register(&mut r);
         thread::register(&mut r);
+        #[cfg(unix)]
         io::register(&mut r);
+        #[cfg(unix)]
         fs::register(&mut r);
         module::register(&mut r);
         classloader::register(&mut r);
@@ -78,7 +94,9 @@ impl NativeRegistry {
         records::register(&mut r);
         mh::register(&mut r);
         array::register(&mut r);
+        #[cfg(unix)]
         unixfs::register(&mut r);
+        #[cfg(unix)]
         unixfs_ext::register(&mut r);
         #[cfg(target_os = "linux")]
         watch::register(&mut r);
@@ -86,16 +104,24 @@ impl NativeRegistry {
         linux::register(&mut r);
         #[cfg(target_os = "macos")]
         bsd::register(&mut r);
+        #[cfg(windows)]
+        windows::register(&mut r);
+        #[cfg(unix)]
         datagram::register(&mut r);
         zip::register(&mut r);
+        #[cfg(unix)]
         nio_ch::register(&mut r);
+        #[cfg(unix)]
         process::register(&mut r);
         management::register(&mut r);
+        #[cfg(unix)]
         auth::register(&mut r);
         desktop::register(&mut r);
         jfr::register(&mut r);
         stackwalk::register(&mut r);
+        #[cfg(unix)]
         net::register(&mut r);
+        #[cfg(unix)]
         netif::register(&mut r);
         misc::register(&mut r);
         digest::register(&mut r);
