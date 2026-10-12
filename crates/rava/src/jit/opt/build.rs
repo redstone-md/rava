@@ -137,6 +137,9 @@ pub(super) struct Builder {
     seq: u32,
     /// Whether this compilation may speculate (see `speculates`).
     speculate: bool,
+    /// `speculates`'s answers so far: trap counts change while compiling, and every pass of
+    /// one compilation (block discovery, then building) must see the same answer.
+    trapped: std::cell::RefCell<HashMap<(usize, usize), bool>>,
     /// Values known non-null, or of an exact class, at the current point (on every path to it).
     pub facts: super::build_cache::Facts,
     /// Constant arrays read from `@Stable` fields, with their stable dimensions left.
@@ -233,7 +236,7 @@ impl Builder {
     fn new(sc: Scope) -> Builder {
         let m = sc.m;
         let speculate = m.deopt_recompiles.load(std::sync::atomic::Ordering::Relaxed) < super::SPECULATIVE_RECOMPILES;
-        Builder { g: Graph::default(), extent: sc.frame_end(), sc, cur: 0, spent: 0, chain: vec![(m, None)], seq: 0, speculate, facts: Default::default(), stable: HashMap::new(), numbered: HashMap::new(), loads: HashMap::new(), exact: Vec::new(), declared: HashMap::new(), boxes: HashMap::new(), complete_phis: Default::default(), unprofiled_call: false, cold_call: false, fallback_call: false, bounds: Vec::new(), exits: HashMap::new() }
+        Builder { g: Graph::default(), extent: sc.frame_end(), sc, cur: 0, spent: 0, chain: vec![(m, None)], seq: 0, speculate, trapped: Default::default(), facts: Default::default(), stable: HashMap::new(), numbered: HashMap::new(), loads: HashMap::new(), exact: Vec::new(), declared: HashMap::new(), boxes: HashMap::new(), complete_phis: Default::default(), unprofiled_call: false, cold_call: false, fallback_call: false, bounds: Vec::new(), exits: HashMap::new() }
     }
 
     /// Makes `block` the current one, next in code order, with the caches of its single
@@ -695,7 +698,7 @@ impl Builder {
     /// from the profile fails there: not where it trapped before, nor anywhere in a method that
     /// kept deoptimizing (HotSpot's per-bytecode and per-method trap limits).
     pub fn speculates(&self, m: &'static Method, bci: usize) -> bool {
-        self.speculate && !crate::jit::profile::trapped(m, bci)
+        self.speculate && !*self.trapped.borrow_mut().entry((m as *const Method as usize, bci)).or_insert_with(|| crate::jit::profile::trapped(m, bci))
     }
 
     /// Which direction of the branch at `pc` baseline code never took (true: the jump to
