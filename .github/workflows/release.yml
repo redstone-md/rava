@@ -58,7 +58,7 @@ jobs:
           "$rava" /tmp/Hello.java
 
       - name: Checks against HotSpot
-        run: R="$PWD/dist/out/$NAME/bin/rava" tests/check.sh
+        run: R="$PWD/dist/out/$NAME/bin/rava" SEM_DIFF=1 tests/check.sh
 
       - name: Checksums
         working-directory: dist/out
