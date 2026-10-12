@@ -25,6 +25,7 @@ pub(super) fn register(r: &mut NativeRegistry) {
         "sun/awt/image/ShortComponentRaster",
         "sun/awt/image/IntegerComponentRaster",
         "sun/awt/image/ImagingLib",
+        "sun/java2d/Disposer",
     ] {
         r.add(class, "initIDs", "()V", |_, _| ret_void());
     }
