@@ -26,8 +26,13 @@ extern "sysv64" fn log(x: u64) -> u64 {
     f64::from_bits(x).ln().to_bits()
 }
 
-/// The `Math` method `name(D)D` the C library computes: its index in `FNS`.
+/// The `Math` method `name(D)D` the C library computes: its index in `FNS`. macOS's `tan` can
+/// land on the other side of the exact result from fdlibm's, two ulps from it, so there `Math.tan`
+/// keeps its bytecode (fdlibm, as HotSpot's own stub computes it).
 pub(crate) fn index(name: &str) -> Option<u8> {
+    if cfg!(target_os = "macos") && name == "tan" {
+        return None;
+    }
     NAMES.iter().position(|&n| n == name).map(|i| i as u8)
 }
 
@@ -38,7 +43,7 @@ fn body<const F: usize>(_: &mut Thread, a: &[u64]) -> JResult<u64> {
 pub(super) fn register(r: &mut NativeRegistry) {
     type Stub = fn(&mut Thread, &[u64]) -> JResult<u64>;
     let bodies: [Stub; 5] = [body::<0>, body::<1>, body::<2>, body::<3>, body::<4>];
-    for (name, f) in NAMES.iter().zip(bodies) {
+    for (name, f) in NAMES.iter().zip(bodies).filter(|(n, _)| index(n).is_some()) {
         r.add_stub("java/lang/Math", name, "(D)D", f);
     }
 }
