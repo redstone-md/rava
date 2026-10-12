@@ -4,6 +4,8 @@
 //! class library, live in `natives/`.
 //!
 //! Memory from `reserve` is zero-filled and costs physical memory only where it is touched.
+//! Memory from `reserve_uncommitted` (the heap) must also be `commit`ted before use: Windows
+//! counts committed memory against a system-wide limit, so the heap commits as it grows.
 
 #[cfg(unix)]
 mod unix;

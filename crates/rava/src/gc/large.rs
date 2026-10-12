@@ -54,6 +54,7 @@ impl LargeArea {
         if self.fresh + size > self.end {
             return None;
         }
+        crate::os::commit(self.fresh, size);
         self.fresh += size;
         super::prefault::advanced(super::prefault::Region::Large, self.fresh);
         Some((self.fresh - size, size))

@@ -35,6 +35,27 @@ pub fn reserve(len: usize, at: Option<usize>, exec: bool) -> Option<usize> {
     }
 }
 
+/// Reserves `len` bytes to `commit` piecewise.
+pub fn reserve_uncommitted(len: usize, at: Option<usize>) -> Option<usize> {
+    // SAFETY: a fresh reservation, at `at` only where that range is free.
+    let p = unsafe { VirtualAlloc(at.unwrap_or(0) as *const _, len, MEM_RESERVE, PAGE_READWRITE) } as usize;
+    match at {
+        _ if p == 0 => None,
+        Some(a) if p != a => {
+            release(p, len);
+            None
+        }
+        _ => Some(p),
+    }
+}
+
+/// Makes a range of a `reserve_uncommitted` reservation usable.
+pub fn commit(p: usize, len: usize) {
+    // SAFETY: commits pages of the caller's reservation (committed pages stay as they are).
+    let ok = unsafe { !VirtualAlloc(p as *const _, len, MEM_COMMIT, PAGE_READWRITE).is_null() };
+    assert!(ok, "cannot commit {len} bytes of heap: {}", std::io::Error::last_os_error());
+}
+
 /// Reserves `len` bytes below 2 GiB, or None.
 pub fn reserve_low(len: usize) -> Option<usize> {
     static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(4 << 20);
@@ -129,6 +150,26 @@ pub fn set_thread_name(name: &std::ffi::CStr) {
     let w: Vec<u16> = name.to_string_lossy().encode_utf16().chain(std::iter::once(0)).collect();
     // SAFETY: names the calling thread with a NUL-terminated wide string.
     unsafe { windows_sys::Win32::System::Threading::SetThreadDescription(GetCurrentThread(), w.as_ptr()) };
+}
+
+/// CPU time the process has used, in nanoseconds (-1 if unknown).
+pub fn process_cpu_nanos() -> i64 {
+    use windows_sys::Win32::Foundation::FILETIME;
+    use windows_sys::Win32::System::Threading::GetProcessTimes;
+    let z = FILETIME { dwLowDateTime: 0, dwHighDateTime: 0 };
+    let (mut c, mut e, mut k, mut u) = (z, z, z, z);
+    // SAFETY: fills four FILETIMEs of the current process.
+    if unsafe { GetProcessTimes(GetCurrentProcess(), &mut c, &mut e, &mut k, &mut u) } == 0 {
+        return -1;
+    }
+    let ticks = |f: FILETIME| ((f.dwHighDateTime as i64) << 32) | f.dwLowDateTime as i64;
+    (ticks(k) + ticks(u)) * 100
+}
+
+/// Configured and online processors.
+pub fn cpu_counts() -> (i32, i32) {
+    let n = std::thread::available_parallelism().map_or(1, |n| n.get()) as i32;
+    (n, n)
 }
 
 /// The lowest address and size of the calling thread's stack.

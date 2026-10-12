@@ -36,6 +36,15 @@ pub fn reserve(len: usize, at: Option<usize>, exec: bool) -> Option<usize> {
     }
 }
 
+/// Reserves `len` bytes to `commit` piecewise (here every reservation is usable at once).
+pub fn reserve_uncommitted(len: usize, at: Option<usize>) -> Option<usize> {
+    reserve(len, at, false)
+}
+
+/// Makes a range of a `reserve_uncommitted` reservation usable.
+#[inline]
+pub fn commit(_p: usize, _len: usize) {}
+
 /// Reserves `len` bytes below 2 GiB, or None.
 pub fn reserve_low(len: usize) -> Option<usize> {
     #[cfg(target_os = "linux")]
@@ -193,6 +202,20 @@ pub fn set_thread_name(name: &std::ffi::CStr) {
     unsafe {
         libc::pthread_setname_np(name.as_ptr());
     }
+}
+
+/// CPU time the process has used, in nanoseconds (-1 if unknown).
+pub fn process_cpu_nanos() -> i64 {
+    let mut ts: libc::timespec = unsafe { std::mem::zeroed() };
+    // SAFETY: fills a timespec.
+    let ok = unsafe { libc::clock_gettime(libc::CLOCK_PROCESS_CPUTIME_ID, &mut ts) } == 0;
+    if ok { ts.tv_sec as i64 * 1_000_000_000 + ts.tv_nsec as i64 } else { -1 }
+}
+
+/// Configured and online processors.
+pub fn cpu_counts() -> (i32, i32) {
+    // SAFETY: plain sysconf queries.
+    unsafe { (libc::sysconf(libc::_SC_NPROCESSORS_CONF) as i32, libc::sysconf(libc::_SC_NPROCESSORS_ONLN) as i32) }
 }
 
 /// The lowest address and size of the calling thread's stack.
