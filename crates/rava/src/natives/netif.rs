@@ -87,6 +87,8 @@ fn ipv6_available() -> bool {
 fn interfaces() -> Vec<Iface> {
     let mut out: Vec<Iface> = Vec::new();
     let mut flags: Vec<(String, u32)> = Vec::new();
+    // IPv6 addresses getifaddrs lists (used where there is no /proc), added after the IPv4 ones.
+    let mut v6: Vec<(String, i32, u32, Addr)> = Vec::new();
     // SAFETY: getifaddrs allocates a list this walks and frees.
     unsafe {
         let mut head: *mut libc::ifaddrs = std::ptr::null_mut();
@@ -101,7 +103,27 @@ fn interfaces() -> Vec<Iface> {
             if !flags.iter().any(|(n, _)| *n == name) {
                 flags.push((name.clone(), ifa.ifa_flags));
             }
-            if ifa.ifa_addr.is_null() || (*ifa.ifa_addr).sa_family as i32 != libc::AF_INET {
+            if ifa.ifa_addr.is_null() {
+                continue;
+            }
+            if (*ifa.ifa_addr).sa_family as i32 == libc::AF_INET6 {
+                let sa = &*(ifa.ifa_addr as *const libc::sockaddr_in6);
+                let mut ip = sa.sin6_addr.s6_addr;
+                // The KAME stack embeds the scope in a link-local address; the JDK removes it.
+                if ip[0] == 0xfe && ip[1] & 0xc0 == 0x80 {
+                    ip[2] = 0;
+                    ip[3] = 0;
+                }
+                let prefix = if ifa.ifa_netmask.is_null() {
+                    0
+                } else {
+                    (*(ifa.ifa_netmask as *const libc::sockaddr_in6)).sin6_addr.s6_addr.iter().map(|b| b.count_ones() as u16).sum()
+                };
+                let index = libc::if_nametoindex(ifa.ifa_name) as i32;
+                v6.push((name, index, ifa.ifa_flags, Addr::V6(ip, prefix, index as u32)));
+                continue;
+            }
+            if (*ifa.ifa_addr).sa_family as i32 != libc::AF_INET {
                 continue;
             }
             let v4 = |sa: *mut libc::sockaddr| u32::from_be((*(sa as *const libc::sockaddr_in)).sin_addr.s_addr);
@@ -117,14 +139,73 @@ fn interfaces() -> Vec<Iface> {
         }
         libc::freeifaddrs(head);
     }
-    if ipv6_available() {
-        let text = std::fs::read_to_string("/proc/net/if_inet6").unwrap_or_default();
-        for (name, index, addr) in parse_if_inet6(&text) {
-            let fl = flags.iter().find(|(n, _)| *n == name).map_or(0, |&(_, f)| f);
+    if cfg!(target_os = "linux") {
+        if ipv6_available() {
+            let text = std::fs::read_to_string("/proc/net/if_inet6").unwrap_or_default();
+            for (name, index, addr) in parse_if_inet6(&text) {
+                let fl = flags.iter().find(|(n, _)| *n == name).map_or(0, |&(_, f)| f);
+                add(&mut out, &name, index, fl, addr);
+            }
+        }
+    } else {
+        for (name, index, fl, addr) in v6 {
             add(&mut out, &name, index, fl, addr);
         }
     }
     out
+}
+
+/// An interface's MTU.
+fn mtu(name: &str) -> Option<i32> {
+    #[cfg(target_os = "linux")]
+    return std::fs::read_to_string(format!("/sys/class/net/{name}/mtu")).ok()?.trim().parse().ok();
+    #[cfg(not(target_os = "linux"))]
+    {
+        // SAFETY: an ifreq naming the interface, filled by SIOCGIFMTU on a probe socket.
+        unsafe {
+            let mut req: libc::ifreq = std::mem::zeroed();
+            for (d, s) in req.ifr_name.iter_mut().zip(name.bytes().take(libc::IFNAMSIZ - 1)) {
+                *d = s as libc::c_char;
+            }
+            let s = libc::socket(libc::AF_INET, libc::SOCK_DGRAM, 0);
+            // `_IOWR('i', 51, struct ifreq)` in <sys/sockio.h>.
+            const SIOCGIFMTU: libc::c_ulong = 0xc020_6933;
+            let r = libc::ioctl(s, SIOCGIFMTU, &mut req);
+            libc::close(s);
+            (r == 0).then_some(req.ifr_ifru.ifru_mtu)
+        }
+    }
+}
+
+/// An interface's hardware address.
+fn hardware_address(name: &str) -> Option<Vec<u8>> {
+    #[cfg(target_os = "linux")]
+    return std::fs::read_to_string(format!("/sys/class/net/{name}/address"))
+        .ok()
+        .map(|s| s.trim().split(':').filter_map(|h| u8::from_str_radix(h, 16).ok()).collect());
+    #[cfg(not(target_os = "linux"))]
+    // SAFETY: walks the list getifaddrs allocates (its link-level entries) and frees it.
+    unsafe {
+        let mut head: *mut libc::ifaddrs = std::ptr::null_mut();
+        if libc::getifaddrs(&mut head) != 0 {
+            return None;
+        }
+        let mut found = None;
+        let mut p = head;
+        while !p.is_null() {
+            let ifa = &*p;
+            p = ifa.ifa_next;
+            if ifa.ifa_addr.is_null() || (*ifa.ifa_addr).sa_family as i32 != libc::AF_LINK || std::ffi::CStr::from_ptr(ifa.ifa_name).to_bytes() != name.as_bytes() {
+                continue;
+            }
+            let dl = &*(ifa.ifa_addr as *const libc::sockaddr_dl);
+            let data = dl.sdl_data.as_ptr() as *const u8;
+            found = Some(std::slice::from_raw_parts(data.add(dl.sdl_nlen as usize), dl.sdl_alen as usize).to_vec());
+            break;
+        }
+        libc::freeifaddrs(head);
+        found
+    }
 }
 
 fn find(name: &str, index: i32) -> Option<Iface> {
@@ -273,14 +354,12 @@ pub(super) fn register(r: &mut NativeRegistry) {
     r.add(NI, "supportsMulticast0", "(Ljava/lang/String;I)Z", |_, a| has_flag(a, libc::IFF_MULTICAST));
     r.add(NI, "isP2P0", "(Ljava/lang/String;I)Z", |_, a| has_flag(a, libc::IFF_POINTOPOINT));
     r.add(NI, "getMTU0", "(Ljava/lang/String;I)I", |_, a| {
-        let mtu = named(a).and_then(|f| std::fs::read_to_string(format!("/sys/class/net/{}/mtu", f.name)).ok()?.trim().parse().ok());
-        ret_int(mtu.unwrap_or(-1))
+        ret_int(named(a).and_then(|f| mtu(&f.name)).unwrap_or(-1))
     });
     // The hardware address, or null for none (loopback reports all zeros).
     r.add(NI, "getMacAddr0", "([BLjava/lang/String;I)[B", |t, a| {
-        let mac: Option<Vec<u8>> = find(&rt::java_string_to_rust(a[1] as Oop), a[2] as i32)
-            .and_then(|f| std::fs::read_to_string(format!("/sys/class/net/{}/address", f.name)).ok())
-            .map(|s| s.trim().split(':').filter_map(|h| u8::from_str_radix(h, 16).ok()).collect())
+        let mac = find(&rt::java_string_to_rust(a[1] as Oop), a[2] as i32)
+            .and_then(|f| hardware_address(&f.name))
             .filter(|m: &Vec<u8>| !m.is_empty() && m.iter().any(|&b| b != 0));
         let Some(mac) = mac else { return ret_ref(std::ptr::null_mut()) };
         let arr = rt::alloc_array(t, vm().primitive_array_class(BasicType::Byte).expect("[B"), mac.len() as i32)?;
