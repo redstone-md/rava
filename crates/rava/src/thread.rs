@@ -94,6 +94,8 @@ pub struct Thread {
     pub(crate) native_limit: usize,
     /// A StackOverflowError is being constructed (`runtime::stack_overflow`).
     pub(crate) overflowing: bool,
+    /// The thread's `JNIEnv` and JNI state (`jni`).
+    pub(crate) jni: crate::jni::JniThread,
 }
 
 const _: () = assert!(std::mem::offset_of!(Thread, poll) == offsets::POLL as usize);
@@ -159,12 +161,14 @@ impl Thread {
             lock_token: crate::sync::thread_token(),
             native_limit: 0,
             overflowing: false,
+            jni: crate::jni::JniThread::new(),
         }
     }
 
     /// Registers this thread (at its final address) with the collector.
     pub fn attach(&mut self) {
         crate::gc::safepoint::attach(self);
+        crate::jni::set_current(self);
         // What constructing the error and the VM's own calls need stays free (4 MiB, at most an
         // eighth of a small stack).
         let (low, size) = crate::gc::safepoint::current_stack();

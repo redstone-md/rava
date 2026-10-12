@@ -1,0 +1,15 @@
+#!/bin/bash
+# JNI end to end: builds a C library with natives of every kind and a Java program calling
+# them, then compares rava's output with HotSpot's. Usage: tests/jni/run.sh [work-dir]; R
+# overrides the rava binary.
+R=$(realpath "${R:-$(dirname "$0")/../../target/release/rava}")
+T=$(realpath "$(dirname "$0")")
+W=${1:-$(mktemp -d)}
+J=$(dirname "$(dirname "$(readlink -f "$(which javac)")")")
+set -e
+javac -nowarn -d "$W" "$T/JniTest.java" 2>/dev/null
+cc -shared -fPIC -O2 -I"$J/include" -I"$J/include/linux" -o "$W/libjnitest.so" "$T/jnitest.c"
+set +e
+want=$(cd "$W" && java -Djava.library.path=. -cp . JniTest 2>&1 | grep -v "Picked up")
+got=$(cd "$W" && "$R" -Djava.library.path=. -cp . JniTest 2>&1 | grep -v "Picked up")
+if [ "$got" == "$want" ]; then echo "jni: pass"; else echo "jni: FAIL"; diff <(echo "$got") <(echo "$want"); exit 1; fi
