@@ -8,6 +8,7 @@ mod io;
 mod misc;
 mod nio_ch;
 mod nio_fs;
+mod process;
 mod security;
 mod selector;
 mod sockopt;
@@ -22,6 +23,7 @@ pub(super) fn register(r: &mut NativeRegistry) {
     misc::register(r);
     nio_ch::register(r);
     nio_fs::register(r);
+    process::register(r);
     security::register(r);
     selector::register(r);
     sockopt::register(r);
