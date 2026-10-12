@@ -17,8 +17,8 @@ macro_rules! constants {
 }
 
 pub(super) fn register(r: &mut NativeRegistry) {
-    // struct sockaddr_in { sa_family_t; in_port_t; struct in_addr; ... } and sockaddr_in6
-    // { sa_family_t; in_port_t; uint32_t flowinfo; struct in6_addr; uint32_t scope_id; }.
+    // The layouts of sockaddr_in and sockaddr_in6 (macOS puts a length byte before a one-byte
+    // family).
     constants!(r,
         "AFINET" => libc::AF_INET,
         "AFINET6" => libc::AF_INET6,
@@ -26,13 +26,13 @@ pub(super) fn register(r: &mut NativeRegistry) {
         "sizeofSockAddr6" => std::mem::size_of::<libc::sockaddr_in6>(),
         "sizeofSockAddr" => std::mem::size_of::<libc::sockaddr_in6>(),
         "sizeofFamily" => std::mem::size_of::<libc::sa_family_t>(),
-        "offsetFamily" => 0,
-        "offsetSin4Port" => 2,
-        "offsetSin4Addr" => 4,
-        "offsetSin6Port" => 2,
-        "offsetSin6FlowInfo" => 4,
-        "offsetSin6Addr" => 8,
-        "offsetSin6ScopeId" => 24,
+        "offsetFamily" => std::mem::offset_of!(libc::sockaddr_in, sin_family),
+        "offsetSin4Port" => std::mem::offset_of!(libc::sockaddr_in, sin_port),
+        "offsetSin4Addr" => std::mem::offset_of!(libc::sockaddr_in, sin_addr),
+        "offsetSin6Port" => std::mem::offset_of!(libc::sockaddr_in6, sin6_port),
+        "offsetSin6FlowInfo" => std::mem::offset_of!(libc::sockaddr_in6, sin6_flowinfo),
+        "offsetSin6Addr" => std::mem::offset_of!(libc::sockaddr_in6, sin6_addr),
+        "offsetSin6ScopeId" => std::mem::offset_of!(libc::sockaddr_in6, sin6_scope_id),
     );
     r.add(DC, "disconnect0", "(Ljava/io/FileDescriptor;Z)V", |t, a| {
         // SAFETY: an AF_UNSPEC address dissolves the association.
