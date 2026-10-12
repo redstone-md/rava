@@ -10,6 +10,7 @@ mod fs;
 pub(crate) mod io;
 mod fields;
 mod io_shared;
+mod sock;
 mod arraycopy;
 mod lang;
 pub(crate) mod misc;
@@ -26,9 +27,7 @@ pub(crate) mod math;
 mod process;
 pub(crate) mod mh;
 mod module;
-#[cfg(unix)]
 mod net;
-#[cfg(unix)]
 mod netif;
 pub(crate) mod props;
 pub(crate) mod reflect;
@@ -51,7 +50,6 @@ mod windows;
 mod posix;
 #[cfg(target_os = "linux")]
 mod watch;
-#[cfg(unix)]
 mod datagram;
 mod zip;
 mod throwable;
@@ -107,7 +105,6 @@ impl NativeRegistry {
         bsd::register(&mut r);
         #[cfg(windows)]
         windows::register(&mut r);
-        #[cfg(unix)]
         datagram::register(&mut r);
         zip::register(&mut r);
         #[cfg(unix)]
@@ -120,9 +117,7 @@ impl NativeRegistry {
         desktop::register(&mut r);
         jfr::register(&mut r);
         stackwalk::register(&mut r);
-        #[cfg(unix)]
         net::register(&mut r);
-        #[cfg(unix)]
         netif::register(&mut r);
         misc::register(&mut r);
         digest::register(&mut r);

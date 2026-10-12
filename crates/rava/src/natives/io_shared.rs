@@ -2,8 +2,10 @@
 //! system's last error as Java's exceptions word it.
 
 use crate::heap::{obj, Oop};
-use crate::runtime::{self as rt, throw_new};
+use crate::runtime::{self as rt, throw_new, vm_field};
 use crate::thread::{JResult, Thread, Throw};
+
+vm_field!(fd_int, "java/io/FileDescriptor", "fd", "I");
 
 /// The `[off, off+len)` byte range of a Java `byte[]`, with Java's exceptions.
 pub(crate) fn checked_range<'a>(t: &mut Thread, arr: Oop, off: i32, len: i32) -> JResult<&'a mut [u8]> {
