@@ -348,6 +348,15 @@ impl Builder {
             self.push(r);
             return Some(());
         }
+        // `x - c` is `x + (-c)`, as `iinc` builds it: one form for value numbering.
+        if let (BinOp::Sub, Ty::I | Ty::J, Some(c)) = (bin, ty, self.g.constant(b)) {
+            if let Some(n) = canon::bin(BinOp::Sub, ty, 0, c) {
+                let k = self.konst(ty, n);
+                let r = self.add(Inst::Bin(BinOp::Add, a, k), ty);
+                self.push(r);
+                return Some(());
+            }
+        }
         let r = self.add(Inst::Bin(bin, a, b), ty);
         self.push(r);
         Some(())
