@@ -14,6 +14,12 @@ with no single bad method. What was ruled out, what was fixed, and what is left,
 - **Trampolines on direct calls**: calling a known method's entry directly, the call sites
   repointed when the entry changes (as HotSpot), left `mobs` unchanged (114.3 against 112.2
   ms per tick); the method-entry samples are the callee's code arriving, not the jump.
+- **Inlining budget** (`TIER2_BUDGET`, one round of two sprints each on `mobs`): 8000 cost 11 %
+  (115 against 103 ms per tick), 32000 changed nothing (111 against 111). The tick wants the
+  inlining it gets; more does not help.
+- **Interface casts** cost 13 % of a two-lambda loop (`checkcast` removed by hand as an
+  experiment), but C2 makes the same check through the secondary-supers cache and the loop
+  still runs 1.6× slower than `java`'s without it.
 - **Call-site bookkeeping**: removing the BCI store and the pending-exception test after a
   call (as an experiment) saves 3 % on `MegaCallBench`.
 
