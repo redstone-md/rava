@@ -228,7 +228,13 @@ typed_calls!(f32, |v: u64| f32::from_bits(v as u32), 7, cv_f, ca_f, nv_f, na_f, 
 typed_calls!(f64, |v: u64| f64::from_bits(v), 8, cv_d, ca_d, nv_d, na_d, sv_d, sa_d, rava_jni_call_d, rava_jni_ncall_d, rava_jni_scall_d);
 typed_calls!((), |_: u64| (), 9, cv_v, ca_v, nv_v, na_v, sv_v, sa_v, rava_jni_call_v, rava_jni_ncall_v, rava_jni_scall_v);
 
+/// `FromReflectedMethod`: the ID of a `java.lang.reflect.Method` or `Constructor`.
+extern "C" fn from_reflected_method(_env: *mut Env, m: Oop) -> *const Method {
+    crate::natives::reflect::executable_of(m)
+}
+
 pub(super) fn fill(t: &mut [usize; SIZE]) {
+    t[7] = from_reflected_method as *const () as usize;
     t[28] = rava_jni_new_object as *const () as usize;
     t[29] = new_object_v as *const () as usize;
     t[30] = new_object_a as *const () as usize;
