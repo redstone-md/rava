@@ -23,7 +23,7 @@ jobs:
     steps:
       # The tag's commit on a tag push; on a manual run, the dispatched branch's head, where the
       # release then creates the tag.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
@@ -33,7 +33,7 @@ jobs:
 
       # Supplies the Java class library the distribution ships (OpenJDK, GPLv2 with the
       # Classpath Exception; its legal notices travel in legal/).
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: "21"
