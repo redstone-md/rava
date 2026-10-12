@@ -29,3 +29,25 @@ a program, the `java` command line unchanged.
    library's natives, tested under Wine here and on Windows runners in CI; a release zip.
 4. **Release matrix**: Linux, macOS and Windows archives from one tag.
 5. **AArch64**: a second backend for both compiler tiers, for Apple Silicon and Linux on ARM.
+
+## Status
+
+- **Platform layer**: done (`src/os/`: `unix.rs` for Linux and macOS, `windows.rs`). The heap
+  reserves its range uncommitted and commits each page as allocation reaches it (a no-op on
+  Unix).
+- **macOS x86-64**: done. The binary links with a 4 KiB `__PAGEZERO`; the heap takes the first
+  free range from 4 GiB. Natives of the BSD class library: `KQueue`, `BsdNativeDispatcher`, path
+  normalization, `F_FULLFSYNC`, socket options; `NetworkInterface` from `getifaddrs`. CI runs the
+  semantic probes, the JNI test and the patches test on an Intel Mac, with the same four
+  red-by-design probes as Linux.
+- **Windows x86-64**: the JDK boots and runs programs; tested here with a MinGW build under Wine
+  and in CI on Windows runners. Done: platform properties, `java.io` over handles,
+  `WinNTFileSystem`, `WindowsNativeDispatcher` (files and security), file channels, sockets over
+  Winsock behind the shared socket layer (`natives/sock`), the `WEPoll` selector over `WSAPoll`,
+  `NetworkInterface` from `GetAdaptersAddresses`, child processes, and JNI in the Win64
+  convention (native calls, variadic `Call*Method`, `va_list`). Not yet: the generated JNI call
+  stubs (natives take the generic path), `ProcessHandle.Info`, AWT. Under Wine, 124 of 132
+  semantic probes match HotSpot's Linux output; the others are the four helpful-NPE probes and
+  output that differs by design on Windows (the ANSI code page, path syntax, interfaces).
+- **Release matrix**: the release workflow builds and checks a tar.gz for Linux and macOS and a
+  zip for Windows and publishes them together.
