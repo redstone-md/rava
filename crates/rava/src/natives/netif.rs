@@ -1,6 +1,6 @@
-//! `java.net.NetworkInterface`: the host's interfaces and their IPv4 addresses, flags, MTU
-//! and hardware address, read with `getifaddrs` and from `/sys/class/net` as the JDK's
-//! `NetworkInterface.c` reads them.
+//! `java.net.NetworkInterface`: the host's interfaces and their addresses, flags, MTU and
+//! hardware address, found as the JDK's `NetworkInterface.c` finds them: IPv4 addresses from
+//! `getifaddrs`, then IPv6 ones from `/proc/net/if_inet6` where the host has IPv6.
 
 use super::{ret_bool, ret_int, ret_ref, ret_void, NativeRegistry};
 use crate::heap::{obj, Oop};
@@ -20,17 +20,73 @@ vm_field!(ni_childs, "java/net/NetworkInterface", "childs", "[Ljava/net/NetworkI
 vm_field!(ia_address, "java/net/InterfaceAddress", "address", "Ljava/net/InetAddress;");
 vm_field!(ia_broadcast, "java/net/InterfaceAddress", "broadcast", "Ljava/net/Inet4Address;");
 vm_field!(ia_mask, "java/net/InterfaceAddress", "maskLength", "S");
+vm_field!(i6_holder, "java/net/Inet6Address", "holder6", "Ljava/net/Inet6Address$Inet6AddressHolder;");
+vm_field!(h6_address, "java/net/Inet6Address$Inet6AddressHolder", "ipaddress", "[B");
+vm_field!(h6_scope, "java/net/Inet6Address$Inet6AddressHolder", "scope_id", "I");
+vm_field!(h6_scope_set, "java/net/Inet6Address$Inet6AddressHolder", "scope_id_set", "Z");
+vm_field!(h6_ifname, "java/net/Inet6Address$Inet6AddressHolder", "scope_ifname", "Ljava/net/NetworkInterface;");
+vm_field!(h6_ifname_set, "java/net/Inet6Address$Inet6AddressHolder", "scope_ifname_set", "Z");
 
-/// One interface: its IPv4 addresses (address, prefix length, broadcast) and `IFF_*` flags.
+/// One address of an interface, with its prefix length.
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum Addr {
+    /// Address and broadcast address (host byte order).
+    V4(u32, u16, Option<u32>),
+    /// Address and scope (the interface's index).
+    V6([u8; 16], u16, u32),
+}
+
+/// One interface: its addresses and `IFF_*` flags.
+#[derive(Debug)]
 struct Iface {
     name: String,
     index: i32,
     flags: u32,
-    addrs: Vec<(u32, u16, Option<u32>)>,
+    addrs: Vec<Addr>,
+}
+
+/// Adds `addr` of interface `name` as the JDK's `addif` does: a new interface goes first in the
+/// list, and so does each new address within its interface.
+fn add(out: &mut Vec<Iface>, name: &str, index: i32, flags: u32, addr: Addr) {
+    match out.iter_mut().find(|f| f.name == name) {
+        Some(f) => f.addrs.insert(0, addr),
+        None => out.insert(0, Iface { name: name.to_owned(), index, flags, addrs: vec![addr] }),
+    }
+}
+
+/// The IPv6 addresses `/proc/net/if_inet6` lists: address, interface index, prefix length,
+/// scope, flags and interface name per line.
+fn parse_if_inet6(text: &str) -> Vec<(String, i32, Addr)> {
+    let mut out = Vec::new();
+    for line in text.lines() {
+        let f: Vec<&str> = line.split_whitespace().collect();
+        if f.len() < 6 || f[0].len() != 32 {
+            continue;
+        }
+        let mut ip = [0u8; 16];
+        for (i, b) in ip.iter_mut().enumerate() {
+            *b = u8::from_str_radix(&f[0][2 * i..2 * i + 2], 16).unwrap_or(0);
+        }
+        let (Ok(index), Ok(prefix)) = (i32::from_str_radix(f[1], 16), u16::from_str_radix(f[2], 16)) else { continue };
+        out.push((f[5].to_owned(), index, Addr::V6(ip, prefix, index as u32)));
+    }
+    out
+}
+
+/// Whether the host has IPv6, as the JDK decides before listing IPv6 addresses.
+fn ipv6_available() -> bool {
+    // SAFETY: a probe socket, closed at once.
+    let s = unsafe { libc::socket(libc::AF_INET6, libc::SOCK_STREAM, 0) };
+    if s < 0 {
+        return false;
+    }
+    unsafe { libc::close(s) };
+    std::path::Path::new("/proc/net/if_inet6").exists()
 }
 
 fn interfaces() -> Vec<Iface> {
     let mut out: Vec<Iface> = Vec::new();
+    let mut flags: Vec<(String, u32)> = Vec::new();
     // SAFETY: getifaddrs allocates a list this walks and frees.
     unsafe {
         let mut head: *mut libc::ifaddrs = std::ptr::null_mut();
@@ -42,14 +98,9 @@ fn interfaces() -> Vec<Iface> {
             let ifa = &*p;
             p = ifa.ifa_next;
             let name = std::ffi::CStr::from_ptr(ifa.ifa_name).to_string_lossy().into_owned();
-            let i = match out.iter().position(|f| f.name == name) {
-                Some(i) => i,
-                None => {
-                    let index = libc::if_nametoindex(ifa.ifa_name) as i32;
-                    out.push(Iface { name, index, flags: ifa.ifa_flags, addrs: Vec::new() });
-                    out.len() - 1
-                }
-            };
+            if !flags.iter().any(|(n, _)| *n == name) {
+                flags.push((name.clone(), ifa.ifa_flags));
+            }
             if ifa.ifa_addr.is_null() || (*ifa.ifa_addr).sa_family as i32 != libc::AF_INET {
                 continue;
             }
@@ -57,13 +108,18 @@ fn interfaces() -> Vec<Iface> {
             let ip = v4(ifa.ifa_addr);
             let prefix = if ifa.ifa_netmask.is_null() { 0 } else { v4(ifa.ifa_netmask).count_ones() as u16 };
             let broadcast = (ifa.ifa_flags & libc::IFF_BROADCAST as u32 != 0 && !ifa.ifa_ifu.is_null()).then(|| v4(ifa.ifa_ifu));
-            out[i].addrs.push((ip, prefix, broadcast));
+            let index = libc::if_nametoindex(ifa.ifa_name) as i32;
+            add(&mut out, &name, index, ifa.ifa_flags, Addr::V4(ip, prefix, broadcast));
         }
         libc::freeifaddrs(head);
     }
-    // As the JDK lists them: interfaces with an address, the last found first.
-    out.retain(|f| !f.addrs.is_empty());
-    out.reverse();
+    if ipv6_available() {
+        let text = std::fs::read_to_string("/proc/net/if_inet6").unwrap_or_default();
+        for (name, index, addr) in parse_if_inet6(&text) {
+            let fl = flags.iter().find(|(n, _)| *n == name).map_or(0, |&(_, f)| f);
+            add(&mut out, &name, index, fl, addr);
+        }
+    }
     out
 }
 
@@ -87,11 +143,16 @@ fn interface_object(t: &mut Thread, f: &Iface) -> JResult<Oop> {
     let childs = object_array(t, NI, 0)?;
     let ia_class = crate::loader::boot_class!("java/net/InterfaceAddress").expect("InterfaceAddress");
     rt::initialize(t, ia_class)?;
-    for (i, &(ip, prefix, broadcast)) in f.addrs.iter().enumerate() {
-        let a = super::net::inet4(t, None, ip)?;
-        let b = match broadcast {
-            Some(b) => super::net::inet4(t, None, b)?,
-            None => std::ptr::null_mut(),
+    for (i, &addr) in f.addrs.iter().enumerate() {
+        let (a, b, prefix) = match addr {
+            Addr::V4(ip, prefix, broadcast) => {
+                let b = match broadcast {
+                    Some(b) => super::net::inet4(t, None, b)?,
+                    None => std::ptr::null_mut(),
+                };
+                (super::net::inet4(t, None, ip)?, b, prefix)
+            }
+            Addr::V6(ip, prefix, scope) => (inet6(t, &ip, scope, o)?, std::ptr::null_mut(), prefix),
         };
         let binding = rt::alloc_instance(t, ia_class)?;
         // SAFETY: fresh objects; offsets from their layouts.
@@ -113,6 +174,42 @@ fn interface_object(t: &mut Thread, f: &Iface) -> JResult<Oop> {
         obj::write_ref(o, ni_childs(), childs);
     }
     Ok(o)
+}
+
+/// An `Inet6Address` of interface `nif`, scoped to it as the JDK's native code makes them.
+fn inet6(t: &mut Thread, ip: &[u8; 16], scope: u32, nif: Oop) -> JResult<Oop> {
+    let a = crate::boot::construct(t, "java/net/Inet6Address", "()V", &[])?;
+    let bytes = rt::alloc_array(t, vm().primitive_array_class(BasicType::Byte).expect("[B"), 16)?;
+    // SAFETY: a fresh Inet6Address, its holder and a fresh byte[16].
+    unsafe {
+        obj::array_slice::<u8>(bytes).copy_from_slice(ip);
+        let h = obj::read_ref(a, i6_holder());
+        obj::write_ref(h, h6_address(), bytes);
+        if scope != 0 {
+            obj::write::<i32>(h, h6_scope(), scope as i32);
+            obj::write::<u8>(h, h6_scope_set(), 1);
+            obj::write_ref(h, h6_ifname(), nif);
+            obj::write::<u8>(h, h6_ifname_set(), 1);
+        }
+    }
+    Ok(a)
+}
+
+/// The address of an `InetAddress`, as the interface lists record them.
+fn address_of(a: Oop) -> Option<Addr> {
+    if a.is_null() {
+        return None;
+    }
+    // SAFETY: a live InetAddress; an Inet6Address has its holder and a byte[16].
+    unsafe {
+        if obj::klass(a).name.as_str() == "java/net/Inet6Address" {
+            let bytes = obj::read_ref(obj::read_ref(a, i6_holder()), h6_address());
+            let mut ip = [0u8; 16];
+            ip.copy_from_slice(obj::array_slice::<u8>(bytes));
+            return Some(Addr::V6(ip, 0, 0));
+        }
+    }
+    Some(Addr::V4(super::net::ipv4_of(a), 0, None))
 }
 
 fn maybe(t: &mut Thread, f: Option<Iface>) -> JResult<u64> {
@@ -154,8 +251,13 @@ pub(super) fn register(r: &mut NativeRegistry) {
         maybe(t, f)
     });
     r.add(NI, "getByInetAddress0", "(Ljava/net/InetAddress;)Ljava/net/NetworkInterface;", |t, a| {
-        let ip = (a[0] != 0).then(|| super::net::ipv4_of(a[0] as Oop));
-        let f = interfaces().into_iter().find(|f| f.addrs.iter().any(|&(x, _, _)| Some(x) == ip));
+        let wanted = address_of(a[0] as Oop);
+        let same = |x: &Addr| match (x, wanted) {
+            (Addr::V4(ip, ..), Some(Addr::V4(w, ..))) => *ip == w,
+            (Addr::V6(ip, ..), Some(Addr::V6(w, ..))) => *ip == w,
+            _ => false,
+        };
+        let f = interfaces().into_iter().find(|f| f.addrs.iter().any(same));
         maybe(t, f)
     });
     r.add(NI, "isUp0", "(Ljava/lang/String;I)Z", |_, a| has_flag(a, libc::IFF_UP));
@@ -178,4 +280,27 @@ pub(super) fn register(r: &mut NativeRegistry) {
         unsafe { obj::array_slice::<u8>(arr).copy_from_slice(&mac) };
         ret_ref(arr)
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ipv6_addresses_follow_the_jdk_order() {
+        let text = "00000000000000000000000000000001 01 80 10 80       lo\n\
+                    fe800000000000000000000000000002 02 40 20 80     eth0\n";
+        let mut out = Vec::new();
+        add(&mut out, "lo", 1, 0, Addr::V4(0x7f00_0001, 8, None));
+        add(&mut out, "eth0", 2, 0, Addr::V4(0x0a00_0002, 24, Some(0x0a00_00ff)));
+        for (name, index, addr) in parse_if_inet6(text) {
+            add(&mut out, &name, index, 0, addr);
+        }
+        let names: Vec<&str> = out.iter().map(|f| f.name.as_str()).collect();
+        assert_eq!(names, ["eth0", "lo"]);
+        let mut loopback = [0u8; 16];
+        loopback[15] = 1;
+        assert_eq!(out[1].addrs, [Addr::V6(loopback, 128, 1), Addr::V4(0x7f00_0001, 8, None)]);
+        assert!(matches!(out[0].addrs[0], Addr::V6(ip, 64, 2) if ip[0] == 0xfe && ip[1] == 0x80));
+    }
 }
