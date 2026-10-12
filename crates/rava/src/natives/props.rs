@@ -22,10 +22,10 @@ fn platform_value(field: &str) -> Option<String> {
         "file_encoding" | "native_encoding" | "sun_jnu_encoding" => locale().codeset.clone(),
         "stdout_encoding" | "stderr_encoding" | "stdin_encoding" => return None,
         "file_separator" => "/".into(),
-        "java_io_tmpdir" => "/tmp".into(),
+        "java_io_tmpdir" => tmpdir(),
         "line_separator" => "\n".into(),
         "os_arch" => if cfg!(target_arch = "x86_64") { "amd64".into() } else { std::env::consts::ARCH.into() },
-        "os_name" => "Linux".into(),
+        "os_name" => if cfg!(target_os = "macos") { "Mac OS X".into() } else { "Linux".into() },
         "os_version" => os_release(),
         "path_separator" => ":".into(),
         "sun_arch_data_model" => "64".into(),
@@ -75,7 +75,31 @@ fn locale() -> &'static Locale {
     })
 }
 
+/// The temporary directory: `/tmp`, or on macOS the per-user directory HotSpot reports.
+fn tmpdir() -> String {
+    #[cfg(target_os = "macos")]
+    {
+        let mut buf = [0u8; 1024];
+        // SAFETY: confstr writes at most `buf.len()` bytes.
+        let n = unsafe { libc::confstr(libc::_CS_DARWIN_USER_TEMP_DIR, buf.as_mut_ptr() as *mut libc::c_char, buf.len()) };
+        if n > 0 && n <= buf.len() {
+            return String::from_utf8_lossy(&buf[..n - 1]).into_owned();
+        }
+    }
+    "/tmp".into()
+}
+
+/// The system's version: the kernel release on Linux, the product version on macOS.
 fn os_release() -> String {
+    #[cfg(target_os = "macos")]
+    {
+        let mut buf = [0u8; 64];
+        let mut len = buf.len();
+        // SAFETY: sysctlbyname fills at most `len` bytes.
+        if unsafe { libc::sysctlbyname(c"kern.osproductversion".as_ptr(), buf.as_mut_ptr() as *mut libc::c_void, &mut len, std::ptr::null_mut(), 0) } == 0 {
+            return String::from_utf8_lossy(&buf[..len.saturating_sub(1)]).into_owned();
+        }
+    }
     // SAFETY: uname fills a caller-provided struct.
     unsafe {
         let mut u: libc::utsname = std::mem::zeroed();

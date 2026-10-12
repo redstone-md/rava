@@ -77,7 +77,7 @@ pub(super) fn register(r: &mut NativeRegistry) {
         // other library is not: loading it fails with UnsatisfiedLinkError, as on a JVM that
         // cannot load it, so libraries with a pure-Java fallback take it at load time.
         let name: String = rt::java_string_to_rust(a[0] as Oop);
-        let base = name.strip_prefix("lib").and_then(|n| n.strip_suffix(".so")).unwrap_or(&name);
+        let base = name.strip_prefix("lib").and_then(|n| n.strip_suffix(".so").or_else(|| n.strip_suffix(".dylib"))).or_else(|| name.strip_suffix(".dll")).unwrap_or(&name);
         if JDK_LIBRARIES.contains(&base) {
             return ret_ref(a[0] as Oop);
         }

@@ -32,6 +32,8 @@ mod unixfs;
 mod unixfs_ext;
 #[cfg(target_os = "linux")]
 mod linux;
+#[cfg(target_os = "macos")]
+mod bsd;
 mod posix;
 #[cfg(target_os = "linux")]
 mod watch;
@@ -82,6 +84,8 @@ impl NativeRegistry {
         watch::register(&mut r);
         #[cfg(target_os = "linux")]
         linux::register(&mut r);
+        #[cfg(target_os = "macos")]
+        bsd::register(&mut r);
         datagram::register(&mut r);
         zip::register(&mut r);
         nio_ch::register(&mut r);
