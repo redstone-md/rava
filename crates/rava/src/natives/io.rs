@@ -1,12 +1,11 @@
 //! `java.io` file-descriptor natives (the libjava subset the boot needs), over POSIX calls.
 
-pub(crate) use super::io_shared::{checked_range, errno_text, io_error};
+pub(crate) use super::io_shared::{checked_range, errno_text, fd_int, io_error};
 use super::{ret_bool, ret_int, ret_long, ret_void, NativeRegistry};
 use crate::heap::{obj, Oop};
 use crate::runtime::{self as rt, throw_new, vm_field};
 use crate::thread::{JResult, Thread};
 
-vm_field!(fd_int, "java/io/FileDescriptor", "fd", "I");
 vm_field!(fis_fd, "java/io/FileInputStream", "fd", "Ljava/io/FileDescriptor;");
 vm_field!(fos_fd, "java/io/FileOutputStream", "fd", "Ljava/io/FileDescriptor;");
 vm_field!(raf_fd, "java/io/RandomAccessFile", "fd", "Ljava/io/FileDescriptor;");

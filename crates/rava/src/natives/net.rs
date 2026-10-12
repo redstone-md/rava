@@ -1,8 +1,10 @@
-//! Networking natives over POSIX sockets (IPv4): `java.net.InetAddress` resolution,
-//! `sun.nio.ch.Net` and socket dispatchers (the selectors are in `linux` and `bsd`). Blocking calls (accept, selector
-//! waits, socket reads) run in the native state so the collector can proceed.
+//! Networking natives over the system's sockets (`sock`, IPv4): `java.net.InetAddress`
+//! resolution, `sun.nio.ch.Net` and the socket dispatchers (the selectors are per system).
+//! Blocking calls (accept, polls, socket reads) run in the native state so the collector can
+//! proceed.
 
-use super::io::{fd_int, io_error};
+use super::io_shared::{fd_int, io_error};
+use super::sock::{self, SockError};
 use super::{ret_bool, ret_int, ret_ref, ret_void, NativeRegistry};
 use crate::heap::{obj, Oop};
 use crate::runtime::{self as rt, throw_new, vm_field};
@@ -22,8 +24,9 @@ pub(super) fn fd(fdo: u64) -> i32 {
     unsafe { obj::read::<i32>(fdo as Oop, fd_int()) }
 }
 
+#[cfg(unix)]
 pub(super) fn errno() -> i32 {
-    std::io::Error::last_os_error().raw_os_error().unwrap_or(libc::EIO)
+    sock::last_code()
 }
 
 /// IPv4 address of a `java.net.InetAddress` (host byte order).
@@ -32,8 +35,8 @@ pub(super) fn ipv4_of(addr: Oop) -> u32 {
     unsafe { obj::read::<i32>(obj::read_ref(addr, ia_holder()), holder_address()) as u32 }
 }
 
-fn sockaddr(addr: Oop, port: u64) -> libc::sockaddr_in {
-    super::posix::sockaddr_in(ipv4_of(addr), port as u16)
+fn sockaddr(addr: Oop, port: u64) -> sock::SockAddrIn {
+    sock::sockaddr_in(ipv4_of(addr), port as u16)
 }
 
 /// `new Inet4Address(host, bytes)`.
@@ -49,14 +52,10 @@ pub(super) fn inet4(t: &mut Thread, host: Option<&str>, ip: u32) -> JResult<Oop>
 }
 
 fn socket_name(t: &mut Thread, f: i32, peer: bool) -> JResult<(u32, u16)> {
-    let mut sa: libc::sockaddr_in = unsafe { std::mem::zeroed() };
-    let mut len = std::mem::size_of::<libc::sockaddr_in>() as libc::socklen_t;
-    let p = &mut sa as *mut libc::sockaddr_in as *mut libc::sockaddr;
-    let r = unsafe { if peer { libc::getpeername(f, p, &mut len) } else { libc::getsockname(f, p, &mut len) } };
-    if r != 0 {
-        return Err(io_error(t, "getsockname failed"));
+    match sock::name(f, peer) {
+        Some(sa) => Ok(sock::ip_port(&sa)),
+        None => Err(io_error(t, "getsockname failed")),
     }
-    Ok((u32::from_be(sa.sin_addr.s_addr), u16::from_be(sa.sin_port)))
 }
 
 pub(super) fn check(t: &mut Thread, r: i32, what: &str) -> JResult<i32> {
@@ -68,14 +67,14 @@ pub(super) fn check(t: &mut Thread, r: i32, what: &str) -> JResult<i32> {
 }
 
 /// A read or write's result as `IOStatus`: bytes, -1 at the end of a read, `UNAVAILABLE`,
-/// `INTERRUPTED`, or `i64::MIN` for an error (errno set).
+/// `INTERRUPTED`, or `i64::MIN` for an error (the system's error set).
 pub(super) fn io_status(n: isize, read: bool) -> i64 {
     match n {
         0 if read => -1,
         n if n >= 0 => n as i64,
-        _ => match errno() {
-            libc::EAGAIN => UNAVAILABLE as i64,
-            libc::EINTR => INTERRUPTED as i64,
+        _ => match sock::last_error() {
+            SockError::WouldBlock => UNAVAILABLE as i64,
+            SockError::Interrupted => INTERRUPTED as i64,
             _ => i64::MIN,
         },
     }
@@ -86,49 +85,46 @@ pub(super) fn register(r: &mut NativeRegistry) {
     for name in ["isIPv6Available0", "shouldShutdownWriteBeforeClose0", "shouldSetBothIPv4AndIPv6Options0", "canIPv6SocketJoinIPv4Group0", "canJoin6WithIPv4Group0", "canUseIPv6OptionsWithIPv4LocalAddress0"] {
         r.add(NET, name, "()Z", |_, _| ret_bool(false));
     }
-    r.add(NET, "isReusePortAvailable0", "()Z", |_, _| ret_bool(true));
+    r.add(NET, "isReusePortAvailable0", "()Z", |_, _| ret_bool(cfg!(unix)));
     r.add(NET, "isExclusiveBindAvailable", "()I", |_, _| ret_int(-1));
     r.add(NET, "initIDs", "()V", |_, _| ret_void());
-    r.add(NET, "pollinValue", "()S", |_, _| ret_int(libc::POLLIN as i32));
-    r.add(NET, "polloutValue", "()S", |_, _| ret_int(libc::POLLOUT as i32));
-    r.add(NET, "pollerrValue", "()S", |_, _| ret_int(libc::POLLERR as i32));
-    r.add(NET, "pollhupValue", "()S", |_, _| ret_int(libc::POLLHUP as i32));
-    r.add(NET, "pollnvalValue", "()S", |_, _| ret_int(libc::POLLNVAL as i32));
-    r.add(NET, "pollconnValue", "()S", |_, _| ret_int(libc::POLLOUT as i32));
+    r.add(NET, "pollinValue", "()S", |_, _| ret_int(sock::POLLIN));
+    r.add(NET, "polloutValue", "()S", |_, _| ret_int(sock::POLLOUT));
+    r.add(NET, "pollerrValue", "()S", |_, _| ret_int(sock::POLLERR));
+    r.add(NET, "pollhupValue", "()S", |_, _| ret_int(sock::POLLHUP));
+    r.add(NET, "pollnvalValue", "()S", |_, _| ret_int(sock::POLLNVAL));
+    r.add(NET, "pollconnValue", "()S", |_, _| ret_int(sock::POLLOUT));
     r.add(NET, "socket0", "(ZZZZ)I", |t, a| {
-        let ty = if a[1] != 0 { libc::SOCK_STREAM } else { libc::SOCK_DGRAM };
-        let s = check(t, super::posix::socket(libc::AF_INET, ty), "Socket creation failed")?;
+        let s = check(t, sock::socket(a[1] != 0), "Socket creation failed")?;
         if a[2] != 0 {
-            let one: libc::c_int = 1;
-            unsafe { libc::setsockopt(s, libc::SOL_SOCKET, libc::SO_REUSEADDR, &one as *const _ as *const libc::c_void, 4) };
+            sock::set_reuse_address(s);
         }
         ret_int(s)
     });
     r.add(NET, "bind0", "(Ljava/io/FileDescriptor;ZZLjava/net/InetAddress;I)V", |t, a| {
-        let sa = sockaddr(a[3] as Oop, a[4]);
-        let r = unsafe { libc::bind(fd(a[0]), &sa as *const _ as *const libc::sockaddr, std::mem::size_of_val(&sa) as u32) };
-        if r != 0 {
-            return Err(throw_new(t, "java/net/BindException", &super::io::errno_text()));
+        if sock::bind(fd(a[0]), &sockaddr(a[3] as Oop, a[4])) != 0 {
+            return Err(throw_new(t, "java/net/BindException", &sock::error_text()));
         }
         ret_void()
     });
     r.add(NET, "listen", "(Ljava/io/FileDescriptor;I)V", |t, a| {
-        check(t, unsafe { libc::listen(fd(a[0]), a[1] as i32) }, "Listen failed")?;
+        check(t, sock::listen(fd(a[0]), a[1] as i32), "Listen failed")?;
         ret_void()
     });
     r.add(NET, "connect0", "(ZLjava/io/FileDescriptor;Ljava/net/InetAddress;I)I", |t, a| {
-        let sa = sockaddr(a[2] as Oop, a[3]);
-        let r = unsafe { libc::connect(fd(a[1]), &sa as *const _ as *const libc::sockaddr, std::mem::size_of_val(&sa) as u32) };
-        match (r, errno()) {
-            (0, _) => ret_int(1),
-            (_, libc::EINPROGRESS) => ret_int(UNAVAILABLE),
-            (_, libc::EINTR) => ret_int(INTERRUPTED),
-            _ => Err(throw_new(t, "java/net/ConnectException", &super::io::errno_text())),
+        if sock::connect(fd(a[1]), &sockaddr(a[2] as Oop, a[3])) == 0 {
+            return ret_int(1);
+        }
+        match sock::last_error() {
+            // Winsock reports a non-blocking connect under way as "would block".
+            SockError::InProgress | SockError::WouldBlock => ret_int(UNAVAILABLE),
+            SockError::Interrupted => ret_int(INTERRUPTED),
+            _ => Err(throw_new(t, "java/net/ConnectException", &sock::error_text())),
         }
     });
     r.add(NET, "accept", "(Ljava/io/FileDescriptor;Ljava/io/FileDescriptor;[Ljava/net/InetSocketAddress;)I", accept);
     r.add(NET, "shutdown", "(Ljava/io/FileDescriptor;I)V", |_, a| {
-        unsafe { libc::shutdown(fd(a[0]), a[1] as i32) };
+        sock::shutdown(fd(a[0]), a[1] as i32);
         ret_void()
     });
     r.add(NET, "localPort", "(Ljava/io/FileDescriptor;)I", |t, a| ret_int(socket_name(t, fd(a[0]), false)?.1 as i32));
@@ -141,67 +137,54 @@ pub(super) fn register(r: &mut NativeRegistry) {
         let (ip, _) = socket_name(t, fd(a[0]), true)?;
         ret_ref(inet4(t, None, ip)?)
     });
-    r.add(NET, "getIntOption0", "(Ljava/io/FileDescriptor;ZII)I", |t, a| {
-        let (mut v, mut len): (libc::c_int, libc::socklen_t) = (0, 4);
-        let r = unsafe { libc::getsockopt(fd(a[0]), a[2] as i32, a[3] as i32, &mut v as *mut _ as *mut libc::c_void, &mut len) };
-        check(t, r, "getsockopt failed")?;
-        ret_int(v)
+    r.add(NET, "getIntOption0", "(Ljava/io/FileDescriptor;ZII)I", |t, a| match sock::get_int(fd(a[0]), a[2] as i32, a[3] as i32) {
+        Some(v) => ret_int(v),
+        None => Err(io_error(t, "getsockopt failed")),
     });
     r.add(NET, "setIntOption0", "(Ljava/io/FileDescriptor;ZIIIZ)V", |t, a| {
         let (level, opt, arg) = (a[2] as i32, a[3] as i32, a[4] as i32);
-        let r = if level == libc::SOL_SOCKET && opt == libc::SO_LINGER {
-            let l = libc::linger { l_onoff: (arg >= 0) as i32, l_linger: arg.max(0) };
-            unsafe { libc::setsockopt(fd(a[0]), level, opt, &l as *const _ as *const libc::c_void, std::mem::size_of_val(&l) as u32) }
-        } else {
-            unsafe { libc::setsockopt(fd(a[0]), level, opt, &arg as *const _ as *const libc::c_void, 4) }
-        };
+        let r = if level == sock::SOL_SOCKET && opt == sock::SO_LINGER { sock::set_linger(fd(a[0]), arg) } else { sock::set_int(fd(a[0]), level, opt, arg) };
         check(t, r, "setsockopt failed")?;
         ret_void()
     });
     r.add(NET, "poll", "(Ljava/io/FileDescriptor;IJ)I", |t, a| {
-        let mut p = libc::pollfd { fd: fd(a[0]), events: a[1] as i16, revents: 0 };
-        let n = crate::gc::safepoint::blocking(t, || unsafe { libc::poll(&mut p, 1, a[2] as i64 as i32) });
-        ret_int(if n > 0 { p.revents as i32 } else { 0 })
+        let (f, events, timeout) = (fd(a[0]), a[1] as i32, a[2] as i64 as i32);
+        let n = crate::gc::safepoint::blocking(t, || sock::poll(f, events, timeout));
+        ret_int(n.max(0))
     });
     r.add(NET, "pollConnect", "(Ljava/io/FileDescriptor;J)Z", |t, a| {
-        let mut p = libc::pollfd { fd: fd(a[0]), events: libc::POLLOUT, revents: 0 };
-        let n = crate::gc::safepoint::blocking(t, || unsafe { libc::poll(&mut p, 1, a[1] as i64 as i32) });
-        if n <= 0 {
+        let (f, timeout) = (fd(a[0]), a[1] as i64 as i32);
+        if crate::gc::safepoint::blocking(t, || sock::poll(f, sock::POLLOUT, timeout)) <= 0 {
             return ret_bool(false);
         }
-        let (mut err, mut len): (libc::c_int, libc::socklen_t) = (0, 4);
-        unsafe { libc::getsockopt(fd(a[0]), libc::SOL_SOCKET, libc::SO_ERROR, &mut err as *mut _ as *mut libc::c_void, &mut len) };
-        if err != 0 {
-            return Err(throw_new(t, "java/net/ConnectException", &std::io::Error::from_raw_os_error(err).to_string()));
+        match sock::pending_error(f) {
+            0 => ret_bool(true),
+            err => Err(throw_new(t, "java/net/ConnectException", &std::io::Error::from_raw_os_error(err).to_string())),
         }
-        ret_bool(true)
     });
-    r.add(NET, "available", "(Ljava/io/FileDescriptor;)I", |_, a| {
-        let mut n: libc::c_int = 0;
-        unsafe { libc::ioctl(fd(a[0]), libc::FIONREAD, &mut n) };
-        ret_int(n)
-    });
+    r.add(NET, "available", "(Ljava/io/FileDescriptor;)I", |_, a| ret_int(sock::available(fd(a[0]))));
     register_dispatch(r);
 }
 
 fn accept(t: &mut Thread, a: &[u64]) -> JResult<u64> {
     let (listener, newfd, isaa) = (fd(a[0]), a[1] as Oop, a[2] as Oop);
-    let mut sa: libc::sockaddr_in = unsafe { std::mem::zeroed() };
-    let mut len = std::mem::size_of::<libc::sockaddr_in>() as libc::socklen_t;
-    let sa_addr = &mut sa as *mut libc::sockaddr_in as usize;
-    let len_addr = &mut len as *mut libc::socklen_t as usize;
-    let s = crate::gc::safepoint::blocking(t, || super::posix::accept(listener, sa_addr as *mut libc::sockaddr, len_addr as *mut libc::socklen_t));
+    // SAFETY: an all-zero socket address is valid.
+    let mut sa: sock::SockAddrIn = unsafe { std::mem::zeroed() };
+    let sa_addr = &mut sa as *mut sock::SockAddrIn as usize;
+    // SAFETY: the address outlives the blocking call.
+    let s = crate::gc::safepoint::blocking(t, || sock::accept(listener, unsafe { &mut *(sa_addr as *mut sock::SockAddrIn) }));
     if s < 0 {
-        return match errno() {
-            libc::EAGAIN => ret_int(UNAVAILABLE),
-            libc::EINTR => ret_int(INTERRUPTED),
+        return match sock::last_error() {
+            SockError::WouldBlock => ret_int(UNAVAILABLE),
+            SockError::Interrupted => ret_int(INTERRUPTED),
             _ => Err(io_error(t, "Accept failed")),
         };
     }
     // SAFETY: the new FileDescriptor and the one-element InetSocketAddress[].
     unsafe { obj::write::<i32>(newfd, fd_int(), s) };
-    let ip = inet4(t, None, u32::from_be(sa.sin_addr.s_addr))?;
-    let isa = crate::boot::construct(t, "java/net/InetSocketAddress", "(Ljava/net/InetAddress;I)V", &[ip as u64, u16::from_be(sa.sin_port) as u64])?;
+    let (ip, port) = sock::ip_port(&sa);
+    let ip = inet4(t, None, ip)?;
+    let isa = crate::boot::construct(t, "java/net/InetSocketAddress", "(Ljava/net/InetAddress;I)V", &[ip as u64, port as u64])?;
     unsafe { obj::store_elem(isaa, 0, isa) };
     ret_int(1)
 }
@@ -213,30 +196,26 @@ fn register_dispatch(r: &mut NativeRegistry) {
     /// JDK retries forever on a closed connection).
     fn finish(t: &mut Thread, v: i64, int: bool) -> JResult<u64> {
         if v == i64::MIN {
-            let msg = super::io::errno_text();
-            return Err(throw_new(t, "java/net/SocketException", &msg));
+            return Err(throw_new(t, "java/net/SocketException", &sock::error_text()));
         }
         Ok(if int { v as i32 as i64 as u64 } else { v as u64 })
     }
+    // The system's error is read before leaving the blocking state (which may wait).
     for c in ["sun/nio/ch/SocketDispatcher", "sun/nio/ch/DatagramDispatcher"] {
         r.add(c, "read0", "(Ljava/io/FileDescriptor;JI)I", |t, a| {
-            // errno is read before leaving the blocking state (which may wait).
-            let v = crate::gc::safepoint::blocking(t, || io_status(unsafe { libc::read(fd(a[0]), a[1] as *mut libc::c_void, a[3] as u32 as usize) }, true));
+            let v = crate::gc::safepoint::blocking(t, || io_status(sock::recv(fd(a[0]), a[1] as usize, a[3] as u32 as usize), true));
             finish(t, v, true)
         });
         r.add(c, "readv0", "(Ljava/io/FileDescriptor;JI)J", |t, a| {
-            // errno is read before leaving the blocking state (which may wait).
-            let v = crate::gc::safepoint::blocking(t, || io_status(unsafe { libc::readv(fd(a[0]), a[1] as *const libc::iovec, a[3] as i32) }, true));
+            let v = crate::gc::safepoint::blocking(t, || io_status(sock::recv_vec(fd(a[0]), a[1] as usize, a[3] as i32), true));
             finish(t, v, false)
         });
         r.add(c, "write0", "(Ljava/io/FileDescriptor;JI)I", |t, a| {
-            // errno is read before leaving the blocking state (which may wait).
-            let v = crate::gc::safepoint::blocking(t, || io_status(unsafe { libc::write(fd(a[0]), a[1] as *const libc::c_void, a[3] as u32 as usize) }, false));
+            let v = crate::gc::safepoint::blocking(t, || io_status(sock::send(fd(a[0]), a[1] as usize, a[3] as u32 as usize), false));
             finish(t, v, true)
         });
         r.add(c, "writev0", "(Ljava/io/FileDescriptor;JI)J", |t, a| {
-            // errno is read before leaving the blocking state (which may wait).
-            let v = crate::gc::safepoint::blocking(t, || io_status(unsafe { libc::writev(fd(a[0]), a[1] as *const libc::iovec, a[3] as i32) }, false));
+            let v = crate::gc::safepoint::blocking(t, || io_status(sock::send_vec(fd(a[0]), a[1] as usize, a[3] as i32), false));
             finish(t, v, false)
         });
     }
@@ -244,12 +223,17 @@ fn register_dispatch(r: &mut NativeRegistry) {
     r.add("sun/nio/ch/UnixDispatcher", "close0", "(Ljava/io/FileDescriptor;)V", |_, a| {
         let f = fd(a[0]);
         if f >= 0 {
-            unsafe { libc::close(f) };
+            sock::close(f);
         }
         ret_void()
     });
     r.add("sun/nio/ch/UnixDispatcher", "preClose0", "(Ljava/io/FileDescriptor;)V", |_, a| {
-        unsafe { libc::shutdown(fd(a[0]), libc::SHUT_RDWR) };
+        sock::shutdown_both(fd(a[0]));
+        ret_void()
+    });
+    // Windows closes a socket by its value.
+    r.add("sun/nio/ch/SocketDispatcher", "close0", "(I)V", |_, a| {
+        sock::close(a[0] as i32);
         ret_void()
     });
 }
@@ -262,10 +246,7 @@ fn register_inet(r: &mut NativeRegistry) {
     r.add("java/net/Inet6Address", "init", "()V", |_, _| ret_void());
     const I4: &str = "java/net/Inet4AddressImpl";
     r.add(I4, "getLocalHostName", "()Ljava/lang/String;", |t, _| {
-        let mut buf = [0u8; 256];
-        unsafe { libc::gethostname(buf.as_mut_ptr() as *mut libc::c_char, buf.len()) };
-        let name = std::ffi::CStr::from_bytes_until_nul(&buf).map_or("localhost".into(), |c| c.to_string_lossy().into_owned());
-        ret_ref(rt::new_string(t, &name)?)
+        ret_ref(rt::new_string(t, &sock::hostname())?)
     });
     r.add(I4, "lookupAllHostAddr", "(Ljava/lang/String;)[Ljava/net/InetAddress;", |t, a| {
         let host = rt::java_string_to_rust(a[1] as Oop);
