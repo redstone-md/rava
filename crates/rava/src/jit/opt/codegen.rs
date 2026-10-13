@@ -14,6 +14,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 mod divconst;
+mod fastexit;
 mod params;
 mod stubs;
 
@@ -348,6 +349,9 @@ pub(super) fn generate(g: &Graph, al: &Allocation, m: &'static Method, frame_slo
         gen.osr_bridge();
     }
     let reg_entry = gen.register_entry(m, al, leaf, osr.is_none() && monitor.is_none());
+    if reg_entry.is_some() {
+        gen.fast_exit();
+    }
     gen.prologue(frame_slots, overflow);
     // Blocks that only deoptimize are not laid out: branches into them go straight to the
     // deoptimization stub, so the path that stays in compiled code falls through.
