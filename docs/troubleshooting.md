@@ -59,14 +59,23 @@ tier miscompiles something. `RAVA_OPT_EXCLUDE` finds what by halving: exclude `n
 (`RAVA_OPT_EXCLUDE=net/minecraft/client/renderer/,com/mojang/blaze3d/`). That method is worth a
 report.
 
-A crash that ends with only an exit code (`-1073741819` on Windows) and no `rava: memory fault`
-report happened inside a native library whose own exception handler ended the process first.
-`RAVA_FAULT_EAGER=1` reports such a fault as it happens, with the native frames and the Java
-frames of the faulting thread, which name the method that called into the library. Off by
-default: a library that raises and handles a fault itself would print a report it recovers from.
-
 Other diagnostics: `RAVA_GC_LOG=1` prints a line per collection; `RAVA_TIMING=1` prints how
 long the JDK took to boot and the run's totals.
+
+## Crashes
+
+When rava itself crashes (a memory fault nothing resolves, or a panic), it prints
+`rava: crashed: ...` with the native frames and the Java frames of the crashing thread, writes
+the same to `rava_crash_<pid>.log` in its working directory (for a game, the instance's game
+folder), and prints a link to a GitHub issue with those fields filled in, as bun does. The link
+holds no command line and no paths, only module names and Java frames, and nothing is sent until
+you submit the form; attach the log file to it.
+
+A crash that ends with only an exit code (`-1073741819` on Windows) and no `rava: crashed`
+report happened inside a native library whose own exception handler ended the process first.
+`RAVA_FAULT_EAGER=1` reports such a fault as it happens, which names the Java method that called
+into the library. Off by default: a library that raises and handles a fault itself would print a
+report it recovers from.
 
 ## Reporting
 
