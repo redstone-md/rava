@@ -1,5 +1,6 @@
 // Multicast as LAN game discovery uses it: join a group on a MulticastSocket, the outgoing
-// interface, sending to the group, a source-specific join on a DatagramChannel, leaving.
+// interface, a source-specific join on a DatagramChannel, leaving. (Whether a send to the group
+// gets out depends on the host's routes, so none is made.)
 import java.net.*; import java.nio.channels.*; import java.nio.*;
 public class MulticastSem { public static void main(String[] a) throws Exception {
   InetAddress group = InetAddress.getByName("224.0.2.60");
@@ -8,7 +9,6 @@ public class MulticastSem { public static void main(String[] a) throws Exception
     System.out.println("if " + s.getInterface());
     try { s.setInterface(InetAddress.getByName("127.0.0.1")); System.out.println("if " + s.getInterface()); } catch (Exception e) { System.out.println("setIf " + e.getClass().getName()); }
     s.setTimeToLive(1); System.out.println("ttl " + s.getTimeToLive());
-    try { s.send(new DatagramPacket(new byte[]{1, 2}, 2, group, 4445)); System.out.println("sent"); } catch (Exception e) { System.out.println("send " + e.getClass().getName()); }
     try { s.leaveGroup(group); System.out.println("left"); } catch (Exception e) { System.out.println("leave " + e.getClass().getName()); }
   }
   try (DatagramChannel ch = DatagramChannel.open(StandardProtocolFamily.INET)) {
