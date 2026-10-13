@@ -550,13 +550,10 @@ impl Gen<'_> {
         self.put(v, R::Rax);
     }
 
-    /// Calls the implementation of `m` for the receiver (already in its argument register) in
-    /// the register convention: through the found method's `reg_call`, made by a stub the
-    /// first time a site finds it missing.
-    fn reg_vtable_call(&mut self, m: &'static Method, base: i32) {
-        let receiver = crate::jit::abi::ARG_GPRS[0];
-        self.a.load(false, R::Rax, mem(receiver, 0));
-        self.a.load(true, R::Rdx, mem(R::Rax, crate::klass::VTABLE_OFFSET as i32 + 8 * m.vtable_index()));
+    /// Calls the method in rdx (found for the receiver) in the register convention, with the
+    /// arguments in place: through its `Method::reg_call`, made by a stub the first time a site
+    /// finds it missing.
+    fn reg_call_found(&mut self, base: i32) {
         self.a.load(true, R::R11, mem(R::Rdx, offset_of!(Method, reg_call) as i32));
         self.a.test_rr(true, R::R11, R::R11);
         let ready = self.a.new_label();
@@ -566,6 +563,31 @@ impl Gen<'_> {
         self.a.bind(ready);
         self.a.lea(R::Rsi, self.slot(base));
         self.a.call_r(R::R11);
+    }
+
+    /// Saves the argument registers of the register convention (`jit::abi`) around a runtime
+    /// call made while they are loaded (16 bytes of stack per pair, keeping the alignment).
+    fn save_arg_regs(&mut self) {
+        use crate::jit::abi::{ARG_GPRS, ARG_XMMS};
+        for r in ARG_GPRS {
+            self.a.push(r);
+        }
+        self.a.alu_ri(true, Alu::Sub, R::Rsp, 8 * ARG_XMMS.len() as i32);
+        for (i, &x) in ARG_XMMS.iter().enumerate() {
+            self.a.fstore(true, mem(R::Rsp, 8 * i as i32), X(x));
+        }
+    }
+
+    /// Restores what `save_arg_regs` saved.
+    fn restore_arg_regs(&mut self) {
+        use crate::jit::abi::{ARG_GPRS, ARG_XMMS};
+        for (i, &x) in ARG_XMMS.iter().enumerate() {
+            self.a.fload(true, X(x), mem(R::Rsp, 8 * i as i32));
+        }
+        self.a.alu_ri(true, Alu::Add, R::Rsp, 8 * ARG_XMMS.len() as i32);
+        for r in ARG_GPRS.iter().rev() {
+            self.a.pop(*r);
+        }
     }
 
 
@@ -579,11 +601,11 @@ impl Gen<'_> {
         // A direct call to a method reachable through its register trampoline passes the first
         // arguments in registers (`jit::abi`); sites that profile themselves keep the frame
         // protocol (their runtime calls could clobber the argument registers).
-        // A vtable call does too, through the `Method::reg_call` of the method it finds (every
-        // overrider has the signature, so the same argument registers).
+        // A vtable or interface call does too, through the `Method::reg_call` of the method it
+        // finds (every implementation has the signature, so the same argument registers).
         let reg_call = match callee {
             Callee::Direct(m) if !unprofiled && !cold => crate::jit::code_cache::reg_entry(m).map(|t| (Some(t), crate::jit::abi::arg_regs(m))),
-            Callee::Virtual(m) if !unprofiled && !cold && crate::jit::code_cache::near() => Some((None, crate::jit::abi::arg_regs(m))),
+            Callee::Virtual(m) | Callee::Interface(m) if !unprofiled && !cold && crate::jit::code_cache::near() => Some((None, crate::jit::abi::arg_regs(m))),
             _ => None,
         };
         let in_reg = |slot: i32| reg_call.as_ref().and_then(|(_, regs)| regs.iter().find(|r| r.0 as i32 == slot - base).map(|r| r.1));
@@ -610,7 +632,17 @@ impl Gen<'_> {
                     self.a.lea(R::Rsi, self.slot(base));
                     self.a.call_abs(t);
                 }
-                (Callee::Virtual(m), _) => self.reg_vtable_call(m, base),
+                (Callee::Virtual(m), _) => {
+                    let receiver = crate::jit::abi::ARG_GPRS[0];
+                    self.a.load(false, R::Rax, mem(receiver, 0));
+                    self.a.load(true, R::Rdx, mem(R::Rax, crate::klass::VTABLE_OFFSET as i32 + 8 * m.vtable_index()));
+                    self.reg_call_found(base);
+                }
+                (Callee::Interface(m), _) => {
+                    let fail = self.restoring(v, deopt);
+                    self.interface_target(m, s, args[0], fail, true);
+                    self.reg_call_found(base);
+                }
                 _ => unreachable!("register calls are direct or through the vtable"),
             }
             self.restore_around(v);
@@ -635,7 +667,7 @@ impl Gen<'_> {
                 self.a.load(false, R::Rax, mem(R::Rcx, 0));
                 self.a.load(true, R::Rdx, mem(R::Rax, crate::klass::VTABLE_OFFSET as i32 + 8 * m.vtable_index()));
             }
-            Callee::Interface(m) => self.interface_target(m, s, args[0], fail),
+            Callee::Interface(m) => self.interface_target(m, s, args[0], fail, false),
             Callee::Method(t) => self.load(R::Rdx, t),
             Callee::Select(t) => self.select_target(t, base, fail),
         }
@@ -739,12 +771,19 @@ impl Gen<'_> {
     /// rdx := the implementation of interface method `m` for `receiver`:
     /// an inline cache, the itable stub once the site is megamorphic, else the runtime.
     /// Its inline cache is the profile's cell for the call at `s`.
-    fn interface_target(&mut self, m: &'static Method, s: &State, receiver: V, fail: crate::jit::asm::Label) {
+    fn interface_target(&mut self, m: &'static Method, s: &State, receiver: V, fail: crate::jit::asm::Label, reg: bool) {
         let cell = crate::jit::profile::cell(s.method, s.bci as usize) as *const IcCell as i64;
         let (hit, done, found, missing) = (self.a.new_label(), self.a.new_label(), self.a.new_label(), self.a.new_label());
-        // The receiver from its register, not the frame slot just written (store forwarding).
-        self.load(R::Rcx, receiver);
-        self.a.load(false, R::Rdi, mem(R::Rcx, 0));
+        // The receiver's class in `k`. For a call in the register convention the receiver is
+        // already in its argument register, and the lookup keeps every argument register.
+        let k = if reg { R::Rcx } else { R::Rdi };
+        if reg {
+            self.a.load(false, k, mem(crate::jit::abi::ARG_GPRS[0], 0));
+        } else {
+            // The receiver from its register, not the frame slot just written (store forwarding).
+            self.load(R::Rcx, receiver);
+            self.a.load(false, k, mem(R::Rcx, 0));
+        }
         // A site known megamorphic goes straight to the itable scan.
         let megamorphic = m.holder.is_interface() && crate::jit::profile::megamorphic(s.method, s.bci as usize);
         // The cell is in low memory, addressed absolutely (else through rax); rdx holds its
@@ -753,7 +792,7 @@ impl Gen<'_> {
         if !megamorphic {
             let m_pair = field(self, IcCell::pair_offset());
             self.a.load(true, R::Rdx, m_pair);
-            self.a.alu_rm(true, Alu::Cmp, R::Rdi, mem(R::Rdx, IcCell::pair_klass_offset()));
+            self.a.alu_rm(true, Alu::Cmp, k, mem(R::Rdx, IcCell::pair_klass_offset()));
             self.a.jcc(Cond::E, hit);
         }
         if m.holder.is_interface() {
@@ -769,10 +808,10 @@ impl Gen<'_> {
             let (scan, block) = (self.a.new_label(), self.a.new_label());
             let hit = offset_of!(Klass, itable_hit) as i32;
             self.a.mov_ri(R::Rsi, m.holder as *const Klass as i64);
-            self.a.load(true, R::Rax, mem(R::Rdi, hit));
+            self.a.load(true, R::Rax, mem(k, hit));
             self.a.alu_rm(true, Alu::Cmp, R::Rsi, mem(R::Rax, -8));
             self.a.jcc(Cond::E, block);
-            self.a.load(true, R::Rax, mem(R::Rdi, offset_of!(Klass, itable_raw) as i32));
+            self.a.load(true, R::Rax, mem(k, offset_of!(Klass, itable_raw) as i32));
             self.a.test_rr(true, R::Rax, R::Rax);
             self.a.jcc(Cond::E, learn);
             self.a.load(true, R::R11, mem(R::Rax, 0));
@@ -783,16 +822,23 @@ impl Gen<'_> {
             self.a.alu_rm(true, Alu::Cmp, R::Rsi, mem(R::Rax, -8));
             self.a.jcc(Cond::Ne, scan);
             self.a.load(true, R::Rax, mem(R::Rax, 0));
-            self.a.store(true, mem(R::Rdi, hit), R::Rax);
+            self.a.store(true, mem(k, hit), R::Rax);
             self.a.bind(block);
             self.a.load(true, R::Rax, mem(R::Rax, 8 * m.index() as i32));
             self.a.test_rr(true, R::Rax, R::Rax);
             self.a.jcc(Cond::Ne, found);
             self.a.bind(learn);
         }
+        if reg {
+            self.save_arg_regs();
+            self.a.mov_rr(true, R::Rdi, k);
+        }
         self.a.mov_ri(R::Rsi, m as *const Method as i64);
         self.a.mov_ri(R::Rdx, cell);
         self.a.call_abs(runtime::ic_miss as *const () as usize);
+        if reg {
+            self.restore_arg_regs();
+        }
         self.a.test_rr(true, R::Rax, R::Rax);
         self.a.jcc(Cond::E, missing);
         self.a.bind(found);
