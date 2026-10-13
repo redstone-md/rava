@@ -17,6 +17,7 @@ macro_rules! env_once {
     }};
 }
 
+pub mod abi;
 pub mod asm;
 mod analysis;
 pub(crate) use analysis::insn_len;
@@ -59,6 +60,8 @@ pub type EntryFn = extern "sysv64" fn(*mut Thread, *mut u64, *const Method) -> u
 /// A method's machine code and the native address of each block start.
 pub struct CompiledMethod {
     pub entry: usize,
+    /// The entry taking the register arguments of `jit::abi` (optimized code), else 0.
+    pub reg_entry: usize,
     /// Executions of sites compiled before their constants were resolved.
     pub unresolved_deferrals: std::sync::atomic::AtomicU32,
     /// Code size for inlining decisions (optimized code: without its out-of-line stubs).

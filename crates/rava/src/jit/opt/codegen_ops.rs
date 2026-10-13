@@ -16,8 +16,9 @@ impl Gen<'_> {
     pub(super) fn inst(&mut self, v: V) {
         let ty = self.g.ty(v);
         match self.g.inst(v).clone() {
-            // A spilled parameter is read from its frame slot where it is used.
-            Inst::Param(_) if matches!(self.loc[v as usize], Loc::Frame(_)) => {}
+            // A spilled parameter is read from its frame slot where it is used; one that came
+            // in a register is in place already.
+            Inst::Param(_) if matches!(self.loc[v as usize], Loc::Frame(_)) || self.placed(v) => {}
             Inst::Param(slot) if matches!(ty, Ty::F | Ty::D) => {
                 let r = self.xout(v);
                 self.a.fload(true, r, self.slot(slot as i32));

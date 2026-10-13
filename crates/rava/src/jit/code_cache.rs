@@ -89,18 +89,85 @@ pub fn direct_entry(m: &'static crate::method::Method) -> Option<usize> {
     Some(t)
 }
 
-/// Points `m`'s trampoline (if any) at its current entry, after `Method::entry` changed.
+/// Points `m`'s trampolines (if any) at its current entries, after `Method::entry` changed.
 pub fn repoint(m: &crate::method::Method) {
     use std::sync::atomic::Ordering::Acquire;
-    if m.trampoline.load(Acquire) == 0 {
+    if m.trampoline.load(Acquire) == 0 && m.reg_trampoline.load(Acquire) == 0 {
         return;
     }
     let _g = TRAMPOLINES.lock().unwrap();
     let t = m.trampoline.load(Acquire);
-    let rel = i32::try_from(m.entry.load(Acquire) as i64 - (t + 8) as i64).expect("entry within reach");
+    if t != 0 {
+        aim(t, m.entry.load(Acquire));
+    }
+    let t = m.reg_trampoline.load(Acquire);
+    if t != 0 {
+        aim(t, reg_target(m));
+    }
+}
+
+/// Points trampoline `t` at `target`.
+fn aim(t: usize, target: usize) {
+    let rel = i32::try_from(target as i64 - (t + 8) as i64).expect("entry within reach");
     // SAFETY: the aligned displacement of the trampoline's jump; an aligned 4-byte store is
     // atomic, so a thread executing the jump meanwhile goes to the old entry or the new one.
     unsafe { (*((t + 4) as *const std::sync::atomic::AtomicI32)).store(rel, std::sync::atomic::Ordering::Release) };
+}
+
+/// A trampoline for direct calls to `m` in the register convention (`jit::abi`), repointed
+/// with `m`'s entry; None when code cannot reach it with a 32-bit displacement.
+pub fn reg_entry(m: &'static crate::method::Method) -> Option<usize> {
+    use std::sync::atomic::Ordering::{Acquire, Release};
+    if !near() {
+        return None;
+    }
+    let _g = TRAMPOLINES.lock().unwrap();
+    let t = m.reg_trampoline.load(Acquire);
+    if t != 0 {
+        return Some(t);
+    }
+    let code = super::asm::Code { bytes: vec![0x0F, 0x1F, 0x00, 0xE9, 0, 0, 0, 0], relocs: vec![(4, reg_target(m))] };
+    let t = install(&code);
+    m.reg_trampoline.store(t, Release);
+    Some(t)
+}
+
+/// Where a register-convention call to `m` goes now: the register entry of the code `m.entry`
+/// runs, when that code has one, else `m`'s adapter (caller holds `TRAMPOLINES`).
+fn reg_target(m: &crate::method::Method) -> usize {
+    use std::sync::atomic::Ordering::Acquire;
+    let entry = m.entry.load(Acquire);
+    match m.compiled() {
+        Some(cm) if cm.entry == entry && cm.reg_entry != 0 => cm.reg_entry,
+        _ => reg_adapter(m),
+    }
+}
+
+/// `m`'s adapter from the register convention to its frame-slot entry: stores each register
+/// argument where the interpreter keeps it (rsi is the callee's frame), then enters through
+/// `m.entry` with the thread in rdi as that entry expects.
+fn reg_adapter(m: &crate::method::Method) -> usize {
+    use super::abi::ArgReg;
+    use super::asm::{mem, X, R};
+    use std::sync::atomic::Ordering::{Acquire, Release};
+    let made = m.reg_adapter.load(Acquire);
+    if made != 0 {
+        return made;
+    }
+    let mut a = super::asm::Asm::default();
+    for (slot, reg, _) in super::abi::arg_regs(m) {
+        match reg {
+            ArgReg::Gpr(r) => a.store(true, mem(R::Rsi, 8 * slot as i32), r),
+            ArgReg::Xmm(x) => a.fstore(true, mem(R::Rsi, 8 * slot as i32), X(x)),
+        }
+    }
+    a.mov_rr(true, R::Rdi, R::R12);
+    a.mov_ri(R::Rdx, m as *const crate::method::Method as i64);
+    a.load(true, R::Rax, mem(R::Rdx, std::mem::offset_of!(crate::method::Method, entry) as i32));
+    a.jmp_r(R::Rax);
+    let at = install(&a.finish());
+    m.reg_adapter.store(at, Release);
+    at
 }
 
 /// Appends `address size name` to `/tmp/perf-<pid>.map` when `RAVA_PERF_MAP` is set, so
