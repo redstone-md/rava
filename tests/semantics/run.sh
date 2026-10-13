@@ -7,6 +7,8 @@
 # depend on when C2 compiled the throwing site.
 # Four probes stay red on purpose: HotSpot's helpful NullPointerException texts (ExcSem,
 # JitNpeSiteSem, JitThrowNullSem, NpeSem) are guest-visible output rava does not produce yet.
+# A probe's `// rava-env: VAR=value ...` line sets environment variables for rava's run (to
+# keep methods out of the optimizing tier, say).
 R=${R:-$(dirname "$0")/../../target/release/rava}
 W=${1:-$(mktemp -d)}
 # macOS has no timeout(1) unless coreutils is installed.
@@ -25,7 +27,8 @@ for f in "$(dirname "$0")"/*Sem.java; do
     javac -nowarn -cp "$cp" -d "$d" "$f" 2>/dev/null || { echo "skip $n (javac; SEM_CP?)"; continue; }
   fi
   [ -f "$d/expected.txt" ] || timeout 60 java -XX:-OmitStackTraceInFastThrow -cp "$cp" "$n" 2>&1 | filter > "$d/expected.txt"
-  got=$(timeout 60 "$R" -cp "$cp" "$n" 2>&1 | filter)
+  penv=$(sed -n 's|^// rava-env: ||p' "$f")
+  got=$(env $penv timeout 60 "$R" -cp "$cp" "$n" 2>&1 | filter)
   if [ "$(cat "$d/expected.txt")" == "$got" ]; then pass=$((pass+1)); else
     fail=$((fail+1)); echo "FAIL $n"
     [ -n "$SEM_DIFF" ] && diff <(echo "$got") "$d/expected.txt" | head -20 | sed 's/^/    /'
