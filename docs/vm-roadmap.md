@@ -79,11 +79,15 @@ compare with the minimum or median of many runs, never one.
    double-heavy calls; `MegaCallBench` 9-10 % at best on megamorphic virtual and interface
    calls (both noisy); Paper's start and the `mobs` sprints are unchanged within noise. Left:
    values live across calls still go to the four callee-saved registers or to memory (no
-   splitting around calls), parameters that the allocator spills are stored by the prologue and
-   reloaded, and every entry still checks the value-stack limit, links the frame and pushes
-   callee-saved registers (10–14 % of optimized-code samples fall in the first bytes of
-   methods).
-2. **Register allocation quality.** Values spilled around calls and reloaded at block starts
+   splitting around calls), and parameters that the allocator spills are stored by the prologue
+   and reloaded.
+2. **Prologue cost.** Early returns now run before the prologue (fast exits): `DirectCallBench`
+   fib 2.4 → 1.85 ns and the four-int recursion 4.0 → 2.3 ns per call (HotSpot 1.4 and 1.9),
+   `mobs` sprints about 3 % faster (noisy). Every other entry still checks the value-stack
+   limit, links the frame and pushes callee-saved registers before its first block (10–14 % of
+   optimized-code samples fell in the first bytes of methods); wider shrink-wrapping (saves
+   only on the paths that use the registers) is next.
+3. **Register allocation quality.** Values spilled around calls and reloaded at block starts
    (`mov %rax,0x50(%rsp); mov 0x50(%rsp),%rax` across a label), loop-carried values kept in
    stack slots across calls.
 

@@ -80,6 +80,12 @@ Rules that keep it correct:
   register for a parameter and for an argument that dies at the call (`opt/hints.rs`). Calls
   through method handles, profiling sites, OSR versions and synchronized methods use the frame
   protocol.
+- **Fast exits** (`opt/codegen/fastexit.rs`, shrink-wrapping in small): when the entry block
+  ends in a test whose one side only computes simple integer values (or reads fields of the
+  receiver) and returns, that test and side run at the register entry before the prologue, on
+  the arguments in their registers and scratch registers only. A recursion's base case or a
+  cached value's return pays no pushes, stack check, frame header or entry poll; otherwise the
+  code falls into the prologue with the entry registers untouched.
 - **Lazy anchor** (HotSpot's last Java frame): optimized code publishes `Thread::top` (its
   innermost header) only before calls out, and `Thread::sp` only before runtime calls, polls and
   deoptimization; it restores `top` on return. `sp` only ever rises while it runs (baseline code
