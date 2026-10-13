@@ -18,6 +18,10 @@ permissions:
 
 env:
   TAG: ${{ inputs.tag || github.ref_name }}
+  # A portable x86-64 baseline (SSE4.2, POPCNT: every x86-64 processor since about 2009) instead
+  # of .cargo/config.toml's target-cpu=native: the archives run on any such machine, newer
+  # instructions are chosen at run time.
+  RUSTFLAGS: -C target-cpu=x86-64-v2
 
 jobs:
   # Archives go straight into a draft release (no workflow artifacts, which count against the

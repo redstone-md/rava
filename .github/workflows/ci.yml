@@ -10,6 +10,11 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  # What the release builds: a portable x86-64 baseline instead of target-cpu=native, so cached
+  # objects from one runner never carry instructions another runner's processor lacks.
+  RUSTFLAGS: -C target-cpu=x86-64-v2
+
 jobs:
   check:
     name: Build and check (${{ matrix.os }})
