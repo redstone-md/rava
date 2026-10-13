@@ -29,6 +29,12 @@ impl<'a> Args<'a> {
         self.int() != 0
     }
 
+    /// A reference.
+    pub fn object(&mut self) -> Oop {
+        self.at += 1;
+        self.slots[self.at - 1] as Oop
+    }
+
     /// A `long` holding an address.
     pub fn ptr<T>(&mut self) -> *mut T {
         self.long() as usize as *mut T

@@ -35,7 +35,7 @@ pub(super) fn ipv4_of(addr: Oop) -> u32 {
     unsafe { obj::read::<i32>(obj::read_ref(addr, ia_holder()), holder_address()) as u32 }
 }
 
-fn sockaddr(addr: Oop, port: u64) -> sock::SockAddrIn {
+pub(super) fn sockaddr(addr: Oop, port: u64) -> sock::SockAddrIn {
     sock::sockaddr_in(ipv4_of(addr), port as u16)
 }
 
