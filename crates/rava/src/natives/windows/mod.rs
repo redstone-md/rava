@@ -15,8 +15,10 @@ mod process;
 mod security;
 mod selector;
 mod sockopt;
+mod timezone;
 
 pub(super) use host::host;
+pub(super) use timezone::{gmt_offset_id, system_zone};
 
 use super::NativeRegistry;
 

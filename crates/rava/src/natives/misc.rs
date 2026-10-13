@@ -129,9 +129,19 @@ pub(super) fn register(r: &mut NativeRegistry) {
     #[cfg(unix)]
     r.add("java/lang/ProcessEnvironment", "environ", "()[[B", environ);
     r.add("java/util/TimeZone", "getSystemTimeZoneID", "(Ljava/lang/String;)Ljava/lang/String;", |t, _| {
-        ret_ref(rt::new_string(t, &system_time_zone())?)
+        #[cfg(windows)]
+        let zone = super::windows::system_zone(&crate::vm::vm().options.java_home);
+        #[cfg(unix)]
+        let zone = system_time_zone();
+        ret_ref(rt::new_string(t, &zone)?)
     });
-    r.add("java/util/TimeZone", "getSystemGMTOffsetID", "()Ljava/lang/String;", |t, _| ret_ref(rt::new_string(t, "GMT")?));
+    r.add("java/util/TimeZone", "getSystemGMTOffsetID", "()Ljava/lang/String;", |t, _| {
+        #[cfg(windows)]
+        let id = super::windows::gmt_offset_id();
+        #[cfg(unix)]
+        let id = "GMT".to_string();
+        ret_ref(rt::new_string(t, &id)?)
+    });
     const PERF: &str = "jdk/internal/perf/Perf";
     r.add(PERF, "registerNatives", "()V", |_, _| ret_void());
     r.add(PERF, "createLong", "(Ljava/lang/String;IIJ)Ljava/nio/ByteBuffer;", |t, a| {
@@ -203,6 +213,7 @@ fn environ(t: &mut Thread, _: &[u64]) -> JResult<u64> {
 }
 
 /// The host's zone ID: `TZ`, else the `/etc/localtime` link target, else `/etc/timezone`, else UTC.
+#[cfg(unix)]
 fn system_time_zone() -> String {
     if let Ok(tz) = std::env::var("TZ") {
         if !tz.is_empty() {
