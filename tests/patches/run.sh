@@ -14,8 +14,8 @@ cp "$T/patch/rava-patch.txt" "$W/patch/"
 jar cf "$W/rava-patches/test-hooks.jar" -C "$W/patch" . 2>/dev/null
 set +e
 # Lines end in CRLF on Windows (line.separator).
-got=$(cd "$W" && "$R" -cp app ravatest.app.PatchApp 2>"$W/stderr.txt" | tr -d '\r')
-code=${PIPESTATUS[0]}
+got=$(cd "$W" && { "$R" -cp app ravatest.app.PatchApp 2>"$W/stderr.txt"; echo $? >"$W/code.txt"; } | tr -d '\r')
+code=$(cat "$W/code.txt")
 if [ "$got" == "$(cat "$T/expected.txt")" ]; then echo "patches: pass"; exit 0; fi
 echo "patches: FAIL (exit code $code)"
 diff <(echo "$got") "$T/expected.txt"
