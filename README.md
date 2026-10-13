@@ -108,7 +108,8 @@ Every start is from class files.
 
 Download the archive for your system from
 [**Releases**](https://github.com/redstone-md/rava/releases) and unpack it anywhere. It is a
-complete Java runtime; each archive has a `.sha256` beside it.
+complete Java runtime; each archive has a `.sha256` beside it. Any x86-64 processor from about
+2009 on (SSE4.2) will do: newer instruction sets are used when the processor has them.
 
 | System | Archive | Requires |
 |---|---|---|
