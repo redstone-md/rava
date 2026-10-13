@@ -91,13 +91,16 @@ struct Intervals {
     used: Vec<bool>,
     /// Positions of instructions that clobber caller-saved registers.
     calls: Vec<u32>,
-    /// Loop weight of each call's block (8 per level), in `calls` order.
-    call_weight: Vec<f32>,
+    /// Estimated executions of each call (its block's profile frequency), in `calls` order.
+    call_freq: Vec<f32>,
     /// The calls, with their positions.
     call_values: Vec<(u32, V)>,
     /// Real uses weighted by loop depth (8 per level), and the weight of the block at hand.
     weight: Vec<f32>,
     block_weight: f32,
+    /// Real uses by estimated executions (block profile frequencies), and the block at hand's.
+    reads: Vec<f32>,
+    block_freq: f32,
     /// Blocks with real uses of each value (for `LoopMap::idle`), and the block at hand.
     use_blocks: Vec<Vec<B>>,
     block: B,
@@ -113,6 +116,7 @@ impl Intervals {
     }
     fn used_at(&mut self, v: V, p: u32) {
         self.weight[v as usize] += self.block_weight;
+        self.reads[v as usize] += self.block_freq;
         let blocks = &mut self.use_blocks[v as usize];
         if blocks.last() != Some(&self.block) {
             blocks.push(self.block);
@@ -135,11 +139,11 @@ impl Intervals {
         let i = self.calls.partition_point(|&p| p <= self.start[v]);
         self.calls.get(i).is_some_and(|&p| p < self.end[v])
     }
-    /// The loop-weighted number of calls `v` lives across.
+    /// Estimated executions of the calls `v` lives across.
     fn calls_crossed(&self, v: usize) -> f32 {
         let i = self.calls.partition_point(|&p| p <= self.start[v]);
         let j = self.calls.partition_point(|&p| p < self.end[v]);
-        self.call_weight[i..j.max(i)].iter().sum()
+        self.call_freq[i..j.max(i)].iter().sum()
     }
 }
 
@@ -328,10 +332,11 @@ fn live_registers(g: &Graph, order: &[B], pos: &[u32], range: &[(u32, u32)], iv:
 fn intervals(g: &Graph, order: &[B], pos: &[u32], range: &[(u32, u32)], depth: &[u32], reads: &mut StateReads, states: bool) -> Intervals {
     let n = g.values.len();
     let live_in = liveness(g, order, reads, states);
-    let mut iv = Intervals { start: vec![u32::MAX; n], end: vec![0; n], used: vec![false; n], calls: Vec::new(), call_weight: Vec::new(), call_values: Vec::new(), weight: vec![0.0; n], block_weight: 1.0, use_blocks: vec![Vec::new(); n], block: 0, dirty: [Vec::new(), Vec::new()] };
+    let mut iv = Intervals { start: vec![u32::MAX; n], end: vec![0; n], used: vec![false; n], calls: Vec::new(), call_freq: Vec::new(), call_values: Vec::new(), weight: vec![0.0; n], block_weight: 1.0, reads: vec![0.0; n], block_freq: 0.0, use_blocks: vec![Vec::new(); n], block: 0, dirty: [Vec::new(), Vec::new()] };
     for &b in order {
         let (from, to) = range[b as usize];
         iv.block_weight = 8f32.powi(depth[b as usize].min(5) as i32);
+        iv.block_freq = g.blocks[b as usize].freq;
         iv.block = b;
         let blk = &g.blocks[b as usize];
         for v in live_in[b as usize].iter() {
@@ -364,7 +369,7 @@ fn intervals(g: &Graph, order: &[B], pos: &[u32], range: &[(u32, u32)], depth: &
             }
             if matches!(inst, Inst::Call(..)) {
                 iv.calls.push(p);
-                iv.call_weight.push(iv.block_weight);
+                iv.call_freq.push(iv.block_freq);
                 iv.call_values.push((p, v));
             }
             let (cx, dx) = super::scratch::clobbers(g, v);
@@ -436,10 +441,10 @@ fn scan(g: &Graph, iv: &mut Intervals, full: &Intervals, loops: &LoopMap, hints:
         let taken = |c: Loc, active: &[usize], loc: &[Loc]| active.iter().any(|&a| loc[a] == c);
         // Candidate registers in preference order: none survives a call but the callee-saved.
         // Across calls, callee-saved registers come first; a caller-saved one costs a save and
-        // a restore at each call, so only a value read more often than that takes one (a slot
-        // costs a load per read, and `reload.rs` keeps repeated reads between calls in a
-        // register).
-        let saving = !crossing || iv.weight[v] > 2.0 * iv.calls_crossed(v);
+        // a restore at each call, so only a value read at least as often as that (by profile
+        // frequency: a cold call in a loop costs little) takes one. A slot costs a load per
+        // read, and `reload.rs` keeps repeated reads between calls in a register.
+        let saving = !crossing || iv.reads[v] >= 2.0 * iv.calls_crossed(v);
         let mut cands: Vec<Loc> = match (matches!(g.values[v].ty, Ty::F | Ty::D), crossing) {
             (true, _) => XMMS.iter().filter(|_| saving).map(|&x| Loc::Xmm(x)).collect(),
             (false, true) => CALLEE_SAVED.iter().chain(CALLER_SAVED.iter().filter(|_| saving)).map(|&r| Loc::Reg(r)).collect(),
