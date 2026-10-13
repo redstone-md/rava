@@ -27,6 +27,7 @@ pub(crate) mod math;
 mod process;
 pub(crate) mod mh;
 mod module;
+mod multicast;
 mod net;
 mod netif;
 pub(crate) mod props;
@@ -117,6 +118,7 @@ impl NativeRegistry {
         desktop::register(&mut r);
         jfr::register(&mut r);
         stackwalk::register(&mut r);
+        multicast::register(&mut r);
         net::register(&mut r);
         netif::register(&mut r);
         misc::register(&mut r);
