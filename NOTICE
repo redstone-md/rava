@@ -1,0 +1,14 @@
+rava
+Copyright 2026 Rxflex and the rava contributors
+https://github.com/redstone-md/rava
+
+This product is rava, a Java Virtual Machine written in Rust, licensed under the
+Apache License, Version 2.0 (see LICENSE).
+
+Any redistribution of rava, in source or binary form, and any work derived from
+it must keep this NOTICE file and give credit to the rava project and its
+authors, as section 4 of the License requires.
+
+The release archives also contain the OpenJDK class library and data files,
+which are not part of rava and keep their own licenses (GPLv2 with the
+Classpath Exception) in legal/.
