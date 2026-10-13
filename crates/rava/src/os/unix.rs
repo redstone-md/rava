@@ -376,3 +376,46 @@ extern "C" fn on_fault(sig: libc::c_int, info: *mut libc::siginfo_t, ctx: *mut l
         }
     }
 }
+
+/// The write end of the pipe `SIGQUIT` wakes the dump thread through.
+static QUIT_PIPE: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(-1);
+
+extern "C" fn on_quit(_: libc::c_int) {
+    let fd = QUIT_PIPE.load(std::sync::atomic::Ordering::Relaxed);
+    // SAFETY: write(2) is async-signal-safe; a full pipe drops the request.
+    unsafe { libc::write(fd, b"q".as_ptr() as *const libc::c_void, 1) };
+}
+
+/// Runs `dump` on a service thread each time the process gets `SIGQUIT` (`kill -3`, Ctrl+\),
+/// as HotSpot prints its thread dump.
+pub fn on_dump_request(dump: fn()) {
+    let mut fds = [0; 2];
+    // SAFETY: a new pipe; its write end is non-blocking for the handler.
+    unsafe {
+        if libc::pipe(fds.as_mut_ptr()) != 0 {
+            return;
+        }
+        libc::fcntl(fds[1], libc::F_SETFL, libc::O_NONBLOCK);
+    }
+    QUIT_PIPE.store(fds[1], std::sync::atomic::Ordering::Relaxed);
+    let read = fds[0];
+    let spawned = std::thread::Builder::new().name("Signal Dispatcher".into()).spawn(move || loop {
+        let mut b = 0u8;
+        // SAFETY: reads one byte into `b`.
+        match unsafe { libc::read(read, &mut b as *mut u8 as *mut libc::c_void, 1) } {
+            1 => dump(),
+            -1 if std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted => {}
+            _ => return,
+        }
+    });
+    if spawned.is_ok() {
+        // SAFETY: a plain handler for SIGQUIT.
+        unsafe {
+            let mut action: libc::sigaction = std::mem::zeroed();
+            action.sa_sigaction = on_quit as *const () as usize;
+            action.sa_flags = libc::SA_RESTART;
+            libc::sigemptyset(&mut action.sa_mask);
+            libc::sigaction(libc::SIGQUIT, &action, std::ptr::null_mut());
+        }
+    }
+}

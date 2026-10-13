@@ -4,6 +4,7 @@ pub mod assertions;
 pub mod boot;
 pub mod classfile;
 pub mod cpool;
+pub mod dump;
 pub mod gc;
 pub mod heap;
 pub mod interp;

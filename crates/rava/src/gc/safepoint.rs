@@ -236,18 +236,37 @@ pub fn stop_the_world<R>(t: &Thread, f: impl FnOnce(usize) -> R) -> Option<R> {
         }
         std::thread::yield_now();
     };
+    Some(stopped(t.gc_record, guard, None, f))
+}
+
+/// Stops every Java thread from a thread that is not one (a diagnostic service thread), waiting
+/// out any collection in progress, and runs `f` meanwhile. Threads still running Java after
+/// `patience` are left running: `f` must not read their frames.
+pub fn with_world_stopped<R>(patience: std::time::Duration, f: impl FnOnce() -> R) -> R {
+    let guard = registry().collecting.lock().unwrap();
+    stopped(None, guard, Some(std::time::Instant::now() + patience), |_| f())
+}
+
+/// With the collection lock held: requests the stop, waits until no other thread runs Java (or
+/// the deadline passes), runs `f` and resumes the world.
+fn stopped<R>(me: Option<&'static Record>, guard: std::sync::MutexGuard<'_, ()>, deadline: Option<std::time::Instant>, f: impl FnOnce(usize) -> R) -> R {
+    let reg = registry();
     REQUESTED.store(true, SeqCst);
     if asymmetric() {
         crate::os::process_barrier();
     }
     arm(true);
-    let me = t.gc_record.map(|r| r as *const Record);
+    let me = me.map(|r| r as *const Record);
     while all_threads().into_iter().any(|r| Some(r as *const Record) != me && r.state.load(SeqCst) == RUNNING) {
+        if deadline.is_some_and(|d| std::time::Instant::now() > d) {
+            break;
+        }
         std::thread::yield_now();
     }
     let result = with_spilled_registers(|rsp| {
-        if let Some(rec) = t.gc_record {
-            rec.rsp.store(rsp, SeqCst);
+        if let Some(rec) = me {
+            // SAFETY: the initiator's own record.
+            unsafe { (*rec).rsp.store(rsp, SeqCst) };
         }
         f(rsp)
     });
@@ -258,5 +277,5 @@ pub fn stop_the_world<R>(t: &Thread, f: impl FnOnce(usize) -> R) -> Option<R> {
     reg.resumed.notify_all();
     drop(epoch);
     drop(guard);
-    Some(result)
+    result
 }
