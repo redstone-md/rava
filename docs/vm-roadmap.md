@@ -73,14 +73,16 @@ Per-process timing on this host varies by up to 2× for `java` and rava alike (4
 compare with the minimum or median of many runs, never one.
 
 ## To do
-1. **Register calling convention.** Direct calls between optimized methods pass their first
-   arguments in registers (`docs/opt-tier.md`); `bench/java/DirectCallBench.java` gains about
-   12 % on double-heavy calls and holds even where the callee spills every argument. Left:
-   every entry still checks the value-stack limit, links the frame and pushes callee-saved
-   registers (10–14 % of optimized-code samples fall in the first bytes of methods), virtual
-   and interface calls still pass every argument in memory (megamorphic calls cost 6–8 ns
-   against HotSpot's 3.5), and the allocator does not yet aim argument values at their
-   registers or keep arriving arguments in them across calls.
+1. **Register calling convention.** Direct, vtable and interface calls between optimized
+   methods pass their first arguments in registers (`docs/opt-tier.md`), and the allocator aims
+   arguments at those registers. `bench/java/DirectCallBench.java` gains about 12 % on
+   double-heavy calls; `MegaCallBench` 9-10 % at best on megamorphic virtual and interface
+   calls (both noisy); Paper's start and the `mobs` sprints are unchanged within noise. Left:
+   values live across calls still go to the four callee-saved registers or to memory (no
+   splitting around calls), parameters that the allocator spills are stored by the prologue and
+   reloaded, and every entry still checks the value-stack limit, links the frame and pushes
+   callee-saved registers (10–14 % of optimized-code samples fall in the first bytes of
+   methods).
 2. **Register allocation quality.** Values spilled around calls and reloaded at block starts
    (`mov %rax,0x50(%rsp); mov 0x50(%rsp),%rax` across a label), loop-carried values kept in
    stack slots across calls.
