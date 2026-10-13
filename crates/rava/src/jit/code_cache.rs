@@ -102,9 +102,8 @@ pub fn direct_entry(m: &'static crate::method::Method) -> Option<usize> {
 /// Points `m`'s trampolines (if any) at its current entries, after `Method::entry` changed.
 pub fn repoint(m: &crate::method::Method) {
     use std::sync::atomic::Ordering::Acquire;
-    if m.trampoline.load(Acquire) == 0 && m.reg_trampoline.load(Acquire) == 0 {
-        return;
-    }
+    // Always under the lock, even with no trampoline yet: one being made meanwhile read the
+    // entry before it changed, and is published before this runs and aims it again.
     let _g = TRAMPOLINES.lock().unwrap();
     let t = m.trampoline.load(Acquire);
     if t != 0 {
