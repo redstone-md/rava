@@ -43,7 +43,40 @@ public class FastExitSem {
         return bias | 1;
     }
 
+    int cached;
+    String name;
+    FastExitSem next;
+
+    int get(int n) {
+        if (cached != 0) return cached ^ n;
+        cached = n + 1;
+        return get(n * 2) + 1;
+    }
+
+    String find(int depth) {
+        if (name != null) return name;
+        if (next == null) return "none";
+        return next.find(depth + 1);
+    }
+
+    long weight(long w) {
+        if (next == null) return w + cached;
+        return next.weight(w + 1) + 1;
+    }
+
     public static void main(String[] args) {
+        FastExitSem a = new FastExitSem(), b = new FastExitSem(), c = new FastExitSem();
+        a.next = b;
+        b.next = c;
+        long objs = 0;
+        for (int i = 0; i < 4000; i++) {
+            FastExitSem o = i % 3 == 0 ? new FastExitSem() : a;
+            objs += o.get(i);
+            c.name = i % 2 == 0 ? "c" + (i % 5) : null;
+            objs += a.find(0).length();
+            objs += a.weight(i);
+        }
+        System.out.println("objects " + objs + " " + a.find(0) + " " + a.weight(1));
         long check = 0;
         for (int i = 0; i < 4000; i++) {
             check += down(i % 9, i, -i);
