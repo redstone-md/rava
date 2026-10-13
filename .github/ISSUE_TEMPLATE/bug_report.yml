@@ -1,0 +1,54 @@
+name: Bug report
+description: A program behaves differently under rava than under java, crashes or hangs
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. [docs/troubleshooting.md](https://github.com/redstone-md/rava/blob/main/docs/troubleshooting.md) explains how to get a thread dump for a hang.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you ran, what you expected, and what happened instead.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: rava version
+      description: The first lines of `rava -version`.
+      placeholder: rava (build 0.0.1-alpha, mixed mode)
+    validations:
+      required: true
+  - type: dropdown
+    id: system
+    attributes:
+      label: System
+      options:
+        - Linux x86-64
+        - macOS (Intel)
+        - macOS (Apple Silicon, Rosetta 2)
+        - Windows x86-64
+    validations:
+      required: true
+  - type: textarea
+    id: how
+    attributes:
+      label: How it was started
+      description: The command line, or the launcher (Prism Launcher, a server panel...) and its Java settings.
+      render: shell
+  - type: dropdown
+    id: hotspot
+    attributes:
+      label: Does it work with java (HotSpot)?
+      options:
+        - "Yes, the same program works with java"
+        - "No, it fails with java too"
+        - "Not tried"
+  - type: textarea
+    id: log
+    attributes:
+      label: Output or log
+      description: The full output (or a link to it, e.g. mclo.gs); for a hang, a thread dump.
+      render: text
