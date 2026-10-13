@@ -41,6 +41,10 @@ pub struct Method {
     /// The adapter from the register convention to `entry` (`code_cache::reg_adapter`), made
     /// once on first need; 0 until then.
     pub(crate) reg_adapter: AtomicUsize,
+    /// Where a register-convention call to this method goes now (the target of
+    /// `reg_trampoline`), for calls that find the method at run time (vtable dispatch); 0
+    /// until the trampoline is made.
+    pub(crate) reg_call: AtomicUsize,
     /// The `ResolvedMethodName` naming this method, made once and kept for good (HotSpot's
     /// `ResolvedMethodTable` interns them likewise); 0 until a `MemberName` resolves to it.
     pub(crate) resolved_name: AtomicUsize,
@@ -93,6 +97,7 @@ impl Method {
             trampoline: AtomicUsize::new(0),
             reg_trampoline: AtomicUsize::new(0),
             reg_adapter: AtomicUsize::new(0),
+            reg_call: AtomicUsize::new(0),
             resolved_name: AtomicUsize::new(0),
             stub,
             overridden: crate::low::leak(std::sync::atomic::AtomicBool::new(false)),

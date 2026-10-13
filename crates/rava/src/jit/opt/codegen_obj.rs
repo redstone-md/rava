@@ -550,6 +550,25 @@ impl Gen<'_> {
         self.put(v, R::Rax);
     }
 
+    /// Calls the implementation of `m` for the receiver (already in its argument register) in
+    /// the register convention: through the found method's `reg_call`, made by a stub the
+    /// first time a site finds it missing.
+    fn reg_vtable_call(&mut self, m: &'static Method, base: i32) {
+        let receiver = crate::jit::abi::ARG_GPRS[0];
+        self.a.load(false, R::Rax, mem(receiver, 0));
+        self.a.load(true, R::Rdx, mem(R::Rax, crate::klass::VTABLE_OFFSET as i32 + 8 * m.vtable_index()));
+        self.a.load(true, R::R11, mem(R::Rdx, offset_of!(Method, reg_call) as i32));
+        self.a.test_rr(true, R::R11, R::R11);
+        let ready = self.a.new_label();
+        self.a.jcc(Cond::Ne, ready);
+        self.a.call_abs(crate::jit::code_cache::reg_call_stub());
+        self.a.mov_rr(true, R::R11, R::Rax);
+        self.a.bind(ready);
+        self.a.lea(R::Rsi, self.slot(base));
+        self.a.call_r(R::R11);
+    }
+
+
     /// A Java call: arguments into the frame's operand stack where the callee's locals start,
     /// the target into rdx, then `Method::entry`. Only values in callee-saved registers and
     /// spill slots survive it (`regalloc.rs`).
@@ -560,8 +579,11 @@ impl Gen<'_> {
         // A direct call to a method reachable through its register trampoline passes the first
         // arguments in registers (`jit::abi`); sites that profile themselves keep the frame
         // protocol (their runtime calls could clobber the argument registers).
+        // A vtable call does too, through the `Method::reg_call` of the method it finds (every
+        // overrider has the signature, so the same argument registers).
         let reg_call = match callee {
-            Callee::Direct(m) if !unprofiled && !cold => crate::jit::code_cache::reg_entry(m).map(|t| (t, crate::jit::abi::arg_regs(m))),
+            Callee::Direct(m) if !unprofiled && !cold => crate::jit::code_cache::reg_entry(m).map(|t| (Some(t), crate::jit::abi::arg_regs(m))),
+            Callee::Virtual(m) if !unprofiled && !cold && crate::jit::code_cache::near() => Some((None, crate::jit::abi::arg_regs(m))),
             _ => None,
         };
         let in_reg = |slot: i32| reg_call.as_ref().and_then(|(_, regs)| regs.iter().find(|r| r.0 as i32 == slot - base).map(|r| r.1));
@@ -582,11 +604,15 @@ impl Gen<'_> {
             // before the link, which clobbers only rax and rcx.
             super::moves::parallel(&mut self.a, &moves);
             self.link(s, false);
-            if let Callee::Direct(m) = callee {
-                self.a.mov_ri(R::Rdx, m as *const Method as i64);
+            match (callee, trampoline) {
+                (Callee::Direct(m), Some(t)) => {
+                    self.a.mov_ri(R::Rdx, m as *const Method as i64);
+                    self.a.lea(R::Rsi, self.slot(base));
+                    self.a.call_abs(t);
+                }
+                (Callee::Virtual(m), _) => self.reg_vtable_call(m, base),
+                _ => unreachable!("register calls are direct or through the vtable"),
             }
-            self.a.lea(R::Rsi, self.slot(base));
-            self.a.call_abs(trampoline);
             self.restore_around(v);
             self.a.alu_mi(true, Alu::Cmp, mem(R::R12, offsets::PENDING), 0);
             self.a.jcc(Cond::Ne, deopt);
