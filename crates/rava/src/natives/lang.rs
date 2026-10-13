@@ -136,11 +136,19 @@ pub(crate) fn identity_hash(o: Oop) -> i32 {
             }
         }
     });
-    let old = mark.load(Ordering::Relaxed);
-    let new = old | (h << HASH_SHIFT);
-    match mark.compare_exchange(old, new, Ordering::AcqRel, Ordering::Relaxed) {
-        Ok(_) => h as i32,
-        Err(now) => ((now >> HASH_SHIFT) & HASH_MASK) as i32,
+    // A lock transition may change the other bits meanwhile: retry until the hash is in, ours
+    // or another thread's (returning the field of a failed exchange could return 0, and the next
+    // call a different hash).
+    let mut old = mark.load(Ordering::Relaxed);
+    loop {
+        let present = (old >> HASH_SHIFT) & HASH_MASK;
+        if present != 0 {
+            return present as i32;
+        }
+        match mark.compare_exchange_weak(old, old | (h << HASH_SHIFT), Ordering::AcqRel, Ordering::Relaxed) {
+            Ok(_) => return h as i32,
+            Err(now) => old = now,
+        }
     }
 }
 
