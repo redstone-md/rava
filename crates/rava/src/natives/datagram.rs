@@ -39,7 +39,7 @@ pub(super) fn register(r: &mut NativeRegistry) {
     );
     r.add(DC, "disconnect0", "(Ljava/io/FileDescriptor;Z)V", |t, a| {
         if sock::disconnect(fd(a[0])) < 0 {
-            return Err(throw_new(t, "java/io/IOException", &sock::error_text()));
+            return Err(super::net::socket_error(t));
         }
         ret_void()
     });
@@ -64,7 +64,7 @@ fn finish(t: &mut Thread, n: isize, refusal: bool) -> JResult<u64> {
         return Err(throw_new(t, "java/net/PortUnreachableException", ""));
     }
     match io_status(n, false) {
-        i64::MIN => Err(throw_new(t, "java/io/IOException", &sock::error_text())),
+        i64::MIN => Err(super::net::socket_error(t)),
         v => ret_int(v as i32),
     }
 }

@@ -2,10 +2,9 @@
 //! group membership with or without a source, source blocking, the outgoing interface, and
 //! out-of-band bytes. Addresses arrive as `int`s in host order.
 
-use super::net::fd;
+use super::net::{fd, socket_error};
 use super::sock;
 use super::{ret_bool, ret_int, ret_void, NativeRegistry};
-use crate::runtime::throw_new;
 use crate::thread::{JResult, Thread};
 
 const NET: &str = "sun/nio/ch/Net";
@@ -56,10 +55,6 @@ fn request(group: u32, interf: u32, source: u32) -> Vec<u8> {
         &[group, source, interf]
     };
     fields.iter().flat_map(|a| a.to_be_bytes()).collect()
-}
-
-fn socket_error(t: &mut Thread) -> crate::thread::Throw {
-    throw_new(t, "java/net/SocketException", &sock::error_text())
 }
 
 /// Sets a membership or source-filter option; `UNAVAILABLE` when the system lacks it and

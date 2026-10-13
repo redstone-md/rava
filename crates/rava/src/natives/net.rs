@@ -58,6 +58,11 @@ fn socket_name(t: &mut Thread, f: i32, peer: bool) -> JResult<(u32, u16)> {
     }
 }
 
+/// The last socket error as the JDK throws it (`handleSocketError`): the class by error code.
+pub(super) fn socket_error(t: &mut Thread) -> crate::thread::Throw {
+    throw_new(t, sock::exception_class(), &sock::error_text())
+}
+
 pub(super) fn check(t: &mut Thread, r: i32, what: &str) -> JResult<i32> {
     if r < 0 {
         Err(io_error(t, what))

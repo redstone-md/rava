@@ -100,6 +100,16 @@ pub(crate) fn get_int(fd: i32, level: i32, opt: i32) -> Option<i32> {
     (unsafe { getsockopt(s(fd), level, opt, &mut v as *mut i32 as *mut u8, &mut len) } == 0).then_some(v)
 }
 
+/// The exception class the JDK's Winsock error table gives the last error.
+pub(crate) fn exception_class() -> &'static str {
+    match last_code() {
+        WSAECONNREFUSED | WSAETIMEDOUT => "java/net/ConnectException",
+        WSAEHOSTUNREACH => "java/net/NoRouteToHostException",
+        WSAEADDRINUSE | WSAEADDRNOTAVAIL => "java/net/BindException",
+        _ => "java/net/SocketException",
+    }
+}
+
 /// A raw option value.
 pub(crate) fn set_bytes(fd: i32, level: i32, opt: i32, v: &[u8]) -> i32 {
     // SAFETY: `v` is the option's value.
