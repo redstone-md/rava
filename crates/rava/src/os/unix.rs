@@ -389,7 +389,10 @@ extern "C" fn on_fault(sig: libc::c_int, info: *mut libc::siginfo_t, ctx: *mut l
             *pc = resume as u64;
             return;
         }
-        if let Some(crash) = CRASH.get() {
+        // Once: a fault inside the report itself (walking a broken thread's frames) goes
+        // straight on to the previous handler.
+        static REPORTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+        if let Some(crash) = CRASH.get().filter(|_| !REPORTED.swap(true, std::sync::atomic::Ordering::SeqCst)) {
             crash(*pc as usize, (*info).si_addr() as usize);
         }
         let previous = PREVIOUS.get().and_then(|p| p.iter().find(|(s, _)| *s == sig)).map(|(_, a)| *a);
