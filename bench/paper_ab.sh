@@ -24,7 +24,7 @@
 set -euo pipefail
 trap '' PIPE
 ROUNDS=3
-BASE=${PAPER_BASE:-/tmp/rava/paper-base}
+BASE=${PAPER_BASE:-${XDG_CACHE_HOME:-$HOME/.cache}/rava/paper-base}
 OUT=""
 while getopts n:b:o: opt; do
   case $opt in

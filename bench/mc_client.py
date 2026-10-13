@@ -6,7 +6,7 @@
 
 Downloads the version's client jar, its libraries (with the Linux natives extracted into
 DIR/natives) and its assets (sounds only with --sounds) into DIR (default
-/tmp/rava/mc-client). With --loader, the newest Fabric loader or NeoForge for the version
+~/.cache/rava/mc-client). With --loader, the newest Fabric loader or NeoForge for the version
 is installed on top (NeoForge through its installer, run with `java`), and --mods adds mods from
 Modrinth into DIR/game/mods. Prints the command line a launcher would run, or with --run
 starts it with BINARY (`java` or rava) in offline mode (no account: singleplayer works);
@@ -22,7 +22,7 @@ MODRINTH = 'https://api.modrinth.com/v2'
 
 ap = argparse.ArgumentParser()
 ap.add_argument('-v', default='1.21.1')
-ap.add_argument('-d', default='/tmp/rava/mc-client')
+ap.add_argument('-d', default=os.path.expanduser('~/.cache/rava/mc-client'))
 ap.add_argument('--loader', choices=['fabric', 'neoforge'])
 ap.add_argument('--mods', default='')
 ap.add_argument('--sounds', action='store_true')
