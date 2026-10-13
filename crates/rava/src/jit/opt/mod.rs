@@ -123,7 +123,7 @@ pub(in crate::jit) fn reprofile(m: &'static Method) {
 
 /// Compiles `m`, or `None` when some instruction is not supported.
 pub fn compile(m: &'static Method) -> Option<CompiledMethod> {
-    if m.is_native() || excluded(m) {
+    if m.is_native() {
         return None;
     }
     let started = std::time::Instant::now();
@@ -159,6 +159,10 @@ fn verify(g: &ir::Graph, m: &'static Method, pass: &str) {
 }
 
 fn compile_timed(m: &'static Method, osr: Option<u32>) -> Option<CompiledMethod> {
+    // Both entries (whole methods and loops entered from a running frame) pass here.
+    if excluded(m) {
+        return None;
+    }
     let log = env_once!("RAVA_OPT_LOG").is_some();
     let monitor = match (m.is_synchronized(), m.is_static()) {
         (false, _) => None,
