@@ -71,4 +71,5 @@ host, not single runs.
 - Pull requests target `main`; CI must pass on all three systems.
 - No generated attribution lines in commits or pull requests.
 
-By contributing you agree that your work is licensed under the [MIT License](LICENSE).
+By contributing you agree that your work is licensed under the [Apache License 2.0](LICENSE),
+and that you are credited as one of the rava contributors ([NOTICE](NOTICE)).

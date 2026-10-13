@@ -31,6 +31,8 @@ for d in security jfr; do [ -d "$JDK/lib/$d" ] && cp -rL "$JDK/lib/$d" "$OUT/lib
 cp -rL "$JDK/conf" "$OUT/conf"
 cp -rL "$JDK/legal" "$OUT/legal" 2>/dev/null || true
 [ -f "$JDK/release" ] && cp -L "$JDK/release" "$OUT/release"
+# rava's own license and notice, which every redistribution keeps.
+cp "$REPO/LICENSE" "$REPO/NOTICE" "$OUT/"
 if [ -n "$EXE" ]; then
   ARCHIVE="$(dirname "$OUT")/$(basename "$OUT").zip"
   (cd "$(dirname "$OUT")" && powershell -NoProfile -Command "Compress-Archive -Force -Path '$(basename "$OUT")' -DestinationPath '$(basename "$ARCHIVE")'")
