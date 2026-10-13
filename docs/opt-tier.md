@@ -74,7 +74,12 @@ Rules that keep it correct:
   arguments from the frame and falls into its register entry (aligned to 16 bytes). The
   prologue stores register arguments into their frame slots where deoptimization or a spill
   reads them, so frames stay what stack walks, the collector and deoptimization expect.
-  Virtual and interface calls, OSR versions and synchronized methods use the frame protocol.
+  Vtable and interface calls pass registers too: once they find the target, they call its
+  `Method::reg_call` (where its register trampoline points), which a shared stub makes on
+  first use while keeping the argument registers. The register allocator prefers the argument
+  register for a parameter and for an argument that dies at the call (`opt/hints.rs`). Calls
+  through method handles, profiling sites, OSR versions and synchronized methods use the frame
+  protocol.
 - **Lazy anchor** (HotSpot's last Java frame): optimized code publishes `Thread::top` (its
   innermost header) only before calls out, and `Thread::sp` only before runtime calls, polls and
   deoptimization; it restores `top` on return. `sp` only ever rises while it runs (baseline code
