@@ -22,6 +22,8 @@ const MAIN_WITHOUT_ARGS: i32 = 1;
 const MAIN_NONSTATIC: i32 = 2;
 
 pub fn main() -> ExitCode {
+    // A panic nothing catches is a crash of the VM: reported, with the issue link.
+    crate::crash::install_panic_hook();
     let line = match CommandLine::from_env() {
         Ok(line) => line,
         Err(e) => return fail(e),

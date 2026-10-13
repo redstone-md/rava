@@ -129,7 +129,7 @@ pub fn compile(m: &'static Method) -> Option<CompiledMethod> {
     let started = std::time::Instant::now();
     // A failure in the compiler abandons this compilation, not the compiler thread; the method
     // keeps running at the lower tier (HotSpot's compilation bailout).
-    let cm = std::panic::catch_unwind(|| compile_timed(m, None)).unwrap_or_else(|_| {
+    let cm = crate::crash::expected(|| std::panic::catch_unwind(|| compile_timed(m, None))).unwrap_or_else(|_| {
         eprintln!("[opt] compilation of {m} failed; it stays at the lower tier");
         None
     });
@@ -142,7 +142,7 @@ pub fn compile(m: &'static Method) -> Option<CompiledMethod> {
 /// Compiles `m` entered at the loop header `bci` from a running frame (`osr.rs`); its entry
 /// is the bridge baseline code jumps to.
 fn compile_osr(m: &'static Method, bci: u32) -> Option<CompiledMethod> {
-    std::panic::catch_unwind(|| compile_timed(m, Some(bci))).unwrap_or_else(|_| {
+    crate::crash::expected(|| std::panic::catch_unwind(|| compile_timed(m, Some(bci)))).unwrap_or_else(|_| {
         eprintln!("[opt] compilation of {m} at bci {bci} failed; the loop stays at the lower tier");
         None
     })

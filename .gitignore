@@ -5,3 +5,4 @@ bench/results/
 /dist/out/
 patches/*/*.jar
 __pycache__/
+rava_crash_*.log
