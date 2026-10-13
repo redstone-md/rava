@@ -1,7 +1,7 @@
 //! Linux and macOS: `mmap`, signals, `dlopen` and pthreads, with the differences between the two
 //! kept to the functions that differ.
 
-use super::{CrashReport, FaultHandler};
+use super::{CrashReport, FaultHandler, OwnCode};
 use std::sync::OnceLock;
 
 #[cfg(target_os = "linux")]
@@ -349,8 +349,8 @@ const FAULTS: [libc::c_int; 1] = [libc::SIGSEGV];
 
 /// Sends memory faults to `handler` first: it returns where to resume, or None to report the
 /// fault with `crash` and pass it on to the handler installed before (the Rust runtime's
-/// stack-overflow report).
-pub fn install_fault_handler(handler: FaultHandler, crash: CrashReport) {
+/// stack-overflow report). Every fault the handler leaves is reported, so `_own` is not needed.
+pub fn install_fault_handler(handler: FaultHandler, crash: CrashReport, _own: OwnCode) {
     if HANDLER.set(handler).is_err() {
         return;
     }
