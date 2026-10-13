@@ -22,48 +22,65 @@ pub fn install() {
     }
 }
 
-/// Prints a dump of every Java thread to standard output.
+/// Prints a dump of every Java thread to standard output. When a collection (or a compiler
+/// reading the heap) holds the world and does not let go within two seconds, the dump says who
+/// holds it and still lists every thread, with the stacks of those that hold still.
 pub fn print() {
-    let text = safepoint::with_world_stopped(std::time::Duration::from_secs(2), collect);
+    let patience = std::time::Duration::from_secs(2);
+    let text = safepoint::try_with_world_stopped(patience, || collect(None)).unwrap_or_else(|| collect(Some(safepoint::holder())));
     use std::io::Write as _;
     let mut out = std::io::stdout().lock();
     let _ = out.write_all(text.as_bytes());
     let _ = out.flush();
 }
 
-/// The dump's text; the world is stopped, so every thread's frames hold still.
-fn collect() -> String {
-    let mut s = String::from("\nFull thread dump rava:\n");
+/// A thread's Java name, or what it is while it has none.
+pub(crate) fn thread_name(rec: &safepoint::Record) -> String {
+    let t = rec.thread.load(SeqCst);
+    if t.is_null() {
+        return "<detached>".to_string();
+    }
+    // SAFETY: a registered thread's `Thread` lives until it detaches.
+    let jt = unsafe { (*t).java_thread };
+    if jt.is_null() {
+        return "<attaching>".to_string();
+    }
+    // SAFETY: a live java.lang.Thread; its name is a String or null.
+    let n = unsafe { crate::heap::obj::read_ref(jt, name_offset()) };
+    if n.is_null() { "<unnamed>".to_string() } else { rt::java_string_to_rust(n) }
+}
+
+/// The dump's text. With the world stopped by the dump itself (`held` None), every stopped or
+/// native thread's frames hold still; when another holder has it (`held`), only while a stop is
+/// requested.
+fn collect(held: Option<String>) -> String {
+    let mut s = match &held {
+        None => String::from("\nFull thread dump rava:\n"),
+        Some(h) => format!("\nFull thread dump rava (the world could not be stopped for the dump: {h}):\n"),
+    };
+    let frames_still = held.is_none() || safepoint::requested();
     for rec in safepoint::all_threads() {
         let t = rec.thread.load(SeqCst);
         if t.is_null() {
             continue;
         }
-        // SAFETY: a registered thread's `Thread` lives until it detaches, which the registry
-        // excludes while the world is stopped.
+        // SAFETY: as in `thread_name`.
         let t = unsafe { &*t };
-        let name = if t.java_thread.is_null() {
-            "<attaching>".to_string()
-        } else {
-            // SAFETY: a live java.lang.Thread; its name is a String or null.
-            let n = unsafe { crate::heap::obj::read_ref(t.java_thread, name_offset()) };
-            if n.is_null() { "<unnamed>".to_string() } else { rt::java_string_to_rust(n) }
-        };
         let state = rec.state.load(SeqCst);
         let text = match state {
             NATIVE => "outside Java (blocked or in native code)",
             STOPPED => "in Java (at a safepoint)",
-            _ => "running Java, did not reach a safepoint (frames not shown)",
+            _ => "running Java, not at a safepoint (frames not shown)",
         };
-        let _ = writeln!(s, "\n\"{name}\" {text}");
-        if state == RUNNING {
+        let _ = writeln!(s, "\n\"{}\" {text}", thread_name(rec));
+        if state == RUNNING || !frames_still {
             continue;
         }
         let monitor = rec.waiting_on.load(SeqCst);
         if monitor != 0 {
             let _ = writeln!(s, "   waiting on the monitor of {monitor:#x}");
         }
-        for (m, bci) in t.frames() {
+        for (m, bci) in t.frames().take(200) {
             let class = m.holder.name.as_str().replace('/', ".");
             let place = if m.is_native() {
                 "Native Method".to_string()
