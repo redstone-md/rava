@@ -28,7 +28,7 @@ for f in "$(dirname "$0")"/*Sem.java; do
   fi
   [ -f "$d/expected.txt" ] || timeout 60 java -XX:-OmitStackTraceInFastThrow -cp "$cp" "$n" 2>&1 | filter > "$d/expected.txt"
   penv=$(sed -n 's|^// rava-env: ||p' "$f")
-  got=$(env $penv timeout 60 "$R" -cp "$cp" "$n" 2>&1 | filter)
+  got=$(timeout 60 env $penv "$R" -cp "$cp" "$n" 2>&1 | filter)
   if [ "$(cat "$d/expected.txt")" == "$got" ]; then pass=$((pass+1)); else
     fail=$((fail+1)); echo "FAIL $n"
     [ -n "$SEM_DIFF" ] && diff <(echo "$got") "$d/expected.txt" | head -20 | sed 's/^/    /'
