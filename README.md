@@ -14,6 +14,7 @@ tiers, and takes the `java` command line unchanged.
 <img src="https://img.shields.io/badge/rust-stable-A855F7?style=flat-square&labelColor=0B0614">
 <img src="https://img.shields.io/badge/JIT-baseline%20%2B%20SSA-A855F7?style=flat-square&labelColor=0B0614">
 <img src="https://img.shields.io/badge/GC-generational%20mark--sweep-22D3EE?style=flat-square&labelColor=0B0614">
+<img src="https://img.shields.io/badge/platforms-Linux%20%C2%B7%20macOS%20%C2%B7%20Windows-22D3EE?style=flat-square&labelColor=0B0614">
 <img src="https://img.shields.io/badge/license-MIT-F59E0B?style=flat-square&labelColor=0B0614">
 <br>
 <a href="https://github.com/redstone-md/rava/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/redstone-md/rava/ci.yml?branch=main&label=CI&style=flat-square&labelColor=0B0614"></a>
@@ -25,7 +26,13 @@ tiers, and takes the `java` command line unchanged.
 
 The benchmark that decides whether this works is a Paper 1.21 Minecraft server, started cold
 and timed to `Done`. rava gets there in about 1.2× the time HotSpot needs, with no snapshot, no
-archive and nothing tuned for the server.
+archive and nothing tuned for the server. It also runs the Minecraft client, vanilla and modded,
+from the usual launchers.
+
+> [!WARNING]
+> rava is alpha software. It runs real servers and games, but expect crashes and differences
+> from HotSpot, and keep backups of anything you open with it. Reports are welcome in
+> [Issues](https://github.com/redstone-md/rava/issues).
 
 <br>
 
@@ -35,17 +42,30 @@ archive and nothing tuned for the server.
 </picture>
 
 Download the archive for your system from [Releases](https://github.com/redstone-md/rava/releases)
-(Linux, macOS and Windows on x86-64; Apple Silicon Macs run the macOS one through Rosetta 2) and
-unpack it anywhere: it is a complete Java runtime, the VM with the Java class library it runs.
+and unpack it anywhere. It is a complete Java runtime, the VM with the Java class library it
+runs: no JDK or JRE is needed on the machine.
+
+| System | Archive | Notes |
+|---|---|---|
+| Linux x86-64 | `rava-<version>-linux-x86_64.tar.gz` | glibc 2.35 or newer |
+| macOS x86-64 | `rava-<version>-macos-x86_64.tar.gz` | Apple Silicon runs it through Rosetta 2 |
+| Windows x86-64 | `rava-<version>-windows-x86_64.zip` | Windows 10 or newer |
 
 ```sh
+# Linux, macOS
 tar xzf rava-0.0.1-alpha-linux-x86_64.tar.gz
 export PATH="$PWD/rava-0.0.1-alpha-linux-x86_64/bin:$PATH"
 rava -version
 ```
 
-Releases are built by [the release workflow](.github/workflows/release.yml) for every `v*` tag,
-with notes from [docs/releases/](docs/releases/) and the commits since the previous tag.
+```powershell
+# Windows (PowerShell)
+Expand-Archive rava-0.0.1-alpha-windows-x86_64.zip .
+.\rava-0.0.1-alpha-windows-x86_64\bin\rava.exe -version
+```
+
+Each archive has a `.sha256` beside it. Releases are built and checked on all three systems by
+[the release workflow](.github/workflows/release.yml).
 
 <br>
 
@@ -77,6 +97,23 @@ bytecode), the data files library code reads (`lib/tzdb.dat`, `lib/security`, `c
 their licences (`legal/`). rava implements every native method itself; no JDK, JRE or HotSpot
 is needed on the machine. A development build (`target/release/rava`, no `lib/` beside it)
 borrows a JDK 21 or 25 class library from `JAVA_HOME` or the `java` on `PATH`.
+
+<br>
+
+<picture>
+  <source media="(prefers-color-scheme: light)" srcset="https://gfx.redstone.md/strip?label=MINECRAFT&note=servers%20and%20the%20client&theme=light">
+  <img src="https://gfx.redstone.md/strip?label=MINECRAFT&note=servers%20and%20the%20client&theme=dark" width="100%">
+</picture>
+
+| | |
+|---|---|
+| **Servers** | `rava -jar paper.jar --nogui` in place of `java`: Paper, Fabric, NeoForge (All The Mods 10 starts and ticks) |
+| **Client** | Minecraft 1.20.5 to 1.21.x, vanilla, Fabric and NeoForge, from Prism Launcher or any launcher that lets you pick the Java executable |
+| **Graphics** | OpenGL through the driver as usual; `-Drava.opengl=vulkan` renders through Mesa's Zink on Linux where a Vulkan driver is installed |
+
+In Prism Launcher: *Settings → Java → Java path*, choose `bin/rava` (`bin\rava.exe` on Windows)
+from the unpacked archive. The bundled class library is Java 21's, so versions that require
+Java 25 (Minecraft 26.x) do not run yet. More in [docs/minecraft.md](docs/minecraft.md).
 
 <br>
 
@@ -132,9 +169,31 @@ measured and changed is in [docs/progress.md](docs/progress.md).
 <br>
 
 <picture>
+  <source media="(prefers-color-scheme: light)" srcset="https://gfx.redstone.md/strip?label=TROUBLESHOOTING&note=thread%20dumps%20and%20reports&theme=light">
+  <img src="https://gfx.redstone.md/strip?label=TROUBLESHOOTING&note=thread%20dumps%20and%20reports&theme=dark" width="100%">
+</picture>
+
+When a program hangs, rava prints a thread dump as HotSpot does: every Java thread, its state
+and its stack.
+
+- **Linux, macOS:** `kill -3 <pid>`, or `Ctrl+\` in the terminal.
+- **Windows:** `Ctrl+Break` in the console.
+- **Launchers without a console:** set the environment variable `RAVA_DUMP_EVERY=30` and a
+  dump goes to the program's output every 30 seconds.
+
+A useful report names the rava version (`rava -version`), the system, the command line or
+launcher, and attaches the full output; for a hang, a thread dump. See
+[docs/troubleshooting.md](docs/troubleshooting.md).
+
+<br>
+
+<picture>
   <source media="(prefers-color-scheme: light)" srcset="https://gfx.redstone.md/strip?label=BUILD&note=cargo%2C%20layout%2C%20tests&theme=light">
   <img src="https://gfx.redstone.md/strip?label=BUILD&note=cargo%2C%20layout%2C%20tests&theme=dark" width="100%">
 </picture>
+
+Rust stable and a JDK 21 (for the reference `java`, `javac` and the class library a
+development build borrows):
 
 ```sh
 cargo build --release          # target/release/rava
@@ -143,14 +202,35 @@ dist/make.sh                   # the release archive: rava with its class librar
 bench/paper_ab.sh HEAD java    # server start, A/B against HotSpot
 ```
 
+The same commands work on macOS and on Windows (from Git Bash, with MinGW's `gcc` for the JNI
+test). CI runs them on all three systems for every change.
+
 ```
-crates/rava/       the VM: loader, interpreter, JIT, GC, natives, launcher
+crates/rava/       the VM: loader, interpreter, JIT, GC, natives, launcher, platform layer (src/os)
 tests/semantics/   probes whose output must match java's
 tests/patches/     a program and a patch exercising every kind of edit
 patches/           official patches (rava-patches/ jars, docs/patches.md)
 bench/             microbenchmarks, world-generation benchmarks, the server A/B harness
-docs/              architecture, the optimizing tier, patches, the progress log
+docs/              architecture, the optimizing tier, platforms, patches, the progress log
+dist/              the distribution build (dist/make.sh)
 ```
+
+<br>
+
+### Documentation
+
+| | |
+|---|---|
+| [Architecture](docs/README.md) | the object model, collector, compilers, natives and launcher, and why |
+| [Optimizing tier](docs/opt-tier.md) | the SSA compiler: inlining, speculation, deoptimization |
+| [Java releases](docs/jdk-versions.md) | which class libraries run and how releases differ |
+| [Platforms](docs/platforms-roadmap.md) | the Linux, macOS and Windows ports |
+| [Minecraft](docs/minecraft.md) | servers, the client and launchers |
+| [Troubleshooting](docs/troubleshooting.md) | thread dumps, diagnostics, reporting problems |
+| [Patches](docs/patches.md) | program-specific changes, installed by the owner |
+| [Progress log](docs/progress.md) | what was measured and changed, step by step |
+
+Contributions are welcome: see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 <br>
 
