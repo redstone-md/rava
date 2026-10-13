@@ -291,6 +291,8 @@ fn report_once(pc: usize, addr: usize) {
 /// probes say, so the report waits until none did). A fault in rava's own code (`own`) is
 /// reported at once: no other handler resolves it, and libraries replace the unhandled-exception
 /// filter (a client's audio, windowing or graphics driver), so the report would never come.
+/// For faults elsewhere, rava takes the filter back once a second (as HotSpot wraps each thread
+/// in its own filter) and chains to the one that replaced it.
 pub fn install_fault_handler(handler: FaultHandler, crash: CrashReport, own: OwnCode) {
     if HANDLER.set(handler).is_ok() {
         let _ = CRASH.set(crash);
@@ -298,7 +300,25 @@ pub fn install_fault_handler(handler: FaultHandler, crash: CrashReport, own: Own
         // SAFETY: registers handlers that live as long as the process.
         unsafe {
             AddVectoredExceptionHandler(1, Some(on_exception));
-            SetUnhandledExceptionFilter(Some(on_unhandled));
+        }
+        take_filter();
+        let _ = std::thread::Builder::new().name("rava-fault-filter".into()).spawn(|| loop {
+            std::thread::sleep(std::time::Duration::from_secs(1));
+            take_filter();
+        });
+    }
+}
+
+/// The filter rava's replaced, called after the report (0: none).
+static PREVIOUS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// Makes `on_unhandled` the unhandled-exception filter again, keeping the one it replaces.
+fn take_filter() {
+    // SAFETY: swaps the process's filter for one that lives as long as the process.
+    let prev = unsafe { SetUnhandledExceptionFilter(Some(on_unhandled)) };
+    if let Some(f) = prev {
+        if f as usize != on_unhandled as *const () as usize {
+            PREVIOUS.store(f as usize, std::sync::atomic::Ordering::SeqCst);
         }
     }
 }
@@ -326,11 +346,22 @@ unsafe extern "system" fn on_exception(info: *mut EXCEPTION_POINTERS) -> i32 {
 }
 
 unsafe extern "system" fn on_unhandled(info: *const EXCEPTION_POINTERS) -> i32 {
+    // A filter that replaced this one may chain back to it: run once per crash.
+    static ENTERED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if ENTERED.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        return CONTINUE_SEARCH;
+    }
     let record = &*(*info).ExceptionRecord;
     if record.ExceptionCode == EXCEPTION_ACCESS_VIOLATION {
         report_once((*(*info).ContextRecord).Rip as usize, record.ExceptionInformation[1]);
     }
-    CONTINUE_SEARCH
+    match PREVIOUS.load(std::sync::atomic::Ordering::SeqCst) {
+        0 => CONTINUE_SEARCH,
+        f => {
+            let f: unsafe extern "system" fn(*const EXCEPTION_POINTERS) -> i32 = std::mem::transmute(f);
+            f(info)
+        }
+    }
 }
 
 static DUMP: std::sync::OnceLock<fn()> = std::sync::OnceLock::new();
