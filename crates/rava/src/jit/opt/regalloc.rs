@@ -179,7 +179,7 @@ impl LoopMap {
     }
 }
 
-pub fn allocate(g: &Graph) -> Allocation {
+pub fn allocate(g: &Graph, m: &crate::method::Method) -> Allocation {
     let mut order: Vec<B> = (0..g.blocks.len() as B).filter(|&b| !matches!(g.blocks[b as usize].term, Term::None)).collect();
     order.sort_by_key(|&b| g.blocks[b as usize].order);
     let n = g.values.len();
@@ -200,7 +200,8 @@ pub fn allocate(g: &Graph) -> Allocation {
     let mut reads = StateReads::new();
     let full = intervals(g, &order, &pos, &range, &loops.depth, &mut reads, true);
     let mut iv = intervals(g, &order, &pos, &range, &loops.depth, &mut reads, false);
-    let (mut loc, spill_slots, home, state_regs) = scan(g, &mut iv, &full, &loops);
+    let hints = super::hints::abi_hints(g, m, &pos, &iv.end);
+    let (mut loc, spill_slots, home, state_regs) = scan(g, &mut iv, &full, &loops, &hints);
     // Registers a call clobbers that hold values live across it.
     let mut saves = std::collections::HashMap::new();
     let mut most = 0;
@@ -389,7 +390,7 @@ fn few_regs() -> Option<usize> {
 /// may share its first operand's register when that operand dies at its definition.
 /// `iv` has the intervals of real uses, `full` those including state uses: a value only states
 /// read lives in a spill slot, one read beyond its real uses gets a home slot as well.
-fn scan(g: &Graph, iv: &mut Intervals, full: &Intervals, loops: &LoopMap) -> (Vec<Loc>, i32, Vec<Option<Loc>>, Vec<bool>) {
+fn scan(g: &Graph, iv: &mut Intervals, full: &Intervals, loops: &LoopMap, hints: &[Option<Loc>]) -> (Vec<Loc>, i32, Vec<Option<Loc>>, Vec<bool>) {
     let n = g.values.len();
     let mut loc = vec![Loc::None; n];
     let mut todo = Vec::new();
@@ -440,8 +441,9 @@ fn scan(g: &Graph, iv: &mut Intervals, full: &Intervals, loops: &LoopMap) -> (Ve
         // Coalescing: the result takes the register of its first operand when that dies here
         // (code generation computes into the first operand's register), or of a commutative
         // operation's second operand (computed into it the other way round).
+        // (Not for a call, whose result comes in rax.)
         let operands = match g.values[v].inst {
-            Inst::Phi(_) => Vec::new(),
+            Inst::Phi(_) | Inst::Call(..) => Vec::new(),
             ref inst => inputs(g, inst),
         };
         let commutes = matches!(g.values[v].inst, Inst::Bin(BinOp::Add | BinOp::Mul | BinOp::And | BinOp::Or | BinOp::Xor, ..));
@@ -460,7 +462,9 @@ fn scan(g: &Graph, iv: &mut Intervals, full: &Intervals, loops: &LoopMap) -> (Ve
             active.push(v);
             continue;
         }
-        if let Some(&c) = cands.iter().find(|&&c| !taken(c, &active, &loc)) {
+        // The register the calling convention brings or takes the value in (`hints.rs`).
+        let abi = hints[v].filter(|&c| !crossing && allowed(c) && !taken(c, &active, &loc));
+        if let Some(c) = abi.or_else(|| cands.iter().copied().find(|&c| !taken(c, &active, &loc))) {
             loc[v] = c;
             active.push(v);
             continue;
