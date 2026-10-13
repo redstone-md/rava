@@ -52,9 +52,18 @@ def previous_tag(rev):
         return None
 
 
+def unmention(text):
+    """Puts `@Name` outside code into code: GitHub takes it for a user mention (and lists that
+    account among the release's contributors), as a Java annotation in a subject would be."""
+    parts = text.split('`')
+    for i in range(0, len(parts), 2):
+        parts[i] = re.sub(r'(?<![\w@])@([A-Za-z][\w.-]*)', r'`@\1`', parts[i])
+    return '`'.join(parts)
+
+
 def commits(rng):
     out = git('log', '--no-merges', '--format=%h%x00%s', rng)
-    return [line.split('\0', 1) for line in out.splitlines() if line]
+    return [(sha, unmention(subject)) for sha, subject in (line.split('\0', 1) for line in out.splitlines() if line)]
 
 
 def grouped(entries):
