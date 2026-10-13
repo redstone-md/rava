@@ -213,6 +213,22 @@ pub fn process_cpu_nanos() -> i64 {
 }
 
 /// Configured and online processors.
+/// The system's CPU time so far, busy and total, in the kernel's ticks (None where it is not
+/// read: macOS).
+pub fn system_cpu_ticks() -> Option<(u64, u64)> {
+    #[cfg(target_os = "linux")]
+    {
+        // The first line of /proc/stat: user nice system idle iowait irq softirq steal ...
+        let stat = std::fs::read_to_string("/proc/stat").ok()?;
+        let v: Vec<u64> = stat.lines().next()?.split_whitespace().skip(1).filter_map(|x| x.parse().ok()).collect();
+        let total: u64 = v.iter().take(8).sum();
+        let idle = v.get(3).copied().unwrap_or(0) + v.get(4).copied().unwrap_or(0);
+        Some((total - idle, total))
+    }
+    #[cfg(not(target_os = "linux"))]
+    None
+}
+
 pub fn cpu_counts() -> (i32, i32) {
     // SAFETY: plain sysconf queries.
     unsafe { (libc::sysconf(libc::_SC_NPROCESSORS_CONF) as i32, libc::sysconf(libc::_SC_NPROCESSORS_ONLN) as i32) }

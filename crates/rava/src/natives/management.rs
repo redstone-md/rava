@@ -197,9 +197,27 @@ fn register_os(r: &mut NativeRegistry) {
     r.add(OS, "getProcessCpuTime0", "()J", |_, _| {
         ret_long(crate::os::process_cpu_nanos())
     });
-    // Loads are unavailable (-1), which the bean reports as such.
-    r.add(OS, "getProcessCpuLoad0", "()D", |_, _| Ok((-1.0f64).to_bits()));
-    r.add(OS, "getCpuLoad0", "()D", |_, _| Ok((-1.0f64).to_bits()));
+    // Loads over the time since the previous call, as the JDK's own implementations measure
+    // them: the process's CPU time over wall time and processors; the system's busy ticks over
+    // all ticks. The first call has nothing to compare with (0), a system that does not report
+    // its ticks -1.
+    r.add(OS, "getProcessCpuLoad0", "()D", |_, _| {
+        static LAST: std::sync::Mutex<Option<(std::time::Instant, i64)>> = std::sync::Mutex::new(None);
+        let (now, cpu) = (std::time::Instant::now(), crate::os::process_cpu_nanos());
+        let previous = LAST.lock().unwrap().replace((now, cpu));
+        let load = previous.map_or(0.0, |(t, c)| {
+            let wall = (now - t).as_nanos() as f64 * crate::os::cpu_counts().1.max(1) as f64;
+            if wall > 0.0 { ((cpu - c) as f64 / wall).clamp(0.0, 1.0) } else { 0.0 }
+        });
+        Ok(load.to_bits())
+    });
+    r.add(OS, "getCpuLoad0", "()D", |_, _| {
+        static LAST: std::sync::Mutex<Option<(u64, u64)>> = std::sync::Mutex::new(None);
+        let Some((busy, total)) = crate::os::system_cpu_ticks() else { return Ok((-1.0f64).to_bits()) };
+        let previous = LAST.lock().unwrap().replace((busy, total));
+        let load = previous.map_or(0.0, |(b, t)| if total > t { ((busy - b) as f64 / (total - t) as f64).clamp(0.0, 1.0) } else { 0.0 });
+        Ok(load.to_bits())
+    });
     r.add(OS, "getSingleCpuLoad0", "(I)D", |_, _| Ok((-1.0f64).to_bits()));
     r.add(OS, "getHostConfiguredCpuCount0", "()I", |_, _| ret_int(crate::os::cpu_counts().0));
     r.add(OS, "getHostOnlineCpuCount0", "()I", |_, _| ret_int(crate::os::cpu_counts().1));
