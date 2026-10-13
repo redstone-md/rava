@@ -32,7 +32,7 @@ A C1-class compiler is enough for parity. Every mechanism below is a generic JVM
   and runs it to completion. Its back-edges can OSR into baseline code again. Inlined scopes are
   resumed innermost first: each returns into its caller's resumed state. A trap that keeps
   firing invalidates the tier-2 code.
-- **Optimizations** (C1-like): constant folding, local value numbering, null-check elimination,
+- **Optimizations** (C1-like): constant folding, local and global value numbering, null-check elimination,
   inlining of statically bound and class-hierarchy-bound targets, and method-handle constants
   followed into their `LambdaForm`s. Intrinsics come from `jit/intrinsics.rs`.
 - **Register allocation**: linear scan over SSA live ranges. Values live across calls use
@@ -50,6 +50,7 @@ A C1-class compiler is enough for parity. Every mechanism below is a generic JVM
 | `freq.rs` | Estimated executions per entry of each instruction from branch profiles (Wu-Larus propagation, loops capped at ~20 iterations), for C2-style frequency-based inlining |
 | `inline.rs` | Inlining (C2's size limits by call-site frequency: hot sites up to 325 bytes, others 35, cold ones only trivial methods): direct targets, methods no loaded class overrides (class hierarchy analysis: a flag test that deoptimizes), vtable-guarded and profile-guarded ones with a call on the guard's failure path |
 | `canon.rs`, `phis.rs` | Constant folding and known-branch removal; trivial phi aliases |
+| `gvn.rs` | Global value numbering of pure arithmetic, conversions and compares after unrolling: a repeat of a dominating instruction becomes its alias |
 | `split.rs` | Live-range splitting at innermost loops by SSA copies (entry copies of values used in the loop and live after it, exit copies of values defined in it) |
 | `regalloc.rs`, `moves.rs` | Liveness, linear scan over one interval per value (spill order: idle in the loop at hand, then loop-weighted use density), parallel moves on edges |
 | `barrier.rs` | Card marks elided for stores initializing an object allocated earlier in the block (ReduceInitialCardMarks) |
