@@ -48,11 +48,15 @@ extern "C" fn new_string(env: *mut Env, chars: *const u16, len: i32) -> Oop {
     refs::local(t, s)
 }
 
-extern "C" fn get_string_length(_env: *mut Env, s: Oop) -> i32 {
+extern "C" fn get_string_length(env: *mut Env, s: Oop) -> i32 {
+    // In the VM while reading: a collection may move the string's young backing array.
+    let (_t, _g) = enter(env);
     crate::runtime::string_units(s).len() as i32
 }
 
-extern "C" fn get_string_chars(_env: *mut Env, s: Oop, is_copy: *mut u8) -> *const u16 {
+extern "C" fn get_string_chars(env: *mut Env, s: Oop, is_copy: *mut u8) -> *const u16 {
+    // In the VM while reading: a collection may move the string's young backing array.
+    let (_t, _g) = enter(env);
     if !is_copy.is_null() {
         // SAFETY: the caller's out-parameter.
         unsafe { *is_copy = 1 };
@@ -78,11 +82,15 @@ extern "C" fn new_string_utf(env: *mut Env, bytes: *const c_char) -> Oop {
     refs::local(t, s)
 }
 
-extern "C" fn get_string_utf_length(_env: *mut Env, s: Oop) -> i32 {
+extern "C" fn get_string_utf_length(env: *mut Env, s: Oop) -> i32 {
+    // In the VM while reading: a collection may move the string's young backing array.
+    let (_t, _g) = enter(env);
     modified_utf8(&crate::runtime::string_units(s)).len() as i32
 }
 
-extern "C" fn get_string_utf_chars(_env: *mut Env, s: Oop, is_copy: *mut u8) -> *const c_char {
+extern "C" fn get_string_utf_chars(env: *mut Env, s: Oop, is_copy: *mut u8) -> *const c_char {
+    // In the VM while reading: a collection may move the string's young backing array.
+    let (_t, _g) = enter(env);
     if !is_copy.is_null() {
         // SAFETY: the caller's out-parameter.
         unsafe { *is_copy = 1 };
@@ -90,7 +98,9 @@ extern "C" fn get_string_utf_chars(_env: *mut Env, s: Oop, is_copy: *mut u8) -> 
     c_copy(&modified_utf8(&crate::runtime::string_units(s)), 1) as *const c_char
 }
 
-extern "C" fn get_string_region(_env: *mut Env, s: Oop, start: i32, len: i32, buf: *mut u16) {
+extern "C" fn get_string_region(env: *mut Env, s: Oop, start: i32, len: i32, buf: *mut u16) {
+    // In the VM while reading: a collection may move the string's young backing array.
+    let (_t, _g) = enter(env);
     let u = crate::runtime::string_units(s);
     let (a, n) = (start.max(0) as usize, len.max(0) as usize);
     if let Some(src) = u.get(a..a + n) {
@@ -99,7 +109,9 @@ extern "C" fn get_string_region(_env: *mut Env, s: Oop, start: i32, len: i32, bu
     }
 }
 
-extern "C" fn get_string_utf_region(_env: *mut Env, s: Oop, start: i32, len: i32, buf: *mut u8) {
+extern "C" fn get_string_utf_region(env: *mut Env, s: Oop, start: i32, len: i32, buf: *mut u8) {
+    // In the VM while reading: a collection may move the string's young backing array.
+    let (_t, _g) = enter(env);
     let u = crate::runtime::string_units(s);
     let (a, n) = (start.max(0) as usize, len.max(0) as usize);
     if let Some(src) = u.get(a..a + n) {
@@ -151,6 +163,17 @@ extern "C" fn set_object_array_element(env: *mut Env, a: Oop, i: i32, v: Oop) {
     if i < 0 || i >= unsafe { obj::array_length(a) } {
         t.jni.exception = crate::runtime::throw_new(t, "java/lang/ArrayIndexOutOfBoundsException", &i.to_string()).0;
         return;
+    }
+    if !v.is_null() {
+        // SAFETY: a live object array and a live value.
+        let (elem, vk) = unsafe {
+            let crate::klass::KlassKind::ObjArray { elem } = obj::klass(a).kind else { unreachable!("an object array") };
+            (elem, obj::klass(v))
+        };
+        if !vk.is_subtype_of(elem) {
+            t.jni.exception = crate::runtime::throw_new(t, "java/lang/ArrayStoreException", &crate::runtime::class_name_of(v)).0;
+            return;
+        }
     }
     // SAFETY: an index within bounds.
     unsafe { obj::store_elem(a, i as usize, v) };
