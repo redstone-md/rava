@@ -1,6 +1,6 @@
 //! Shrink-wrapping in small: a fast exit at the register entry, before the prologue. When the
 //! entry block ends in a test whose one side only computes a little integer arithmetic and
-//! returns, that test and that side run first, on the arguments still in their registers and
+//! returns (or reads a field of the receiver), that test and that side run first, on the arguments still in their registers and
 //! with scratch registers only: the early return (a recursion's base case, a cached value) pays
 //! no callee-saved pushes, stack check, frame header or entry poll. Otherwise the code goes on
 //! into the prologue with every entry register as it came, and the method runs as compiled.
@@ -9,8 +9,10 @@
 
 use super::{cond, invert, Gen};
 use crate::jit::abi::ArgReg;
-use crate::jit::asm::{Alu, R};
-use crate::jit::opt::ir::{BinOp, Inst, Term, Ty, V};
+use crate::jit::asm::{mem, Alu, R};
+use crate::jit::emit_obj::load_typed_to;
+use crate::types::BasicType;
+use crate::jit::opt::ir::{BinOp, Graph, Inst, Term, Ty, V};
 
 /// Registers the fast exit computes in: none carries an argument, the frame base (rsi), the
 /// method (rdx) or the thread.
@@ -37,7 +39,7 @@ impl Gen<'_> {
         // The side that only returns: blocks of simple values (and phis, which take what the
         // path passes) joined by jumps, from the entry block to a return; with each block, the
         // block it is entered from.
-        let ok = |v: V| g.resolve(v) != v || matches!(g.values[v as usize].inst, Inst::Phi(_)) || simple(&g.values[v as usize].inst, g.ty(v));
+        let ok = |v: V| g.resolve(v) != v || matches!(g.values[v as usize].inst, Inst::Phi(_)) || simple(g, v);
         let path = |x: u32| -> Option<Vec<(u32, u32)>> {
             let (mut at, mut from, mut out) = (x, 0, Vec::new());
             for _ in 0..4 {
@@ -63,7 +65,7 @@ impl Gen<'_> {
         let own = |b: u32| g.blocks[b as usize].insts.iter().copied().filter(|&v| g.resolve(v) == v).map(move |v| (v, b));
         let entry: Vec<V> = own(0).map(|(v, _)| v).collect();
         let tail: Vec<(V, u32)> = path.iter().flat_map(|&(b, _)| own(b)).collect();
-        if !entry.iter().all(|&v| simple(&g.values[v as usize].inst, g.ty(v))) {
+        if !entry.iter().all(|&v| simple(g, v)) {
             return;
         }
         let last = path.last().expect("a path").0;
@@ -139,6 +141,10 @@ impl Gen<'_> {
         let w = g.ty(v) != Ty::I;
         match g.values[v as usize].inst {
             Inst::Param(_) | Inst::Const(_) | Inst::Copy(_) | Inst::Phi(_) => {}
+            Inst::LoadField(o, off, bt) => {
+                let Place::Reg(base) = get(o) else { unreachable!("the receiver is in a register") };
+                load_typed_to(&mut self.a, dst, bt, mem(base, off as i32));
+            }
             Inst::Bin(op, x, y) => {
                 let alu = match op {
                     BinOp::Add => Alu::Add,
@@ -167,13 +173,23 @@ impl Gen<'_> {
     }
 }
 
-/// Whether the fast exit computes `inst`: parameters, small constants, copies and integer
-/// arithmetic that cannot fault.
-fn simple(inst: &Inst, ty: Ty) -> bool {
-    match inst {
+/// Whether the fast exit computes value `v`: parameters, small constants, copies, integer
+/// arithmetic that cannot fault, and non-floating fields of the receiver (never null).
+fn simple(g: &Graph, v: V) -> bool {
+    match g.values[v as usize].inst {
         Inst::Param(_) | Inst::Copy(_) => true,
-        Inst::Const(c) => i32::try_from(*c).is_ok(),
-        Inst::Bin(BinOp::Add | BinOp::Sub | BinOp::And | BinOp::Or | BinOp::Xor, ..) => matches!(ty, Ty::I | Ty::J),
+        Inst::Const(c) => i32::try_from(c).is_ok(),
+        Inst::Bin(BinOp::Add | BinOp::Sub | BinOp::And | BinOp::Or | BinOp::Xor, ..) => matches!(g.ty(v), Ty::I | Ty::J),
+        Inst::LoadField(o, _, bt) => !matches!(bt, BasicType::Float | BasicType::Double) && g.receiver.is_some_and(|r| g.resolve(r) == origin(g, o)),
         _ => false,
     }
+}
+
+/// The value `v` copies (through `split.rs`'s copies), or `v`.
+fn origin(g: &Graph, mut v: V) -> V {
+    v = g.resolve(v);
+    while let Inst::Copy(x) = g.values[v as usize].inst {
+        v = g.resolve(x);
+    }
+    v
 }
