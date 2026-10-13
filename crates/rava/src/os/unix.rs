@@ -1,7 +1,7 @@
 //! Linux and macOS: `mmap`, signals, `dlopen` and pthreads, with the differences between the two
 //! kept to the functions that differ.
 
-use super::FaultHandler;
+use super::{CrashReport, FaultHandler};
 use std::sync::OnceLock;
 
 #[cfg(target_os = "linux")]
@@ -310,11 +310,25 @@ pub fn library_symbol(h: usize, name: &str) -> usize {
     unsafe { libc::dlsym(h as *mut libc::c_void, c.as_ptr()) as usize }
 }
 
-/// The base address of the binary or library holding `pc`.
-pub fn module_base(pc: usize) -> Option<usize> {
+/// The base address of the binary or library holding `pc`, and the length of its file name
+/// (without directories) as copied into `name` (cut at its length).
+pub fn module(pc: usize, name: &mut [u8]) -> Option<(usize, usize)> {
     let mut info: libc::Dl_info = unsafe { std::mem::zeroed() };
-    // SAFETY: dladdr reads the loader's tables.
-    (unsafe { libc::dladdr(pc as *const libc::c_void, &mut info) } != 0 && !info.dli_fbase.is_null()).then(|| info.dli_fbase as usize)
+    // SAFETY: dladdr reads the loader's tables; the name it gives lives as long as the module.
+    if unsafe { libc::dladdr(pc as *const libc::c_void, &mut info) } == 0 || info.dli_fbase.is_null() {
+        return None;
+    }
+    let path = if info.dli_fname.is_null() { &[][..] } else { unsafe { std::ffi::CStr::from_ptr(info.dli_fname) }.to_bytes() };
+    let file = path.rsplit(|&b| b == b'/').next().unwrap_or_default();
+    let n = file.len().min(name.len());
+    name[..n].copy_from_slice(&file[..n]);
+    Some((info.dli_fbase as usize, n))
+}
+
+/// Return addresses of the calling thread's native frames, innermost first; how many fit.
+pub fn native_frames(out: &mut [usize]) -> usize {
+    // SAFETY: backtrace(3) into a buffer of the length passed.
+    unsafe { libc::backtrace(out.as_mut_ptr() as *mut *mut libc::c_void, out.len() as libc::c_int).max(0) as usize }
 }
 
 /// Writes `bytes` to stderr without allocating (usable in a fault handler).
@@ -324,6 +338,7 @@ pub fn write_stderr(bytes: &[u8]) {
 }
 
 static HANDLER: OnceLock<FaultHandler> = OnceLock::new();
+static CRASH: OnceLock<CrashReport> = OnceLock::new();
 static PREVIOUS: OnceLock<Vec<(libc::c_int, libc::sigaction)>> = OnceLock::new();
 
 /// The signals an access to unmapped memory raises.
@@ -332,12 +347,14 @@ const FAULTS: [libc::c_int; 2] = [libc::SIGSEGV, libc::SIGBUS];
 #[cfg(not(target_os = "macos"))]
 const FAULTS: [libc::c_int; 1] = [libc::SIGSEGV];
 
-/// Sends memory faults to `handler` first: it returns where to resume, or None to pass the fault
-/// on to the handler installed before (the Rust runtime's stack-overflow report).
-pub fn install_fault_handler(handler: FaultHandler) {
+/// Sends memory faults to `handler` first: it returns where to resume, or None to report the
+/// fault with `crash` and pass it on to the handler installed before (the Rust runtime's
+/// stack-overflow report).
+pub fn install_fault_handler(handler: FaultHandler, crash: CrashReport) {
     if HANDLER.set(handler).is_err() {
         return;
     }
+    let _ = CRASH.set(crash);
     let mut previous = Vec::new();
     // SAFETY: plain sigaction calls; the previous actions are kept for chaining.
     unsafe {
@@ -371,6 +388,9 @@ extern "C" fn on_fault(sig: libc::c_int, info: *mut libc::siginfo_t, ctx: *mut l
         if let Some(resume) = HANDLER.get().and_then(|h| h(*pc as usize, (*info).si_addr() as usize)) {
             *pc = resume as u64;
             return;
+        }
+        if let Some(crash) = CRASH.get() {
+            crash(*pc as usize, (*info).si_addr() as usize);
         }
         let previous = PREVIOUS.get().and_then(|p| p.iter().find(|(s, _)| *s == sig)).map(|(_, a)| *a);
         match previous {

@@ -88,7 +88,7 @@ pub(crate) fn set_current(t: *mut Thread) {
     CURRENT.with(|c| c.set(t));
 }
 
-fn current() -> *mut Thread {
+pub(crate) fn current() -> *mut Thread {
     CURRENT.with(|c| c.get())
 }
 

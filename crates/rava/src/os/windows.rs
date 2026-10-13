@@ -2,12 +2,12 @@
 //! process queries. Memory is reserved and committed together: Windows charges committed memory
 //! against its commit limit but still gives physical pages only to the ones touched.
 
-use super::FaultHandler;
+use super::{CrashReport, FaultHandler};
 use std::sync::OnceLock;
 use windows_sys::Win32::Foundation::{EXCEPTION_ACCESS_VIOLATION, HANDLE, HMODULE};
 use windows_sys::Win32::Storage::FileSystem::WriteFile;
-use windows_sys::Win32::System::Diagnostics::Debug::{AddVectoredExceptionHandler, EXCEPTION_POINTERS};
-use windows_sys::Win32::System::LibraryLoader::{GetModuleHandleExW, GetProcAddress, LoadLibraryW, GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS, GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT};
+use windows_sys::Win32::System::Diagnostics::Debug::{AddVectoredExceptionHandler, RtlCaptureStackBackTrace, SetUnhandledExceptionFilter, EXCEPTION_POINTERS};
+use windows_sys::Win32::System::LibraryLoader::{GetModuleFileNameW, GetModuleHandleExW, GetProcAddress, LoadLibraryW, GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS, GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT};
 use windows_sys::Win32::System::Memory::{
     CreateFileMappingW, MapViewOfFile, UnmapViewOfFile, VirtualAlloc, VirtualFree, FILE_MAP_READ, MEM_COMMIT, MEM_DECOMMIT, MEM_RELEASE, MEM_RESERVE, PAGE_EXECUTE_READWRITE,
     PAGE_READONLY, PAGE_READWRITE,
@@ -231,12 +231,36 @@ pub fn library_symbol(h: usize, name: &str) -> usize {
     unsafe { GetProcAddress(h as HMODULE, c.as_ptr() as *const u8) }.map_or(0, |f| f as usize)
 }
 
-/// The base address of the binary or library holding `pc`.
-pub fn module_base(pc: usize) -> Option<usize> {
+/// The base address of the binary or library holding `pc`, and the length of its file name
+/// (without directories, UTF-8) as copied into `name` (cut at its length).
+pub fn module(pc: usize, name: &mut [u8]) -> Option<(usize, usize)> {
     let mut m: HMODULE = std::ptr::null_mut();
     // SAFETY: looks up the module containing an address, without a reference.
     let ok = unsafe { GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, pc as *const u16, &mut m) };
-    (ok != 0).then_some(m as usize)
+    if ok == 0 {
+        return None;
+    }
+    let mut path = [0u16; 260];
+    // SAFETY: a buffer of the length passed.
+    let len = unsafe { GetModuleFileNameW(m, path.as_mut_ptr(), path.len() as u32) } as usize;
+    let file = path[..len].rsplit(|&c| c == u16::from(b'\\') || c == u16::from(b'/')).next().unwrap_or_default();
+    let mut n = 0;
+    for c in char::decode_utf16(file.iter().copied()).map(|c| c.unwrap_or('?')) {
+        let mut b = [0u8; 4];
+        let e = c.encode_utf8(&mut b).as_bytes();
+        if n + e.len() > name.len() {
+            break;
+        }
+        name[n..n + e.len()].copy_from_slice(e);
+        n += e.len();
+    }
+    Some((m as usize, n))
+}
+
+/// Return addresses of the calling thread's native frames, innermost first; how many fit.
+pub fn native_frames(out: &mut [usize]) -> usize {
+    // SAFETY: captures into a buffer of the length passed.
+    unsafe { RtlCaptureStackBackTrace(0, out.len().min(62) as u32, out.as_mut_ptr() as *mut *mut core::ffi::c_void, std::ptr::null_mut()) as usize }
 }
 
 /// Writes `bytes` to stderr without allocating (usable in an exception handler).
@@ -248,13 +272,20 @@ pub fn write_stderr(bytes: &[u8]) {
 }
 
 static HANDLER: OnceLock<FaultHandler> = OnceLock::new();
+static CRASH: OnceLock<CrashReport> = OnceLock::new();
 
 /// Sends access violations to `handler` first: it returns where to resume, or None to let the
-/// exception go on to the other handlers.
-pub fn install_fault_handler(handler: FaultHandler) {
+/// exception go on to the other handlers. One that nothing handles goes to `crash` before the
+/// process ends (a vectored handler also sees the faults that code catches itself, a driver's
+/// probes say, so the report waits until none did).
+pub fn install_fault_handler(handler: FaultHandler, crash: CrashReport) {
     if HANDLER.set(handler).is_ok() {
-        // SAFETY: registers a handler that lives as long as the process.
-        unsafe { AddVectoredExceptionHandler(1, Some(on_exception)) };
+        let _ = CRASH.set(crash);
+        // SAFETY: registers handlers that live as long as the process.
+        unsafe {
+            AddVectoredExceptionHandler(1, Some(on_exception));
+            SetUnhandledExceptionFilter(Some(on_unhandled));
+        }
     }
 }
 
@@ -272,6 +303,16 @@ unsafe extern "system" fn on_exception(info: *mut EXCEPTION_POINTERS) -> i32 {
         }
         None => CONTINUE_SEARCH,
     }
+}
+
+unsafe extern "system" fn on_unhandled(info: *const EXCEPTION_POINTERS) -> i32 {
+    let record = &*(*info).ExceptionRecord;
+    if record.ExceptionCode == EXCEPTION_ACCESS_VIOLATION {
+        if let Some(crash) = CRASH.get() {
+            crash((*(*info).ContextRecord).Rip as usize, record.ExceptionInformation[1]);
+        }
+    }
+    CONTINUE_SEARCH
 }
 
 static DUMP: std::sync::OnceLock<fn()> = std::sync::OnceLock::new();

@@ -19,3 +19,5 @@ pub use windows::*;
 
 /// What a fault handler decides: resume at an address, or let the fault take its course.
 pub type FaultHandler = fn(pc: usize, addr: usize) -> Option<usize>;
+/// Reports a fault no handler resumes from, before the process dies of it.
+pub type CrashReport = fn(pc: usize, addr: usize);

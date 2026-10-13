@@ -28,7 +28,7 @@ mod emit_call;
 mod emit_obj;
 mod emit_reg;
 mod emit_reg_mem;
-mod fault;
+pub mod fault;
 mod fold;
 mod frame_stubs;
 mod inline;

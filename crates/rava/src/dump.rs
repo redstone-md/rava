@@ -80,21 +80,42 @@ fn collect(held: Option<String>) -> String {
         if monitor != 0 {
             let _ = writeln!(s, "   waiting on the monitor of {monitor:#x}");
         }
-        for (m, bci) in t.frames().take(200) {
-            let class = m.holder.name.as_str().replace('/', ".");
-            let place = if m.is_native() {
-                "Native Method".to_string()
-            } else {
-                let (file, line) = (crate::natives::source_file(m), crate::natives::line_number(m, bci));
-                match (file, line >= 0) {
-                    (Some(f), true) => format!("{f}:{line}"),
-                    (Some(f), false) => f.to_string(),
-                    (None, _) => "Unknown Source".to_string(),
-                }
-            };
-            let _ = writeln!(s, "\tat {class}.{}({place})", m.name.as_str());
-        }
+        write_frames(&mut s, t);
     }
     s.push('\n');
     s
+}
+
+/// The frames of `t`, innermost first, as a stack trace prints them (without allocating).
+fn write_frames(w: &mut impl Write, t: &crate::thread::Thread) {
+    for (m, bci) in t.frames().take(200) {
+        let _ = w.write_str("\tat ");
+        for c in m.holder.name.as_str().chars() {
+            let _ = w.write_char(if c == '/' { '.' } else { c });
+        }
+        let _ = write!(w, ".{}(", m.name.as_str());
+        let _ = if m.is_native() {
+            w.write_str("Native Method")
+        } else {
+            match (crate::natives::source_file(m), crate::natives::line_number(m, bci)) {
+                (Some(f), line) if line >= 0 => write!(w, "{f}:{line}"),
+                (Some(f), _) => w.write_str(f),
+                (None, _) => w.write_str("Unknown Source"),
+            }
+        };
+        let _ = w.write_str(")\n");
+    }
+}
+
+/// Writes the calling thread's Java frames (as last published: compiled code publishes its
+/// frame before it calls out), for a crash report; nothing on a thread that is not a Java
+/// thread.
+pub fn write_current_thread(w: &mut impl Write) {
+    let t = crate::jni::current();
+    if t.is_null() {
+        return;
+    }
+    let _ = w.write_str("Java frames of the faulting thread:\n");
+    // SAFETY: the calling thread's own `Thread`, which lives while it runs.
+    write_frames(w, unsafe { &*t });
 }
