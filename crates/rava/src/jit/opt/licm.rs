@@ -2,7 +2,7 @@
 //! preheader (its single outside predecessor, ending in a jump to the header), instructions
 //! whose inputs are all defined outside the loop move to the end of the preheader, innermost
 //! loops first so values can climb several levels:
-//! - pure arithmetic (no division), conversions, compares, conditional moves and pure
+//! - constants, pure arithmetic (no division), conversions, compares, conditional moves and pure
 //!   intrinsics, which may run once before the loop whether or not the loop would have;
 //! - array lengths and field loads of objects known non-null at the preheader (a dominating null
 //!   check, an allocation, or the receiver), which cannot fault there; a field load only when the
@@ -88,7 +88,9 @@ pub fn hoist(g: &mut Graph) {
                         && inst.inputs().into_iter().all(invariant)
                         && match inst {
                             Inst::Bin(op, ..) => !matches!(op, BinOp::Div | BinOp::Rem) || matches!(g.ty(v), Ty::F | Ty::D),
-                            Inst::Neg(_) | Inst::Convert(..) | Inst::Compare(..) | Inst::Select(..) => true,
+                            // A constant moves too, so the arithmetic on it can follow (inlining
+                            // makes a `Const` per use, inside the loop).
+                            Inst::Const(_) | Inst::Neg(_) | Inst::Convert(..) | Inst::Compare(..) | Inst::Select(..) => true,
                             Inst::Intrinsic(k, _, None) => k.is_pure() && !k.reads_mutable(),
                             // Class metadata (vtable entries, the supers display) read
                             // through a class word: never written, so no store or call in the
