@@ -68,10 +68,24 @@ fn addr(sa: &SOCKADDR_INET, prefix: Option<u8>) -> Option<Addr> {
     }
 }
 
+/// Whether this is Wine, whose IP helper aborts the process in `GetAnycastIpAddressTable` (it
+/// has no anycast addresses to list).
+fn wine() -> bool {
+    static WINE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *WINE.get_or_init(|| {
+        let ntdll: Vec<u16> = "ntdll.dll\0".encode_utf16().collect();
+        // SAFETY: looks up an export of the always-loaded ntdll.
+        unsafe {
+            let m = windows_sys::Win32::System::LibraryLoader::GetModuleHandleW(ntdll.as_ptr());
+            !m.is_null() && windows_sys::Win32::System::LibraryLoader::GetProcAddress(m, c"wine_get_version".as_ptr() as *const u8).is_some()
+        }
+    })
+}
+
 fn adapters() -> Vec<Adapter> {
     let (mut ifs, mut uni, mut any): (*mut MIB_IF_TABLE2, *mut MIB_UNICASTIPADDRESS_TABLE, *mut MIB_ANYCASTIPADDRESS_TABLE) = (std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut());
     // SAFETY: each call allocates its table; the guards free them.
-    let ok = unsafe { GetIfTable2(&mut ifs) == 0 && GetUnicastIpAddressTable(AF_UNSPEC, &mut uni) == 0 && GetAnycastIpAddressTable(AF_UNSPEC, &mut any) == 0 };
+    let ok = unsafe { GetIfTable2(&mut ifs) == 0 && GetUnicastIpAddressTable(AF_UNSPEC, &mut uni) == 0 && (wine() || GetAnycastIpAddressTable(AF_UNSPEC, &mut any) == 0) };
     let (ifs, uni, any) = (Mib(ifs), Mib(uni), Mib(any));
     if !ok {
         return Vec::new();
@@ -81,7 +95,7 @@ fn adapters() -> Vec<Adapter> {
         (
             rows::<_, MIB_IF_ROW2>(ifs.0, (*ifs.0).NumEntries, std::mem::offset_of!(MIB_IF_TABLE2, Table)),
             rows::<_, MIB_UNICASTIPADDRESS_ROW>(uni.0, (*uni.0).NumEntries, std::mem::offset_of!(MIB_UNICASTIPADDRESS_TABLE, Table)),
-            rows::<_, MIB_ANYCASTIPADDRESS_ROW>(any.0, (*any.0).NumEntries, std::mem::offset_of!(MIB_ANYCASTIPADDRESS_TABLE, Table)),
+            if any.0.is_null() { &[] } else { rows::<_, MIB_ANYCASTIPADDRESS_ROW>(any.0, (*any.0).NumEntries, std::mem::offset_of!(MIB_ANYCASTIPADDRESS_TABLE, Table)) },
         )
     };
     ifs.iter()
