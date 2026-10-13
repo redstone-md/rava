@@ -100,7 +100,8 @@ impl Monitor {
         self.owner.store(me, SeqCst);
     }
 
-    pub fn enter(&self, t: &Thread, me: u64) {
+    /// `o` is the monitor's object (reported to `ThreadInfo` while the caller is blocked).
+    pub fn enter(&self, t: &Thread, me: u64, o: crate::heap::Oop) {
         if self.owner.load(Relaxed) == me {
             self.count.fetch_add(1, Relaxed);
             return;
@@ -108,7 +109,9 @@ impl Monitor {
         if !self.claim(me) && !self.spin_claim(me) {
             super::BLOCKED_ENTERS.fetch_add(1, Relaxed);
             // Blocked outside Java so a collection can proceed; no Rust lock is held on return.
+            crate::natives::block_on(t, o);
             crate::gc::safepoint::blocking(t, || drop(self.block_claim(self.lock(), me)));
+            crate::natives::unblock(t);
         }
         self.count.store(1, Relaxed);
     }

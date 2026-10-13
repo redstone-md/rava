@@ -220,7 +220,9 @@ pub(super) fn register(r: &mut NativeRegistry) {
             }
             _ => return ret_void(),
         };
+        super::thread::set_status(t, if deadline.is_some() { super::thread::STATUS_PARKED_TIMED } else { super::thread::STATUS_PARKED });
         crate::gc::safepoint::blocking(t, || rec.parker.park(deadline, &|| super::thread::is_interrupted(jt, false)));
+        super::thread::set_status(t, super::thread::STATUS_RUNNABLE);
         ret_void()
     });
 }

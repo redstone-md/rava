@@ -26,6 +26,8 @@ pub struct Record {
     pub parker: crate::parker::Parker,
     /// The object whose monitor this thread is `wait`ing on, or 0 (for `Thread.interrupt`).
     pub waiting_on: AtomicUsize,
+    /// The object whose monitor this thread is blocked entering, or 0 (for `ThreadInfo`).
+    pub blocked_on: AtomicUsize,
 }
 
 struct Registry {
@@ -142,6 +144,7 @@ pub fn attach(t: &mut Thread) {
         state: AtomicU8::new(RUNNING),
         parker: crate::parker::Parker::default(),
         waiting_on: AtomicUsize::new(0),
+        blocked_on: AtomicUsize::new(0),
     }));
     t.gc_record = Some(rec);
     registry().threads.lock().unwrap().push(rec);
