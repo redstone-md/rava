@@ -151,6 +151,28 @@ impl Asm {
         self.buf.extend_from_slice(&bits.to_le_bytes());
     }
 
+    /// Pads with multi-byte nops (Intel's recommended forms) to a multiple of `n`, a power of two.
+    /// Branch relaxation keeps the alignment only when no branch precedes the padding.
+    pub fn align(&mut self, n: u32) {
+        const NOPS: [&[u8]; 9] = [
+            &[],
+            &[0x90],
+            &[0x66, 0x90],
+            &[0x0F, 0x1F, 0x00],
+            &[0x0F, 0x1F, 0x40, 0x00],
+            &[0x0F, 0x1F, 0x44, 0x00, 0x00],
+            &[0x66, 0x0F, 0x1F, 0x44, 0x00, 0x00],
+            &[0x0F, 0x1F, 0x80, 0x00, 0x00, 0x00, 0x00],
+            &[0x0F, 0x1F, 0x84, 0x00, 0x00, 0x00, 0x00, 0x00],
+        ];
+        let mut pad = (n - self.pos() % n) % n;
+        while pad > 0 {
+            let k = pad.min(8);
+            self.buf.extend_from_slice(NOPS[k as usize]);
+            pad -= k;
+        }
+    }
+
     /// `finish`, with the final position of label `l` (bound).
     pub fn finish_at(mut self, l: Label) -> (Code, u32) {
         self.resolve();
