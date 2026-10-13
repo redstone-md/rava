@@ -3,6 +3,7 @@
 
 mod args;
 mod async_sock;
+mod awt;
 mod fs;
 mod host;
 mod io;
@@ -24,6 +25,7 @@ use super::NativeRegistry;
 
 pub(super) fn register(r: &mut NativeRegistry) {
     async_sock::register(r);
+    awt::register(r);
     fs::register(r);
     io::register(r);
     iocp::register(r);
