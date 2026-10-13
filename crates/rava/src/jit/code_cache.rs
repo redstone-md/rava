@@ -102,7 +102,9 @@ pub fn repoint(m: &crate::method::Method) {
     }
     let t = m.reg_trampoline.load(Acquire);
     if t != 0 {
-        aim(t, reg_target(m));
+        let target = reg_target(m);
+        aim(t, target);
+        m.reg_call.store(target, std::sync::atomic::Ordering::Release);
     }
 }
 
@@ -126,9 +128,11 @@ pub fn reg_entry(m: &'static crate::method::Method) -> Option<usize> {
     if t != 0 {
         return Some(t);
     }
-    let code = super::asm::Code { bytes: vec![0x0F, 0x1F, 0x00, 0xE9, 0, 0, 0, 0], relocs: vec![(4, reg_target(m))] };
+    let target = reg_target(m);
+    let code = super::asm::Code { bytes: vec![0x0F, 0x1F, 0x00, 0xE9, 0, 0, 0, 0], relocs: vec![(4, target)] };
     let t = install(&code);
     m.reg_trampoline.store(t, Release);
+    m.reg_call.store(target, Release);
     Some(t)
 }
 
@@ -199,4 +203,44 @@ pub fn flush_perf_map() {
     if !lines.is_empty() {
         let _ = std::fs::write(format!("/tmp/perf-{}.map", std::process::id()), lines.join("\n") + "\n");
     }
+}
+
+/// Makes `m`'s register trampoline and returns where a register-convention call to `m` goes
+/// (`Method::reg_call`): the slow path of a vtable call that finds it not made yet.
+extern "sysv64" fn make_reg_call(m: &'static crate::method::Method) -> usize {
+    reg_entry(m);
+    m.reg_call.load(std::sync::atomic::Ordering::Acquire)
+}
+
+/// A stub that makes the register trampoline of the method in rdx and returns its
+/// `Method::reg_call` in rax, keeping every argument register (`jit::abi`) and rdx: called by
+/// a vtable call whose target has none yet, with the arguments already in place.
+pub fn reg_call_stub() -> usize {
+    use super::abi::{ARG_GPRS, ARG_XMMS};
+    use super::asm::{mem, Alu, Asm, R, X};
+    static STUB: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *STUB.get_or_init(|| {
+        let mut a = Asm::default();
+        // Entered with rsp 8 below a 16-byte boundary: five pushes and 32 bytes realign it.
+        a.push(R::Rdx);
+        for r in ARG_GPRS {
+            a.push(r);
+        }
+        a.alu_ri(true, Alu::Sub, R::Rsp, 8 * ARG_XMMS.len() as i32);
+        for (i, &x) in ARG_XMMS.iter().enumerate() {
+            a.fstore(true, mem(R::Rsp, 8 * i as i32), X(x));
+        }
+        a.mov_rr(true, R::Rdi, R::Rdx);
+        a.call_abs(make_reg_call as *const () as usize);
+        for (i, &x) in ARG_XMMS.iter().enumerate() {
+            a.fload(true, X(x), mem(R::Rsp, 8 * i as i32));
+        }
+        a.alu_ri(true, Alu::Add, R::Rsp, 8 * ARG_XMMS.len() as i32);
+        for r in ARG_GPRS.iter().rev() {
+            a.pop(*r);
+        }
+        a.pop(R::Rdx);
+        a.ret();
+        install(&a.finish())
+    })
 }
