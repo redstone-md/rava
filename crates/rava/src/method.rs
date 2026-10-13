@@ -34,6 +34,13 @@ pub struct Method {
     /// A `jmp rel32` to `entry` for direct calls from compiled code (`code_cache::direct_entry`),
     /// repointed whenever `entry` changes; 0 until a call site wants one.
     pub(crate) trampoline: AtomicUsize,
+    /// A `jmp rel32` for direct calls in the register convention (`jit::abi`): to the
+    /// optimized code's register entry, else to `reg_adapter`; repointed with `trampoline`.
+    /// 0 until a call site wants one.
+    pub(crate) reg_trampoline: AtomicUsize,
+    /// The adapter from the register convention to `entry` (`code_cache::reg_adapter`), made
+    /// once on first need; 0 until then.
+    pub(crate) reg_adapter: AtomicUsize,
     /// The `ResolvedMethodName` naming this method, made once and kept for good (HotSpot's
     /// `ResolvedMethodTable` interns them likewise); 0 until a `MemberName` resolves to it.
     pub(crate) resolved_name: AtomicUsize,
@@ -84,6 +91,8 @@ impl Method {
             backedges: AtomicU32::new(0),
             entry: AtomicUsize::new(if native { crate::jit::native_entry() } else { crate::jit::interpreter_entry() }),
             trampoline: AtomicUsize::new(0),
+            reg_trampoline: AtomicUsize::new(0),
+            reg_adapter: AtomicUsize::new(0),
             resolved_name: AtomicUsize::new(0),
             stub,
             overridden: crate::low::leak(std::sync::atomic::AtomicBool::new(false)),

@@ -244,7 +244,7 @@ fn compile_timed(m: &'static Method, osr: Option<u32>) -> Option<CompiledMethod>
     // `RAVA_PERF_MAP=inline`: name the code of each inlined method after it, so samples are
     // attributed to the innermost method as HotSpot's profilers do.
     let by_leaf = env_once!("RAVA_PERF_MAP").is_some_and(|v| v == "inline");
-    let (code, main, faults, trace) = codegen::generate(&g, &al, m, extent, monitor, osr, dumped || by_leaf);
+    let (code, main, faults, trace, reg_entry) = codegen::generate(&g, &al, m, extent, monitor, osr, dumped || by_leaf);
     let entry = code_cache::install(&code);
     if !faults.is_empty() {
         super::fault::register(faults.into_iter().map(|(at, to)| (entry + at, entry + to)));
@@ -273,7 +273,7 @@ fn compile_timed(m: &'static Method, osr: Option<u32>) -> Option<CompiledMethod>
         let _ = std::fs::write(format!("/tmp/rava-opt-{entry:x}.map"), lines.join("\n") + "\n");
         eprintln!("[opt-dump] {m} -> {file}");
     }
-    Some(CompiledMethod { entry, unresolved_deferrals: Default::default(), size: main, blocks: Vec::new(), frame_slots: extent as usize, tier: 2, optimized: true, deopts: Default::default() })
+    Some(CompiledMethod { entry, reg_entry: reg_entry.map_or(0, |r| entry + r), unresolved_deferrals: Default::default(), size: main, blocks: Vec::new(), frame_slots: extent as usize, tier: 2, optimized: true, deopts: Default::default() })
 }
 
 /// Perf map entries for `m`'s optimized code at `entry` (`size` bytes), one per run of code

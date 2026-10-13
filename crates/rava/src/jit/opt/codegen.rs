@@ -14,6 +14,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 mod divconst;
+mod params;
 mod stubs;
 
 /// The monitor a synchronized method holds while it runs.
@@ -87,6 +88,9 @@ pub(super) struct Gen<'a> {
     /// slow path first publishes the frame, and its exit unlinks only a published frame: the
     /// path that stays in compiled code never touches the header or `Thread::top`.
     lazy_header: bool,
+    /// Parameters that arrive in registers at the register entry (`jit::abi`), placed there
+    /// by the prologue: (value, register, frame slot).
+    pub(super) reg_params: Vec<(V, crate::jit::abi::ArgReg, u16)>,
     /// The method's return type.
     ret: crate::types::BasicType,
     /// The register holding the frame base: r13, or for a frameless body that reads its
@@ -273,7 +277,9 @@ fn narrow_refs(g: &Graph, al: &Allocation) -> std::collections::HashSet<V> {
 /// main part (without the out-of-line stubs after it, as C2 sizes code for inlining).
 /// Code, main part's size, implicit null checks' (access, handler) offsets, and with `trace`
 /// (`RAVA_JIT_DUMP`) the offset each value's code starts at, described.
-pub(super) fn generate(g: &Graph, al: &Allocation, m: &'static Method, frame_slots: i32, monitor: Option<Monitor>, osr: Option<u32>, trace: bool) -> (crate::jit::asm::Code, usize, Vec<(usize, usize)>, Vec<(usize, String)>) {
+/// The code, its main part's length, implicit-null-check fault sites, the trace, and the offset
+/// of the register entry (`jit::abi`) when the method has one.
+pub(super) fn generate(g: &Graph, al: &Allocation, m: &'static Method, frame_slots: i32, monitor: Option<Monitor>, osr: Option<u32>, trace: bool) -> (crate::jit::asm::Code, usize, Vec<(usize, usize)>, Vec<(usize, String)>, Option<usize>) {
     let max_locals = m.code.expect("compiled method has code").max_locals as i32;
     let mut a = Asm::default();
     a.enable_peephole();
@@ -304,6 +310,7 @@ pub(super) fn generate(g: &Graph, al: &Allocation, m: &'static Method, frame_slo
         lazy_header: false,
         base: R::R13,
         ret: m.sig.ret,
+        reg_params: Vec::new(),
         saves: &al.saves,
         save_base: al.save_base,
         restore_stubs: Vec::new(),
@@ -340,6 +347,7 @@ pub(super) fn generate(g: &Graph, al: &Allocation, m: &'static Method, frame_slo
     if osr.is_some() {
         gen.osr_bridge();
     }
+    let reg_entry = gen.register_entry(m, al, leaf, osr.is_none() && monitor.is_none());
     gen.prologue(frame_slots, overflow);
     // Blocks that only deoptimize are not laid out: branches into them go straight to the
     // deoptimization stub, so the path that stays in compiled code falls through.
@@ -384,7 +392,10 @@ pub(super) fn generate(g: &Graph, al: &Allocation, m: &'static Method, frame_slo
     let mut marks: Vec<Label> = gen.faults.iter().flat_map(|&(at, to)| [at, to]).collect();
     let nfaults = marks.len();
     marks.extend(traced.iter().map(|&(l, _)| l));
+    marks.extend(reg_entry);
     let (code, main, pos) = gen.a.finish_labels(stubs, &marks);
+    let reg_entry = reg_entry.map(|_| *pos.last().expect("the register entry's position") as usize);
+    let pos = &pos[..pos.len() - reg_entry.is_some() as usize];
     let faults = pos[..nfaults].chunks(2).map(|p| (p[0] as usize, p[1] as usize)).collect();
     // Each value with the bytecode position of the nearest state at or before it.
     let mut last = String::new();
@@ -399,7 +410,7 @@ pub(super) fn generate(g: &Graph, al: &Allocation, m: &'static Method, frame_slo
             (at as usize, format!("v{v} {} @ {last}", kind.chars().take(60).collect::<String>()))
         })
         .collect();
-    (code, main as usize, faults, trace)
+    (code, main as usize, faults, trace, reg_entry)
 }
 
 impl Gen<'_> {
@@ -450,6 +461,7 @@ impl Gen<'_> {
             a.mov_rr(true, R::R13, R::Rsi);
         }
         if self.frameless {
+            self.place_params();
             return;
         }
         a.lea(R::Rax, mem(R::R13, 8 * frame_slots));
@@ -474,6 +486,12 @@ impl Gen<'_> {
             a.lea(R::Rcx, h(header::METHOD));
             a.store(true, mem(R::R12, offsets::TOP), R::Rcx);
             self.top_published = true;
+        }
+        // Register arguments go to their places before anything can call out (the poll below
+        // keeps every allocated register).
+        if !self.reg_params.is_empty() {
+            self.place_params();
+            self.preserve = self.all_registers();
         }
         // A body without loops or Java calls runs for a bounded time: the polls of its callers
         // bound the time to a safepoint (`polls.rs`). Fallback calls still poll here, so a

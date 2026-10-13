@@ -169,7 +169,7 @@ fn compile_timed(m: &'static Method, tier: u8) -> Option<CompiledMethod> {
     if env_once!("RAVA_JIT_LOG").is_some() {
         eprintln!("[jit] {m} {} bytes of bytecode -> {} bytes", info.code.len(), code.len());
     }
-    Some(CompiledMethod { entry, unresolved_deferrals: Default::default(), size: code.len(), blocks, frame_slots: frame_slots as usize, tier, optimized: false, deopts: Default::default() })
+    Some(CompiledMethod { entry, reg_entry: 0, unresolved_deferrals: Default::default(), size: code.len(), blocks, frame_slots: frame_slots as usize, tier, optimized: false, deopts: Default::default() })
 }
 
 impl Emitter {
