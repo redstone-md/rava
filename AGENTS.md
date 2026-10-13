@@ -19,6 +19,7 @@
 * **Verification before a compiler commit.** A full Paper start (`bench/paper_ab.sh`) and `tests/semantics/run.sh`; four probes are red on purpose (helpful NPE messages).
 * **Shared host.** Never kill `java` processes broadly: port 25565 belongs to the user; benchmarks use 25599.
 * **Language.** Talk to the user in Russian; commit messages and code comments in English.
+* **No AI attribution.** Commit messages, tags, release notes and PR texts carry no `Co-Authored-By`, `Claude-Session`, "Generated with Claude" or similar lines.
 
 ## 3. Frontend State Management Architecture
 
