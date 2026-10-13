@@ -10,6 +10,7 @@ mod iocp;
 mod misc;
 mod nio_ch;
 mod nio_fs;
+mod ntsystem;
 mod process;
 mod security;
 mod selector;
@@ -27,6 +28,7 @@ pub(super) fn register(r: &mut NativeRegistry) {
     misc::register(r);
     nio_ch::register(r);
     nio_fs::register(r);
+    ntsystem::register(r);
     process::register(r);
     security::register(r);
     selector::register(r);
