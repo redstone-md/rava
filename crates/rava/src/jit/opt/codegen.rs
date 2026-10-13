@@ -72,6 +72,9 @@ pub(super) struct Gen<'a> {
     saved: Vec<R>,
     /// Bytes below them: spill slots and alignment.
     frame_bytes: i32,
+    /// The body's rsp is 8 mod 16 (a frameless body, not realigned on entry): a helper call
+    /// pushes one more slot to reach the 16-byte alignment the callee expects.
+    body_misaligned: bool,
     /// Caller-saved registers holding values somewhere in this method (runtime calls from
     /// slow paths preserve them).
     live_gprs: Vec<R>,
@@ -303,6 +306,7 @@ pub(super) fn generate(g: &Graph, al: &Allocation, m: &'static Method, frame_slo
         edge_stubs: Vec::new(),
         saved: Vec::new(),
         frame_bytes: 0,
+        body_misaligned: false,
         live_gprs: CALLER_SAVED.into_iter().chain(SCRATCH).filter(|r| al.loc.contains(&Loc::Reg(*r))).collect(),
         live_xmms: XMMS.into_iter().filter(|x| al.loc.contains(&Loc::Xmm(*x))).collect(),
         lock: None,
@@ -341,8 +345,13 @@ pub(super) fn generate(g: &Graph, al: &Allocation, m: &'static Method, frame_slo
     gen.saved = (!leaf).then_some(R::R13).into_iter().chain(CALLEE_SAVED.into_iter().filter(|r| al.loc.contains(&Loc::Reg(*r)))).collect();
     let spill_bytes = 8 * (al.spill_slots + (al.spill_slots & 1));
     gen.lock = monitor.map(|mon| (mon, spill_bytes));
-    // A frameless body calls nothing, so needs no call alignment.
+    // A frameless body makes no Java call and is not realigned on entry (its hot path stays
+    // free), but it may still call a Rust helper (a float remainder's fmod, a saturating float
+    // to int conversion, a pure intrinsic, a subtype check): with an even number of saved
+    // registers its rsp is 8 mod 16, and each such call pads one more slot (`body_misaligned`).
+    // An unaligned helper faults on Windows, whose C runtime spills SSE registers with movaps.
     let align = if gen.frameless { 0 } else if gen.saved.len() % 2 == 0 { 8 } else { 0 };
+    gen.body_misaligned = gen.frameless && gen.saved.len() % 2 == 0;
     gen.frame_bytes = spill_bytes + if monitor.is_some() { 16 } else { 0 } + align;
     let overflow = gen.a.new_label();
     if osr.is_some() {
@@ -619,7 +628,7 @@ impl Gen<'_> {
         for &r in &gprs {
             self.a.push(r);
         }
-        let pad = gprs.len() % 2 == 1;
+        let pad = (gprs.len() + self.body_misaligned as usize) % 2 == 1;
         if pad {
             self.a.push(R::Rax);
         }
@@ -662,7 +671,7 @@ impl Gen<'_> {
         for &r in &gprs {
             self.a.push(r);
         }
-        let pad = gprs.len() % 2 == 1;
+        let pad = (gprs.len() + self.body_misaligned as usize) % 2 == 1;
         if pad {
             self.a.push(R::Rax);
         }
