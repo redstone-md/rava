@@ -1,0 +1,69 @@
+name: Crash report
+description: rava crashed and printed a report link (memory fault or panic)
+labels: [bug, crash]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. If you came from the link rava printed, the fields below are already filled in from the crash. Please add what you were doing, and attach the `rava_crash_<pid>.log` file rava wrote in its working directory (for a game, the instance's game folder).
+  - type: textarea
+    id: what
+    attributes:
+      label: What were you doing
+      description: The program or game, and what happened right before the crash (entering a world, opening settings...).
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: rava version
+      placeholder: 0.0.1-alpha
+    validations:
+      required: true
+  - type: dropdown
+    id: system
+    attributes:
+      label: System
+      options:
+        - Windows x86-64
+        - Linux x86-64
+        - macOS (Intel)
+        - macOS (Apple Silicon, Rosetta 2)
+    validations:
+      required: true
+  - type: input
+    id: where
+    attributes:
+      label: Where it crashed
+      description: The first line of rava's report.
+  - type: textarea
+    id: java
+    attributes:
+      label: Java frames
+      description: The Java frames of the crashing thread.
+      render: text
+  - type: textarea
+    id: native
+    attributes:
+      label: Native frames
+      description: Module and offset of each native frame.
+      render: text
+  - type: textarea
+    id: how
+    attributes:
+      label: How it was started
+      description: The launcher (Prism Launcher, a server panel...) or the command line. Leave out account tokens.
+      render: shell
+  - type: dropdown
+    id: hotspot
+    attributes:
+      label: Does it work with java (HotSpot)?
+      options:
+        - "Yes, the same program works with java"
+        - "No, it fails with java too"
+        - "Not tried"
+  - type: textarea
+    id: log
+    attributes:
+      label: Crash report and log
+      description: Drag the rava_crash_<pid>.log file here, and the game or program log (or a link to it, e.g. mclo.gs).
