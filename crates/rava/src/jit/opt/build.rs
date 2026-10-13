@@ -221,7 +221,7 @@ pub(super) fn build_osr(m: &'static Method, bci: usize, types: &[Option<Ty>]) ->
         }
     }
     // The receiver, unless the method stores into local 0.
-    if let (false, Some(this)) = (m.is_static(), b.sc.locals[0]) {
+    if let (false, Some(this)) = (m.is_static(), b.sc.locals.first().copied().flatten()) {
         if !super::locals::written(b.sc.code, 0, b.sc.code.len(), 1)[0] {
             b.facts.push(this);
             b.g.receiver = Some(this);
