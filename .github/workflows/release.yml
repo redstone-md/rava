@@ -32,6 +32,9 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          # Drafts of this tag that earlier runs left behind.
+          gh api "repos/$GITHUB_REPOSITORY/releases" --paginate --jq ".[] | select(.draft and (.tag_name | startswith(\"$TAG-draft-\"))) | .id" |
+            while read -r old; do gh api -X DELETE "repos/$GITHUB_REPOSITORY/releases/$old"; done
           # Under a tag of its own (a draft makes no tag) while a release of $TAG may still exist.
           id=$(gh api "repos/$GITHUB_REPOSITORY/releases" -f tag_name="$TAG-draft-$GITHUB_RUN_ID" -f target_commitish="$GITHUB_SHA" -f name="rava $TAG" -F draft=true --jq .id)
           echo "id=$id" >> "$GITHUB_OUTPUT"
@@ -149,7 +152,7 @@ jobs:
   discard:
     name: Discard the draft
     needs: [draft, build]
-    if: failure() && needs.draft.outputs.id != ''
+    if: (failure() || cancelled()) && needs.draft.outputs.id != ''
     runs-on: ubuntu-24.04
     steps:
       - env:
