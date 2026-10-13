@@ -68,6 +68,7 @@ fn run(mut line: CommandLine, java_home: PathBuf) -> ExitCode {
     let mut t = Thread::new();
     t.attach();
     let result = boot::boot(&mut t).and_then(|_| {
+        crate::dump::install();
         if timing() {
             eprintln!("[rava] JDK booted in {:.1} ms, {} classes", started.elapsed().as_secs_f64() * 1e3, vm.loaded_class_count());
         }

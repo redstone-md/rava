@@ -259,3 +259,24 @@ unsafe extern "system" fn on_exception(info: *mut EXCEPTION_POINTERS) -> i32 {
         None => CONTINUE_SEARCH,
     }
 }
+
+static DUMP: std::sync::OnceLock<fn()> = std::sync::OnceLock::new();
+
+unsafe extern "system" fn on_console_event(event: u32) -> windows_sys::Win32::Foundation::BOOL {
+    match (event, DUMP.get()) {
+        (windows_sys::Win32::System::Console::CTRL_BREAK_EVENT, Some(dump)) => {
+            dump();
+            1
+        }
+        _ => 0,
+    }
+}
+
+/// Runs `dump` each time the console sends Ctrl+Break, as HotSpot prints its thread dump (the
+/// system runs the handler on a thread of its own).
+pub fn on_dump_request(dump: fn()) {
+    if DUMP.set(dump).is_ok() {
+        // SAFETY: adds a handler for console events; the others pass on to the default.
+        unsafe { windows_sys::Win32::System::Console::SetConsoleCtrlHandler(Some(on_console_event), 1) };
+    }
+}

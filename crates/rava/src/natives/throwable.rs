@@ -136,7 +136,7 @@ fn init_stack_trace_element(t: &mut Thread, a: &[u64]) -> JResult<u64> {
     ret_void()
 }
 
-fn source_file(m: &Method) -> Option<&'static str> {
+pub fn source_file(m: &Method) -> Option<&'static str> {
     let cf = m.holder.cf.as_ref()?;
     let a = cf.attr("SourceFile")?;
     let b = cf.attr_bytes(a);
