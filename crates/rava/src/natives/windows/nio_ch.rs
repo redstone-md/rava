@@ -296,21 +296,48 @@ fn ioutil(r: &mut NativeRegistry) {
         }
         ret_void()
     });
-    r.add(IOUTIL, "write1", "(IB)I", |_, a| {
-        let b = a[1] as u8;
-        ret_int(sock::send(a[0] as i32, &b as *const u8 as usize, 1) as i32)
-    });
-    r.add(IOUTIL, "drain1", "(I)I", |_, a| {
-        let mut b = 0u8;
-        ret_int(sock::recv(a[0] as i32, &mut b as *mut u8 as usize, 1) as i32)
-    });
-    r.add(IOUTIL, "drain", "(I)Z", |_, a| {
-        let mut buf = [0u8; 128];
-        let mut any = false;
-        while sock::recv(a[0] as i32, buf.as_mut_ptr() as usize, buf.len()) > 0 {
-            any = true;
+    // As the JDK's Windows IOUtil.c. The wakeup pipe's sockets may be blocking, so these stop at
+    // what is there: `drain` returns after a short read instead of reading until nothing is left
+    // (which would wait forever on a blocking socket), and each call runs outside Java.
+    r.add(IOUTIL, "write1", "(IB)I", |t, a| {
+        let (fd, b) = (a[0] as i32, a[1] as u8);
+        let n = crate::gc::safepoint::blocking(t, || sock::send(fd, &b as *const u8 as usize, 1));
+        if n < 0 && sock::last_error() != sock::SockError::WouldBlock {
+            return Err(io_error(t, "send failed"));
         }
-        ret_bool(any)
+        ret_int((n == 1) as i32)
+    });
+    r.add(IOUTIL, "drain1", "(I)I", |t, a| {
+        let (fd, mut b) = (a[0] as i32, 0u8);
+        let n = crate::gc::safepoint::blocking(t, || sock::recv(fd, &mut b as *mut u8 as usize, 1));
+        if n < 0 {
+            if sock::last_error() == sock::SockError::WouldBlock {
+                return ret_int(0);
+            }
+            return Err(io_error(t, "recv failed"));
+        }
+        ret_int(n as i32)
+    });
+    r.add(IOUTIL, "drain", "(I)Z", |t, a| {
+        let fd = a[0] as i32;
+        let mut read = false;
+        loop {
+            let mut buf = [0u8; 16];
+            let n = crate::gc::safepoint::blocking(t, || sock::recv(fd, buf.as_mut_ptr() as usize, buf.len()));
+            if n < 0 {
+                if sock::last_error() != sock::SockError::WouldBlock {
+                    return Err(io_error(t, "recv failed"));
+                }
+                return ret_bool(read);
+            }
+            if n == 0 {
+                return ret_bool(read);
+            }
+            if (n as usize) < buf.len() {
+                return ret_bool(true);
+            }
+            read = true;
+        }
     });
 }
 
