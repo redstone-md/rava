@@ -30,6 +30,7 @@ mod conds;
 mod consts;
 mod dce;
 mod guards;
+mod hints;
 mod licm;
 mod rce;
 mod liveness;
@@ -215,18 +216,18 @@ fn compile_timed(m: &'static Method, osr: Option<u32>) -> Option<CompiledMethod>
     }
     conds::mark_nonnull_inputs(&mut g);
     verify(&g, m, "conds::mark_nonnull_inputs");
-    let mut al = regalloc::allocate(&g);
+    let mut al = regalloc::allocate(&g, m);
     if env_once!("RAVA_OPT_RELOAD").map_or(true, |v| v != "0") {
         let mut copies = reload::split(&mut g, &al.loc);
         if !copies.is_empty() {
-            al = regalloc::allocate(&g);
+            al = regalloc::allocate(&g, m);
             // Each allocation may leave other copies without a register: take those back too.
             for _ in 0..3 {
                 if !reload::undo_spilled(&mut g, &copies, &al.loc) {
                     break;
                 }
                 copies.retain(|&c| matches!(al.loc[c as usize], regalloc::Loc::Reg(_) | regalloc::Loc::Xmm(_)));
-                al = regalloc::allocate(&g);
+                al = regalloc::allocate(&g, m);
             }
         }
     }

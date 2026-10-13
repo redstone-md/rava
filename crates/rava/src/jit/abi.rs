@@ -53,3 +53,20 @@ pub fn arg_regs(m: &Method) -> Vec<(u16, ArgReg, bool)> {
     }
     out
 }
+
+/// The register of each argument value of a call to `m` (one per parameter, the receiver
+/// first), None for those passed in the frame.
+pub fn regs_by_arg(m: &Method) -> Vec<Option<ArgReg>> {
+    let regs = arg_regs(m);
+    let mut out = Vec::new();
+    let mut slot = 0u16;
+    if !m.is_static() {
+        out.push(regs.iter().find(|r| r.0 == 0).map(|r| r.1));
+        slot = 1;
+    }
+    for &ty in m.sig.params.iter() {
+        out.push(regs.iter().find(|r| r.0 == slot).map(|r| r.1));
+        slot += if matches!(ty, BasicType::Long | BasicType::Double) { 2 } else { 1 };
+    }
+    out
+}
