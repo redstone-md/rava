@@ -81,7 +81,7 @@ pub(super) fn decide(target: &'static Method, first: Option<i64>, chain: &Chain,
     if env_once!("RAVA_NO_INLINE").is_some() || target.is_abstract() || target.is_native() || intrinsic(target).is_some() {
         return None;
     }
-    if tier >= 3 && (compiled_too_large(target, freq) || cold_site(target, freq)) {
+    if tier >= 3 && (compiled_too_large(target, freq) || cold_site(target, freq) || super::opt::excluded(target)) {
         return None;
     }
     if is_leaf(target) {

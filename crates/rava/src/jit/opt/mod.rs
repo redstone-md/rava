@@ -63,6 +63,18 @@ pub fn enabled() -> bool {
     mode() != "0"
 }
 
+/// `RAVA_OPT_EXCLUDE=a,b`: methods whose `class.name` starts with one of the comma-separated
+/// prefixes (`net/foo/`, `java/util/HashMap.get`) are neither compiled by this tier nor inlined
+/// (HotSpot's `CompileCommand=exclude`), for narrowing a miscompilation down to a method.
+pub fn excluded(m: &Method) -> bool {
+    static PREFIXES: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
+    let prefixes = PREFIXES.get_or_init(|| std::env::var("RAVA_OPT_EXCLUDE").map(|v| v.split(',').map(str::trim).filter(|p| !p.is_empty()).map(String::from).collect()).unwrap_or_default());
+    !prefixes.is_empty() && {
+        let name = format!("{}.{}", m.holder.name, m.name);
+        prefixes.iter().any(|p| name.starts_with(p.as_str()))
+    }
+}
+
 /// `RAVA_OPT=all`: every compilation tries this tier first (testing).
 pub fn everywhere() -> bool {
     mode() == "all"
@@ -111,7 +123,7 @@ pub(in crate::jit) fn reprofile(m: &'static Method) {
 
 /// Compiles `m`, or `None` when some instruction is not supported.
 pub fn compile(m: &'static Method) -> Option<CompiledMethod> {
-    if m.is_native() {
+    if m.is_native() || excluded(m) {
         return None;
     }
     let started = std::time::Instant::now();

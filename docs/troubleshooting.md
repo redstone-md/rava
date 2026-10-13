@@ -50,9 +50,14 @@ These switch parts of the VM off, to tell whether a wrong result comes from a co
 |---|---|
 | `RAVA_NO_TIER2=1` | no optimizing tier: the interpreter and the baseline compiler only |
 | `RAVA_NO_JIT=1` | interpreter only (slow) |
+| `RAVA_OPT=0` | hot methods stay in baseline code instead of the SSA optimizing tier |
+| `RAVA_OPT_EXCLUDE=<prefixes>` | methods whose `package/Class.method` starts with one of the comma-separated prefixes are neither compiled by the SSA tier nor inlined into its code |
 
-If a program works with `RAVA_NO_TIER2=1` and fails without it, the optimizing tier
-miscompiles something; that is worth a report with the smallest program that shows it.
+If a program works with `RAVA_NO_TIER2=1` or `RAVA_OPT=0` and fails without it, the optimizing
+tier miscompiles something. `RAVA_OPT_EXCLUDE` finds what by halving: exclude `net/,org/` or
+`java/,jdk/,sun/`, then the half that fixed it, down to one class or method
+(`RAVA_OPT_EXCLUDE=net/minecraft/client/renderer/,com/mojang/blaze3d/`). That method is worth a
+report.
 
 Other diagnostics: `RAVA_GC_LOG=1` prints a line per collection; `RAVA_TIMING=1` prints how
 long the JDK took to boot and the run's totals.
