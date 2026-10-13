@@ -30,6 +30,7 @@ mod conds;
 mod consts;
 mod dce;
 mod guards;
+mod gvn;
 mod hints;
 mod licm;
 mod rce;
@@ -198,6 +199,8 @@ fn compile_timed(m: &'static Method, osr: Option<u32>) -> Option<CompiledMethod>
     verify(&g, m, "unroll::unroll");
     algebra::simplify_late(&mut g);
     verify(&g, m, "algebra::simplify_late");
+    gvn::number(&mut g);
+    verify(&g, m, "gvn::number");
     consts::hoist(&mut g);
     verify(&g, m, "consts::hoist");
     g.prune_unreachable();
