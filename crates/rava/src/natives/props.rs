@@ -182,6 +182,10 @@ fn vm_properties(t: &mut Thread, _: &[u64]) -> JResult<u64> {
         ("java.class.path".into(), v.options.class_path.clone()),
         ("sun.java.launcher".into(), "SUN_STANDARD".into()),
         ("sun.management.compiler".into(), "rava tiered".into()),
+        // rava has no windowing AWT (no displays, frames or event loop), so it is a headless
+        // runtime on every system, as a JDK without a display: programs that would open a
+        // window (a Minecraft server's console GUI) take their headless path. -D overrides it.
+        ("java.awt.headless".into(), "true".into()),
     ];
     pairs.extend(v.options.properties.iter().cloned());
     let flat: Vec<Option<String>> = pairs.into_iter().flat_map(|(k, v)| [Some(k), Some(v)]).collect();
