@@ -93,7 +93,7 @@ fn init_stack_trace_elements(t: &mut Thread, a: &[u64]) -> JResult<u64> {
     ret_void()
 }
 
-fn fill_element(t: &mut Thread, e: Oop, m: &'static Method, bci: i32) -> JResult<()> {
+pub(super) fn fill_element(t: &mut Thread, e: Oop, m: &'static Method, bci: i32) -> JResult<()> {
     let class = rt::new_string(t, &m.holder.java_name())?;
     // SAFETY: live StackTraceElement; each string is stored as soon as it exists.
     unsafe { obj::write_ref(e, ste_class(), class) };

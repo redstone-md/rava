@@ -53,6 +53,7 @@ mod posix;
 mod watch;
 mod datagram;
 mod zip;
+mod thread_mx;
 mod throwable;
 
 pub(crate) use jfr::{register_on_init as jfr_register_on_init, roots as jfr_roots};
@@ -119,6 +120,7 @@ impl NativeRegistry {
         desktop::register(&mut r);
         jfr::register(&mut r);
         stackwalk::register(&mut r);
+        thread_mx::register(&mut r);
         multicast::register(&mut r);
         net::register(&mut r);
         netif::register(&mut r);
