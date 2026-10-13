@@ -159,7 +159,11 @@ pub fn detach(t: &mut Thread) {
     if let Some(rec) = t.gc_record.take() {
         // Still in Java: no collection runs meanwhile to reset the cache itself.
         crate::vm::vm().heap.retire_cache(t);
-        enter_native(rec);
+        // Unregistered while still running, never published as native: a collection either
+        // waits for the record to go (its wait rereads the registry) or never sees this
+        // thread, whose `Thread` and value stack are freed right after this returns. Published
+        // as native first, a collection could take the record as stopped and scan the frames
+        // after they were freed.
         registry().threads.lock().unwrap().retain(|r| !std::ptr::eq(*r, rec));
     }
 }
