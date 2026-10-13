@@ -132,7 +132,6 @@ fn fold_constant_branches(g: &mut Graph) {
 /// constant array's length is a constant, and a bounds check of a constant index against a
 /// known length goes.
 pub fn simplify_late(g: &mut Graph) {
-    let mut changed = false;
     let mut gone = Vec::new();
     for b in 0..g.blocks.len() {
         for &v in &g.blocks[b].insts {
@@ -144,11 +143,9 @@ pub fn simplify_late(g: &mut Graph) {
                     Some(Len::Value(n)) => {
                         g.alias[v as usize] = g.resolve(n);
                         gone.push(v);
-                        changed = true;
                     }
                     Some(Len::Const(n)) => {
                         g.values[v as usize].inst = Inst::Const(n);
-                        changed = true;
                     }
                     None => {}
                 },
@@ -161,8 +158,7 @@ pub fn simplify_late(g: &mut Graph) {
                     if let (Some(n), Some(i)) = (len, g.constant(g.resolve(i))) {
                         if (0..n).contains(&i) {
                             gone.push(v);
-                            changed = true;
-                        }
+                            }
                     }
                 }
                 _ => {}
@@ -174,12 +170,8 @@ pub fn simplify_late(g: &mut Graph) {
             blk.insts.retain(|v| !gone.contains(v));
         }
     }
-    if changed {
-        simplify(g);
-    } else {
-        fold_unsafe_addresses(g);
-        fold_constant_branches(g);
-    }
+    // Unrolled copies read constant counters (`0 + 1`, `a + 0`): fold them too.
+    simplify(g);
 }
 
 enum Len {
