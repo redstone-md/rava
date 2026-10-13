@@ -154,8 +154,8 @@ fn fold_scalar(mut h: i32, n: usize, e: impl Fn(usize) -> i32) -> i32 {
 /// accumulator, four accumulators over 32-element blocks (each lane times `31^32` per block), then
 /// 8-element chunks; the lanes are weighted by their remaining powers of 31 and summed. `load`
 /// widens the 8 elements at `p` to 32-bit lanes; `size` is the element size in bytes.
-#[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
-#[inline(always)]
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
 unsafe fn fold_avx2(h: i32, p: *const u8, n: usize, size: usize, load: impl Fn(*const u8) -> std::arch::x86_64::__m256i, e: impl Fn(usize) -> i32) -> i32 {
     use std::arch::x86_64::*;
     // Lane l of a chunk of 8 weighs 31^(7-l); of block j of 4, 31^(31-8j-l).
@@ -192,7 +192,7 @@ unsafe fn fold_avx2(h: i32, p: *const u8, n: usize, size: usize, load: impl Fn(*
 }
 
 /// `31^k`, wrapping.
-#[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
+#[cfg(target_arch = "x86_64")]
 fn pow31(mut k: usize) -> i32 {
     let (mut r, mut b) = (1i32, 31i32);
     while k > 0 {
@@ -206,8 +206,25 @@ fn pow31(mut k: usize) -> i32 {
 }
 
 /// Elements below which `vectorized_hash_code` folds without vectors.
-#[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
+#[cfg(target_arch = "x86_64")]
 const SHORT_HASH: usize = 32;
+
+/// The AVX2 fold of `n` elements of kind `ty` at `p` (chosen at run time, so one binary runs
+/// on processors with and without AVX2).
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn hash_avx2(init: i32, p: *const u8, n: usize, ty: i32, rd: impl Fn(usize) -> i32) -> i32 {
+    use std::arch::x86_64::*;
+    let lo = |q: *const u8| _mm_loadl_epi64(q as *const __m128i);
+    let full = |q: *const u8| _mm_loadu_si128(q as *const __m128i);
+    match ty {
+        4 => fold_avx2(init, p, n, 1, |q| _mm256_cvtepu8_epi32(lo(q)), |k| *p.add(k) as i32),
+        8 => fold_avx2(init, p, n, 1, |q| _mm256_cvtepi8_epi32(lo(q)), |k| *p.add(k) as i8 as i32),
+        5 => fold_avx2(init, p, n, 2, |q| _mm256_cvtepu16_epi32(full(q)), rd),
+        9 => fold_avx2(init, p, n, 2, |q| _mm256_cvtepi16_epi32(full(q)), rd),
+        _ => fold_avx2(init, p, n, 4, |q| _mm256_loadu_si256(q as *const __m256i), rd),
+    }
+}
 
 /// `31^n * init + sum(a[from + i] * 31^(n-1-i))` over `n = len` elements of the kind `ty`
 /// names (`ArraysSupport.T_BOOLEAN` unsigned bytes, `T_CHAR` chars of a `char[]` or of a UTF-16
@@ -236,26 +253,17 @@ extern "sysv64" fn vectorized_hash_code(a: Oop, from: i32, len: i32, init: i32, 
         };
         // Short arrays (most strings) fold faster in scalar steps of four than through a vector
         // multiply and a horizontal sum.
-        #[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
-        if n < SHORT_HASH {
+        #[cfg(target_arch = "x86_64")]
+        if n >= SHORT_HASH && std::arch::is_x86_feature_detected!("avx2") {
+            hash_avx2(init, p, n, ty, rd)
+        } else {
             match ty {
                 4 => fold_scalar(init, n, |k| *p.add(k) as i32),
                 8 => fold_scalar(init, n, |k| *p.add(k) as i8 as i32),
                 _ => fold_scalar(init, n, rd),
             }
-        } else {
-            use std::arch::x86_64::*;
-            let lo = |q: *const u8| _mm_loadl_epi64(q as *const __m128i);
-            let full = |q: *const u8| _mm_loadu_si128(q as *const __m128i);
-            match ty {
-                4 => fold_avx2(init, p, n, 1, |q| _mm256_cvtepu8_epi32(lo(q)), |k| *p.add(k) as i32),
-                8 => fold_avx2(init, p, n, 1, |q| _mm256_cvtepi8_epi32(lo(q)), |k| *p.add(k) as i8 as i32),
-                5 => fold_avx2(init, p, n, 2, |q| _mm256_cvtepu16_epi32(full(q)), rd),
-                9 => fold_avx2(init, p, n, 2, |q| _mm256_cvtepi16_epi32(full(q)), rd),
-                _ => fold_avx2(init, p, n, 4, |q| _mm256_loadu_si256(q as *const __m256i), rd),
-            }
         }
-        #[cfg(not(all(target_arch = "x86_64", target_feature = "avx2")))]
+        #[cfg(not(target_arch = "x86_64"))]
         fold_scalar(init, n, rd)
     };
     h as i64
