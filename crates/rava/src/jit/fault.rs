@@ -30,8 +30,22 @@ pub fn install() {
         sites();
         // glibc's backtrace loads its unwinder on first use, which allocates: not in a handler.
         crate::os::native_frames(&mut [0; 4]);
-        crate::os::install_fault_handler(on_fault, report);
+        // rava's own module, found before any fault (the lookup in the handler then only
+        // compares).
+        own_module();
+        crate::os::install_fault_handler(on_fault, report, own_code);
     });
+}
+
+/// The base of the module holding rava's code.
+fn own_module() -> Option<usize> {
+    static BASE: std::sync::OnceLock<Option<usize>> = std::sync::OnceLock::new();
+    *BASE.get_or_init(|| crate::os::module(install as *const () as usize, &mut [0u8; 128]).map(|(base, _)| base))
+}
+
+/// Whether `pc` is compiled code or in rava's own executable.
+fn own_code(pc: usize) -> bool {
+    super::code_cache::contains(pc) || own_module().is_some_and(|base| crate::os::module(pc, &mut [0u8; 128]).is_some_and(|(b, _)| b == base))
 }
 
 fn on_fault(pc: usize, addr: usize) -> Option<usize> {

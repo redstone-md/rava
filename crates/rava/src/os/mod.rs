@@ -21,3 +21,6 @@ pub use windows::*;
 pub type FaultHandler = fn(pc: usize, addr: usize) -> Option<usize>;
 /// Reports a fault no handler resumes from, before the process dies of it.
 pub type CrashReport = fn(pc: usize, addr: usize);
+/// Whether `pc` is in rava's own code (its executable or compiled code): a fault there that
+/// the fault handler does not resolve is fatal, whatever handlers other code installed.
+pub type OwnCode = fn(pc: usize) -> bool;

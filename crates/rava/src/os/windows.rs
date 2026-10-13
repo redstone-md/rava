@@ -2,7 +2,7 @@
 //! process queries. Memory is reserved and committed together: Windows charges committed memory
 //! against its commit limit but still gives physical pages only to the ones touched.
 
-use super::{CrashReport, FaultHandler};
+use super::{CrashReport, FaultHandler, OwnCode};
 use std::sync::OnceLock;
 use windows_sys::Win32::Foundation::{EXCEPTION_ACCESS_VIOLATION, HANDLE, HMODULE};
 use windows_sys::Win32::Storage::FileSystem::WriteFile;
@@ -273,14 +273,28 @@ pub fn write_stderr(bytes: &[u8]) {
 
 static HANDLER: OnceLock<FaultHandler> = OnceLock::new();
 static CRASH: OnceLock<CrashReport> = OnceLock::new();
+static OWN: OnceLock<OwnCode> = OnceLock::new();
+/// Set by the first report, so a fault reported at once is not reported again as unhandled.
+static REPORTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+fn report_once(pc: usize, addr: usize) {
+    if !REPORTED.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        if let Some(crash) = CRASH.get() {
+            crash(pc, addr);
+        }
+    }
+}
 
 /// Sends access violations to `handler` first: it returns where to resume, or None to let the
 /// exception go on to the other handlers. One that nothing handles goes to `crash` before the
 /// process ends (a vectored handler also sees the faults that code catches itself, a driver's
-/// probes say, so the report waits until none did).
-pub fn install_fault_handler(handler: FaultHandler, crash: CrashReport) {
+/// probes say, so the report waits until none did). A fault in rava's own code (`own`) is
+/// reported at once: no other handler resolves it, and libraries replace the unhandled-exception
+/// filter (a client's audio, windowing or graphics driver), so the report would never come.
+pub fn install_fault_handler(handler: FaultHandler, crash: CrashReport, own: OwnCode) {
     if HANDLER.set(handler).is_ok() {
         let _ = CRASH.set(crash);
+        let _ = OWN.set(own);
         // SAFETY: registers handlers that live as long as the process.
         unsafe {
             AddVectoredExceptionHandler(1, Some(on_exception));
@@ -301,16 +315,20 @@ unsafe extern "system" fn on_exception(info: *mut EXCEPTION_POINTERS) -> i32 {
             context.Rip = resume as u64;
             CONTINUE_EXECUTION
         }
-        None => CONTINUE_SEARCH,
+        None => {
+            let pc = context.Rip as usize;
+            if OWN.get().is_some_and(|own| own(pc)) {
+                report_once(pc, addr);
+            }
+            CONTINUE_SEARCH
+        }
     }
 }
 
 unsafe extern "system" fn on_unhandled(info: *const EXCEPTION_POINTERS) -> i32 {
     let record = &*(*info).ExceptionRecord;
     if record.ExceptionCode == EXCEPTION_ACCESS_VIOLATION {
-        if let Some(crash) = CRASH.get() {
-            crash((*(*info).ContextRecord).Rip as usize, record.ExceptionInformation[1]);
-        }
+        report_once((*(*info).ContextRecord).Rip as usize, record.ExceptionInformation[1]);
     }
     CONTINUE_SEARCH
 }

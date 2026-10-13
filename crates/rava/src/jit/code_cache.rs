@@ -38,8 +38,18 @@ fn region() -> &'static Mutex<Region> {
         // tens of megabytes then takes a few TLB entries instead of thousands. Memory is still
         // committed only as code is written (one huge page at a time).
         crate::os::huge_pages(p, RESERVE);
+        BASE.store(p, std::sync::atomic::Ordering::Release);
         Mutex::new(Region { base: p, top: p, near: reaches(p, text) })
     })
+}
+
+/// The region's start, for `contains` (0 before it exists).
+static BASE: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// Whether `pc` is in the code cache (lock-free: fault handlers ask).
+pub fn contains(pc: usize) -> bool {
+    let base = BASE.load(std::sync::atomic::Ordering::Acquire);
+    base != 0 && (base..base + RESERVE).contains(&pc)
 }
 
 /// Whether code may call rava's functions with 32-bit displacements.
