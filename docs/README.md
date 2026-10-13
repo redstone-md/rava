@@ -9,6 +9,7 @@
 | [Platforms](platforms-roadmap.md) | the Linux, macOS and Windows ports |
 | [Patches](patches.md) | program-specific changes, installed by the owner |
 | [VM roadmap](vm-roadmap.md), [patch roadmap](patch-roadmap.md), [GUI roadmap](gui-roadmap.md) | what is planned |
+| [RAVA Vault](vault-design.md) | design of protected mod cores (a specification; not implemented) |
 | [Progress log](progress.md) | what was measured and changed, step by step |
 | [Release notes](releases/) | the highlights of each release |
 
