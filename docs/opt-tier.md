@@ -61,9 +61,20 @@ A C1-class compiler is enough for parity. Every mechanism below is a generic JVM
 Rules that keep it correct:
 
 - **Frames**: compiled code keeps the baseline layout; a call stores its arguments where the
-  interpreter would. Inlined bodies write no frame headers: before a call from one, the physical
+  interpreter would, except those passed in registers (below). Inlined bodies write no frame headers: before a call from one, the physical
   header's bytecode-index slot gets a pointer to a static `InlinedSite` (the inlined frames and
   their bytecode indexes, HotSpot's debug info at a return address), which stack walks expand.
+- **Register arguments** (`jit/abi.rs`, HotSpot's compiled calling convention in small): a
+  direct call from optimized code passes the first four integer and reference arguments in
+  rdi, r8, r9, r10 and the first four float and double ones in xmm2-xmm5; the rest go to the
+  callee's frame slots as before. It calls the callee's register trampoline, which reaches the
+  register entry of the callee's current optimized code, or an adapter that stores the
+  registers into the frame and enters whatever code the method has (interpreter, baseline,
+  code without a register entry). Optimized code's ordinary entry loads the register
+  arguments from the frame and falls into its register entry (aligned to 16 bytes). The
+  prologue stores register arguments into their frame slots where deoptimization or a spill
+  reads them, so frames stay what stack walks, the collector and deoptimization expect.
+  Virtual and interface calls, OSR versions and synchronized methods use the frame protocol.
 - **Lazy anchor** (HotSpot's last Java frame): optimized code publishes `Thread::top` (its
   innermost header) only before calls out, and `Thread::sp` only before runtime calls, polls and
   deoptimization; it restores `top` on return. `sp` only ever rises while it runs (baseline code

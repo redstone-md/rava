@@ -73,12 +73,14 @@ Per-process timing on this host varies by up to 2× for `java` and rava alike (4
 compare with the minimum or median of many runs, never one.
 
 ## To do
-1. **Register calling convention.** Arguments go through the value stack in memory and the
-   callee reads them back; every entry checks the value-stack limit, links the frame and pushes
-   callee-saved registers. 10–14 % of optimized-code samples fall in the first bytes of
-   methods; megamorphic calls cost 6–8 ns against HotSpot's 3.5. Passing arguments in
-   registers and slimming the prologue needs the register allocator's cooperation:
-   a multi-day project, potentially 10–20 %.
+1. **Register calling convention.** Direct calls between optimized methods pass their first
+   arguments in registers (`docs/opt-tier.md`); `bench/java/DirectCallBench.java` gains about
+   12 % on double-heavy calls and holds even where the callee spills every argument. Left:
+   every entry still checks the value-stack limit, links the frame and pushes callee-saved
+   registers (10–14 % of optimized-code samples fall in the first bytes of methods), virtual
+   and interface calls still pass every argument in memory (megamorphic calls cost 6–8 ns
+   against HotSpot's 3.5), and the allocator does not yet aim argument values at their
+   registers or keep arriving arguments in them across calls.
 2. **Register allocation quality.** Values spilled around calls and reloaded at block starts
    (`mov %rax,0x50(%rsp); mov 0x50(%rsp),%rax` across a label), loop-carried values kept in
    stack slots across calls.
