@@ -58,7 +58,7 @@ pub(crate) fn entry(m: &Method, bci: u32, room: usize) -> Option<usize> {
 pub(crate) fn request(m: &'static Method, bci: u32) {
     // A synchronized method's monitor is held by the frame's first-tier code, which the
     // optimized version would not know to release on deoptimization.
-    if !super::enabled() || m.is_synchronized() || m.not_compilable.load(Ordering::Relaxed) {
+    if !super::enabled() || super::excluded(m) || m.is_synchronized() || m.not_compilable.load(Ordering::Relaxed) {
         return;
     }
     if versions(m, bci).next().is_some_and(|c| c.entry.load(Ordering::Acquire) != RETIRED) || versions(m, bci).count() >= MAX_VERSIONS {
