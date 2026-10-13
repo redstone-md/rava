@@ -167,6 +167,20 @@ pub fn process_cpu_nanos() -> i64 {
 }
 
 /// Configured and online processors.
+/// The system's CPU time so far, busy and total, in 100 ns units (`GetSystemTimes`; kernel
+/// time includes idle time).
+pub fn system_cpu_ticks() -> Option<(u64, u64)> {
+    use windows_sys::Win32::Foundation::FILETIME;
+    let ft = |f: FILETIME| (f.dwHighDateTime as u64) << 32 | f.dwLowDateTime as u64;
+    let (mut idle, mut kernel, mut user) = (FILETIME { dwLowDateTime: 0, dwHighDateTime: 0 }, FILETIME { dwLowDateTime: 0, dwHighDateTime: 0 }, FILETIME { dwLowDateTime: 0, dwHighDateTime: 0 });
+    // SAFETY: three FILETIME out-parameters.
+    if unsafe { windows_sys::Win32::System::Threading::GetSystemTimes(&mut idle, &mut kernel, &mut user) } == 0 {
+        return None;
+    }
+    let total = ft(kernel) + ft(user);
+    Some((total - ft(idle), total))
+}
+
 pub fn cpu_counts() -> (i32, i32) {
     let n = std::thread::available_parallelism().map_or(1, |n| n.get()) as i32;
     (n, n)
