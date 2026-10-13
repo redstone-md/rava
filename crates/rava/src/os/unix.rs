@@ -337,6 +337,26 @@ pub fn write_stderr(bytes: &[u8]) {
     unsafe { libc::write(2, bytes.as_ptr() as *const libc::c_void, bytes.len()) };
 }
 
+/// Creates (or empties) the crash report file `name` (NUL-terminated, in the working directory)
+/// without allocating; None when it cannot be created.
+pub fn create_report(name: &[u8]) -> Option<usize> {
+    // SAFETY: open(2) of a NUL-terminated name; the descriptor is closed by `close_report`.
+    let fd = unsafe { libc::open(name.as_ptr() as *const libc::c_char, libc::O_WRONLY | libc::O_CREAT | libc::O_TRUNC | libc::O_CLOEXEC, 0o644) };
+    (fd >= 0).then_some(fd as usize)
+}
+
+/// Appends `bytes` to a file from `create_report`.
+pub fn write_report(f: usize, bytes: &[u8]) {
+    // SAFETY: write(2) to an open descriptor from `create_report`, a borrowed buffer.
+    unsafe { libc::write(f as libc::c_int, bytes.as_ptr() as *const libc::c_void, bytes.len()) };
+}
+
+/// Closes a file from `create_report`.
+pub fn close_report(f: usize) {
+    // SAFETY: close(2) of a descriptor from `create_report`, closed once.
+    unsafe { libc::close(f as libc::c_int) };
+}
+
 static HANDLER: OnceLock<FaultHandler> = OnceLock::new();
 static CRASH: OnceLock<CrashReport> = OnceLock::new();
 static PREVIOUS: OnceLock<Vec<(libc::c_int, libc::sigaction)>> = OnceLock::new();

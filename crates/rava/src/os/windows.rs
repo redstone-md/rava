@@ -271,6 +271,29 @@ pub fn write_stderr(bytes: &[u8]) {
     unsafe { WriteFile(GetStdHandle(STD_ERROR_HANDLE), bytes.as_ptr(), bytes.len() as u32, &mut written, std::ptr::null_mut()) };
 }
 
+/// Creates (or empties) the crash report file `name` (NUL-terminated, in the working directory)
+/// without allocating; None when it cannot be created.
+pub fn create_report(name: &[u8]) -> Option<usize> {
+    use windows_sys::Win32::Foundation::{GENERIC_WRITE, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::Storage::FileSystem::{CreateFileA, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, FILE_SHARE_READ};
+    // SAFETY: a NUL-terminated name; the handle is closed by `close_report`.
+    let h = unsafe { CreateFileA(name.as_ptr(), GENERIC_WRITE, FILE_SHARE_READ, std::ptr::null(), CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, std::ptr::null_mut()) };
+    (h != INVALID_HANDLE_VALUE).then_some(h as usize)
+}
+
+/// Appends `bytes` to a file from `create_report`.
+pub fn write_report(f: usize, bytes: &[u8]) {
+    let mut written = 0u32;
+    // SAFETY: an open handle from `create_report`, a borrowed buffer.
+    unsafe { WriteFile(f as HANDLE, bytes.as_ptr(), bytes.len() as u32, &mut written, std::ptr::null_mut()) };
+}
+
+/// Closes a file from `create_report`.
+pub fn close_report(f: usize) {
+    // SAFETY: an open handle from `create_report`, closed once.
+    unsafe { windows_sys::Win32::Foundation::CloseHandle(f as HANDLE) };
+}
+
 static HANDLER: OnceLock<FaultHandler> = OnceLock::new();
 static CRASH: OnceLock<CrashReport> = OnceLock::new();
 static OWN: OnceLock<OwnCode> = OnceLock::new();
