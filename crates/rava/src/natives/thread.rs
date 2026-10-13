@@ -51,9 +51,53 @@ pub(crate) fn is_interrupted(jt: Oop, clear: bool) -> bool {
     field.load(std::sync::atomic::Ordering::SeqCst) && (!clear || field.swap(false, std::sync::atomic::Ordering::SeqCst))
 }
 
-/// `JavaThreadStatus` values stored in `Thread.FieldHolder.threadStatus`.
+/// `JavaThreadStatus` values stored in `Thread.FieldHolder.threadStatus` (JVMTI state bits:
+/// alive, runnable, waiting, with or without timeout, sleeping, in `Object.wait`, parked,
+/// blocked on a monitor), which `Thread.getState` and `ThreadInfo` decode.
 pub const STATUS_RUNNABLE: i32 = 0x0005;
 pub const STATUS_TERMINATED: i32 = 0x0002;
+pub const STATUS_SLEEPING: i32 = 0x00e1;
+pub const STATUS_IN_OBJECT_WAIT: i32 = 0x0191;
+pub const STATUS_IN_OBJECT_WAIT_TIMED: i32 = 0x01a1;
+pub const STATUS_PARKED: i32 = 0x0291;
+pub const STATUS_PARKED_TIMED: i32 = 0x02a1;
+pub const STATUS_BLOCKED_ON_MONITOR_ENTER: i32 = 0x0401;
+
+/// Records what `t` is doing (a `STATUS_*` value) in its Java thread, for `Thread.getState`.
+pub(crate) fn set_status(t: &Thread, status: i32) {
+    let jt = t.java_thread;
+    if jt.is_null() {
+        return;
+    }
+    // SAFETY: a live java.lang.Thread whose holder exists once it is constructed.
+    unsafe {
+        let holder = obj::read_ref(jt, holder_offset());
+        if !holder.is_null() {
+            obj::write::<i32>(holder, status_offset(), status);
+        }
+    }
+}
+
+/// Marks `t` blocked entering the monitor of `o` (`Thread.getState` BLOCKED, `ThreadInfo`'s lock).
+pub(crate) fn block_on(t: &Thread, o: Oop) {
+    set_status(t, STATUS_BLOCKED_ON_MONITOR_ENTER);
+    t.gc_record.inspect(|r| r.blocked_on.store(o as usize, std::sync::atomic::Ordering::SeqCst));
+}
+
+/// Undoes `block_on` once the monitor is entered.
+pub(crate) fn unblock(t: &Thread) {
+    t.gc_record.inspect(|r| r.blocked_on.store(0, std::sync::atomic::Ordering::SeqCst));
+    set_status(t, STATUS_RUNNABLE);
+}
+
+/// The `STATUS_*` value recorded for Java thread `jt`.
+pub(crate) fn status_of(jt: Oop) -> i32 {
+    // SAFETY: a live java.lang.Thread; its holder exists once it is constructed.
+    unsafe {
+        let holder = obj::read_ref(jt, holder_offset());
+        if holder.is_null() { 0 } else { obj::read::<i32>(holder, status_offset()) }
+    }
+}
 
 const T: &str = "java/lang/Thread";
 
@@ -121,7 +165,10 @@ pub(super) fn register(r: &mut NativeRegistry) {
     r.add(T, "start0", "()V", start0);
     r.add("java/lang/Object", "wait0", "(J)V", |t, a| {
         let jt = t.java_thread;
-        match sync::wait(t, a[0] as Oop, a[1] as i64, &|| is_interrupted(jt, true)) {
+        set_status(t, if a[1] as i64 > 0 { STATUS_IN_OBJECT_WAIT_TIMED } else { STATUS_IN_OBJECT_WAIT });
+        let waited = sync::wait(t, a[0] as Oop, a[1] as i64, &|| is_interrupted(jt, true));
+        set_status(t, STATUS_RUNNABLE);
+        match waited {
             Ok(()) => ret_void(),
             Err(sync::WaitError::Interrupted) => Err(throw_new(t, "java/lang/InterruptedException", "")),
             Err(sync::WaitError::NotOwner) => Err(throw_new(t, "java/lang/IllegalMonitorStateException", "current thread is not owner")),
@@ -135,6 +182,7 @@ pub(super) fn register(r: &mut NativeRegistry) {
 fn sleep0(t: &mut Thread, a: &[u64]) -> JResult<u64> {
     let jt = t.java_thread;
     let deadline = std::time::Instant::now() + std::time::Duration::from_nanos(a[0].min(i64::MAX as u64));
+    set_status(t, STATUS_SLEEPING);
     let interrupted = match t.gc_record {
         None => {
             crate::gc::safepoint::blocking(t, || std::thread::sleep(deadline - std::time::Instant::now()));
@@ -142,6 +190,7 @@ fn sleep0(t: &mut Thread, a: &[u64]) -> JResult<u64> {
         }
         Some(rec) => crate::gc::safepoint::blocking(t, || rec.parker.sleep(deadline, &|| is_interrupted(jt, true))),
     };
+    set_status(t, STATUS_RUNNABLE);
     if interrupted {
         return Err(throw_new(t, "java/lang/InterruptedException", "sleep interrupted"));
     }
@@ -281,7 +330,7 @@ pub(crate) fn record_of(jt: Oop) -> Option<&'static crate::gc::safepoint::Record
 }
 
 /// `Thread.getThreads`: the started, not yet terminated platform threads.
-fn get_threads(t: &mut Thread, _: &[u64]) -> JResult<u64> {
+pub(super) fn get_threads(t: &mut Thread, _: &[u64]) -> JResult<u64> {
     let thread_class = crate::loader::boot_class!("java/lang/Thread").expect("Thread");
     let array_class = crate::vm::vm().array_class_of(thread_class).expect("Thread[]");
     let count = crate::gc::safepoint::all_threads().len() as i32;

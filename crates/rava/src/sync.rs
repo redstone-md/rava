@@ -112,7 +112,7 @@ pub fn enter(t: &Thread, o: Oop) {
             }
             THIN => {
                 spins += 1;
-                back_off(t, spins);
+                back_off(t, o, spins);
             }
             _ => return enter_inflated(t, o, me),
         }
@@ -121,14 +121,16 @@ pub fn enter(t: &Thread, o: Oop) {
 
 /// Waiting for another thread's thin lock: spin briefly, then yield, then sleep (in the native
 /// state, so a collection can proceed).
-fn back_off(t: &Thread, spins: u32) {
+fn back_off(t: &Thread, o: Oop, spins: u32) {
     if spins < 64 {
         std::hint::spin_loop();
     } else if spins < 256 {
         std::thread::yield_now();
     } else {
         THIN_SLEEPS.fetch_add(1, Ordering::Relaxed);
+        crate::natives::block_on(t, o);
         crate::gc::safepoint::blocking(t, || std::thread::sleep(Duration::from_micros(100)));
+        crate::natives::unblock(t);
     }
 }
 
@@ -152,7 +154,7 @@ fn inflate_owned(o: Oop) {
 }
 
 fn enter_inflated(t: &Thread, o: Oop, me: u64) {
-    monitor_of(o).enter(t, me);
+    monitor_of(o).enter(t, me, o);
 }
 
 /// Releases one level of ownership. Returns false if the caller does not own the monitor.

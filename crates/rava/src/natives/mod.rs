@@ -59,6 +59,7 @@ pub(crate) use jfr::{register_on_init as jfr_register_on_init, roots as jfr_root
 pub(crate) use lang::{class_modifiers, identity_hash, HASH_MASK, HASH_SHIFT};
 pub(crate) use module::{roots as module_roots, set_mirror_module, set_primitive_mirror_module};
 pub use props::string_array;
+pub(crate) use thread::{block_on, unblock};
 pub use throwable::{backtrace_of, describe as describe_throwable, line_number, source_file};
 
 use crate::method::Method;
