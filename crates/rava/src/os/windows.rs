@@ -336,13 +336,24 @@ unsafe extern "system" fn on_exception(info: *mut EXCEPTION_POINTERS) -> i32 {
             CONTINUE_EXECUTION
         }
         None => {
+            // A fault in rava's own code is fatal, so it is reported here, before any library's
+            // unhandled-exception filter (which libraries replace). `RAVA_FAULT_EAGER=1` reports
+            // every unresolved access violation here, for a native library whose own handler
+            // would otherwise end the process before the report; the exception still goes on to
+            // the next handler, so a fault the library handles only adds a note on stderr.
             let pc = context.Rip as usize;
-            if OWN.get().is_some_and(|own| own(pc)) {
+            if OWN.get().is_some_and(|own| own(pc)) || eager() {
                 report_once(pc, addr);
             }
             CONTINUE_SEARCH
         }
     }
+}
+
+/// Whether `RAVA_FAULT_EAGER` is set.
+fn eager() -> bool {
+    static EAGER: OnceLock<bool> = OnceLock::new();
+    *EAGER.get_or_init(|| std::env::var_os("RAVA_FAULT_EAGER").is_some())
 }
 
 unsafe extern "system" fn on_unhandled(info: *const EXCEPTION_POINTERS) -> i32 {
