@@ -105,9 +105,14 @@ impl Gen<'_> {
             };
             place.insert(v, p);
         }
-        let operand = |v: V| place.get(&g.resolve(v)).copied();
+        let operand = |v: V| place_of(g, &place, v);
         let (Some(Place::Reg(x)), Some(y)) = (operand(a), operand(b)) else { return };
         if result.is_some_and(|r| operand(r).is_none()) {
+            return;
+        }
+        // Every operand computed here must have a place (`algebra.rs` makes constants outside
+        // any block, which the walk above never saw): else only the fast exit is given up.
+        if !body.iter().all(|&(v, _)| g.values[v as usize].inst.inputs().into_iter().all(|x| operand(x).is_some())) {
             return;
         }
         let slow = self.a.new_label();
@@ -136,7 +141,7 @@ impl Gen<'_> {
     /// Computes non-parameter, non-constant value `v` into its place.
     fn fast_value(&mut self, v: V, place: &std::collections::HashMap<V, Place>) {
         let g = self.g;
-        let get = |x: V| place[&g.resolve(x)];
+        let get = |x: V| place_of(g, place, x).expect("checked before emitting");
         let Some(&Place::Reg(dst)) = place.get(&v) else { return };
         let w = g.ty(v) != Ty::I;
         match g.values[v as usize].inst {
@@ -183,6 +188,12 @@ fn simple(g: &Graph, v: V) -> bool {
         Inst::LoadField(o, _, bt) => !matches!(bt, BasicType::Float | BasicType::Double) && g.receiver.is_some_and(|r| g.resolve(r) == origin(g, o)),
         _ => false,
     }
+}
+
+/// Where operand `v` is: its place, or an immediate for a constant that fits one.
+fn place_of(g: &Graph, place: &std::collections::HashMap<V, Place>, v: V) -> Option<Place> {
+    let v = g.resolve(v);
+    place.get(&v).copied().or_else(|| g.constant(v).filter(|&c| i32::try_from(c).is_ok()).map(Place::Imm))
 }
 
 /// The value `v` copies (through `split.rs`'s copies), or `v`.
