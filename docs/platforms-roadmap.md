@@ -1,10 +1,11 @@
-# Platforms roadmap: Windows and macOS
+# Platforms: Linux, macOS and Windows
 
-rava was written for Linux on x86-64. This is the plan for Windows and macOS: what ties the VM
-to Linux today, and the order in which it comes apart. The rules stay: one VM, nothing keyed to
-a program, the `java` command line unchanged.
+rava was written for Linux on x86-64 and now also runs on macOS and Windows (x86-64). This page
+records what tied the VM to Linux, the order in which it came apart, and where each port
+stands ([Status](#status)). The rules stayed: one VM, nothing keyed to a program, the `java`
+command line unchanged.
 
-## What is Linux-specific
+## What was Linux-specific
 
 | Area | Linux today | macOS | Windows |
 |---|---|---|---|
@@ -43,7 +44,7 @@ a program, the `java` command line unchanged.
 - **Windows x86-64**: the JDK boots and runs programs; tested here with a MinGW build under Wine
   and in CI on Windows runners. Done: platform properties, `java.io` over handles,
   `WinNTFileSystem`, `WindowsNativeDispatcher` (files and security), file channels, sockets over
-  Winsock behind the shared socket layer (`natives/sock`), the `WEPoll` selector over `WSAPoll`,
+  Winsock behind the shared socket layer (`natives/sock`), the `WEPoll` selector over `WSAPoll`, asynchronous channels over completion ports,
   `NetworkInterface` from `GetAdaptersAddresses`, child processes, and JNI in the Win64
   convention (native calls, variadic `Call*Method`, `va_list`). Not yet: the generated JNI call
   stubs (natives take the generic path), `ProcessHandle.Info`, AWT. Under Wine, 124 of 132
