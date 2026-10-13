@@ -57,11 +57,79 @@ thread_local!(static ATTACHED: std::cell::Cell<bool> = const { std::cell::Cell::
 /// Excludes collections while held, on a thread that is not a Java thread (a compiler reading
 /// the heap: a young collection moves objects, `evacuate.rs`); None on a Java thread, which no
 /// collection runs past anyway (it stops only at polls, never inside the caller).
-pub fn heap_access() -> Option<std::sync::MutexGuard<'static, ()>> {
+pub fn heap_access() -> Option<HeapAccess> {
     if ATTACHED.with(|a| a.get()) {
         return None;
     }
-    Some(registry().collecting.lock().unwrap_or_else(|e| e.into_inner()))
+    let guard = registry().collecting.lock().unwrap_or_else(|e| e.into_inner());
+    READER.store(thread_label().as_ptr() as *mut u8, SeqCst);
+    Some(HeapAccess { _guard: guard })
+}
+
+/// A non-Java thread's exclusion of collections (`heap_access`).
+pub struct HeapAccess {
+    _guard: std::sync::MutexGuard<'static, ()>,
+}
+
+impl Drop for HeapAccess {
+    fn drop(&mut self) {
+        READER.store(std::ptr::null_mut(), SeqCst);
+    }
+}
+
+/// The calling OS thread's name, kept for diagnostics (NUL-terminated).
+fn thread_label() -> &'static str {
+    thread_local!(static LABEL: &'static str = Box::leak(format!("{}\0", std::thread::current().name().unwrap_or("unnamed")).into_boxed_str()));
+    LABEL.with(|l| *l)
+}
+
+/// What holds the world, for diagnostics: the collecting thread's record, the step it is at
+/// (an index into `STEPS`) and since when (milliseconds from the first collection), and the
+/// non-Java thread reading the heap (`heap_access`), if any.
+static COLLECTOR: AtomicPtr<Record> = AtomicPtr::new(std::ptr::null_mut());
+static STEP: AtomicUsize = AtomicUsize::new(0);
+static SINCE: AtomicUsize = AtomicUsize::new(0);
+static READER: AtomicPtr<u8> = AtomicPtr::new(std::ptr::null_mut());
+
+/// The steps of a collection, as diagnostics name them.
+pub const STEPS: [&str; 7] = ["idle", "stopping threads", "world stopped", "taking the heap lock", "marking", "sweeping", "returning memory"];
+pub const STEP_LOCK: usize = 3;
+pub const STEP_MARK: usize = 4;
+pub const STEP_SWEEP: usize = 5;
+pub const STEP_RELEASE: usize = 6;
+
+fn epoch() -> std::time::Instant {
+    static E: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+    *E.get_or_init(std::time::Instant::now)
+}
+
+/// Records the step a collection is at.
+pub fn set_step(step: usize) {
+    STEP.store(step, SeqCst);
+    SINCE.store(epoch().elapsed().as_millis() as usize, SeqCst);
+}
+
+/// Who holds the world, as a dump reports it when it cannot stop the world itself.
+pub fn holder() -> String {
+    let rec = COLLECTOR.load(SeqCst);
+    if !rec.is_null() || STEP.load(SeqCst) != 0 {
+        let secs = (epoch().elapsed().as_millis() as usize).saturating_sub(SINCE.load(SeqCst)) as f64 / 1e3;
+        // SAFETY: a registered thread's record lives as long as the process.
+        let name = if rec.is_null() { "a service thread".to_string() } else { format!("\"{}\"", crate::dump::thread_name(unsafe { &*rec })) };
+        return format!("{name} is collecting, at step \"{}\" for {secs:.1} s", STEPS[STEP.load(SeqCst)]);
+    }
+    let reader = READER.load(SeqCst);
+    if !reader.is_null() {
+        // SAFETY: a leaked NUL-terminated label.
+        let label = unsafe { std::ffi::CStr::from_ptr(reader as *const std::ffi::c_char) };
+        return format!("\"{}\" is reading the heap (a compiler thread)", label.to_string_lossy());
+    }
+    "nothing recorded holds it".to_string()
+}
+
+/// Whether a stop is requested (the frames of stopped and native threads hold still).
+pub fn requested() -> bool {
+    REQUESTED.load(SeqCst)
 }
 
 /// Registers `t` (at its final address) as a Java thread of this OS thread.
@@ -236,15 +304,27 @@ pub fn stop_the_world<R>(t: &Thread, f: impl FnOnce(usize) -> R) -> Option<R> {
         }
         std::thread::yield_now();
     };
-    Some(stopped(t.gc_record, guard, None, f))
+    COLLECTOR.store(t.gc_record.map_or(std::ptr::null_mut(), |r| r as *const Record as *mut Record), SeqCst);
+    let r = stopped(t.gc_record, guard, None, f);
+    COLLECTOR.store(std::ptr::null_mut(), SeqCst);
+    Some(r)
 }
 
-/// Stops every Java thread from a thread that is not one (a diagnostic service thread), waiting
-/// out any collection in progress, and runs `f` meanwhile. Threads still running Java after
-/// `patience` are left running: `f` must not read their frames.
-pub fn with_world_stopped<R>(patience: std::time::Duration, f: impl FnOnce() -> R) -> R {
-    let guard = registry().collecting.lock().unwrap();
-    stopped(None, guard, Some(std::time::Instant::now() + patience), |_| f())
+/// Stops every Java thread from a thread that is not one (a diagnostic service thread) and runs
+/// `f` meanwhile; None when a collection or a heap reader holds the world for longer than
+/// `patience`. Threads still running Java after `patience` are left running: `f` must not read
+/// their frames.
+pub fn try_with_world_stopped<R>(patience: std::time::Duration, f: impl FnOnce() -> R) -> Option<R> {
+    let end = std::time::Instant::now() + patience;
+    let guard = loop {
+        match registry().collecting.try_lock() {
+            Ok(g) => break g,
+            Err(std::sync::TryLockError::Poisoned(e)) => break e.into_inner(),
+            Err(std::sync::TryLockError::WouldBlock) if std::time::Instant::now() < end => std::thread::sleep(std::time::Duration::from_millis(10)),
+            Err(_) => return None,
+        }
+    };
+    Some(stopped(None, guard, Some(std::time::Instant::now() + patience), |_| f()))
 }
 
 /// With the collection lock held: requests the stop, waits until no other thread runs Java (or
@@ -257,12 +337,22 @@ fn stopped<R>(me: Option<&'static Record>, guard: std::sync::MutexGuard<'_, ()>,
     }
     arm(true);
     let me = me.map(|r| r as *const Record);
+    set_step(1);
+    let (started, mut warn_at) = (std::time::Instant::now(), 10u64);
     while all_threads().into_iter().any(|r| Some(r as *const Record) != me && r.state.load(SeqCst) == RUNNING) {
         if deadline.is_some_and(|d| std::time::Instant::now() > d) {
             break;
         }
+        // A thread that never reaches a safepoint (blocked in a system call it entered without
+        // leaving the Java state) stops everything: name it.
+        if started.elapsed().as_secs() >= warn_at {
+            let running: Vec<String> = all_threads().into_iter().filter(|r| Some(*r as *const Record) != me && r.state.load(SeqCst) == RUNNING).map(|r| format!("\"{}\"", crate::dump::thread_name(r))).collect();
+            eprintln!("rava: waited {warn_at} s for threads to reach a safepoint: {}", running.join(", "));
+            warn_at *= 3;
+        }
         std::thread::yield_now();
     }
+    set_step(2);
     let result = with_spilled_registers(|rsp| {
         if let Some(rec) = me {
             // SAFETY: the initiator's own record.
@@ -270,6 +360,7 @@ fn stopped<R>(me: Option<&'static Record>, guard: std::sync::MutexGuard<'_, ()>,
         }
         f(rsp)
     });
+    set_step(0);
     let mut epoch = reg.epoch.lock().unwrap();
     *epoch += 1;
     arm(false);

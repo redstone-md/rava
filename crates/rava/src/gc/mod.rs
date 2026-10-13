@@ -228,6 +228,7 @@ impl Heap {
         let done = safepoint::stop_the_world(t, |_| {
             let stopped = std::time::Instant::now();
             phases[0] = (stopped - started).as_secs_f64() * 1e3;
+            safepoint::set_step(safepoint::STEP_LOCK);
             let mut space = self.space.lock().unwrap();
             for rec in safepoint::all_threads() {
                 // SAFETY: every registered thread is stopped (or is us); its cache is ours to reset.
@@ -242,6 +243,7 @@ impl Heap {
                 clear_marks(&mut space);
             }
             let before_mark = std::time::Instant::now();
+            safepoint::set_step(safepoint::STEP_MARK);
             let marked = mark::mark(&mut space, !full);
             if full && std::env::var_os("RAVA_GC_HISTO").is_some() {
                 histo::report(&space);
@@ -255,6 +257,7 @@ impl Heap {
                 cards::clean(lb, lf);
             }
             let before_sweep = std::time::Instant::now();
+            safepoint::set_step(safepoint::STEP_SWEEP);
             let live = sweep(&mut space);
             if full {
                 space.live_after_full = live;
@@ -268,6 +271,7 @@ impl Heap {
                 // released after a young one were faulted back in, zeroed, by the allocation
                 // that followed (~640 MiB over a Paper start), and each release costs a TLB
                 // shootdown on every core inside the pause.
+                safepoint::set_step(safepoint::STEP_RELEASE);
                 space.release_surplus(self.young_budget(live) + self.young_budget(live) / 8);
                 // So does the malloc heap's free memory: compiler threads free most of what
                 // they allocate, in arenas glibc keeps (~1 ms; -15 MiB on a modded server).
