@@ -100,6 +100,37 @@ pub(crate) fn get_int(fd: i32, level: i32, opt: i32) -> Option<i32> {
     (unsafe { getsockopt(s(fd), level, opt, &mut v as *mut i32 as *mut u8, &mut len) } == 0).then_some(v)
 }
 
+/// A raw option value.
+pub(crate) fn set_bytes(fd: i32, level: i32, opt: i32, v: &[u8]) -> i32 {
+    // SAFETY: `v` is the option's value.
+    unsafe { setsockopt(s(fd), level, opt, v.as_ptr(), v.len() as i32) }
+}
+
+/// A raw option value into `v`: its length.
+pub(crate) fn get_bytes(fd: i32, level: i32, opt: i32, v: &mut [u8]) -> Option<usize> {
+    let mut len = v.len() as i32;
+    // SAFETY: `v` has room for `len` bytes.
+    (unsafe { getsockopt(s(fd), level, opt, v.as_mut_ptr(), &mut len) } == 0).then_some(len as usize)
+}
+
+/// Whether the last call failed for an option or operation the system does not offer.
+pub(crate) fn unsupported() -> bool {
+    matches!(last_code(), WSAENOPROTOOPT | WSAEOPNOTSUPP)
+}
+
+/// `send` / `recv` with `flags` (urgent data).
+pub(crate) fn send_flags(fd: i32, buf: &[u8], flags: i32) -> isize {
+    // SAFETY: `buf` is readable.
+    unsafe { ws::send(s(fd), buf.as_ptr(), buf.len() as i32, flags as SEND_RECV_FLAGS) as isize }
+}
+
+pub(crate) fn recv_flags(fd: i32, buf: &mut [u8], flags: i32) -> isize {
+    // SAFETY: `buf` is writable.
+    unsafe { ws::recv(s(fd), buf.as_mut_ptr(), buf.len() as i32, flags as SEND_RECV_FLAGS) as isize }
+}
+
+pub(crate) const MSG_OOB: i32 = ws::MSG_OOB as i32;
+
 pub(crate) fn set_reuse_address(fd: i32) {
     set_int(fd, SOL_SOCKET, SO_REUSEADDR, 1);
 }

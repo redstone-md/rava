@@ -65,6 +65,37 @@ pub(crate) fn get_int(fd: i32, level: i32, opt: i32) -> Option<i32> {
     (unsafe { libc::getsockopt(fd, level, opt, &mut v as *mut i32 as *mut libc::c_void, &mut len) } == 0).then_some(v)
 }
 
+/// A raw option value.
+pub(crate) fn set_bytes(fd: i32, level: i32, opt: i32, v: &[u8]) -> i32 {
+    // SAFETY: `v` is the option's value.
+    unsafe { libc::setsockopt(fd, level, opt, v.as_ptr() as *const libc::c_void, v.len() as libc::socklen_t) }
+}
+
+/// A raw option value into `v`: its length.
+pub(crate) fn get_bytes(fd: i32, level: i32, opt: i32, v: &mut [u8]) -> Option<usize> {
+    let mut len = v.len() as libc::socklen_t;
+    // SAFETY: `v` has room for `len` bytes.
+    (unsafe { libc::getsockopt(fd, level, opt, v.as_mut_ptr() as *mut libc::c_void, &mut len) } == 0).then_some(len as usize)
+}
+
+/// Whether the last call failed for an option or operation the system does not offer.
+pub(crate) fn unsupported() -> bool {
+    matches!(last_code(), libc::ENOPROTOOPT | libc::EOPNOTSUPP)
+}
+
+/// `send` / `recv` with `flags` (urgent data).
+pub(crate) fn send_flags(fd: i32, buf: &[u8], flags: i32) -> isize {
+    // SAFETY: `buf` is readable.
+    unsafe { libc::send(fd, buf.as_ptr() as *const libc::c_void, buf.len(), flags) }
+}
+
+pub(crate) fn recv_flags(fd: i32, buf: &mut [u8], flags: i32) -> isize {
+    // SAFETY: `buf` is writable.
+    unsafe { libc::recv(fd, buf.as_mut_ptr() as *mut libc::c_void, buf.len(), flags) }
+}
+
+pub(crate) const MSG_OOB: i32 = libc::MSG_OOB;
+
 pub(crate) fn set_reuse_address(fd: i32) {
     set_int(fd, libc::SOL_SOCKET, libc::SO_REUSEADDR, 1);
 }
