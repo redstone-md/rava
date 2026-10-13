@@ -611,9 +611,18 @@ impl Gen<'_> {
         let in_reg = |slot: i32| reg_call.as_ref().and_then(|(_, regs)| regs.iter().find(|r| r.0 as i32 == slot - base).map(|r| r.1));
         let mut slot = base;
         let mut moves: Vec<(Loc, Loc)> = Vec::new();
+        // Int-like arguments leave in slot encoding (sign-extended), as `store_frame` writes
+        // them: 32-bit arithmetic leaves the upper half zero, and a baseline callee (through
+        // its adapter) reads the whole slot.
+        let mut ints: Vec<R> = Vec::new();
         for &x in args {
             match in_reg(slot) {
-                Some(crate::jit::abi::ArgReg::Gpr(r)) => moves.push((Loc::Reg(r), self.loc[x as usize])),
+                Some(crate::jit::abi::ArgReg::Gpr(r)) => {
+                    if self.g.ty(x) == Ty::I {
+                        ints.push(r);
+                    }
+                    moves.push((Loc::Reg(r), self.loc[x as usize]))
+                }
                 Some(crate::jit::abi::ArgReg::Xmm(r)) => moves.push((Loc::Xmm(r), self.loc[x as usize])),
                 None => self.store_frame(self.slot(slot), x),
             }
@@ -625,6 +634,9 @@ impl Gen<'_> {
             // The argument registers are filled after the saves (they may hold saved values) and
             // before the link, which clobbers only rax and rcx.
             super::moves::parallel(&mut self.a, &moves);
+            for &r in &ints {
+                self.a.movsxd(r, r);
+            }
             self.link(s, false);
             match (callee, trampoline) {
                 (Callee::Direct(m), Some(t)) => {
