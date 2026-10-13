@@ -26,7 +26,8 @@ mkdir -p "$OUT/bin" "$OUT/lib"
 case $(uname -s) in MINGW*|MSYS*|CYGWIN*) EXE=.exe ;; *) EXE= ;; esac
 cp "$REPO/target/release/rava$EXE" "$OUT/bin/rava$EXE"
 cp -L "$JDK/lib/modules" "$OUT/lib/"
-for f in "$JDK"/lib/*.dat "$JDK"/lib/*.properties; do [ -e "$f" ] && cp -L "$f" "$OUT/lib/"; done
+# tzmappings: Windows time zone names to Java IDs (only in a Windows JDK).
+for f in "$JDK"/lib/*.dat "$JDK"/lib/*.properties "$JDK"/lib/tzmappings; do [ -e "$f" ] && cp -L "$f" "$OUT/lib/"; done
 for d in security jfr; do [ -d "$JDK/lib/$d" ] && cp -rL "$JDK/lib/$d" "$OUT/lib/"; done
 cp -rL "$JDK/conf" "$OUT/conf"
 cp -rL "$JDK/legal" "$OUT/legal" 2>/dev/null || true
