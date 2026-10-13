@@ -556,16 +556,49 @@ impl Gen<'_> {
     fn call(&mut self, v: V, callee: Callee, args: &[V], s: &Rc<State>) {
         let deopt = self.deopt(s);
         let base = Self::stack_base_of(s) + s.stack.len() as i32;
+        let (unprofiled, cold) = (self.g.unprofiled.contains(&v), self.g.cold_calls.contains(&v));
+        // A direct call to a method reachable through its register trampoline passes the first
+        // arguments in registers (`jit::abi`); sites that profile themselves keep the frame
+        // protocol (their runtime calls could clobber the argument registers).
+        let reg_call = match callee {
+            Callee::Direct(m) if !unprofiled && !cold => crate::jit::code_cache::reg_entry(m).map(|t| (t, crate::jit::abi::arg_regs(m))),
+            _ => None,
+        };
+        let in_reg = |slot: i32| reg_call.as_ref().and_then(|(_, regs)| regs.iter().find(|r| r.0 as i32 == slot - base).map(|r| r.1));
         let mut slot = base;
+        let mut moves: Vec<(Loc, Loc)> = Vec::new();
         for &x in args {
-            self.store_frame(self.slot(slot), x);
+            match in_reg(slot) {
+                Some(crate::jit::abi::ArgReg::Gpr(r)) => moves.push((Loc::Reg(r), self.loc[x as usize])),
+                Some(crate::jit::abi::ArgReg::Xmm(r)) => moves.push((Loc::Xmm(r), self.loc[x as usize])),
+                None => self.store_frame(self.slot(slot), x),
+            }
             slot += if self.g.ty(x).wide() { 2 } else { 1 };
         }
         // From here until the restore, values live across the call are only in their save slots.
         self.save_around(v);
+        if let Some((trampoline, _)) = reg_call {
+            // The argument registers are filled after the saves (they may hold saved values) and
+            // before the link, which clobbers only rax and rcx.
+            super::moves::parallel(&mut self.a, &moves);
+            self.link(s, false);
+            if let Callee::Direct(m) = callee {
+                self.a.mov_ri(R::Rdx, m as *const Method as i64);
+            }
+            self.a.lea(R::Rsi, self.slot(base));
+            self.a.call_abs(trampoline);
+            self.restore_around(v);
+            self.a.alu_mi(true, Alu::Cmp, mem(R::R12, offsets::PENDING), 0);
+            self.a.jcc(Cond::Ne, deopt);
+            if matches!(self.g.ty(v), Ty::F | Ty::D) {
+                self.xput(v, crate::jit::asm::X(0));
+            } else {
+                self.put(v, R::Rax);
+            }
+            return;
+        }
         let fail = self.restoring(v, deopt);
         self.link(s, false);
-        let (unprofiled, cold) = (self.g.unprofiled.contains(&v), self.g.cold_calls.contains(&v));
         if unprofiled || cold {
             self.profile_call(s, unprofiled.then(|| args[0]), cold);
         }
