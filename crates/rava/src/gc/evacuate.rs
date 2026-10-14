@@ -62,9 +62,13 @@ impl Shared<'_> {
         }
         let n = self.forward(t, stack, runs);
         if n != t {
-            // SAFETY: as above; the object moved, the slot follows (no card: the object it
-            // now references is old).
+            // SAFETY: as above; the object moved, the slot follows.
             unsafe { obj::store_ref_raw(slot, n as Oop) };
+        }
+        // A copy, or an object still aging, is young again in the next young collection: the
+        // slot's card stays dirty so that collection finds this reference.
+        if n != t || super::mark::in_ranges(self.young_again, n) {
+            crate::gc::cards::dirty(slot);
         }
     }
 
@@ -171,6 +175,7 @@ impl Shared<'_> {
             word.fetch_or((u64::MAX >> (64 - n)) << (c % 64), Ordering::Relaxed);
             c += n;
         }
+        self.promoted.lock().unwrap().push((start, next));
     }
 
     /// Marks the copies of every run of `runs`.

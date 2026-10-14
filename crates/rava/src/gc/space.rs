@@ -179,6 +179,10 @@ pub struct Space {
     pub live_after_gc: usize,
     /// Live bytes after the last full collection.
     pub live_after_full: usize,
+    /// Cells whose objects young collections promoted lately, with how many young collections
+    /// they have survived (sorted, disjoint ranges): they count as young again in the next one,
+    /// until they have survived `mark::TENURE` (`mark.rs`).
+    pub aging: Vec<(usize, usize, u8)>,
 }
 
 /// The smallest heap reservation `Space::new` falls back to.
@@ -230,6 +234,7 @@ impl Space {
             allocated_since_gc: 0,
             live_after_gc: 0,
             live_after_full: 0,
+            aging: Vec::new(),
         }
     }
 
