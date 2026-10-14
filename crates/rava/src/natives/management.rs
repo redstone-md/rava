@@ -88,6 +88,22 @@ fn vm_flags() -> Vec<(String, FlagValue, &'static str)> {
         ("DisableExplicitGC".into(), FlagValue::Bool(false), "DEFAULT"),
         ("ActiveProcessorCount".into(), FlagValue::Long(-1), "DEFAULT"),
     ];
+    // The CPU feature flags HotSpot sets from the processor, which libraries read to choose a
+    // code path (JOML asks for UseFMA before it calls Math.fma).
+    #[cfg(target_arch = "x86_64")]
+    {
+        let avx = if std::is_x86_feature_detected!("avx512f") {
+            3
+        } else if std::is_x86_feature_detected!("avx2") {
+            2
+        } else {
+            std::is_x86_feature_detected!("avx") as i64
+        };
+        let sse = if std::is_x86_feature_detected!("sse4.1") { 4 } else if std::is_x86_feature_detected!("sse3") { 3 } else { 2 };
+        flags.push(("UseFMA".into(), FlagValue::Bool(std::is_x86_feature_detected!("fma")), "ERGONOMIC"));
+        flags.push(("UseAVX".into(), FlagValue::Long(avx), "ERGONOMIC"));
+        flags.push(("UseSSE".into(), FlagValue::Long(sse), "ERGONOMIC"));
+    }
     for o in crate::vm_options() {
         let (name, value) = if let Some(n) = o.strip_prefix('+') {
             (n.to_string(), FlagValue::Bool(true))
