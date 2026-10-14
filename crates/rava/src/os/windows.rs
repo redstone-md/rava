@@ -415,6 +415,15 @@ fn take_filter() {
 
 unsafe extern "system" fn on_exception(info: *mut EXCEPTION_POINTERS) -> i32 {
     let record = &*(*info).ExceptionRecord;
+    // The heap's own fatal errors (a corrupted block found, a fail-fast check): no handler
+    // recovers from them, so the report is made now, its native frames naming the code that
+    // found the damage (a block written past, freed twice or freed by another allocator).
+    const HEAP_CORRUPTION: i32 = 0xC0000374_u32 as i32;
+    const FAIL_FAST: i32 = 0xC0000409_u32 as i32;
+    if record.ExceptionCode == HEAP_CORRUPTION || record.ExceptionCode == FAIL_FAST {
+        report_once((*(*info).ContextRecord).Rip as usize, record.ExceptionCode as u32 as usize);
+        return CONTINUE_SEARCH;
+    }
     if record.ExceptionCode != EXCEPTION_ACCESS_VIOLATION {
         return CONTINUE_SEARCH;
     }
