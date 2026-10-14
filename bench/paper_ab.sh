@@ -119,8 +119,8 @@ done
 } > "$OUT/env.txt"
 [ -f "$OUT/runs.tsv" ] || printf 'time_utc\tround\tlabel\tcommit\tbin_sha256\twall_s\tdone_s\tuser_s\tsys_s\thwm_mb\trss_mb\tmilestones\n' > "$OUT/runs.tsv"
 
-run_one() { # label round
-  local label=$1 round=$2 d
+run_one() { # label round ordinal
+  local label=$1 round=$2 ordinal=$3 d
   d=$(mktemp -d "${TMPDIR:-$OUT}/paper-ab-run.XXXXXX")
   cp -r "$BASE/." "$d/"
   rm -rf "$d"/world* "$d/logs" "$d/crash-reports"
@@ -183,7 +183,12 @@ PY
 )
   printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$round" "$label" "${COMMIT[$label]}" "${SHA[$label]}" \
     "$wall" "${done_s:--}" "$(python3 -c 'import sys; print("-" if sys.argv[1] == "-" else f"{int(sys.argv[1]) / int(sys.argv[2]):.1f}")' "$ut" "$tck")" "$(python3 -c 'import sys; print("-" if sys.argv[1] == "-" else f"{int(sys.argv[1]) / int(sys.argv[2]):.1f}")' "$st" "$tck")" "$hwm" "$rss" "$ms" >> "$OUT/runs.tsv"
-  gzip -c "$d/out.txt" > "$OUT/logs/r${round}-${label//\//_}.log.gz"
+  # Portable artifact names; the ordinal distinguishes labels with the same bounded slug.
+  # mktemp also preserves previous logs when another invocation appends to this results dir.
+  local slug log_file
+  slug=$(printf '%s' "$label" | LC_ALL=C tr -c 'A-Za-z0-9._-' '_' | cut -c1-64)
+  log_file=$(mktemp "$OUT/logs/r${round}-l${ordinal}-${slug}.XXXXXX.log.gz")
+  gzip -c "$d/out.txt" > "$log_file"
   rm -rf "$d"
   echo "round $round $label wall $wall done ${done_s:--} hwm ${hwm}M"
 }
@@ -194,9 +199,9 @@ PY
 labels=("$@")
 for round in $(seq 1 "$ROUNDS"); do
   if (( round % 2 == 0 )); then
-    for (( i = ${#labels[@]} - 1; i >= 0; i-- )); do run_one "${labels[$i]}" "$round"; done
+    for (( i = ${#labels[@]} - 1; i >= 0; i-- )); do run_one "${labels[$i]}" "$round" "$((i + 1))"; done
   else
-    for label in "${labels[@]}"; do run_one "$label" "$round"; done
+    for (( i = 0; i < ${#labels[@]}; i++ )); do run_one "${labels[$i]}" "$round" "$((i + 1))"; done
   fi
 done
 echo "results: $OUT"
