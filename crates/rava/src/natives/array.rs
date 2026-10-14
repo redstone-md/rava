@@ -11,7 +11,34 @@ use crate::vm::vm;
 
 const A: &str = "java/lang/reflect/Array";
 
+/// `Arrays.fill` of a whole primitive array, for the interpreter and baseline code (optimized
+/// code calls `jit::leaf`'s routine in place): the bytecode stores an element per iteration.
+fn fill(t: &mut Thread, a: &[u64], shift: u8) -> JResult<u64> {
+    let arr = a[0] as Oop;
+    if arr.is_null() {
+        return Err(rt::null_pointer(t));
+    }
+    // SAFETY: a live primitive array of the descriptor's element type.
+    unsafe {
+        match shift {
+            0 => crate::jit::leaf::fill::<u8>(arr, a[1]),
+            1 => crate::jit::leaf::fill::<u16>(arr, a[1]),
+            2 => crate::jit::leaf::fill::<u32>(arr, a[1]),
+            _ => crate::jit::leaf::fill::<u64>(arr, a[1]),
+        }
+    }
+    super::ret_void()
+}
+
 pub(super) fn register(r: &mut NativeRegistry) {
+    r.add_stub("java/util/Arrays", "fill", "([BB)V", |t, a| fill(t, a, 0));
+    r.add_stub("java/util/Arrays", "fill", "([ZZ)V", |t, a| fill(t, a, 0));
+    r.add_stub("java/util/Arrays", "fill", "([CC)V", |t, a| fill(t, a, 1));
+    r.add_stub("java/util/Arrays", "fill", "([SS)V", |t, a| fill(t, a, 1));
+    r.add_stub("java/util/Arrays", "fill", "([II)V", |t, a| fill(t, a, 2));
+    r.add_stub("java/util/Arrays", "fill", "([FF)V", |t, a| fill(t, a, 2));
+    r.add_stub("java/util/Arrays", "fill", "([JJ)V", |t, a| fill(t, a, 3));
+    r.add_stub("java/util/Arrays", "fill", "([DD)V", |t, a| fill(t, a, 3));
     r.add(A, "newArray", "(Ljava/lang/Class;I)Ljava/lang/Object;", |t, a| {
         let k = array_class_for(t, a[0] as Oop)?;
         ret_ref(rt::alloc_array(t, k, a[1] as i32)?)

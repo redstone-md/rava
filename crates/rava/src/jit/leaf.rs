@@ -1,10 +1,11 @@
 //! Array and string routines optimized code calls directly in place of the JDK methods marked
 //! `@IntrinsicCandidate` for them (HotSpot's string and array intrinsics): comparing, searching
 //! and hashing whole arrays a word or a vector at a time instead of an element per iteration.
-//! The interpreter and baseline code run the methods' bytecode, which computes the same
-//! results. Each routine is a leaf: it reads arrays, allocates nothing and cannot stop, so the
-//! collector never runs while it holds a reference. Ranges come from the JDK callers, which
-//! check them; reads are still clamped to the array so a bad one cannot leave it.
+//! The interpreter and baseline code run the methods' bytecode (for a fill, the VM's body),
+//! which computes the same results. Each routine is a leaf: it reads arrays (or fills a
+//! primitive one), allocates nothing and cannot stop, so the collector never runs while it
+//! holds a reference. Ranges come from the JDK callers, which check them; reads are still
+//! clamped to the array so a bad one cannot leave it.
 
 use crate::heap::{obj, Oop};
 
@@ -28,6 +29,9 @@ pub(crate) enum Leaf {
     IsAssignableFrom,
     /// `Reference.refersTo0(Object)` (and `PhantomReference`'s): the referent is the object.
     RefersTo,
+    /// `Arrays.fill(x[], x)` for a primitive array of elements of `1 << n` bytes (the only
+    /// routine that writes: HotSpot recognizes the loop and calls its fill stub).
+    Fill(u8),
 }
 
 impl Leaf {
@@ -43,6 +47,10 @@ impl Leaf {
             Leaf::IsInterface => is_interface as *const () as usize,
             Leaf::IsAssignableFrom => is_assignable_from as *const () as usize,
             Leaf::RefersTo => refers_to as *const () as usize,
+            Leaf::Fill(0) => fill_leaf::<u8> as *const () as usize,
+            Leaf::Fill(1) => fill_leaf::<u16> as *const () as usize,
+            Leaf::Fill(2) => fill_leaf::<u32> as *const () as usize,
+            Leaf::Fill(_) => fill_leaf::<u64> as *const () as usize,
         }
     }
 
@@ -58,8 +66,14 @@ impl Leaf {
             ("java/lang/Class", "isInterface", "()Z") => Leaf::IsInterface,
             ("java/lang/Class", "isAssignableFrom", "(Ljava/lang/Class;)Z") => Leaf::IsAssignableFrom,
             ("java/lang/ref/Reference" | "java/lang/ref/PhantomReference", "refersTo0", "(Ljava/lang/Object;)Z") => Leaf::RefersTo,
+            ("java/util/Arrays", "fill", _) => Leaf::Fill(fill_shift(desc)?),
             _ => return None,
         })
+    }
+
+    /// Writes memory (an array's elements): an effect, never removed, moved or merged.
+    pub(crate) fn writes(self) -> bool {
+        matches!(self, Leaf::Fill(_))
     }
 
     /// Which arguments must not be null (checked before the call): arrays the routine reads,
@@ -69,7 +83,7 @@ impl Leaf {
         match self {
             Leaf::Latin1Equals => &[0, 1],
             Leaf::Mismatch | Leaf::IsArray | Leaf::IsPrimitive | Leaf::IsInterface | Leaf::RefersTo => &[],
-            Leaf::HashCode | Leaf::CountPositives => &[0],
+            Leaf::HashCode | Leaf::CountPositives | Leaf::Fill(_) => &[0],
             Leaf::IsAssignableFrom => &[1],
         }
     }
@@ -300,6 +314,32 @@ extern "sysv64" fn is_assignable_from(to: Oop, from: Oop) -> i64 {
         (Some(to), Some(from)) => from.is_subtype_of(to) as i64,
         _ => (to == from) as i64,
     }
+}
+
+/// The element size (log2) of the whole-array primitive `Arrays.fill` with descriptor `desc`.
+pub(crate) fn fill_shift(desc: &str) -> Option<u8> {
+    Some(match desc {
+        "([BB)V" | "([ZZ)V" => 0,
+        "([CC)V" | "([SS)V" => 1,
+        "([II)V" | "([FF)V" => 2,
+        "([JJ)V" | "([DD)V" => 3,
+        _ => return None,
+    })
+}
+
+/// Stores the low bytes of `v` (an element's bits) into every element of primitive array `a`.
+///
+/// # Safety
+/// `a` is a live, non-null array of elements of `T`'s size.
+pub(crate) unsafe fn fill<T: Copy + TryFrom<u64> + Default>(a: Oop, v: u64) {
+    let x = T::try_from(v & (u64::MAX >> (64 - 8 * std::mem::size_of::<T>()))).unwrap_or_default();
+    obj::array_slice::<T>(a).fill(x);
+}
+
+extern "sysv64" fn fill_leaf<T: Copy + TryFrom<u64> + Default>(a: Oop, v: u64) -> i64 {
+    // SAFETY: a live primitive array of `T` (null-checked by the caller).
+    unsafe { fill::<T>(a, v) };
+    0
 }
 
 extern "sysv64" fn refers_to(r: Oop, o: Oop) -> i64 {

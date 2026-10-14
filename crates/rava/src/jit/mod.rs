@@ -34,7 +34,7 @@ mod frame_stubs;
 mod inline;
 mod inline_plan;
 mod intrinsics;
-mod leaf;
+pub(crate) mod leaf;
 mod opt;
 
 /// Indexes a newly defined class for class hierarchy analysis (`opt/cha.rs`).

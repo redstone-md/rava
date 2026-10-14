@@ -75,7 +75,10 @@ impl Intrinsic {
 
     /// Without side effects (usable inside inlined leaf bodies).
     pub(super) fn is_pure(self) -> bool {
-        !matches!(self, Intrinsic::UnsafePut(..) | Intrinsic::CompareAndSet(_) | Intrinsic::IdentityHash | Intrinsic::UnsafeGet(_, true) | Intrinsic::ArrayCopy)
+        match self {
+            Intrinsic::Leaf(l) => !l.writes(),
+            _ => !matches!(self, Intrinsic::UnsafePut(..) | Intrinsic::CompareAndSet(_) | Intrinsic::IdentityHash | Intrinsic::UnsafeGet(_, true) | Intrinsic::ArrayCopy),
+        }
     }
 }
 
