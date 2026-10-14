@@ -4,7 +4,7 @@ use super::codegen::{Arg, Gen, SlowCall};
 use super::ir::*;
 use super::regalloc::Loc;
 use crate::jit::asm::{mem, mem_idx, Alu, Cond, Shift, M, R, X};
-use crate::jit::emit_obj::{load_typed_to, normalize_into, store_typed_from};
+use crate::jit::emit_obj::{load_typed_to, normalize_reg, store_typed_from};
 use crate::jit::runtime::{self, IcCell};
 use crate::klass::Klass;
 use crate::method::Method;
@@ -76,11 +76,12 @@ impl Gen<'_> {
                 crate::jit::emit_obj::load_static_to(&mut self.a, r, bt, at);
                 self.put(v, r);
             }
+            // Through rax and r11 (`scratch.rs`).
             Inst::StoreStatic(addr, bt, x) => {
-                self.load(R::Rdx, x);
-                normalize_into(&mut self.a, bt);
-                let at = self.absolute(addr, R::Rcx);
-                self.a.store(true, at, R::Rdx);
+                self.load(R::Rax, x);
+                normalize_reg(&mut self.a, bt, R::Rax);
+                let at = self.absolute(addr, R::R11);
+                self.a.store(true, at, R::Rax);
             }
             Inst::ArrayLength(x) => {
                 let at = self.field(x, crate::heap::ARRAY_LENGTH_OFFSET as i32);

@@ -1,6 +1,6 @@
 //! Which instructions code generation may write rcx or rdx in. Both are scratch for division,
-//! variable shifts, `lcmp` and float compares, calls (and every runtime call), type checks,
-//! allocation, monitors, intrinsics and static stores; everything else uses rax and r11 only.
+//! variable shifts, calls (and every runtime call), type checks, large allocations, monitors
+//! and intrinsics; everything else uses rax and r11 only.
 //! The register allocator hands rcx and rdx to values whose whole interval avoids every
 //! instruction that may write them (`regalloc.rs`).
 
@@ -21,8 +21,8 @@ pub fn clobbers(g: &Graph, v: V) -> (bool, bool) {
             (_, BinOp::Shl | BinOp::Shr | BinOp::Ushr) if g.constant(*y).is_none() => (true, false),
             _ => NONE,
         },
-        // lcmp and float compares set rdx; lcmp also reads its first operand through rcx.
-        Inst::Compare(..) => BOTH,
+        // lcmp and float compares work through rax and r11, as do static stores.
+        Inst::Compare(..) | Inst::StoreStatic(..) => NONE,
         Inst::NullCheck(..) | Inst::ZeroCheck(..) | Inst::FlagCheck(..) | Inst::BoundsCheck(..) | Inst::RangeGuard(..) | Inst::Guard(..) => NONE,
         Inst::LoadField(..) | Inst::StoreField(..) | Inst::LoadStatic(..) | Inst::ArrayLength(_) | Inst::LoadIndexed(..) => NONE,
         // A byte or non-float element store puts the value through rdx.

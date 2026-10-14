@@ -479,11 +479,12 @@ impl Gen<'_> {
 
     /// lcmp / fcmpl / fcmpg / dcmpl / dcmpg: -1, 0 or 1.
     fn compare(&mut self, v: V, op: u8, x: V, y: V) {
+        // Through rax and r11 (`scratch.rs`).
         if op == 0x94 {
-            let rx = self.reg(x, R::Rcx);
+            let rx = self.reg(x, R::Rax);
             self.alu_val(true, Alu::Cmp, rx, y);
             self.a.setcc(Cond::G, R::Rax);
-            self.a.setcc(Cond::L, R::Rdx);
+            self.a.setcc(Cond::L, R::R11);
         } else {
             let double = op >= 0x97;
             let nan = if op == 0x95 || op == 0x97 { -1 } else { 1 };
@@ -495,7 +496,7 @@ impl Gen<'_> {
             self.a.jmp(done);
             self.a.bind(ordered);
             self.a.setcc(Cond::A, R::Rax);
-            self.a.setcc(Cond::B, R::Rdx);
+            self.a.setcc(Cond::B, R::R11);
             self.finish_compare();
             self.a.bind(done);
             return self.put(v, R::Rax);
@@ -504,10 +505,10 @@ impl Gen<'_> {
         self.put(v, R::Rax);
     }
 
-    /// rax := (al) - (dl) as 32-bit values.
+    /// rax := (al) - (r11b) as 32-bit values.
     fn finish_compare(&mut self) {
         self.a.movzx8(R::Rax, R::Rax);
-        self.a.movzx8(R::Rdx, R::Rdx);
-        self.a.alu_rr(false, Alu::Sub, R::Rax, R::Rdx);
+        self.a.movzx8(R::R11, R::R11);
+        self.a.alu_rr(false, Alu::Sub, R::Rax, R::R11);
     }
 }

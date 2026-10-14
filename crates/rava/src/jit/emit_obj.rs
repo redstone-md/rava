@@ -504,13 +504,18 @@ pub(crate) fn store_raw(a: &mut Asm, src: R, ty: BasicType, m: M) {
 
 /// Normalizes rdx to the full-slot representation of a static field of type `ty`.
 pub(super) fn normalize_into(a: &mut Asm, ty: BasicType) {
+    normalize_reg(a, ty, R::Rdx);
+}
+
+/// `normalize_into` for the value in `r`.
+pub(super) fn normalize_reg(a: &mut Asm, ty: BasicType, r: R) {
     match ty {
-        BasicType::Boolean => a.alu_ri(false, Alu::And, R::Rdx, 1),
-        BasicType::Byte => a.movsx_rr(1, R::Rdx, R::Rdx),
-        BasicType::Char => a.movzx16_rr(R::Rdx, R::Rdx),
-        BasicType::Short => a.movsx_rr(2, R::Rdx, R::Rdx),
-        BasicType::Int => a.movsxd(R::Rdx, R::Rdx),
-        BasicType::Float => a.mov_rr(false, R::Rdx, R::Rdx),
+        BasicType::Boolean => a.alu_ri(false, Alu::And, r, 1),
+        BasicType::Byte => a.movsx_rr(1, r, r),
+        BasicType::Char => a.movzx16_rr(r, r),
+        BasicType::Short => a.movsx_rr(2, r, r),
+        BasicType::Int => a.movsxd(r, r),
+        BasicType::Float => a.mov_rr(false, r, r),
         _ => {}
     }
 }
