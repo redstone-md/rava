@@ -1,9 +1,11 @@
 //! Natives of the Windows class library: files through handles (`java.io`, `WinNTFileSystem`,
-//! `sun.nio.fs.WindowsNativeDispatcher`), Winsock, processes and the platform properties.
+//! `sun.nio.fs.WindowsNativeDispatcher`), Winsock, the DNS configuration,
+//! processes and the platform properties.
 
 mod args;
 mod async_sock;
 mod awt;
+mod dns;
 mod fs;
 mod host;
 mod io;
@@ -26,6 +28,7 @@ use super::NativeRegistry;
 pub(super) fn register(r: &mut NativeRegistry) {
     async_sock::register(r);
     awt::register(r);
+    dns::register(r);
     fs::register(r);
     io::register(r);
     iocp::register(r);
