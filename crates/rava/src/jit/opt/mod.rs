@@ -80,23 +80,33 @@ pub fn everywhere() -> bool {
     mode() == "all"
 }
 
-/// Deoptimizations of one compiled version before its method is recompiled, and the
-/// recompilations before it keeps the baseline compiler's tier-2 code instead.
+/// Deoptimizations of one compiled version before its method is recompiled (for a failed
+/// speculation, and to throw), and the recompilations before it keeps the baseline compiler's
+/// tier-2 code instead. A failed speculation recompiles soon, as C2's traps invalidate their
+/// code: the trapping bytecode stops speculating (`profile::trapped`), and until then every
+/// call taking that path leaves for the interpreter for the rest of its invocation.
+const TRAPS_BEFORE_RECOMPILE: u32 = 2;
 const DEOPTS_BEFORE_RECOMPILE: u32 = 8;
-const MAX_RECOMPILES: u32 = 8;
+const MAX_RECOMPILES: u32 = 16;
 /// Recompilations after which a method is compiled without speculating on its profile. Each
 /// bytecode that trapped already stops speculating by itself (`profile::trapped`), as C2's
 /// per-bytecode trap limits do; giving up on the whole method after two recompilations left
-/// paths that were cold at the first compilations with unguarded calls and no inlining.
-pub(super) const SPECULATIVE_RECOMPILES: u32 = MAX_RECOMPILES;
+/// paths that were cold at the first compilations with unguarded calls and no inlining. A
+/// method whose speculations keep failing at new places (a renderer meeting new entity
+/// classes) goes on recompiling, as C2's (hundreds of recompilations) do, then stops
+/// speculating rather than falling back to baseline code.
+pub(super) const SPECULATIVE_RECOMPILES: u32 = 12;
 
 /// Counts a deoptimization of `m`'s optimized code. Frequent ones recompile it: constants have
 /// been resolved and profiles updated since; a method that keeps deoptimizing gets baseline
 /// code (which handles exceptions and every instruction itself).
-pub(super) fn note_deopt(m: &'static Method) {
+pub(super) fn note_deopt(m: &'static Method, trap: bool) {
     use std::sync::atomic::Ordering;
     let Some(cm) = m.compiled().filter(|c| c.tier >= 2) else { return };
-    if cm.deopts.fetch_add(1, Ordering::Relaxed) + 1 == DEOPTS_BEFORE_RECOMPILE {
+    // A trap weighs as several throws: the `TRAPS_BEFORE_RECOMPILE`th recompiles.
+    let weight = if trap { DEOPTS_BEFORE_RECOMPILE / TRAPS_BEFORE_RECOMPILE } else { 1 };
+    let before = cm.deopts.fetch_add(weight, Ordering::Relaxed);
+    if before < DEOPTS_BEFORE_RECOMPILE && before + weight >= DEOPTS_BEFORE_RECOMPILE {
         m.retire(cm);
         super::queue::submit(super::queue::Job::Recompile(m));
     }
@@ -158,11 +168,15 @@ fn verify(g: &ir::Graph, m: &'static Method, pass: &str) {
     }
 }
 
+/// Optimizing compilations started, for diagnostics (`RAVA_SAMPLE`'s CPU series).
+pub static COMPILES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 fn compile_timed(m: &'static Method, osr: Option<u32>) -> Option<CompiledMethod> {
     // Both entries (whole methods and loops entered from a running frame) pass here.
     if excluded(m) {
         return None;
     }
+    COMPILES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let log = env_once!("RAVA_OPT_LOG").is_some();
     let monitor = match (m.is_synchronized(), m.is_static()) {
         (false, _) => None,
@@ -280,7 +294,9 @@ fn compile_timed(m: &'static Method, osr: Option<u32>) -> Option<CompiledMethod>
         code_cache::perf_map(entry, code.len(), &format!("{m} [opt{}]", if osr.is_some() { " osr" } else { "" }));
     }
     if log {
-        eprintln!("[opt] {m}{tag}: {} values, {} blocks, {} spill slots -> {} bytes ({main} main)", g.values.len(), al.order.len(), al.spill_slots, code.len());
+        static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+        let at = START.get_or_init(std::time::Instant::now).elapsed().as_secs_f32();
+        eprintln!("[opt] {at:.1}s {m}{tag}: {} values, {} blocks, {} spill slots -> {} bytes ({main} main)", g.values.len(), al.order.len(), al.spill_slots, code.len());
     }
     if raw {
         let file = crate::jit::code_cache::dump_path(&format!("rava-opt-{entry:x}.bin"));

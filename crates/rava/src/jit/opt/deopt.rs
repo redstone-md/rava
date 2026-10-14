@@ -276,14 +276,14 @@ pub extern "sysv64" fn deopt(t: *mut Thread, base: *mut u64, desc: *const u8, sa
     if let Some(s) = crate::jit::stats::get() {
         s.deopts.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
-    match desc.osr {
-        Some(bci) => super::osr::note_deopt(frames[n - 1].method, bci),
-        None => super::note_deopt(frames[n - 1].method),
-    }
     let mut outcome: Result<u64, Throw> = match t.take_pending() {
         Some(e) => Err(e),
         None => Ok(0),
     };
+    match desc.osr {
+        Some(bci) => super::osr::note_deopt(frames[n - 1].method, bci),
+        None => super::note_deopt(frames[n - 1].method, outcome.is_ok()),
+    }
     if outcome.is_ok() {
         crate::jit::profile::note_trap(frames[0].method, frames[0].bci as usize);
         note_receiver(&frames[0], base);
