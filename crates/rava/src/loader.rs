@@ -373,11 +373,23 @@ fn build_vtable(klass: &'static Klass) -> Box<[&'static Method]> {
             vt.push(m);
         }
     }
-    // Default methods inherited from interfaces take slots the class does not fill.
+    // Default methods inherited from interfaces take the slots no class method fills: the
+    // maximally-specific one, which replaces a default the superclass inherited when this
+    // class adds an interface that overrides it.
     for iface in klass.all_interfaces.iter() {
         for d in iface.methods().iter().filter(|d| d.is_default_candidate()) {
-            if !vt.iter().any(|m| m.name == d.name && m.desc == d.desc) {
-                vt.push(d);
+            let slot = vt.iter().position(|m| m.name == d.name && m.desc == d.desc);
+            if slot.is_some_and(|i| !vt[i].holder.is_interface()) {
+                continue;
+            }
+            let Some(best) = crate::link::inherited_default(klass, d.name, d.desc) else { continue };
+            match slot {
+                Some(i) if !std::ptr::eq(vt[i], best) => {
+                    vt[i].mark_overridden();
+                    vt[i] = best;
+                }
+                Some(_) => {}
+                None => vt.push(best),
             }
         }
     }
