@@ -18,6 +18,7 @@ use windows_sys::Win32::System::Pipes::PeekNamedPipe;
 
 vm_field!(fd_handle, "java/io/FileDescriptor", "handle", "J");
 vm_field!(fd_int, "java/io/FileDescriptor", "fd", "I");
+vm_field!(fd_append, "java/io/FileDescriptor", "append", "Z");
 vm_field!(fis_fd, "java/io/FileInputStream", "fd", "Ljava/io/FileDescriptor;");
 vm_field!(fos_fd, "java/io/FileOutputStream", "fd", "Ljava/io/FileDescriptor;");
 vm_field!(raf_fd, "java/io/RandomAccessFile", "fd", "Ljava/io/FileDescriptor;");
@@ -52,8 +53,14 @@ fn open_into(t: &mut Thread, stream: Oop, field: u32, path: Oop, access: u32, di
         let msg = format!("{name} ({})", crate::natives::io_shared::errno_text());
         return Err(throw_new(t, "java/io/FileNotFoundException", &msg));
     }
-    // SAFETY: the stream's FileDescriptor, made by its constructor.
-    unsafe { obj::write::<i64>(obj::read_ref(stream, field), fd_handle(), h as i64) };
+    // SAFETY: the stream's FileDescriptor, made by its constructor. Its `append` is what the
+    // stream passes to each write, which then goes to the end (the JDK's `fileOpen` sets it:
+    // with write access a handle opened for appending still writes where its position is).
+    unsafe {
+        let fd = obj::read_ref(stream, field);
+        obj::write::<i64>(fd, fd_handle(), h as i64);
+        obj::write::<bool>(fd, fd_append(), access & FILE_APPEND_DATA != 0);
+    }
     ret_void()
 }
 
