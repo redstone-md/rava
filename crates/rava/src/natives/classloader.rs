@@ -21,6 +21,21 @@ const JDK_LIBRARIES: &[&str] = &[
     "splashscreen", "syslookup", "verify", "zip",
 ];
 
+/// The packages (internal form, `java/lang`) of the classes the boot loader has defined from the
+/// runtime image.
+fn boot_packages() -> std::collections::BTreeSet<String> {
+    let classes = vm().classes.read().unwrap();
+    let image = &vm().image;
+    let mut seen = std::collections::BTreeSet::new();
+    for &(loader, name) in classes.keys() {
+        let Some((package, _)) = name.as_str().rsplit_once('/') else { continue };
+        if loader == 0 && !seen.contains(package) && image.module_of_package(package).is_some() {
+            seen.insert(package.to_string());
+        }
+    }
+    seen
+}
+
 pub(super) fn register(r: &mut NativeRegistry) {
     r.add(CL, "registerNatives", "()V", |_, _| ret_void());
     r.add(
@@ -66,11 +81,22 @@ pub(super) fn register(r: &mut NativeRegistry) {
         }
     });
     r.add(CL, "retrieveDirectives", "()Ljava/lang/AssertionStatusDirectives;", retrieve_directives);
+    // The boot loader's packages, as HotSpot reports them: those it has loaded a class of,
+    // located at their module in the runtime image (`jrt:/java.base`). `Class.getPackage` of a
+    // JDK class and `Package.getPackages` are built on them.
     r.add("jdk/internal/loader/BootLoader", "getSystemPackageNames", "()[Ljava/lang/String;", |t, _| {
-        ret_ref(super::string_array(t, &[])?)
+        let names: Vec<Option<String>> = boot_packages().into_iter().map(Some).collect();
+        ret_ref(super::string_array(t, &names)?)
     });
-    r.add("jdk/internal/loader/BootLoader", "getSystemPackageLocation", "(Ljava/lang/String;)Ljava/lang/String;", |_, _| {
-        ret_ref(std::ptr::null_mut())
+    r.add("jdk/internal/loader/BootLoader", "getSystemPackageLocation", "(Ljava/lang/String;)Ljava/lang/String;", |t, a| {
+        let name = rt::java_string_to_rust(a[0] as Oop);
+        if !boot_packages().contains(&name) {
+            return ret_ref(std::ptr::null_mut());
+        }
+        match vm().image.module_of_package(&name) {
+            Some(module) => ret_ref(rt::new_string(t, &format!("jrt:/{module}"))?),
+            None => ret_ref(std::ptr::null_mut()),
+        }
     });
     r.add("jdk/internal/loader/NativeLibraries", "findBuiltinLib", "(Ljava/lang/String;)Ljava/lang/String;", |_, a| {
         // The JDK's own libraries are built into the VM (rava implements their natives). Any
