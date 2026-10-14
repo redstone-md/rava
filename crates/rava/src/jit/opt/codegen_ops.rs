@@ -165,7 +165,17 @@ impl Gen<'_> {
         let r = self.out(v);
         if let (BinOp::Mul, Some(c)) = (op, self.g.constant(y).and_then(|c| i32::try_from(c).ok())) {
             let x = self.reg(x, r);
-            self.a.imul_rri(w, r, x, c);
+            match c {
+                // A power of two is a shift; 3, 5 and 9 one `lea` (a cycle each, not three).
+                2.. if c.count_ones() == 1 => {
+                    if x != r {
+                        self.a.mov_rr(w, r, x);
+                    }
+                    self.a.shift_ri(w, crate::jit::asm::Shift::Shl, r, c.trailing_zeros() as u8);
+                }
+                3 | 5 | 9 => self.a.lea_w(w, r, crate::jit::asm::mem_idx(x, x, (c - 1) as u8, 0)),
+                _ => self.a.imul_rri(w, r, x, c),
+            }
             return self.put(v, r);
         }
         // The register allocator gave a commutative result its second operand's register
