@@ -11,6 +11,13 @@ use std::sync::Mutex;
 
 const CHUNK: usize = 32 << 20;
 
+/// Bytes of low memory taken so far (memlog).
+static RESERVED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+pub fn reserved_bytes() -> usize {
+    RESERVED.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 /// `size` bytes aligned to `align` in low memory, or None (none left, or too large).
 fn reserve(size: usize, align: usize) -> Option<usize> {
     static ARENA: Mutex<(usize, usize)> = Mutex::new((0, 0));
@@ -22,6 +29,7 @@ fn reserve(size: usize, align: usize) -> Option<usize> {
     let mut at = arena.0.next_multiple_of(align);
     if arena.0 == 0 || at + size > arena.1 {
         let p = crate::os::reserve_low(CHUNK)?;
+        RESERVED.fetch_add(CHUNK, std::sync::atomic::Ordering::Relaxed);
         crate::os::huge_pages(p, CHUNK);
         *arena = (p, p + CHUNK);
         at = arena.0;

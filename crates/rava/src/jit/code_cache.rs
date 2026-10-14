@@ -52,6 +52,12 @@ pub fn contains(pc: usize) -> bool {
     base != 0 && (base..base + RESERVE).contains(&pc)
 }
 
+/// Bytes of compiled code so far (`memlog`).
+pub fn used_bytes() -> usize {
+    let r = region().lock().unwrap();
+    r.top - r.base
+}
+
 /// Whether code may call rava's functions with 32-bit displacements.
 pub fn near() -> bool {
     region().lock().unwrap().near

@@ -348,6 +348,20 @@ pub fn release_growing(p: usize, len: usize) {
     release(p, len);
 }
 
+/// The process's resident and committed (virtual, on Linux) bytes; zeros where unknown.
+pub fn process_memory() -> (usize, usize) {
+    let page = 4096;
+    std::fs::read_to_string("/proc/self/statm")
+        .ok()
+        .and_then(|s| {
+            let mut it = s.split_whitespace().map(|v| v.parse::<usize>().ok());
+            let size = it.next()??;
+            let resident = it.next()??;
+            Some((resident * page, size * page))
+        })
+        .unwrap_or((0, 0))
+}
+
 /// Makes `file` the process's standard error, for the VM's diagnostics and Java's `System.err`.
 pub fn redirect_stderr(file: std::fs::File) -> bool {
     use std::os::fd::AsRawFd;

@@ -74,6 +74,7 @@ fn run(mut line: CommandLine, java_home: PathBuf) -> ExitCode {
         Err(e) => return fail(LaunchError::Vm(format!("Could not reserve space for the heap: {e}"))),
     };
     crate::patch::discover();
+    crate::memlog::start();
     // Crashes are reported from the start, also those before any optimized code exists.
     crate::jit::fault::install();
     let mut t = Thread::new();

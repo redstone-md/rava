@@ -1,0 +1,71 @@
+//! Where the process's memory goes. The VM's own allocations (class metadata, compiler data,
+//! JNI buffers...) are counted by the global allocator wrapper `Counting`; `RAVA_MEM_LOG=<seconds>`
+//! prints a line at that interval: resident and committed memory, the heap, the VM's
+//! allocations, the low arena (classes, methods) and the code cache.
+
+use std::alloc::{GlobalAlloc, Layout};
+use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering::Relaxed};
+
+/// Bytes the VM holds from its allocator, counted only while RAVA_MEM_LOG reports: one
+/// counter every thread updates on each allocation cost a Paper start 30% (7.7 -> 10.0 s).
+static ALLOCATED: AtomicIsize = AtomicIsize::new(0);
+static COUNTING: AtomicBool = AtomicBool::new(false);
+
+/// A global allocator counting the bytes held through `A`.
+pub struct Counting<A>(pub A);
+
+// SAFETY: forwards every call to `A`, which upholds the contract.
+unsafe impl<A: GlobalAlloc> GlobalAlloc for Counting<A> {
+    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        let p = self.0.alloc(layout);
+        if !p.is_null() && COUNTING.load(Relaxed) {
+            ALLOCATED.fetch_add(layout.size() as isize, Relaxed);
+        }
+        p
+    }
+    unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
+        let p = self.0.alloc_zeroed(layout);
+        if !p.is_null() && COUNTING.load(Relaxed) {
+            ALLOCATED.fetch_add(layout.size() as isize, Relaxed);
+        }
+        p
+    }
+    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        self.0.dealloc(ptr, layout);
+        if COUNTING.load(Relaxed) {
+            ALLOCATED.fetch_sub(layout.size() as isize, Relaxed);
+        }
+    }
+    unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+        let p = self.0.realloc(ptr, layout, new_size);
+        if !p.is_null() && COUNTING.load(Relaxed) {
+            ALLOCATED.fetch_add(new_size as isize - layout.size() as isize, Relaxed);
+        }
+        p
+    }
+}
+
+/// Starts the report thread when `RAVA_MEM_LOG` asks for one.
+pub fn start() {
+    let Some(secs) = std::env::var("RAVA_MEM_LOG").ok().and_then(|v| v.parse::<u64>().ok()).filter(|&s| s > 0) else { return };
+    // From here on (what the launcher allocated before is not counted, a few megabytes).
+    COUNTING.store(true, Relaxed);
+    let _ = std::thread::Builder::new().name("rava-mem-log".into()).spawn(move || loop {
+        std::thread::sleep(std::time::Duration::from_secs(secs));
+        let mb = |b: usize| b >> 20;
+        let (rss, committed) = crate::os::process_memory();
+        let vm = crate::vm::vm();
+        eprintln!(
+            "[mem] resident {} MiB, committed {} MiB | heap {} MiB (live after last gc {} MiB) | vm allocations {} MiB | low arena {} MiB | code {} MiB | {} classes, {} threads",
+            mb(rss),
+            mb(committed),
+            mb(vm.heap.used_bytes()),
+            mb(vm.heap.live_after_gc()),
+            mb(ALLOCATED.load(Relaxed).max(0) as usize),
+            mb(crate::low::reserved_bytes()),
+            mb(crate::jit::code_cache::used_bytes()),
+            vm.loaded_class_count(),
+            crate::gc::safepoint::all_threads().len(),
+        );
+    });
+}
