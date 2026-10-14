@@ -121,14 +121,19 @@ impl Gen<'_> {
             // A null base makes the offset an absolute address; an array base, an element's.
             Intrinsic::UnsafeGet(ty, _) => {
                 let heap = self.arrays.contains(&self.g.resolve(args[1]));
-                let at = self.unsafe_operand(args[1], args[2], &args[3..], R::Rax, R::Rcx);
+                // A primitive leaves rcx to the register allocator (`scratch.rs`).
+                let ro = if ty == BasicType::Reference { R::Rcx } else { R::R11 };
+                let at = self.unsafe_operand(args[1], args[2], &args[3..], R::Rax, ro);
                 let r = self.out(v);
                 crate::jit::emit_obj::unsafe_load(&mut self.a, r, ty, at, heap);
                 self.put(v, r);
             }
             Intrinsic::UnsafePut(ty, volatile) => {
                 let heap = self.arrays.contains(&self.g.resolve(args[1]));
-                let at = self.unsafe_operand(args[1], args[2], &args[4..], R::Rax, R::Rcx);
+                // A reference's barrier needs r11; a primitive leaves rcx to the register
+                // allocator (`scratch.rs`).
+                let ro = if ty == BasicType::Reference { R::Rcx } else { R::R11 };
+                let at = self.unsafe_operand(args[1], args[2], &args[4..], R::Rax, ro);
                 let x = self.reg(args[3], R::Rdx);
                 crate::jit::emit_obj::unsafe_store(&mut self.a, x, ty, at, heap);
                 if volatile {

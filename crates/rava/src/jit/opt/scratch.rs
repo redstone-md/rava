@@ -29,6 +29,10 @@ pub fn clobbers(g: &Graph, v: V) -> (bool, bool) {
         Inst::StoreIndexed(_, _, BasicType::Float | BasicType::Double, _) => NONE,
         Inst::StoreIndexed(..) => (false, true),
         Inst::Intrinsic(crate::jit::intrinsics::Intrinsic::BitCount(..), ..) => NONE,
+        // A primitive Unsafe access addresses through rax and r11; a store's value goes
+        // through rdx.
+        Inst::Intrinsic(crate::jit::intrinsics::Intrinsic::UnsafeGet(t, _), ..) if *t != BasicType::Reference => NONE,
+        Inst::Intrinsic(crate::jit::intrinsics::Intrinsic::UnsafePut(t, _), ..) if *t != BasicType::Reference => (false, true),
         _ => BOTH,
     }
 }
