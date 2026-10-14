@@ -122,8 +122,15 @@ impl Emitter {
         }
         self.a.bind(other);
         self.a.alu_mi(false, super::asm::Alu::Add, mem(R::Rax, runtime::IcCell::others_offset()), 1);
+        // Past two classes, one call in `RESAMPLE` still reports its receiver, so a class that
+        // became frequent after the recorded ones went quiet can take a slot.
+        let note = self.a.new_label();
         self.a.cmp8_mi(mem(R::Rax, runtime::IcCell::more_offset()), 0);
+        self.a.jcc(Cond::E, note);
+        self.a.load(false, R::Rsi, mem(R::Rax, runtime::IcCell::others_offset()));
+        self.a.alu_ri(false, super::asm::Alu::And, R::Rsi, runtime::RESAMPLE as i32 - 1);
         self.a.jcc(Cond::Ne, done);
+        self.a.bind(note);
         self.a.push(R::Rcx);
         self.a.push(R::Rcx);
         self.a.mov_rr(true, R::Rsi, R::Rax);

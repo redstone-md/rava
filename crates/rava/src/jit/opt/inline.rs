@@ -123,7 +123,7 @@ impl Builder {
             if crate::jit::inline_plan::log_enabled() {
                 let indent = "  ".repeat(self.chain.len());
                 let why = if ok { String::new() } else { format!(" ({})", crate::jit::inline_plan::refusal(target, &self.chain, 3, self.spent, freq)) };
-                crate::jit::inline_plan::log(format_args!("[opt-inline] {indent}{} @{} (freq {freq:.3}) -> {target} {}{why}", self.sc.m, s.bci, if ok { "inlined" } else { "call" }));
+                crate::jit::inline_plan::log(format_args!("[opt-inline] {indent}{} @{} (freq {freq:.3}) -> {target} {}{why} [{}]", self.sc.m, s.bci, if ok { "inlined" } else { "call" }, crate::jit::profile::describe(self.sc.m, s.bci as usize)));
             }
             if !ok {
                 // A receiver class the profile names, whose target is not inlined: tested

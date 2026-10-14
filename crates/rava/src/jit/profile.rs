@@ -115,7 +115,9 @@ pub(crate) fn describe(m: &'static Method, bci: usize) -> String {
     match cell.receivers() {
         None => {
             let (a, b, o) = cell.shares();
-            format!("megamorphic {a}/{b}/{o}")
+            // SAFETY: recorded classes are immortal.
+            let names: Vec<String> = cell.recorded().into_iter().map(|k| unsafe { &*(k as *const Klass) }.name.to_string()).collect();
+            format!("megamorphic {a}/{b}/{o} {names:?}")
         }
         Some(v) => format!("{} receivers", v.len()),
     }

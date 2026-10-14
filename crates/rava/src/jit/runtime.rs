@@ -94,6 +94,8 @@ pub struct IcCell {
 }
 
 pub(super) const IC_MAX_UPDATES: u32 = 4;
+/// One call in this many with an unrecorded receiver at a megamorphic site reports it.
+pub(super) const RESAMPLE: u32 = 128;
 /// Counted calls before a site's major receiver is trusted.
 const MAJOR_MIN_CALLS: u64 = 1000;
 /// Share of a megamorphic site's calls a recorded receiver class needs to be checked for first.
@@ -143,6 +145,35 @@ impl IcCell {
             }
         }
         self.more.store(true, Ordering::Relaxed);
+    }
+
+    /// `note` for a receiver first-tier code reports: past two classes, a sample (one call in
+    /// `RESAMPLE`) that may replace a recorded class.
+    fn note_sampled(&self, k: usize) {
+        use std::sync::atomic::Ordering;
+        if self.more.load(Ordering::Relaxed) && !self.seen.iter().any(|s| s.load(Ordering::Relaxed) == k) {
+            self.resample(k);
+        } else {
+            self.note(k);
+        }
+    }
+
+    /// A class reported past the two recorded ones (one call in `RESAMPLE`): it takes the slot
+    /// of a recorded class that has since gone quiet, with the calls counted as others, so the
+    /// profile follows the code now running rather than the first classes the site ever saw
+    /// (startup), as HotSpot's profiles, which begin only once a method is warm, do.
+    fn resample(&self, k: usize) {
+        use std::sync::atomic::Ordering;
+        let c = [self.counts[0].load(Ordering::Relaxed), self.counts[1].load(Ordering::Relaxed)];
+        let others = self.others.load(Ordering::Relaxed);
+        let i = if c[0] <= c[1] { 0 } else { 1 };
+        if (c[i] as u64) * 8 >= others as u64 {
+            return;
+        }
+        // The sample stands for the calls counted as others since the last one.
+        self.seen[i].store(k, Ordering::Relaxed);
+        self.counts[i].store(others, Ordering::Relaxed);
+        self.others.store(0, Ordering::Relaxed);
     }
 
     /// The class of at least 90% of the receivers counted (C2's TypeProfileMajorReceiverPercent),
@@ -251,7 +282,7 @@ pub extern "sysv64" fn identity_hash(o: crate::heap::Oop) -> u64 {
 /// A receiver class new to a virtual call's profile (first-tier code checks the known ones).
 pub extern "sysv64" fn note_receiver(k: *const Klass, cell: *const IcCell) {
     // SAFETY: a leaked profile cell.
-    unsafe { &*cell }.note(k as usize);
+    unsafe { &*cell }.note_sampled(k as usize);
 }
 
 /// A one-entry type-check cache: the last class that passed `subtype` against `target`.
