@@ -195,6 +195,22 @@ impl Builder {
                     self.goto(handler);
                     return Some(false);
                 }
+                // An inlined body whose call the caller's handler covers leaves for that handler
+                // (a synchronized one would have to release its monitor first: it deoptimizes).
+                if let (Some((exit, _, catch)), None) = (self.sc.catch_out, self.sc.lock) {
+                    let s = self.state();
+                    let exc = self.pop();
+                    self.null_check(exc, s.clone());
+                    if let Some(k) = catch.filter(|k| !self.exact_class(exc).is_some_and(|c| c.is_subtype_of(k))) {
+                        let is = self.add(Inst::InstanceOf(exc, k), Ty::I);
+                        let one = self.konst(Ty::I, 1);
+                        self.add(Inst::Guard(Cmp::Eq, Ty::I, is, one, s), Ty::I);
+                    }
+                    self.g.blocks[self.cur as usize].term = Term::Goto(exit);
+                    self.g.blocks[exit as usize].preds.push(self.cur);
+                    self.sc.catch_exits.push((self.cur, exc));
+                    return Some(false);
+                }
                 self.deopt();
                 return Some(false);
             }

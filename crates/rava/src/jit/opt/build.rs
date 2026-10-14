@@ -1,8 +1,9 @@
 //! Bytecode to SSA by abstract interpretation over basic blocks (C1's graph builder): the
 //! operand stack and locals hold values; blocks reached from several places get a phi per live
 //! slot, created on first entry and completed as the other predecessors are built. Exception
-//! handlers are compiled only for an `athrow` the same method catches further on (`throw_to`);
-//! any other exception leaves compiled code through deoptimization.
+//! handlers are compiled only for an `athrow` the same method catches further on, or its
+//! caller at the call it was inlined at (`throw_to`); any other exception leaves compiled code
+//! through deoptimization.
 //!
 //! Callees are inlined into the same graph (`inline.rs`): each method being built is a `Scope`,
 //! and an inlined scope's returns jump to a continuation block in its caller.
@@ -26,7 +27,14 @@ pub(super) struct Scope {
     /// For each `athrow` a handler of this method after it covers: that handler and the class
     /// it catches (None: any). The throw jumps there once the exception is an instance; else it
     /// deoptimizes, and the interpreter looks for the handler.
+    /// Also for each call to a method that throws itself (`athrow` in its own bytecode), which
+    /// an inlined body may leave by its exceptional exit (`catch_out`).
     pub throw_to: HashMap<usize, (usize, Option<&'static crate::klass::Klass>)>,
+    /// For an inlined scope whose call its caller's handler covers: the caller's block that
+    /// takes the exception thrown (`catch_exits`), and that handler's bci and class.
+    pub catch_out: Option<(B, usize, Option<&'static crate::klass::Klass>)>,
+    /// The paths that leave this inlined scope by `catch_out`, with the exception.
+    pub catch_exits: Vec<(B, V)>,
     /// Conditional branches with a direction left to the interpreter (true: the jump), decided
     /// once per scope as its blocks are made, since profiles change while it compiles.
     pub pruned: HashMap<usize, bool>,
@@ -87,6 +95,8 @@ impl Scope {
             an,
             throws: crate::jit::analysis::throw_paths(info.code),
             throw_to: HashMap::new(),
+            catch_out: None,
+            catch_exits: Vec::new(),
             pruned: HashMap::new(),
             unreached: Default::default(),
             blocks: HashMap::new(),
@@ -322,7 +332,19 @@ impl Builder {
         // its own rethrow would be a loop) and catches any exception or a resolved class.
         let mut pc = 0;
         while pc < sc.code.len() {
-            if sc.code[pc] == 0xbf && sc.an.depth[pc].is_some() {
+            let throws_itself = |code: &[u8]| {
+                let mut at = 0;
+                while at < code.len() {
+                    if code[at] == 0xbf {
+                        return true;
+                    }
+                    at += insn_len(code, at);
+                }
+                false
+            };
+            let call_throws = matches!(sc.code[pc], 0xb6 | 0xb7 | 0xb8)
+                && matches!(sc.m.holder.peek_resolved(u16::from_be_bytes([sc.code[pc + 1], sc.code[pc + 2]])), Some(crate::link::Resolved::Method(t)) if t.code.is_some_and(|c| throws_itself(c.code)));
+            if (sc.code[pc] == 0xbf || call_throws) && sc.an.depth[pc].is_some() {
                 if let Some(h) = table.iter().find(|h| (h.start as usize..h.end as usize).contains(&pc)) {
                     let catch = match h.catch_type {
                         0 => Some(None),
@@ -359,7 +381,10 @@ impl Builder {
             let len = insn_len(sc.code, pc);
             if sc.an.depth[pc].is_some() && live[pc] {
                 let mut succ = successors(sc.code, pc, len);
-                succ.extend(sc.throw_to.get(&pc).map(|t| t.0));
+                // A call's inlined bodies may each leave by an exception: never fewer than two
+                // edges, so the handler merges what arrives.
+                let count = if sc.code[pc] == 0xbf { 1 } else { 2 };
+                succ.extend(sc.throw_to.get(&pc).into_iter().flat_map(|t| std::iter::repeat(t.0).take(count)));
                 // A switch makes one edge per distinct target (`build_ops::switch`).
                 if matches!(sc.code[pc], 0xaa | 0xab) {
                     succ.sort_unstable();

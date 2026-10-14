@@ -467,6 +467,11 @@ impl Builder {
             slot += if self.g.ty(a).wide() { 2 } else { 1 };
         }
         sc.cont = Some(k);
+        // A throw the body does not catch itself goes to the caller's handler of this call.
+        let caught = self.sc.throw_to.get(&(s.bci as usize)).copied().filter(|_| self.sc.code[s.bci as usize] != 0xbf);
+        if let Some((handler, catch)) = caught {
+            sc.catch_out = Some((self.g.new_block(-1), handler, catch));
+        }
         // A synchronized method takes its monitor (the receiver, already null-checked, or the
         // class's mirror) before its body, at the call; each return releases it, and a
         // deoptimization inside releases it once the interpreter finishes the method (`deopt.rs`).
@@ -483,7 +488,40 @@ impl Builder {
         let ok = self.build_scope();
         let callee = std::mem::replace(&mut self.sc, caller);
         self.chain.pop();
-        ok.map(|()| callee.returns)
+        ok?;
+        if let (Some((exit, handler, _)), false) = (callee.catch_out, callee.catch_exits.is_empty()) {
+            self.catch_from_body(exit, handler, &callee.catch_exits, s.bci as usize);
+        }
+        Some(callee.returns)
+    }
+
+    /// The caller's side of an inlined body's exceptional exits: block `exit` merges the
+    /// exceptions and jumps to the caller's `handler` with the caller's locals at the call and
+    /// the exception alone on its stack. The current block and stack are left as they were.
+    fn catch_from_body(&mut self, exit: B, handler: usize, exits: &[(B, V)], bci: usize) {
+        let (cur, stack, facts) = (self.cur, self.sc.stack.clone(), self.facts.clone());
+        // The current block's caches stay its own (the exit's path knows other things).
+        let caches = self.take_caches();
+        self.start_block(exit);
+        let exc = match exits {
+            [(_, v)] => *v,
+            _ => {
+                let p = self.add(Inst::Phi(exits.iter().map(|e| e.1).collect()), Ty::A);
+                self.complete_phis.insert(p);
+                p
+            }
+        };
+        self.sc.stack.clear();
+        self.push(exc);
+        self.facts.push(exc);
+        self.sc.bci = bci;
+        self.goto(handler);
+        let _ = self.take_caches();
+        self.exits.remove(&cur);
+        self.cur = cur;
+        self.sc.stack = stack;
+        self.facts = facts;
+        self.set_caches(caches);
     }
 
     /// Ends an inlined scope's path with a return of `v`.
