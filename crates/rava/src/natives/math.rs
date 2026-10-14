@@ -41,7 +41,24 @@ fn body<const F: usize>(_: &mut Thread, a: &[u64]) -> JResult<u64> {
     Ok(FNS[F](a[0]))
 }
 
+/// `Math.fma(double, double, double)`: the exact `a * b + c` rounded once, as the processor's
+/// fused multiply-add computes it. The bytecode computes it with `BigDecimal` (HotSpot never runs
+/// it: the method is an intrinsic), microseconds a call: JOML multiplies matrices with it, so a
+/// modded client's render thread spent a tenth of its time there.
+fn fma_d(_: &mut Thread, a: &[u64]) -> JResult<u64> {
+    let (x, y, z) = (f64::from_bits(a[0]), f64::from_bits(a[2]), f64::from_bits(a[4]));
+    Ok(x.mul_add(y, z).to_bits())
+}
+
+/// `Math.fma(float, float, float)`, the same in single precision.
+fn fma_f(_: &mut Thread, a: &[u64]) -> JResult<u64> {
+    let f = |v: u64| f32::from_bits(v as u32);
+    Ok(f(a[0]).mul_add(f(a[1]), f(a[2])).to_bits() as u64)
+}
+
 pub(super) fn register(r: &mut NativeRegistry) {
+    r.add_stub("java/lang/Math", "fma", "(DDD)D", fma_d);
+    r.add_stub("java/lang/Math", "fma", "(FFF)F", fma_f);
     type Stub = fn(&mut Thread, &[u64]) -> JResult<u64>;
     let bodies: [Stub; 5] = [body::<0>, body::<1>, body::<2>, body::<3>, body::<4>];
     for (name, f) in NAMES.iter().zip(bodies).filter(|(n, _)| index(n).is_some()) {
