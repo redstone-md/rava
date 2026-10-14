@@ -94,6 +94,14 @@ impl Builder {
                 }
             }
         }
+        // The Unsafe instance of an access is not read (a constant, `theUnsafe`): a small
+        // constant stands for it, so no register keeps its address through the code.
+        let mut args = args;
+        if matches!(k, crate::jit::intrinsics::Intrinsic::UnsafeGet(..) | crate::jit::intrinsics::Intrinsic::UnsafePut(..) | crate::jit::intrinsics::Intrinsic::CompareAndSet(_))
+            && self.g.constant_value(args[0]).is_some_and(|c| c != 0)
+        {
+            args[0] = self.konst(Ty::A, 0);
+        }
         self.add(Inst::Intrinsic(k, args, s), ty)
     }
 

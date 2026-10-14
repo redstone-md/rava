@@ -129,8 +129,8 @@ impl Gen<'_> {
             Intrinsic::UnsafePut(ty, volatile) => {
                 let heap = self.arrays.contains(&self.g.resolve(args[1]));
                 let at = self.unsafe_operand(args[1], args[2], &args[4..], R::Rax, R::Rcx);
-                self.load(R::Rdx, args[3]);
-                crate::jit::emit_obj::unsafe_store(&mut self.a, R::Rdx, ty, at, heap);
+                let x = self.reg(args[3], R::Rdx);
+                crate::jit::emit_obj::unsafe_store(&mut self.a, x, ty, at, heap);
                 if volatile {
                     self.a.storeload();
                 }
@@ -212,10 +212,26 @@ impl Gen<'_> {
     /// (a displacement when constant, else in its register or `ro`), or with a folded scale and
     /// displacement (`algebra::fold_unsafe_addresses`), plus index `off` scaled.
     fn unsafe_operand(&mut self, base: V, off: V, folded: &[V], rb: R, ro: R) -> crate::jit::asm::M {
-        let b = self.reg(base, rb);
         let k = |this: &Self, x: V| this.g.constant(this.g.resolve(x));
+        // A null base (off-heap memory, lwjgl's `memGetInt`): the offset alone is the address.
+        if self.g.constant_value(base) == Some(0) && k(self, off).is_none() {
+            let o = self.reg(off, ro);
+            match *folded {
+                [s, d] if k(self, s) == Some(1) => return mem(o, k(self, d).expect("a folded constant") as i32),
+                [] => return mem(o, 0),
+                _ => {}
+            }
+        }
+        let b = self.reg(base, rb);
         if let (None, Some(c)) = (folded.first(), k(self, off).and_then(|c| i32::try_from(c).ok())) {
             return mem(b, c);
+        }
+        // A constant index (an unrolled copy): one displacement.
+        if let (&[s, d], Some(c)) = (folded, k(self, off)) {
+            let at = k(self, s).zip(k(self, d)).and_then(|(s, d)| c.checked_mul(s)?.checked_add(d)).and_then(|x| i32::try_from(x).ok());
+            if let Some(at) = at {
+                return mem(b, at);
+            }
         }
         let o = self.reg(off, ro);
         match *folded {

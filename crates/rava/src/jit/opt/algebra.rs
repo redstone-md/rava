@@ -196,7 +196,8 @@ fn length_of(g: &Graph, a: V) -> Option<Len> {
 
 /// Unsafe accesses at `base + ((long) i << k) + c` (an array element, as `ConcurrentHashMap`'s
 /// `tabAt` reads one) take `i`, `1 << k` and `c` as their last three operands, for one scaled
-/// address (`[base + i * 2^k + c]`) instead of a shift and an add.
+/// address (`[base + i * 2^k + c]`) instead of a shift and an add. A primitive access with a
+/// null base (off-heap memory) at `a + (i << k)` takes `a` as its base.
 fn fold_unsafe_addresses(g: &mut Graph) {
     use crate::jit::intrinsics::Intrinsic;
     for b in 0..g.blocks.len() {
@@ -217,7 +218,16 @@ fn fold_unsafe_addresses(g: &mut Graph) {
             if args.len() != arity {
                 continue;
             }
-            let Some((x, scale, disp)) = scaled(g, g.resolve(args[2])) else { continue };
+            let (base, off) = (args[1], g.resolve(args[2]));
+            // A null base (off-heap memory) with an offset `a + (x << k)`: `a` is the base.
+            let primitive = !matches!(k, Intrinsic::UnsafeGet(crate::types::BasicType::Reference, _) | Intrinsic::UnsafePut(crate::types::BasicType::Reference, _) | Intrinsic::CompareAndSet(_));
+            let (x, scale, disp, new_base) = match scaled(g, off) {
+                Some((x, scale, disp)) => (x, scale, disp, None),
+                None => match based(g, off).filter(|_| primitive && g.constant_value(base) == Some(0)) {
+                    Some((a, x, scale)) => (x, scale, 0, Some(a)),
+                    None => continue,
+                },
+            };
             let (s, d) = (g.add(b as B, Inst::Const(scale), Ty::J), g.add(b as B, Inst::Const(disp), Ty::J));
             // The constants go before the access.
             let blk = &mut g.blocks[b].insts;
@@ -225,6 +235,9 @@ fn fold_unsafe_addresses(g: &mut Graph) {
             blk.splice(i - 1..i - 1, [s, d]);
             i += 2;
             if let Inst::Intrinsic(_, args, _) = &mut g.values[v as usize].inst {
+                if let Some(a) = new_base {
+                    args[1] = a;
+                }
                 args[2] = x;
                 args.extend([s, d]);
             }
@@ -232,7 +245,8 @@ fn fold_unsafe_addresses(g: &mut Graph) {
     }
 }
 
-/// `(x, 1 << k, c)` for an offset `(x << k) + c` with `k` up to 3 and `c` an `i32`.
+/// `(x, 1 << k, c)` for an offset `(x << k) + c` with `k` up to 3 and `c` an `i32` (`x + c`
+/// with a scale of 1).
 fn scaled(g: &Graph, off: V) -> Option<(V, i64, i64)> {
     let Inst::Bin(BinOp::Add, a, b) = *g.inst(off) else { return None };
     let (a, b) = (g.resolve(a), g.resolve(b));
@@ -242,9 +256,33 @@ fn scaled(g: &Graph, off: V) -> Option<(V, i64, i64)> {
         _ => return None,
     };
     i32::try_from(c).ok()?;
-    let Inst::Bin(BinOp::Shl, x, k) = *g.inst(shifted) else { return None };
+    if g.ty(shifted) != Ty::J {
+        return None;
+    }
+    let (x, s) = shift_of(g, shifted).unwrap_or((shifted, 1));
+    Some((x, s, c))
+}
+
+/// `(a, x, 1 << k)` for an offset `a + (x << k)` with `k` up to 3 (`a + x` with a scale of 1),
+/// neither a constant: an absolute address with a base register.
+fn based(g: &Graph, off: V) -> Option<(V, V, i64)> {
+    let Inst::Bin(BinOp::Add, a, b) = *g.inst(off) else { return None };
+    let (a, b) = (g.resolve(a), g.resolve(b));
+    if g.ty(off) != Ty::J || g.constant(a).is_some() || g.constant(b).is_some() {
+        return None;
+    }
+    match (shift_of(g, a), shift_of(g, b)) {
+        (_, Some((x, s))) => Some((a, x, s)),
+        (Some((x, s)), None) => Some((b, x, s)),
+        (None, None) => Some((a, b, 1)),
+    }
+}
+
+/// `(x, 1 << k)` for a long `x << k` with `k` up to 3.
+fn shift_of(g: &Graph, v: V) -> Option<(V, i64)> {
+    let Inst::Bin(BinOp::Shl, x, k) = *g.inst(v) else { return None };
     let k = g.constant(g.resolve(k)).filter(|k| (0..=3).contains(k))?;
-    (g.ty(shifted) == Ty::J).then(|| (g.resolve(x), 1 << k, c))
+    (g.ty(v) == Ty::J).then(|| (g.resolve(x), 1 << k))
 }
 
 /// The operand `a op b` equals, when the other is an identity constant of `op`.
