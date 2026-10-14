@@ -126,6 +126,11 @@ pub(super) fn register(r: &mut NativeRegistry) {
     });
     r.add("java/security/AccessController", "ensureMaterializedForStackWalk", "(Ljava/lang/Object;)V", |_, _| ret_void());
     r.add("jdk/internal/misc/ScopedMemoryAccess", "registerNatives", "()V", |_, _| ret_void());
+    // Closing a shared arena (`Arena.ofShared().close()`). HotSpot first checks, at a
+    // safepoint, that no thread is inside an access to the session's memory and refuses the
+    // close (false) if one is. rava does not track those accesses, so it allows the close, as
+    // HotSpot does for every program that does not race closing against accessing.
+    r.add("jdk/internal/misc/ScopedMemoryAccess", "closeScope0", "(Ljdk/internal/foreign/MemorySessionImpl;)Z", |_, _| ret_bool(true));
     #[cfg(unix)]
     r.add("java/lang/ProcessEnvironment", "environ", "()[[B", environ);
     r.add("java/util/TimeZone", "getSystemTimeZoneID", "(Ljava/lang/String;)Ljava/lang/String;", |t, _| {
