@@ -34,6 +34,7 @@ pub(crate) mod props;
 pub(crate) mod reflect;
 mod records;
 mod reflect_class;
+mod serial;
 mod stackwalk;
 pub(crate) mod thread;
 pub(crate) mod unsafe_mem;
@@ -94,6 +95,7 @@ impl NativeRegistry {
         classloader::register(&mut r);
         reflect_class::register(&mut r);
         records::register(&mut r);
+        serial::register(&mut r);
         mh::register(&mut r);
         array::register(&mut r);
         #[cfg(unix)]
