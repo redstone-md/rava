@@ -259,15 +259,38 @@ pub fn lookup_method(owner: &'static Klass, name: Symbol, desc: Symbol) -> Optio
     if let Some(m) = signature_polymorphic(owner, name) {
         return Some(m);
     }
-    let candidates = owner.all_interfaces.iter().filter_map(|i| i.declared_method(name, desc));
-    let mut abstract_hit = None;
-    for m in candidates.filter(|m| !m.is_static() && !m.is_private()) {
-        if !m.is_abstract() {
-            return Some(m);
-        }
-        abstract_hit.get_or_insert(m);
+    let maximal = maximally_specific(owner, name, desc);
+    let mut defaults = maximal.iter().filter(|m| !m.is_abstract());
+    match (defaults.next(), defaults.next()) {
+        (Some(&only), None) => Some(only),
+        // No single default: any of them (JVMS leaves the choice open), an abstract one first.
+        _ => maximal.iter().find(|m| m.is_abstract()).or(maximal.first()).copied(),
     }
-    abstract_hit
+}
+
+/// The maximally-specific superinterface methods of `k` for a name and descriptor (JVMS
+/// 5.4.3.3): those declared (non-static, non-private) in an interface of `k` that no other
+/// declaring interface extends. A subinterface's redeclaration, abstract or default, hides
+/// what it overrides.
+fn maximally_specific(k: &'static Klass, name: Symbol, desc: Symbol) -> Vec<&'static Method> {
+    let declared: Vec<&'static Method> =
+        k.all_interfaces.iter().filter_map(|i| i.declared_method(name, desc)).filter(|m| !m.is_static() && !m.is_private()).collect();
+    declared
+        .iter()
+        .filter(|m| !declared.iter().any(|o| !std::ptr::eq(o.holder, m.holder) && o.holder.is_subtype_of(m.holder)))
+        .copied()
+        .collect()
+}
+
+/// The default method `k` inherits for a name and descriptor: the one non-abstract
+/// maximally-specific superinterface method, if there is exactly one.
+pub(crate) fn inherited_default(k: &'static Klass, name: Symbol, desc: Symbol) -> Option<&'static Method> {
+    let maximal = maximally_specific(k, name, desc);
+    let mut defaults = maximal.iter().filter(|m| !m.is_abstract());
+    match (defaults.next(), defaults.next()) {
+        (Some(&only), None) => Some(only),
+        _ => None,
+    }
 }
 
 /// `MethodHandle.invoke*` / `VarHandle` accessors accept any descriptor (JVMS 2.9.3).
