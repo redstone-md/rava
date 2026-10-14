@@ -34,6 +34,15 @@ pub(super) struct Shared<'a> {
     idle: AtomicUsize,
     workers: usize,
     marked: AtomicUsize,
+    /// The cells copies were made into (`finish_run`), for the next young collection's second
+    /// chance.
+    pub(super) promoted: Mutex<Vec<(usize, usize)>>,
+    /// The cells young again this collection (`Space::aging`): a reference to one of them keeps
+    /// its card dirty, as one to a copy does.
+    pub(super) young_again: &'a [(usize, usize)],
+    /// Objects marked from thread stacks (conservatively) and from the other roots (RAVA_GC_LOG).
+    by_stacks: AtomicUsize,
+    by_roots: AtomicUsize,
 }
 
 // The space is only read while the world is stopped; mark bits change atomically.
@@ -75,7 +84,7 @@ impl Shared<'_> {
     }
 
     /// Scans objects, starting with `stack`, until no worker has any left.
-    fn work(&self, mut stack: Vec<usize>, runs: &mut super::evacuate::Runs) {
+    fn work(&self, mut stack: Vec<usize>, runs: &mut super::evacuate::Runs) -> usize {
         let mut scanned = 0;
         // Objects pass through a small FIFO between the stack and the scan, their first line
         // prefetched on the way in, so the scan rarely waits on a miss.
@@ -119,7 +128,7 @@ impl Shared<'_> {
                 }
                 if self.idle.load(Ordering::Acquire) == self.workers {
                     self.marked.fetch_add(scanned, Ordering::Relaxed);
-                    return;
+                    return scanned;
                 }
                 spins += 1;
                 if spins < IDLE_SPINS {
@@ -202,6 +211,7 @@ impl Shared<'_> {
     /// Marks the object `r` points at exactly, queuing it if new.
     fn precise(&self, r: usize, out: &mut Vec<usize>) {
         if r != 0 && self.mark_start(r) {
+            self.by_roots.fetch_add(1, Ordering::Relaxed);
             out.push(r);
         }
     }
@@ -210,6 +220,7 @@ impl Shared<'_> {
     fn maybe(&self, w: usize, out: &mut Vec<usize>) {
         if let Some(start) = self.space.find_object(w) {
             if self.mark_start(start) {
+                self.by_stacks.fetch_add(1, Ordering::Relaxed);
                 out.push(start);
             }
         }
@@ -261,7 +272,10 @@ impl Shared<'_> {
             Task::Statics(from, to) => {
                 let (addr, seen) = &roots.statics;
                 for i in from..to {
-                    if super::statics::read(addr[i]) != seen[i] {
+                    // A slot still holding what the last collection left references an old
+                    // object, unless that object was promoted then and is young again now.
+                    let value = super::statics::read(addr[i]);
+                    if value != seen[i] || in_ranges(roots.second_chance, value) {
                         changed.push(i);
                         static_slot(addr[i], out);
                     }
@@ -394,6 +408,12 @@ fn workers() -> usize {
 /// objects, plus what old objects on dirty cards reference); returns the number of newly
 /// marked objects.
 pub(super) fn mark(space: &mut Space, young: bool) -> usize {
+    // Recently promoted objects are young again: their marks go, so the trace reaches (and
+    // keeps) only those still in use; the others are freed by this sweep.
+    let aging = std::mem::take(&mut space.aging);
+    let aging = if young && super::evacuate::enabled() { aging } else { Vec::new() };
+    let second_chance: Vec<(usize, usize)> = aging.iter().map(|&(s, e, _)| (s, e)).collect();
+    clear_marks(space, &second_chance);
     let workers = workers();
     let promote: *mut Space = space;
     let shared = Shared {
@@ -406,12 +426,16 @@ pub(super) fn mark(space: &mut Space, young: bool) -> usize {
         idle: AtomicUsize::new(0),
         workers,
         marked: AtomicUsize::new(0),
+        promoted: Mutex::new(Vec::new()),
+        young_again: &second_chance,
+        by_stacks: AtomicUsize::new(0),
+        by_roots: AtomicUsize::new(0),
     };
     let classes = crate::vm::vm().all_classes();
     let (noted, old) = super::recent::take(classes.len());
     let old = if young { old.min(classes.len()) } else { 0 };
     let statics = if young { super::statics::listed(&classes, old) } else { Default::default() };
-    let roots = Roots { classes: &classes, noted: &noted, statics };
+    let roots = Roots { classes: &classes, noted: &noted, statics, second_chance: &second_chance };
     let tasks = tasks(shared.space, classes.len(), old, young, roots.statics.0.len());
     let changed = Mutex::new(Vec::new());
     // The card tasks run first, and nothing is marked until all are done: a mark set meanwhile
@@ -419,6 +443,9 @@ pub(super) fn mark(space: &mut Space, young: bool) -> usize {
     let cards = tasks.iter().take_while(|t| matches!(t, Task::Cards(..) | Task::LargeCards(..))).count();
     let (next_card, next) = (AtomicUsize::new(0), AtomicUsize::new(cards));
     let barrier = std::sync::Barrier::new(workers);
+    // Per worker: root tasks ms, trace ms, objects found by roots, objects scanned (RAVA_GC_LOG).
+    let started = std::time::Instant::now();
+    let stats = Mutex::new(Vec::new());
     // Each worker takes root tasks until none is left, then traces from what it found.
     // Evacuating, every root is marked (kept in place) before anything moves.
     let worker = || {
@@ -441,18 +468,120 @@ pub(super) fn mark(space: &mut Space, young: bool) -> usize {
             shared.run(task, &roots, &mut found, &mut statics, &mut changes);
         }
         changed.lock().unwrap().extend(changes);
+        let (roots_ms, found_n) = (started.elapsed().as_secs_f64() * 1e3, found.len());
         if shared.evacuate {
             barrier.wait();
             slots.into_iter().for_each(|s| shared.update(s, &mut found, &mut runs));
             statics.into_iter().for_each(|s| shared.update_static(s, &mut found, &mut runs));
         }
-        shared.work(found, &mut runs);
+        let scanned = shared.work(found, &mut runs);
         shared.finish_runs(&runs);
+        stats.lock().unwrap().push((roots_ms, started.elapsed().as_secs_f64() * 1e3, found_n, scanned));
     };
     super::pool::run(workers - 1, &worker);
+    if young && !second_chance.is_empty() && std::env::var_os("RAVA_GC_LOG").is_some() {
+        let (given, kept) = chance_bytes(shared.space, &second_chance);
+        eprintln!(
+            "[gc-age] {} KiB of recent promotions young again, {} KiB still in use; marked from stacks {}, from other roots {}",
+            given >> 10,
+            kept >> 10,
+            shared.by_stacks.load(Ordering::Relaxed),
+            shared.by_roots.load(Ordering::Relaxed)
+        );
+    }
+    if !young && std::env::var_os("RAVA_GC_LOG").is_some() {
+        let s = stats.into_inner().unwrap();
+        let rows: Vec<String> = s.iter().map(|(r, t, f, n)| format!("{r:.0}/{t:.0}ms {f}->{n}")).collect();
+        eprintln!("[gc-mark] {} tasks, workers (roots/end, found->scanned): {}", tasks.len(), rows.join(", "));
+    }
     // The statics hold their final values now (moved objects followed).
     super::statics::settle(&classes, young.then(|| changed.into_inner().unwrap()).as_deref());
-    shared.marked.into_inner()
+    let marked = shared.marked.into_inner();
+    let mut promoted = shared.promoted.into_inner().unwrap();
+    // Only young collections age objects; a full one leaves every survivor old.
+    if young && super::evacuate::enabled() {
+        promoted.sort_unstable();
+        space.aging = age(space, &aging, &promoted);
+    }
+    marked
+}
+
+/// Young collections an object survives before it is old for good (HotSpot's tenuring
+/// threshold). Promoted after its first, it counts as young again in the next ones: All the
+/// Mods 10 still used 3-6 MiB of each young collection's 4-8 MiB of promotions one collection
+/// later, objects that died seconds on and, old already, filled the old generation.
+pub(super) const TENURE: u8 = 8;
+
+/// The aging cells after a young collection: the survivors among `aging`, one collection older
+/// (until `TENURE`), and the cells this one promoted into (`promoted`, sorted).
+fn age(space: &Space, aging: &[(usize, usize, u8)], promoted: &[(usize, usize)]) -> Vec<(usize, usize, u8)> {
+    let mut out: Vec<(usize, usize, u8)> = promoted.iter().map(|&(s, e)| (s, e, 1)).collect();
+    for &(start, end, years) in aging {
+        if years + 1 >= TENURE {
+            continue;
+        }
+        let Some(index) = space.page_index(start) else { continue };
+        let page = space.page_addr(index);
+        let Some(meta) = space.pages[index].as_ref() else { continue };
+        let size = meta.cell_size as usize;
+        let mut run: Option<usize> = None;
+        for cell in meta.cell_of(start - page)..meta.cell_of(end - page) {
+            let at = page + cell * size;
+            // Survivors, less the cells a copy of this collection took (those are age 1).
+            let live = meta.marks[cell / 64] & (1u64 << (cell % 64)) != 0 && !in_ranges(promoted, at);
+            match (live, run) {
+                (true, None) => run = Some(at),
+                (false, Some(s)) => {
+                    out.push((s, at, years + 1));
+                    run = None;
+                }
+                _ => {}
+            }
+        }
+        if let Some(s) = run {
+            out.push((s, end, years + 1));
+        }
+    }
+    out.sort_unstable();
+    out
+}
+
+/// Whether `value` lies in one of the sorted, disjoint `ranges`.
+pub(super) fn in_ranges(ranges: &[(usize, usize)], value: usize) -> bool {
+    let i = ranges.partition_point(|r| r.0 <= value);
+    i > 0 && value < ranges[i - 1].1
+}
+
+/// Bytes of the cells in `ranges`, and of those marked now.
+fn chance_bytes(space: &Space, ranges: &[(usize, usize)]) -> (usize, usize) {
+    let (mut given, mut kept) = (0, 0);
+    for &(start, end) in ranges {
+        let Some(index) = space.page_index(start) else { continue };
+        let page = space.page_addr(index);
+        let Some(meta) = space.pages[index].as_ref() else { continue };
+        let cell = meta.cell_size as usize;
+        for c in meta.cell_of(start - page)..meta.cell_of(end - page) {
+            given += cell;
+            // SAFETY: mark words, read after the markers are done.
+            if unsafe { *meta.marks.as_ptr().add(c / 64) } & (1u64 << (c % 64)) != 0 {
+                kept += cell;
+            }
+        }
+    }
+    (given, kept)
+}
+
+/// Clears the marks of the cells in `ranges` (cells of old pages, still allocated).
+fn clear_marks(space: &mut Space, ranges: &[(usize, usize)]) {
+    for &(start, end) in ranges {
+        let Some(index) = space.page_index(start) else { continue };
+        let page = space.page_addr(index);
+        let Some(meta) = space.pages[index].as_mut() else { continue };
+        let (first, last) = (meta.cell_of(start - page), meta.cell_of(end - page));
+        for cell in first..last {
+            meta.marks[cell / 64] &= !(1u64 << (cell % 64));
+        }
+    }
 }
 
 /// What root tasks read: every class, the noted objects, and for a young collection the listed
@@ -461,4 +590,6 @@ struct Roots<'a> {
     classes: &'a [&'static Klass],
     noted: &'a [usize],
     statics: (Vec<usize>, Vec<usize>),
+    /// The cells young again this collection (`Space::aging`).
+    second_chance: &'a [(usize, usize)],
 }
