@@ -4,6 +4,9 @@
 use super::{CrashReport, FaultHandler, OwnCode};
 use std::sync::OnceLock;
 
+mod dns;
+pub(crate) use dns::fallback_domain;
+
 #[cfg(target_os = "linux")]
 const NORESERVE: libc::c_int = libc::MAP_NORESERVE;
 #[cfg(not(target_os = "linux"))]
