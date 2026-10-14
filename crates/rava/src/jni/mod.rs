@@ -23,7 +23,7 @@ mod vm_iface;
 
 pub(crate) use call::invoke;
 pub(crate) use libs::{entry, load_for_java, symbol};
-pub(crate) use refs::roots;
+pub(crate) use refs::{delete_global, new_global, roots};
 
 use crate::gc::safepoint::{self, Record, NATIVE};
 use crate::thread::Thread;
