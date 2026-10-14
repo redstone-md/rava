@@ -29,6 +29,11 @@ pub fn clobbers(g: &Graph, v: V) -> (bool, bool) {
         Inst::StoreIndexed(_, _, BasicType::Float | BasicType::Double, _) => NONE,
         Inst::StoreIndexed(..) => (false, true),
         Inst::Intrinsic(crate::jit::intrinsics::Intrinsic::BitCount(..), ..) => NONE,
+        // A cast to a final class or one at a primary depth tests through r11 and rax.
+        Inst::CheckCast(_, k, _) if crate::jit::emit_obj::primary_depth(k).is_some() || matches!(k.kind, crate::klass::KlassKind::TypeArray { .. }) || matches!(k.kind, crate::klass::KlassKind::Instance) && k.access & crate::klass::ACC_FINAL != 0 => NONE,
+        // An object of up to 128 bytes past its header is cleared without a loop counter; the
+        // runtime call of the slow path saves rcx and rdx.
+        Inst::New(k, _) if k.instance_size() <= 132 => NONE,
         // A primitive Unsafe access addresses through rax and r11; a store's value goes
         // through rdx.
         Inst::Intrinsic(crate::jit::intrinsics::Intrinsic::UnsafeGet(t, _), ..) if *t != BasicType::Reference => NONE,

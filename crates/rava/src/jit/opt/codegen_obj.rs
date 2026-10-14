@@ -137,15 +137,27 @@ impl Gen<'_> {
                         self.a.test_rr(true, rx, rx);
                         self.a.jcc(Cond::E, done);
                     }
-                    self.a.load(false, R::Rcx, mem(rx, 0));
-                    let kk = self.class_operand(k);
-                    self.cmp_class(None, kk);
+                    // Through r11 and rax only: rcx and rdx stay with the register allocator
+                    // (`scratch.rs`).
+                    self.a.load(false, R::R11, mem(rx, 0));
+                    let addr = k as *const Klass as usize;
+                    let low = crate::low::is_low(addr);
+                    if !low {
+                        self.a.mov_ri(R::Rax, addr as i64);
+                    }
+                    let cmp = |a: &mut crate::jit::asm::Asm, m: Option<M>| match (m, low) {
+                        (None, true) => a.alu_ri(true, Alu::Cmp, R::R11, addr as i32),
+                        (None, false) => a.alu_rr(true, Alu::Cmp, R::R11, R::Rax),
+                        (Some(m), true) => a.alu_mi(true, Alu::Cmp, m, addr as i32),
+                        (Some(m), false) => a.alu_rm(true, Alu::Cmp, R::Rax, m),
+                    };
+                    cmp(&mut self.a, None);
                     match depth.filter(|_| !exact) {
                         None => self.a.jcc(Cond::Ne, fail),
                         Some(d) => {
                             self.a.jcc(Cond::E, done);
                             let at = std::mem::offset_of!(Klass, primary) as i32 + 8 * d as i32;
-                            self.cmp_class(Some(mem(R::Rcx, at)), kk);
+                            cmp(&mut self.a, Some(mem(R::R11, at)));
                             self.a.jcc(Cond::Ne, fail);
                         }
                     }
@@ -464,12 +476,13 @@ impl Gen<'_> {
         match crate::gc::bump_layout(k.instance_size() as usize) {
             Some((size, bump, end)) => {
                 let at = |off: usize| mem(R::R12, (offset_of!(crate::thread::Thread, alloc) + off) as i32);
+                // Through r11 (and rcx to clear a large object, `scratch.rs`).
                 self.a.load(true, R::Rax, at(bump));
-                self.a.lea(R::Rdx, mem(R::Rax, size as i32));
-                self.a.alu_rm(true, Alu::Cmp, R::Rdx, at(end));
+                self.a.lea(R::R11, mem(R::Rax, size as i32));
+                self.a.alu_rm(true, Alu::Cmp, R::R11, at(end));
                 self.a.jcc(Cond::A, slow);
-                self.a.store(true, at(bump), R::Rdx);
-                crate::jit::emit_obj::clear(&mut self.a, R::Rax, 4, k.instance_size() as i32, R::Rdx, R::Rcx);
+                self.a.store(true, at(bump), R::R11);
+                crate::jit::emit_obj::clear(&mut self.a, R::Rax, 4, k.instance_size() as i32, R::R11, R::Rcx);
                 self.a.store_imm32(mem(R::Rax, 0), crate::heap::klass_word(k) as i32);
             }
             None => self.a.jmp(slow),
