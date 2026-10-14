@@ -473,6 +473,9 @@ impl Gen<'_> {
         if self.base == R::R13 {
             a.mov_rr(true, R::R13, R::Rsi);
         }
+        if let Some(c) = crate::jit::call_counter() {
+            a.alu_mi(true, Alu::Add, crate::jit::asm::abs32(c as *const _ as usize), 1);
+        }
         if self.frameless {
             self.place_params();
             return;

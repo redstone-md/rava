@@ -313,6 +313,9 @@ impl Emitter {
         let frame_patch = self.a.pos() - 4;
         let counted = self.tier < 2;
         self.a.call_abs(super::frame_stubs::enter(counted));
+        if let Some(c) = super::call_counter() {
+            self.a.alu_mi(true, super::asm::Alu::Add, super::asm::abs32(c as *const _ as usize), 1);
+        }
         if self.m.is_synchronized() {
             self.enter_method_monitor();
         }

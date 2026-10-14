@@ -96,7 +96,6 @@ mod imp {
         let _ = std::thread::Builder::new().name("rava-sampler".into()).spawn(move || {
             let mut counts: HashMap<(u32, usize, usize, usize), u64> = HashMap::new();
             let stubs = module_ranges(&["ntdll.dll", "win32u.dll"]);
-            let own = own_range();
             let system = module_ranges(&["ntdll.dll", "win32u.dll", "KERNELBASE.dll", "kernel32.dll", "user32.dll", "gdi32.dll", "gdi32full.dll"]);
             let mut modules = all_modules();
             let mut names: HashMap<u32, String> = HashMap::new();
@@ -106,6 +105,7 @@ mod imp {
             let mut last_used: HashMap<u32, u64> = HashMap::new();
             let mut last_process = process_cpu();
             let mut last_compiles = 0;
+            let mut last_calls = 0;
             let mut ctx: Box<Ctx> = Box::new(unsafe { std::mem::zeroed() });
             let mut pcs: Vec<(u32, usize, usize, usize)> = Vec::with_capacity(512);
             loop {
@@ -145,10 +145,11 @@ mod imp {
                                 if within(&system, caller) {
                                     origin = (1..48).map(|i| *sp.add(i)).find(|&a| (crate::jit::code_cache::contains(a) || within(&modules, a)) && !within(&system, a)).unwrap_or(0);
                                 }
-                            } else if ok && within(&own, pc) {
-                                // In the VM's own code: the first return address into compiled
-                                // code further up names the Java method that called into it
-                                // (scanned within the stack's committed region).
+                            } else if ok && !crate::jit::code_cache::contains(pc) {
+                                // In native code (the VM's own, the C runtime's): the first
+                                // return address into compiled code further up names the Java
+                                // method that called into it (scanned within the stack's
+                                // committed region).
                                 let sp = ctx.0.Rsp as usize;
                                 let words = committed_above(sp).min(4096) / 8;
                                 origin = (1..words).map(|i| *(sp as *const usize).add(i)).find(|&a| crate::jit::code_cache::contains(a)).unwrap_or(0);
@@ -176,6 +177,11 @@ mod imp {
                     let compiles = crate::jit::OPT_COMPILES.load(Relaxed);
                     let mut line = format!("{}	process={:.2}	opt-compiles={}", started.elapsed().as_secs(), process - last_process, compiles - last_compiles);
                     last_compiles = compiles;
+                    if let Some(c) = crate::jit::call_counter() {
+                        let n = c.load(Relaxed);
+                        line += &format!("	calls={}", n - last_calls);
+                        last_calls = n;
+                    }
                     last_process = process;
                     for (id, &u) in &used {
                         let d = u - last_used.get(id).copied().unwrap_or(0);
@@ -219,13 +225,6 @@ mod imp {
         unsafe { GetProcessTimes(GetCurrentProcess(), &mut c, &mut e, &mut k, &mut u) };
         let t = |f: FILETIME| ((f.dwHighDateTime as u64) << 32 | f.dwLowDateTime as u64) as f64 / 1e7;
         t(k) + t(u)
-    }
-
-    /// The address range of the VM's own executable.
-    fn own_range() -> Vec<(usize, usize)> {
-        use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
-        // SAFETY: the handle of the executable itself.
-        range_of(unsafe { GetModuleHandleW(std::ptr::null()) }).into_iter().collect()
     }
 
     /// Bytes from `at` to the end of the committed memory region holding it (a stack's).

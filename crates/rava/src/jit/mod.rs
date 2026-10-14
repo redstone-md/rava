@@ -38,6 +38,13 @@ pub(crate) mod leaf;
 mod opt;
 pub(crate) use opt::COMPILES as OPT_COMPILES;
 
+/// `RAVA_COUNT_CALLS`: entries into compiled methods counted (racily, across threads) in this
+/// low-memory cell, for the sampler's series; `None` when not counting.
+pub(crate) fn call_counter() -> Option<&'static std::sync::atomic::AtomicU64> {
+    static CELL: std::sync::OnceLock<Option<&'static std::sync::atomic::AtomicU64>> = std::sync::OnceLock::new();
+    *CELL.get_or_init(|| std::env::var_os("RAVA_COUNT_CALLS").map(|_| crate::low::leak(std::sync::atomic::AtomicU64::new(0)) as &'static _))
+}
+
 /// Indexes a newly defined class for class hierarchy analysis (`opt/cha.rs`).
 pub(crate) fn note_class(k: &'static crate::klass::Klass) {
     opt::cha::note_class(k);
