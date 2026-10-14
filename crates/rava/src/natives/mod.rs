@@ -22,6 +22,7 @@ mod desktop;
 mod digest;
 mod jfr;
 mod management;
+mod mapped;
 pub(crate) mod math;
 #[cfg(unix)]
 mod process;
@@ -117,6 +118,7 @@ impl NativeRegistry {
         #[cfg(unix)]
         process::register(&mut r);
         management::register(&mut r);
+        mapped::register(&mut r);
         #[cfg(unix)]
         auth::register(&mut r);
         desktop::register(&mut r);
