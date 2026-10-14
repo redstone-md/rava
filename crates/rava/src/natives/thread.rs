@@ -152,6 +152,8 @@ pub(super) fn register(r: &mut NativeRegistry) {
         }
         ret_ref(out)
     });
+    // The same for one thread: no trace, which `Thread.getStackTrace` returns as an empty one.
+    r.add(T, "getStackTrace0", "()Ljava/lang/Object;", |_, _| ret_ref(std::ptr::null_mut()));
     r.add(T, "holdsLock", "(Ljava/lang/Object;)Z", |t, a| {
         if a[0] == 0 {
             return Err(rt::null_pointer(t));
