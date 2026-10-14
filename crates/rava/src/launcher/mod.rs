@@ -22,6 +22,13 @@ const MAIN_WITHOUT_ARGS: i32 = 1;
 const MAIN_NONSTATIC: i32 = 2;
 
 pub fn main() -> ExitCode {
+    // A launcher that keeps no standard error (Prism keeps it only in its console window) loses
+    // diagnostics such as RAVA_GC_LOG: RAVA_STDERR=<path> appends them to a file instead.
+    if let Some(path) = std::env::var_os("RAVA_STDERR") {
+        if let Ok(f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+            crate::os::redirect_stderr(f);
+        }
+    }
     // A panic nothing catches is a crash of the VM: reported, with the issue link.
     crate::crash::install_panic_hook();
     let line = match CommandLine::from_env() {

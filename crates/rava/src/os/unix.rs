@@ -337,6 +337,13 @@ pub fn write_stderr(bytes: &[u8]) {
     unsafe { libc::write(2, bytes.as_ptr() as *const libc::c_void, bytes.len()) };
 }
 
+/// Makes `file` the process's standard error, for the VM's diagnostics and Java's `System.err`.
+pub fn redirect_stderr(file: std::fs::File) -> bool {
+    use std::os::fd::AsRawFd;
+    // SAFETY: dup2(2) of an open descriptor onto 2; `file` closes its own copy when dropped.
+    unsafe { libc::dup2(file.as_raw_fd(), 2) == 2 }
+}
+
 /// Creates (or empties) the crash report file `name` (NUL-terminated, in the working directory)
 /// without allocating; None when it cannot be created.
 pub fn create_report(name: &[u8]) -> Option<usize> {

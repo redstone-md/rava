@@ -271,6 +271,14 @@ pub fn write_stderr(bytes: &[u8]) {
     unsafe { WriteFile(GetStdHandle(STD_ERROR_HANDLE), bytes.as_ptr(), bytes.len() as u32, &mut written, std::ptr::null_mut()) };
 }
 
+/// Makes `file` the process's standard error, for the VM's diagnostics and Java's `System.err`.
+pub fn redirect_stderr(file: std::fs::File) -> bool {
+    use std::os::windows::io::IntoRawHandle;
+    use windows_sys::Win32::System::Console::{SetStdHandle, STD_ERROR_HANDLE};
+    // SAFETY: an open handle the process keeps for its lifetime.
+    unsafe { SetStdHandle(STD_ERROR_HANDLE, file.into_raw_handle() as HANDLE) != 0 }
+}
+
 /// Creates (or empties) the crash report file `name` (NUL-terminated, in the working directory)
 /// without allocating; None when it cannot be created.
 pub fn create_report(name: &[u8]) -> Option<usize> {
