@@ -68,7 +68,15 @@ pub(super) fn register(r: &mut NativeRegistry) {
     r.add("java/lang/Runtime", "maxMemory", "()J", |_, _| ret_long(vm().heap.max_bytes() as i64));
     r.add("java/lang/Runtime", "totalMemory", "()J", |_, _| ret_long(vm().heap.used_bytes().max(64 << 20) as i64));
     r.add("java/lang/Runtime", "freeMemory", "()J", |_, _| ret_long(32 << 20));
-    r.add("java/lang/Runtime", "gc", "()V", |_, _| ret_void());
+    // A full collection, as HotSpot's `System.gc()` (none with `-XX:+DisableExplicitGC`): it
+    // also sets the old generation's baseline, so a program that collects after building its
+    // long-lived data does not get a full collection mid-run for having grown past it.
+    r.add("java/lang/Runtime", "gc", "()V", |t, _| {
+        if !crate::vm_options().iter().any(|o| o == "+DisableExplicitGC") {
+            vm().heap.collect(t);
+        }
+        ret_void()
+    });
     r.add("java/lang/Shutdown", "beforeHalt", "()V", |_, _| ret_void());
     r.add("java/lang/Shutdown", "halt0", "(I)V", |_, a| {
         if let Some(s) = crate::jit::stats::get() {
