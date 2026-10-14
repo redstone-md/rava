@@ -61,7 +61,9 @@ tier miscompiles something. `RAVA_OPT_EXCLUDE` finds what by halving: exclude `n
 report.
 
 Other diagnostics: `RAVA_GC_LOG=1` prints a line per collection; `RAVA_TIMING=1` prints how
-long the JDK took to boot and the run's totals.
+long the JDK took to boot and the run's totals. They go to standard error, which some launchers
+do not keep (Prism Launcher shows it only in its console window): `RAVA_STDERR=<path>` appends
+standard error to that file instead.
 
 ## Crashes
 
