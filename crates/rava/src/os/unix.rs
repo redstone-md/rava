@@ -6,6 +6,8 @@ use std::sync::OnceLock;
 
 mod dns;
 pub(crate) use dns::fallback_domain;
+mod prefs;
+pub(crate) use prefs::{prefs_chmod, prefs_lock, prefs_unlock};
 
 #[cfg(target_os = "linux")]
 const NORESERVE: libc::c_int = libc::MAP_NORESERVE;
