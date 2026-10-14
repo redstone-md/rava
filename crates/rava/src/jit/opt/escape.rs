@@ -10,8 +10,9 @@
 //! (`deopt.rs`), once per state however many slots hold it.
 //!
 //! Not replaced: arrays (they can raise `NegativeArraySizeException`, a guest-visible effect),
-//! an object stored into another object's field (no nesting), or one compared, locked, passed,
-//! returned or merged by a phi.
+//! an object stored into another object's field (no nesting), or one locked, passed, returned,
+//! merged by a phi or compared with one. An identity test against any other value folds:
+//! nothing else can hold an object that never escaped.
 //!
 //! On by default (`RAVA_SCALAR_REPLACE=0` turns it off).
 
@@ -33,7 +34,38 @@ pub fn eliminate(g: &mut Graph) {
         let n = g.alias.len();
         g.alias.extend(n as V..g.values.len() as V);
     }
+    fold_identity_tests(g, &candidates);
     Replace::new(g, candidates).run();
+}
+
+/// For a reference test of an allocation `n` against `x`: `(n, x)`, when `x` is not a phi
+/// (that could merge `n` with something else).
+fn identity_test(g: &Graph, a: V, b: V) -> Option<(V, V)> {
+    let (a, b) = (g.resolve(a), g.resolve(b));
+    let is_new = |v: V| matches!(g.values[v as usize].inst, Inst::New(..));
+    let is_phi = |v: V| matches!(g.values[v as usize].inst, Inst::Phi(_));
+    match (is_new(a), is_new(b)) {
+        (true, _) if !is_phi(b) => Some((a, b)),
+        (_, true) if !is_phi(a) => Some((b, a)),
+        _ => None,
+    }
+}
+
+/// Tests of a replaced allocation's identity become constant: equal to itself only, as no
+/// other value can hold an object that never escaped.
+fn fold_identity_tests(g: &mut Graph, candidates: &HashMap<V, Candidate>) {
+    for b in 0..g.blocks.len() {
+        let Term::If { ty: Ty::A, a, b: other, .. } = g.blocks[b].term else { continue };
+        let Some((n, x)) = identity_test(g, a, other) else { continue };
+        if !candidates.contains_key(&n) {
+            continue;
+        }
+        let same = x == n;
+        let (zero, one) = (g.add(b as B, Inst::Const(0), Ty::I), g.add(b as B, Inst::Const(1), Ty::I));
+        if let Term::If { ty, a, b: rhs, .. } = &mut g.blocks[b].term {
+            (*ty, *a, *rhs) = (Ty::I, zero, if same { zero } else { one });
+        }
+    }
 }
 
 /// The phis something reads: a non-phi instruction, a terminator, a state, or a phi read.
@@ -125,7 +157,13 @@ fn find_candidates(g: &Graph) -> HashMap<V, Candidate> {
                 _ => g.values[v as usize].inst.inputs().into_iter().for_each(|x| escapes[g.resolve(x) as usize] = true),
             }
         }
-        blk.term.inputs().into_iter().for_each(|x| escapes[g.resolve(x) as usize] = true);
+        match blk.term {
+            // An allocation compared by identity with anything but a phi (which could carry it)
+            // keeps it from escaping: nothing else can hold it unless it escapes some other way,
+            // and then it stays (`fold_identity_tests` folds only for the replaced ones).
+            Term::If { ty: Ty::A, a, b, .. } if identity_test(g, a, b).is_some() => {}
+            _ => blk.term.inputs().into_iter().for_each(|x| escapes[g.resolve(x) as usize] = true),
+        }
     }
     let mut out = HashMap::new();
     for (v, x) in g.values.iter().enumerate() {

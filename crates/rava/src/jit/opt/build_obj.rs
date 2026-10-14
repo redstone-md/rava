@@ -70,6 +70,19 @@ impl Builder {
                 return self.add(Inst::InstanceOf(args[1], class), Ty::I);
             }
         }
+        // A plain Unsafe read of an allocation of this compilation at a constant offset is that
+        // field's load (C2 does the same): escape analysis can then replace the object, as for
+        // the getters of a record's `equals` and `hashCode` (`ObjectMethods`).
+        if let (crate::jit::intrinsics::Intrinsic::UnsafeGet(bt, false), [_, base, off]) = (k, &args[..]) {
+            let base = self.g.resolve(*base);
+            if let (Inst::New(class, _), Some(off)) = (self.g.inst(base), self.g.constant(self.g.resolve(*off))) {
+                let class: &'static crate::klass::Klass = class;
+                let declared = std::iter::successors(Some(class), |c| c.super_klass).flat_map(|c| c.fields.iter()).any(|f| !f.is_static() && f.offset as i64 == off && f.ty == bt);
+                if declared {
+                    return self.add(Inst::LoadField(base, off as u32, bt), ty);
+                }
+            }
+        }
         self.add(Inst::Intrinsic(k, args, s), ty)
     }
 
