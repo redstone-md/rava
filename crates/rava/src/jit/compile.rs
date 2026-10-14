@@ -158,12 +158,18 @@ fn compile_timed(m: &'static Method, tier: u8) -> Option<CompiledMethod> {
         // Raw code for `objdump -D -b binary -mi386:x86-64 --adjust-vma=<entry>`.
         let name = m.to_string();
         if name.contains(filter.to_str().unwrap_or("")) {
-            let file = format!("/tmp/rava-jit-{:x}.bin", entry);
+            let file = crate::os::diagnostic_path(&format!("rava-jit-{entry:x}.bin"));
             // SAFETY: the code just installed (calls resolved).
-            let _ = std::fs::write(&file, unsafe { std::slice::from_raw_parts(entry as *const u8, code.len()) });
+            let written = std::fs::write(&file, unsafe { std::slice::from_raw_parts(entry as *const u8, code.len()) });
             let map: String = e.dump_map.iter().flatten().map(|(off, m, bci)| format!("{off:x} {m}@{bci}\n")).collect();
-            let _ = std::fs::write(format!("{file}.map"), map);
-            eprintln!("[jit-dump] {name} -> {file} (entry {entry:#x})");
+            let map_file = file.with_extension("bin.map");
+            if let Err(err) = std::fs::write(&map_file, map) {
+                eprintln!("[jit-dump] {name}: cannot write {}: {err}", map_file.display());
+            }
+            match written {
+                Ok(()) => eprintln!("[jit-dump] {name} -> {} (entry {entry:#x})", file.display()),
+                Err(err) => eprintln!("[jit-dump] {name}: cannot write {}: {err}", file.display()),
+            }
         }
     }
     if env_once!("RAVA_JIT_LOG").is_some() {

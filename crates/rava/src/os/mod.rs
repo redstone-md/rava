@@ -24,3 +24,16 @@ pub type CrashReport = fn(pc: usize, addr: usize);
 /// Whether `pc` is in rava's own code (its executable or compiled code): a fault there that
 /// the fault handler does not resolve is fatal, whatever handlers other code installed.
 pub type OwnCode = fn(pc: usize) -> bool;
+
+/// A file of an enabled diagnostic: an explicit directory, else the platform temporary
+/// directory (`TMPDIR` on Unix). Resolve it once, only when a diagnostic writes a file.
+/// Directories are not created; a writer reports an invalid or unwritable destination.
+pub(crate) fn diagnostic_path(name: &str) -> std::path::PathBuf {
+    static DIR: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+    DIR.get_or_init(|| {
+        std::env::var_os("RAVA_DIAG_DIR")
+            .filter(|dir| !dir.is_empty())
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(std::env::temp_dir)
+    }).join(name)
+}

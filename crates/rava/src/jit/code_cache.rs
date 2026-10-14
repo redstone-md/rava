@@ -189,8 +189,8 @@ fn reg_adapter(m: &crate::method::Method) -> usize {
     at
 }
 
-/// Appends `address size name` to `/tmp/perf-<pid>.map` when `RAVA_PERF_MAP` is set, so
-/// `perf` can name compiled methods.
+/// Appends `address size name` to `perf-<pid>.map` in the diagnostic directory when
+/// `RAVA_PERF_MAP` is set, so `perf` can name compiled methods (normally `/tmp` on Linux).
 pub fn perf_map(address: usize, size: usize, name: &str) {
     use std::io::Write;
     static FILE: std::sync::OnceLock<Option<Mutex<std::fs::File>>> = std::sync::OnceLock::new();
@@ -205,8 +205,14 @@ pub fn perf_map(address: usize, size: usize, name: &str) {
         return;
     }
     let file = FILE.get_or_init(|| {
-        let path = format!("/tmp/perf-{}.map", std::process::id());
-        std::fs::File::create(path).ok().map(Mutex::new)
+        let path = crate::os::diagnostic_path(&format!("perf-{}.map", std::process::id()));
+        match std::fs::File::create(&path) {
+            Ok(file) => Some(Mutex::new(file)),
+            Err(err) => {
+                eprintln!("[perf-map] cannot write {}: {err}", path.display());
+                None
+            }
+        }
     });
     if let Some(f) = file {
         let _ = writeln!(f.lock().unwrap(), "{address:x} {size:x} {name}");
@@ -233,7 +239,10 @@ pub fn names() -> std::collections::BTreeMap<usize, (usize, String)> {
 pub fn flush_perf_map() {
     let lines = std::mem::take(&mut *PERF_LINES.lock().unwrap());
     if !lines.is_empty() {
-        let _ = std::fs::write(format!("/tmp/perf-{}.map", std::process::id()), lines.join("\n") + "\n");
+        let path = crate::os::diagnostic_path(&format!("perf-{}.map", std::process::id()));
+        if let Err(err) = std::fs::write(&path, lines.join("\n") + "\n") {
+            eprintln!("[perf-map] cannot write {}: {err}", path.display());
+        }
     }
 }
 

@@ -279,19 +279,27 @@ fn compile_timed(m: &'static Method, osr: Option<u32>) -> Option<CompiledMethod>
         eprintln!("[opt] {m}{tag}: {} values, {} blocks, {} spill slots -> {} bytes ({main} main)", g.values.len(), al.order.len(), al.spill_slots, code.len());
     }
     if raw {
-        let file = format!("/tmp/rava-opt-{entry:x}.bin");
+        let file = crate::os::diagnostic_path(&format!("rava-opt-{entry:x}.bin"));
         // SAFETY: the code just installed (calls resolved).
-        let _ = std::fs::write(&file, unsafe { std::slice::from_raw_parts(entry as *const u8, code.len()) });
-        eprintln!("[opt-dump] {m} -> {file}");
+        match std::fs::write(&file, unsafe { std::slice::from_raw_parts(entry as *const u8, code.len()) }) {
+            Ok(()) => eprintln!("[opt-dump] {m} -> {}", file.display()),
+            Err(err) => eprintln!("[opt-dump] {m}: cannot write {}: {err}", file.display()),
+        }
     }
     if dumped {
-        let file = format!("/tmp/rava-opt-{entry:x}.bin");
+        let file = crate::os::diagnostic_path(&format!("rava-opt-{entry:x}.bin"));
         // SAFETY: the code just installed (calls resolved).
-        let _ = std::fs::write(&file, unsafe { std::slice::from_raw_parts(entry as *const u8, code.len()) });
+        let written = std::fs::write(&file, unsafe { std::slice::from_raw_parts(entry as *const u8, code.len()) });
         // Where each value's code starts, for attributing samples to bytecode.
         let lines: Vec<String> = trace.iter().map(|(at, d)| format!("{at:x} {d}")).collect();
-        let _ = std::fs::write(format!("/tmp/rava-opt-{entry:x}.map"), lines.join("\n") + "\n");
-        eprintln!("[opt-dump] {m} -> {file}");
+        let map = file.with_extension("map");
+        if let Err(err) = std::fs::write(&map, lines.join("\n") + "\n") {
+            eprintln!("[opt-dump] {m}: cannot write {}: {err}", map.display());
+        }
+        match written {
+            Ok(()) => eprintln!("[opt-dump] {m} -> {}", file.display()),
+            Err(err) => eprintln!("[opt-dump] {m}: cannot write {}: {err}", file.display()),
+        }
     }
     Some(CompiledMethod { entry, reg_entry: reg_entry.map_or(0, |r| entry + r), unresolved_deferrals: Default::default(), size: main, blocks: Vec::new(), frame_slots: extent as usize, tier: 2, optimized: true, deopts: Default::default() })
 }
