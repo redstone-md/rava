@@ -212,8 +212,14 @@ mod imp {
         let code = crate::jit::code_cache::names();
         let mut by: HashMap<(String, String), u64> = HashMap::new();
         let mut buf = [0u8; 128];
+        // RAVA_SAMPLE_DETAIL=<text>: compiled methods whose name contains it are counted per
+        // instruction offset (for RAVA_JIT_DUMP's code), to find the instructions that take the time.
+        let detail = std::env::var("RAVA_SAMPLE_DETAIL").ok();
         let mut label_of = |pc: usize| match code.range(..=pc).next_back() {
-            Some((&start, (size, name))) if pc < start + size => name.clone(),
+            Some((&start, (size, name))) if pc < start + size => match &detail {
+                Some(d) if name.contains(d.as_str()) => format!("{name} @{start:#x}+{:#x}", pc - start),
+                _ => name.clone(),
+            },
             _ => match crate::os::module(pc, &mut buf) {
                 Some((base, len)) => format!("{}+{:#x}", String::from_utf8_lossy(&buf[..len]), pc - base),
                 None => format!("{pc:#x}"),
