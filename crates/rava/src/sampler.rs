@@ -94,12 +94,15 @@ mod imp {
         // The code cache's names, kept in memory.
         crate::jit::code_cache::keep_names();
         let _ = std::thread::Builder::new().name("rava-sampler".into()).spawn(move || {
-            let mut counts: HashMap<(u32, usize), u64> = HashMap::new();
+            let mut counts: HashMap<(u32, usize, usize, usize), u64> = HashMap::new();
+            let stubs = module_ranges(&["ntdll.dll", "win32u.dll"]);
+            let system = module_ranges(&["ntdll.dll", "win32u.dll", "KERNELBASE.dll", "kernel32.dll", "user32.dll", "gdi32.dll", "gdi32full.dll"]);
+            let mut modules = all_modules();
             let mut names: HashMap<u32, String> = HashMap::new();
             let mut used: HashMap<u32, u64> = HashMap::new();
             let mut last_report = std::time::Instant::now();
             let mut ctx: Box<Ctx> = Box::new(unsafe { std::mem::zeroed() });
-            let mut pcs: Vec<(u32, usize)> = Vec::with_capacity(512);
+            let mut pcs: Vec<(u32, usize, usize, usize)> = Vec::with_capacity(512);
             loop {
                 std::thread::sleep(std::time::Duration::from_millis(1));
                 pcs.clear();
@@ -123,15 +126,30 @@ mod imp {
                             }
                             ctx.0.ContextFlags = CONTEXT_CONTROL_AMD64;
                             let ok = GetThreadContext(s.handle, &mut ctx.0) != 0;
+                            // In a system call stub the return address is on top of the stack: it
+                            // names who made the call. When that is a system library's wrapper,
+                            // the first return address further up into other code (found by
+                            // scanning, as there are no frame pointers) names its caller. Read
+                            // while the thread is suspended.
+                            let pc = ctx.0.Rip as usize;
+                            let within = |ranges: &[(usize, usize)], a: usize| ranges.iter().any(|&(b, e)| a >= b && a < e);
+                            let (mut caller, mut origin) = (0, 0);
+                            if ok && within(&stubs, pc) {
+                                let sp = ctx.0.Rsp as *const usize;
+                                caller = *sp;
+                                if within(&system, caller) {
+                                    origin = (1..48).map(|i| *sp.add(i)).find(|&a| (crate::jit::code_cache::contains(a) || within(&modules, a)) && !within(&system, a)).unwrap_or(0);
+                                }
+                            }
                             ResumeThread(s.handle);
                             if ok {
-                                pcs.push((s.id, ctx.0.Rip as usize));
+                                pcs.push((s.id, pc, caller, origin));
                             }
                         }
                     }
                 }
-                for &(id, pc) in &pcs {
-                    *counts.entry((id, pc)).or_default() += 1;
+                for &key in &pcs {
+                    *counts.entry(key).or_default() += 1;
                 }
                 if last_report.elapsed().as_secs() >= 10 {
                     last_report = std::time::Instant::now();
@@ -140,24 +158,75 @@ mod imp {
                         used.insert(s.id, s.used);
                     }
                     let _ = std::fs::write(&path, report(&counts, &names, &used));
+                    // Libraries a program loads later (a game's natives, its graphics driver).
+                    modules = all_modules();
                 }
             }
         });
     }
 
+    /// The address range of a loaded module.
+    fn range_of(m: windows_sys::Win32::Foundation::HMODULE) -> Option<(usize, usize)> {
+        use windows_sys::Win32::System::ProcessStatus::{GetModuleInformation, MODULEINFO};
+        use windows_sys::Win32::System::Threading::GetCurrentProcess;
+        // SAFETY: a query of a loaded module.
+        unsafe {
+            let mut info: MODULEINFO = std::mem::zeroed();
+            (!m.is_null() && GetModuleInformation(GetCurrentProcess(), m, &mut info, std::mem::size_of::<MODULEINFO>() as u32) != 0).then(|| {
+                let base = info.lpBaseOfDll as usize;
+                (base, base + info.SizeOfImage as usize)
+            })
+        }
+    }
+
+    /// The address ranges of the named modules that are loaded.
+    fn module_ranges(names: &[&str]) -> Vec<(usize, usize)> {
+        use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
+        names
+            .iter()
+            .filter_map(|name| {
+                let wide: Vec<u16> = name.encode_utf16().chain(Some(0)).collect();
+                // SAFETY: a lookup of a loaded module, without a reference.
+                range_of(unsafe { GetModuleHandleW(wide.as_ptr()) })
+            })
+            .collect()
+    }
+
+    /// The address ranges of every module loaded when sampling starts (later ones, a game's
+    /// native libraries, are found per address by `os::module` in the report).
+    fn all_modules() -> Vec<(usize, usize)> {
+        use windows_sys::Win32::System::ProcessStatus::EnumProcessModules;
+        use windows_sys::Win32::System::Threading::GetCurrentProcess;
+        let mut mods = vec![std::ptr::null_mut(); 1024];
+        let mut needed = 0u32;
+        // SAFETY: fills a buffer of the size passed.
+        if unsafe { EnumProcessModules(GetCurrentProcess(), mods.as_mut_ptr(), (mods.len() * 8) as u32, &mut needed) } == 0 {
+            return Vec::new();
+        }
+        mods.truncate((needed as usize / 8).min(mods.len()));
+        mods.into_iter().filter_map(range_of).collect()
+    }
+
     /// Counts per thread and location, most frequent first.
-    fn report(counts: &HashMap<(u32, usize), u64>, names: &HashMap<u32, String>, used: &HashMap<u32, u64>) -> String {
+    fn report(counts: &HashMap<(u32, usize, usize, usize), u64>, names: &HashMap<u32, String>, used: &HashMap<u32, u64>) -> String {
         let code = crate::jit::code_cache::names();
         let mut by: HashMap<(String, String), u64> = HashMap::new();
         let mut buf = [0u8; 128];
-        for (&(id, pc), &n) in counts {
-            let label = match code.range(..=pc).next_back() {
-                Some((&start, (size, name))) if pc < start + size => name.clone(),
-                _ => match crate::os::module(pc, &mut buf) {
-                    Some((base, len)) => format!("{}+{:#x}", String::from_utf8_lossy(&buf[..len]), pc - base),
-                    None => format!("{pc:#x}"),
-                },
-            };
+        let mut label_of = |pc: usize| match code.range(..=pc).next_back() {
+            Some((&start, (size, name))) if pc < start + size => name.clone(),
+            _ => match crate::os::module(pc, &mut buf) {
+                Some((base, len)) => format!("{}+{:#x}", String::from_utf8_lossy(&buf[..len]), pc - base),
+                None => format!("{pc:#x}"),
+            },
+        };
+        for (&(id, pc, caller, origin), &n) in counts {
+            let mut label = label_of(pc);
+            if caller != 0 {
+                label = format!("{label} <- {}", label_of(caller));
+            }
+            if origin != 0 {
+                label = format!("{label} <~ {}", label_of(origin));
+            }
             let thread = names.get(&id).cloned().unwrap_or_else(|| id.to_string());
             *by.entry((thread, label)).or_default() += n;
         }
