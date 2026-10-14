@@ -115,6 +115,30 @@ impl Asm {
     pub fn cvtt_f2i(&mut self, double: bool, w: bool, r: R, x: X) {
         self.sse_rr(Self::fp(double), w, 0x2C, r as u8, x.0);
     }
+    /// The three-byte VEX prefix of an 0F38 instruction with the 66 prefix: `reg` the ModRM reg
+    /// operand, `index` and `base` those of r/m, `vvvv` the extra source.
+    fn vex_66_0f38(&mut self, w: bool, reg: u8, index: u8, base: u8, vvvv: u8) {
+        self.b(0xC4);
+        self.b((!reg >> 3 & 1) << 7 | (!index >> 3 & 1) << 6 | (!base >> 3 & 1) << 5 | 0b00010);
+        self.b((w as u8) << 7 | (!vvvv & 0xF) << 3 | 0b01);
+    }
+
+    /// `vfmadd213sd/ss x, y, z`: x := x * y + z, rounded once (`Math.fma`). Needs the FMA
+    /// extension.
+    pub fn fma_rr(&mut self, double: bool, x: X, y: X, z: X) {
+        self.vex_66_0f38(double, x.0, 0, z.0, y.0);
+        self.b(0xA9);
+        self.b(0xC0 | lo(x.0) << 3 | lo(z.0));
+    }
+
+    /// `vfmadd213sd/ss x, y, [m]`.
+    pub fn fma_rm(&mut self, double: bool, x: X, y: X, m: M) {
+        let index = m.index.map_or(0, |(i, _)| i as u8);
+        self.vex_66_0f38(double, x.0, index, m.base as u8, y.0);
+        self.b(0xA9);
+        self.modrm_m(x.0, m);
+    }
+
     /// `movaps dst, src` (a register copy).
     pub fn mov_xx(&mut self, dst: X, src: X) {
         self.sse_rr(0, false, 0x28, dst.0, src.0);

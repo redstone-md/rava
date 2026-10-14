@@ -6,12 +6,28 @@ public class FmaSem {
     static final float[] F = {0.0f, -0.0f, 1.0f, -1.0f, 0.1f, 3e38f, -3e38f, 1e-38f, 1.4e-45f, Float.MAX_VALUE, Float.MIN_NORMAL,
             Float.NaN, Float.POSITIVE_INFINITY, Float.NEGATIVE_INFINITY, 1.0f + Math.ulp(1.0f), 1.0f - Math.ulp(1.0f) / 2, 3.0f, 1.0f / 3};
 
-    public static void main(String[] args) {
-        long hd = 0, hf = 0;
+    static long hashD() {
+        long hd = 0;
         for (double a : D) for (double b : D) for (double c : D) hd = hd * 31 + Double.doubleToRawLongBits(Math.fma(a, b, c));
+        return hd;
+    }
+
+    static long hashF() {
+        long hf = 0;
         for (float a : F) for (float b : F) for (float c : F) hf = hf * 31 + Float.floatToRawIntBits(Math.fma(a, b, c));
-        System.out.println("double " + hd);
-        System.out.println("float " + hf);
+        return hf;
+    }
+
+    public static void main(String[] args) {
+        System.out.println("double " + hashD());
+        System.out.println("float " + hashF());
+        // Again once the compilers have them (an intrinsic in optimized code).
+        long hd = 0, hf = 0;
+        for (int i = 0; i < 400; i++) {
+            hd = hashD();
+            hf = hashF();
+        }
+        System.out.println("compiled double " + hd + " float " + hf);
         // Where the unfused result differs.
         double x = 1.0 + Math.ulp(1.0), y = 1.0 - Math.ulp(1.0);
         System.out.println("fused " + Math.fma(x, y, -1.0) + " unfused " + (x * y - 1.0));

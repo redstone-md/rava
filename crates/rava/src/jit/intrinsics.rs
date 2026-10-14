@@ -50,6 +50,8 @@ pub(super) enum Intrinsic {
     Libm(u8),
     /// A string or array routine called directly (`leaf.rs`) on the call's arguments.
     Leaf(super::leaf::Leaf),
+    /// `Math.fma` on doubles (`true`) or floats: one `vfmadd`, where the processor has FMA.
+    Fma(bool),
 }
 
 impl Intrinsic {
@@ -61,7 +63,7 @@ impl Intrinsic {
     /// The baseline compiler emits it in place (else it calls the method, whose body computes
     /// the same result).
     pub(super) fn in_baseline(self) -> bool {
-        !matches!(self, Intrinsic::ArrayCopy | Intrinsic::Libm(_) | Intrinsic::Leaf(_))
+        !matches!(self, Intrinsic::ArrayCopy | Intrinsic::Libm(_) | Intrinsic::Leaf(_) | Intrinsic::Fma(_))
     }
 
     /// Reads memory that stores or a collection change: not computed once before a loop.
@@ -127,6 +129,7 @@ pub(super) fn intrinsic(m: &Method) -> Option<Intrinsic> {
             };
             Some(if name == "abs" { Intrinsic::Abs(ty) } else { Intrinsic::MinMax(ty, name == "max") })
         }
+        "java/lang/Math" | "java/lang/StrictMath" if name == "fma" && matches!(desc, "(DDD)D" | "(FFF)F") => std::arch::is_x86_feature_detected!("fma").then_some(Intrinsic::Fma(desc == "(DDD)D")),
         "java/lang/Math" if desc == "(D)D" && crate::natives::math::index(name).is_some() => crate::natives::math::index(name).map(Intrinsic::Libm),
         "java/lang/Math" | "java/lang/StrictMath" if desc == "(D)D" => match name {
             "sqrt" => Some(Intrinsic::Sqrt),
@@ -204,7 +207,7 @@ impl Emitter {
     pub(super) fn try_intrinsic(&mut self, pc: usize, depth: u16, m: &'static Method, args: i32) -> bool {
         let Some(k) = bound_intrinsic(m).filter(|k| k.in_baseline()) else { return false };
         match k {
-            Intrinsic::ArrayCopy | Intrinsic::Libm(_) | Intrinsic::Leaf(_) => unreachable!("not emitted by the baseline compiler"),
+            Intrinsic::ArrayCopy | Intrinsic::Libm(_) | Intrinsic::Leaf(_) | Intrinsic::Fma(_) => unreachable!("not emitted by the baseline compiler"),
             Intrinsic::BitCount(opcode, wide) => {
                 self.a.load(true, R::Rax, self.stk(args));
                 self.a.bit_count(opcode, wide, R::Rax, R::Rax);

@@ -91,6 +91,27 @@ impl Gen<'_> {
                 self.a.round_sd(r, a, mode);
                 self.xput(v, r);
             }
+            Intrinsic::Fma(double) => {
+                // xmm0 := a, then a * b + c with c from memory where it is not in a register.
+                self.xload(X(0), args[0]);
+                let b = self.xreg(args[1], X(1));
+                match self.loc[args[2] as usize] {
+                    super::regalloc::Loc::Xmm(c) => self.a.fma_rr(double, X(0), b, X(c)),
+                    super::regalloc::Loc::Const(c) => {
+                        let m = self.const_mem(c);
+                        self.a.fma_rm(double, X(0), b, m);
+                    }
+                    super::regalloc::Loc::Stack(s) => self.a.fma_rm(double, X(0), b, super::moves::spill(s)),
+                    super::regalloc::Loc::Frame(s) => {
+                        let m = self.slot(s);
+                        self.a.fma_rm(double, X(0), b, m);
+                    }
+                    l => unreachable!("a float operand at {l:?}"),
+                }
+                let r = self.xout(v);
+                self.a.mov_xx(r, X(0));
+                self.xput(v, r);
+            }
             Intrinsic::Sqrt => {
                 let a = self.xreg(args[0], X(1));
                 let r = self.xout(v);
