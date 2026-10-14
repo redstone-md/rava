@@ -56,6 +56,14 @@ const TIER2_BUDGET: usize = 16000;
 /// smaller than the call's, and a large method full of them (a renderer's frame method) paid a
 /// call for each once its budget was spent.
 const TINY_SIZE: usize = 10;
+/// Levels of a method inlined into itself in the optimizing tier (`RAVA_RECURSIVE_INLINE`): two,
+/// one more than C2, halve again the calls a recursion makes (a tree walk, a recursive
+/// descent) at no measured cost elsewhere.
+fn max_recursive() -> usize {
+    static N: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *N.get_or_init(|| std::env::var("RAVA_RECURSIVE_INLINE").ok().and_then(|v| v.parse().ok()).unwrap_or(2))
+}
+
 /// A callee whose optimized code is larger than this is called rather than inlined again
 /// (HotSpot's `InlineSmallCode`, 2500 bytes of C2 code): its own compilation already inlined
 /// what it calls. Optimized code here takes more bytes per bytecode than C2's, so the same
@@ -129,7 +137,7 @@ pub(super) fn refusal(target: &'static Method, chain: &Chain, tier: u8, spent: u
     if chain.len() > max_depth(target, tier >= 3) {
         return "too deep";
     }
-    if recursive(target, None, chain, (tier >= 3) as usize) {
+    if recursive(target, None, chain, if tier >= 3 { max_recursive() } else { 0 }) {
         return "recursive";
     }
     if target.is_synchronized() && (tier < 3 || target.is_static() && target.holder.mirror().is_null()) {
@@ -177,7 +185,7 @@ fn framed_ok(t: &'static Method, first: Option<i64>, chain: &Chain, hot: bool, o
     let depth = max_depth(t, opt);
     // The optimizing tier inlines synchronized methods with their monitor (`opt::inline`).
     let monitor_ok = !t.is_synchronized() || opt && !(t.is_static() && t.holder.mirror().is_null());
-    if chain.len() > depth || recursive(t, first, chain, opt as usize) || !monitor_ok || (!opt && !info.handlers.is_empty()) {
+    if chain.len() > depth || recursive(t, first, chain, if opt { max_recursive() } else { 0 }) || !monitor_ok || (!opt && !info.handlers.is_empty()) {
         return false;
     }
     if t.has_annotation("Ljdk/internal/vm/annotation/DontInline;") {
