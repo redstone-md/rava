@@ -188,6 +188,18 @@ fn framed_ok(t: &'static Method, first: Option<i64>, chain: &Chain, hot: bool, o
         if matches!(info.code[pc], 0xa8 | 0xa9 | 0xc9) {
             return false;
         }
+        // A loop stays a call in first-tier code: inlined there, it would run that tier's code
+        // for as long as it loops (a caller entered once, such as `main`, never gets an
+        // optimized version), where the call reaches the callee's own optimized code.
+        let backward = match info.code[pc] {
+            0x99..=0xa7 | 0xc6 | 0xc7 => i2(info.code, pc + 1) <= 0,
+            0xc8 => i4(info.code, pc + 1) <= 0,
+            0xaa | 0xab => switch_targets(info.code, pc).iter().any(|&t| t <= pc),
+            _ => false,
+        };
+        if backward && !opt {
+            return false;
+        }
         pc += insn_len(info.code, pc);
     }
     true
