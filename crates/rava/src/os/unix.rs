@@ -8,6 +8,10 @@ mod dns;
 pub(crate) use dns::fallback_domain;
 mod prefs;
 pub(crate) use prefs::{prefs_chmod, prefs_lock, prefs_unlock};
+#[cfg(target_os = "macos")]
+mod macos_prefs;
+#[cfg(target_os = "macos")]
+pub(crate) use macos_prefs::{mac_prefs_constants, MacPrefs, MacPrefsResult};
 
 #[cfg(target_os = "linux")]
 const NORESERVE: libc::c_int = libc::MAP_NORESERVE;
