@@ -56,7 +56,7 @@ pub fn start() {
         let (rss, committed) = crate::os::process_memory();
         let vm = crate::vm::vm();
         eprintln!(
-            "[mem] resident {} MiB, committed {} MiB | heap {} MiB (live after last gc {} MiB) | vm allocations {} MiB | low arena {} MiB | code {} MiB | {} classes, {} threads",
+            "[mem] resident {} MiB, committed {} MiB | heap {} MiB (live after last gc {} MiB) | vm allocations {} MiB | low arena {} MiB | code {} MiB | {} classes, {} threads | monitors inflated {}, thin-lock sleeps {}",
             mb(rss),
             mb(committed),
             mb(vm.heap.used_bytes()),
@@ -66,6 +66,8 @@ pub fn start() {
             mb(crate::jit::code_cache::used_bytes()),
             vm.loaded_class_count(),
             crate::gc::safepoint::all_threads().len(),
+            crate::sync::INFLATIONS.load(Relaxed),
+            crate::sync::THIN_SLEEPS.load(Relaxed),
         );
     });
 }
