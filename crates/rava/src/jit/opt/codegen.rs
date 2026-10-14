@@ -726,7 +726,7 @@ impl Gen<'_> {
     /// for a call from inlined bodies its `InlinedSite`, so stack walks see the inlined frames
     /// hidden ones aside) and publishes the header as `Thread::top`; with `sp`, also the
     /// frame's end as `Thread::sp` (for runtime calls, which may collect or run Java code at
-    /// `sp`). Clobbers rax and rcx.
+    /// `sp`). Clobbers rax and r11.
     pub fn link(&mut self, s: &State, sp: bool) {
         let scopes = scopes(s);
         let (outer, inner) = scopes.split_last().expect("a state has a scope");
@@ -739,8 +739,10 @@ impl Gen<'_> {
             let site: &'static crate::thread::InlinedSite = crate::low::leak(crate::thread::InlinedSite { frames: frames.into() });
             self.a.store_const(at, site as *const _ as i64, R::Rax);
         }
+        // Through r11 and rax only: an allocation's slow path links before it saves the
+        // registers, and rcx may hold a value there (`scratch.rs`).
         if !self.top_published {
-            self.publish(R::Rcx, R::Rax);
+            self.publish(R::R11, R::Rax);
         }
         if sp {
             self.publish_sp();

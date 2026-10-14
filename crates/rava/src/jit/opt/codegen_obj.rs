@@ -646,7 +646,7 @@ impl Gen<'_> {
         self.save_around(v);
         if let Some((trampoline, _)) = reg_call {
             // The argument registers are filled after the saves (they may hold saved values) and
-            // before the link, which clobbers only rax and rcx.
+            // before the link, which clobbers only rax and r11.
             super::moves::parallel(&mut self.a, &moves);
             for &r in &ints {
                 self.a.movsxd(r, r);
