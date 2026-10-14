@@ -22,6 +22,12 @@ passed the semantic, JNI and patch checks on Linux, Windows, macOS Intel and mac
 with the pinned patch. The four documented helpful-NPE-message probes remain expected
 failures. CI-built Paper executables have their separate artifact identities below.
 
+[PR CI run 38510747236](https://github.com/redstone-md/rava/actions/runs/38510747236)
+also passed all four platforms: 149 semantic probes passed plus four expected NPE-message
+failures; JNI, patches and unit tests passed. It validates synthetic merge `b8d7e114`,
+including newer main `7061` and PR head `51feb88`. The performance measurements below use
+the earlier `bed0e219` source base, not the newer merged collector.
+
 ## JNI string getters
 
 Ten cases, five cold processes per case and VM: **150 process samples**. Each process warms
@@ -116,11 +122,47 @@ are superseded by this verified artifact comparison. Startup does not establish 
 performance. Client validation still needs a real modpack and graphics-capable host;
 no client FPS or server MSPT improvement is claimed.
 
+## Local tick-sprint follow-up
+
+The existing `bench/tick_sprint.py` mobs scenario was run in six cold processes, ordered
+baseline/candidate/HotSpot then HotSpot/candidate/baseline. Each process completed three
+1,000-tick sprints. Binary hashes match the local baseline `3a02afa0`, candidate `6d0c79c3`
+and HotSpot `2a207f5e7d075afa01d97f8048389a64432a44c4a5af0f5e77d6e286ec5f401d`.
+This is another measurement of `bed0e219` plus the candidate patch, not main `7061` after merge.
+
+| Reported average MSPT | Process 1: three sprints | Process 2: three sprints | Mean of six averages | Median of six averages |
+|---|---|---|---:|---:|
+| Baseline | 4.18, 3.97, 3.75 | 4.13, 3.83, 3.79 | 3.9417 | 3.90 |
+| Candidate | 4.49, 3.75, 3.77 | 4.08, 3.78, 3.92 | 3.9650 | 3.85 |
+| HotSpot | 3.63, 3.07, 2.98 | 3.19, 3.37, 2.82 | 3.1767 | 3.13 |
+
+Candidate mean MSPT is 0.59% above baseline and 24.82% above HotSpot. Its median of sprint
+averages is slightly below baseline, so the summary statistic changes the direction of that
+small difference: **no stable baseline win is established**. HotSpot has lower reported
+averages in this scenario. These medians are not tick p50; no per-tick p50/p95 was collected.
+
+All six servers reached `Done`, acknowledged 350 summons and a `Spread 350` command, and
+stopped gracefully with exit 0. The arena loads 64 chunks, with 250 cows and 100 villagers,
+and zero connected players. Forceloading without players may suppress activation-dependent
+AI; command acknowledgements do not verify live entity counts or simulation-state equality.
+No entity/state checksum was collected. Profiler startup warnings occurred under RAVA and
+HotSpot, so there is no validated hot-method profile for bottleneck attribution.
+
+The seed remained `20260930`; complete configuration snapshots and hashes were retained.
+Only the overworld was regenerated; copied base Nether/End worlds remained. The safe direct
+process harness retained the scenario commands and waits: 20 seconds after `Done`, 30 after
+arena preparation and 10 after spawning mobs. Exact JVM arguments were
+`-jar paper-1.21.1-133.jar --nogui`, using defaults without JVM/GC tuning. Inherited CPU
+affinity was 0–8, without individual-core pinning; port was `127.0.0.1:25599`, query/RCON off.
+The validation bundle's `tick_validation/analysis.json`, `results.json`, `metadata.json` and
+`host-and-config.json` retain raw commands, configuration/binary hashes and hashed server logs.
+
 ## Reproducing the generic checks
 
 Set RAVA_BASE and RAVA_CANDIDATE to separately built release executables, and JAVA_HOME to
 JDK 21. Check executable hashes before running; use the same host and rotate process order.
 CPU pinning is optional where unavailable; record the choice rather than silently changing it.
+PAPER_BASE denotes the fixed server directory with the seed/configuration and port above.
 
 ```sh
 cargo build --release
@@ -138,6 +180,10 @@ cc -shared -fPIC -O2 -I"$JAVA_HOME/include" -I"$JAVA_HOME/include/linux" \
   JniTest string-bench 1 4096 20000 1
 R="$RAVA_CANDIDATE" tests/jni/run.sh
 bench/paper_ab.sh "binary:$RAVA_CANDIDATE"
+python3 bench/tick_sprint.py -n 1 -s 1000t -r 3 -b "$PAPER_BASE" \
+  -c bench/scenarios/mobs.txt "$RAVA_BASE" "$RAVA_CANDIDATE" "$JAVA_HOME/bin/java"
+python3 bench/tick_sprint.py -n 1 -s 1000t -r 3 -b "$PAPER_BASE" \
+  -c bench/scenarios/mobs.txt "$JAVA_HOME/bin/java" "$RAVA_CANDIDATE" "$RAVA_BASE"
 ```
 
 For FastReturnBench, repeat three cold processes per VM in rotated order. For JNI, use five
