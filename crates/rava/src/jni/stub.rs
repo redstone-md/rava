@@ -41,10 +41,10 @@ pub(super) fn bind(m: &'static Method, f: usize) {
 }
 
 /// Natives the stub serves: unsynchronized, without a VM body (which takes precedence), and
-/// with no invocation statistics to keep. The stub speaks the System V convention, so Windows
-/// natives take the generic path.
+/// with no invocation statistics to keep. It calls the native with the system's convention
+/// (System V, or Win64 on Windows).
 fn eligible(m: &'static Method) -> bool {
-    !cfg!(windows) && !m.is_synchronized() && m.native.get().is_none() && crate::vm::vm().natives.lookup(m).is_none() && crate::jit::stats::get().is_none()
+    !m.is_synchronized() && m.native.get().is_none() && crate::vm::vm().natives.lookup(m).is_none() && crate::jit::stats::get().is_none()
 }
 
 /// The C arguments of `m`'s native in order: the environment, the receiver or class, then the
@@ -150,23 +150,7 @@ fn generate(m: &'static Method, f: usize) -> usize {
     a.store_imm(mem(R::Rbx, scope + offset_of!(Scope, touched) as i32), 0);
     a.load(true, R::R14, mem(R::Rbx, offset_of!(Thread, gc_record) as i32));
 
-    // Arguments: stack words (pushed last to first, padded to keep the call aligned), then
-    // vector and integer registers.
-    let pad = stack.len() % 2 == 1;
-    if pad {
-        a.alu_ri(true, Alu::Sub, R::Rsp, 8);
-    }
-    for &s in stack.iter().rev() {
-        load(&mut a, s, R::Rax);
-        a.push(R::Rax);
-    }
-    for (i, &(s, d)) in fps.iter().enumerate() {
-        let Src::Slot(slot, _) = s else { unreachable!() };
-        a.fload(d, X(i as u8), mem(R::Rbp, slot as i32 * 8));
-    }
-    for (i, &s) in ints.iter().enumerate() {
-        load(&mut a, s, INTS[i]);
-    }
+    let popped = if cfg!(windows) { win64_args(&mut a, &srcs) } else { sysv_args(&mut a, &ints, &fps, &stack) };
 
     // The call, in the native state (plain stores suffice: a collector reading the state late
     // only waits longer); back in Java, a collection requested meanwhile is waited out.
@@ -179,7 +163,6 @@ fn generate(m: &'static Method, f: usize) -> usize {
     a.bind(no_rec);
     a.mov_ri(R::R11, f as i64);
     a.call_r(R::R11);
-    let popped = (stack.len() + pad as usize) * 8;
     if popped > 0 {
         a.alu_ri(true, Alu::Add, R::Rsp, popped as i32);
     }
@@ -254,6 +237,47 @@ fn generate(m: &'static Method, f: usize) -> usize {
     a.bind(generic);
     a.jmp_abs(crate::jit::native_entry());
     crate::jit::code_cache::install(&a.finish())
+}
+
+/// System V: stack words (pushed last to first, padded to keep the call aligned), then vector
+/// and integer registers. Returns the bytes to pop after the call.
+fn sysv_args(a: &mut Asm, ints: &[Src], fps: &[(Src, bool)], stack: &[Src]) -> usize {
+    let pad = stack.len() % 2 == 1;
+    if pad {
+        a.alu_ri(true, Alu::Sub, R::Rsp, 8);
+    }
+    for &s in stack.iter().rev() {
+        load(a, s, R::Rax);
+        a.push(R::Rax);
+    }
+    for (i, &(s, d)) in fps.iter().enumerate() {
+        let Src::Slot(slot, _) = s else { unreachable!() };
+        a.fload(d, X(i as u8), mem(R::Rbp, slot as i32 * 8));
+    }
+    for (i, &s) in ints.iter().enumerate() {
+        load(a, s, INTS[i]);
+    }
+    (stack.len() + pad as usize) * 8
+}
+
+/// Win64: the first four arguments by position in rcx, rdx, r8, r9 or xmm0-3 (by type), the
+/// others on the stack above the 32 bytes of home space the caller reserves, the call 16-byte
+/// aligned (it is at entry to this). Returns the bytes to pop after the call.
+fn win64_args(a: &mut Asm, srcs: &[Src]) -> usize {
+    const REGS: [R; 4] = [R::Rcx, R::Rdx, R::R8, R::R9];
+    let area = (32 + 8 * srcs.len().saturating_sub(4)).next_multiple_of(16);
+    a.alu_ri(true, Alu::Sub, R::Rsp, area as i32);
+    for (i, &s) in srcs.iter().enumerate().skip(4) {
+        load(a, s, R::Rax);
+        a.store(true, mem(R::Rsp, (32 + 8 * (i - 4)) as i32), R::Rax);
+    }
+    for (i, &s) in srcs.iter().enumerate().take(4) {
+        match s {
+            Src::Slot(slot, Some(d)) => a.fload(d, X(i as u8), mem(R::Rbp, slot as i32 * 8)),
+            _ => load(a, s, REGS[i]),
+        }
+    }
+    area
 }
 
 extern "sysv64" fn leave_native(rec: &'static Record) {
