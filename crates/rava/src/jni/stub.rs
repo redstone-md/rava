@@ -44,7 +44,9 @@ pub(super) fn bind(m: &'static Method, f: usize) {
 /// with no invocation statistics to keep. It calls the native with the system's convention
 /// (System V, or Win64 on Windows).
 fn eligible(m: &'static Method) -> bool {
-    !m.is_synchronized() && m.native.get().is_none() && crate::vm::vm().natives.lookup(m).is_none() && crate::jit::stats::get().is_none()
+    // `RAVA_NO_JNI_STUBS`: every native through the generic entry (to narrow a bug down).
+    static OFF: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    !*OFF.get_or_init(|| std::env::var_os("RAVA_NO_JNI_STUBS").is_some()) && !m.is_synchronized() && m.native.get().is_none() && crate::vm::vm().natives.lookup(m).is_none() && crate::jit::stats::get().is_none()
 }
 
 /// The C arguments of `m`'s native in order: the environment, the receiver or class, then the

@@ -170,8 +170,17 @@ pub(crate) fn invoke(t: &mut Thread, m: &'static Method, f: usize, args: &[u64])
         }
         slot += p.slots() as usize;
     }
+    // `RAVA_TRACE_JNI=<text>`: each call of a native whose name contains it, with its argument
+    // slots and result (the generic path only: with `RAVA_NO_JNI_STUBS` every call takes it).
+    let traced = std::env::var("RAVA_TRACE_JNI").ok().filter(|f| m.to_string().contains(f.as_str()));
     // SAFETY: the symbol a library exported (or RegisterNatives bound) for this method.
     let (rax, xmm0) = crate::gc::safepoint::native_call(t, || unsafe { c.call(f) });
+    if traced.is_some() {
+        let hex: Vec<String> = args.iter().map(|a| format!("{a:#x}")).collect();
+        let loader = m.holder.loader();
+        let loader = if loader.is_null() { "boot".to_string() } else { format!("{}@{:#x}", crate::runtime::class_name_of(loader), loader as usize) };
+        eprintln!("[jni] {m} [{loader}] ({}) -> {rax:#x}", hex.join(", "));
+    }
     refs::close(t, outer);
     if let Some(e) = refs::take_exception(t) {
         return Err(Throw(e));
