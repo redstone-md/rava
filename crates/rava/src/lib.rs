@@ -25,6 +25,7 @@ pub mod os;
 pub mod parker;
 pub(crate) mod patch;
 pub mod runtime;
+pub mod sampler;
 pub mod symbol;
 pub mod sync;
 pub mod thread;
