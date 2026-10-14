@@ -1,5 +1,5 @@
 //! Small natives of the Windows class library: the error mode, the environment block, the
-//! system's random seed.
+//! system's random seed, the NTLM trusted-site check.
 
 use crate::heap::{obj, Oop};
 use crate::natives::{ret_bool, ret_long, ret_ref, NativeRegistry};
@@ -31,4 +31,11 @@ pub(super) fn register(r: &mut NativeRegistry) {
         let ok = unsafe { BCryptGenRandom(std::ptr::null_mut(), buf.as_mut_ptr(), buf.len() as u32, BCRYPT_USE_SYSTEM_PREFERRED_RNG) } == 0;
         ret_bool(ok)
     });
+    // The JDK asks urlmon's zone map whether a site is in the intranet zone, for transparent
+    // NTLM logins. Without that map the class takes its documented fallback: no site is
+    // trusted, so NTLM credentials are only sent where an `Authenticator` supplies them.
+    // `<clinit>` calls this on any `WWW-Authenticate` header (an HTTP 401 from anywhere).
+    const NTLM: &str = "sun/net/www/protocol/http/ntlm/NTLMAuthentication";
+    r.add(NTLM, "isTrustedSiteAvailable", "()Z", |_, _| ret_bool(false));
+    r.add(NTLM, "isTrustedSite0", "(Ljava/lang/String;)Z", |_, _| ret_bool(false));
 }
