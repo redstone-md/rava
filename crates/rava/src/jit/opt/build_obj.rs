@@ -71,12 +71,13 @@ impl Builder {
             }
         }
         // `Reference.refersTo0(o)` is the referent's load compared with `o` (each ThreadLocal
-        // lookup makes one), not a call that saves every register around it. The load stays
-        // where it is (ordered), as a collection may clear the referent between two of them.
+        // lookup makes one), not a call that saves every register around it. An ordinary load:
+        // only `Reference.clear` and enqueueing (calls, which end every reuse of loads) clear a
+        // referent; the collector keeps referents as strong references. Ordering it kept every
+        // other load of a ThreadLocal lookup's loop in the loop.
         if let (crate::jit::intrinsics::Intrinsic::Leaf(crate::jit::leaf::Leaf::RefersTo), [r, o]) = (k, &args[..]) {
             let off = crate::natives::misc::referent_offset();
             let referent = self.add(Inst::LoadField(*r, off as u32, crate::types::BasicType::Reference), Ty::A);
-            self.g.ordered.insert(referent);
             let (one, zero) = (self.konst(Ty::I, 1), self.konst(Ty::I, 0));
             return self.add(Inst::Select(Cmp::Eq, Ty::A, referent, *o, one, zero), Ty::I);
         }
