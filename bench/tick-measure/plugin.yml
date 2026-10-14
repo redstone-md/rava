@@ -1,0 +1,9 @@
+name: TickMeasure
+version: '1.0'
+main: ravabench.TickMeasure
+api-version: '1.21'
+description: External per-tick measurement observer
+commands:
+  tickmeasure:
+    description: Capture Paper tick durations from the server console
+    usage: tickmeasure start LABEL WARMUP_TICKS MEASURE_TICKS [paced|sprint]
