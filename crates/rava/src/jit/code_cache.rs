@@ -189,6 +189,13 @@ fn reg_adapter(m: &crate::method::Method) -> usize {
     at
 }
 
+/// Where a diagnostic file named `name` goes: `/tmp` on Unix (where `perf` looks for its maps),
+/// the user's temporary directory on Windows.
+pub fn dump_path(name: &str) -> String {
+    let dir = if cfg!(windows) { std::env::temp_dir() } else { std::path::PathBuf::from("/tmp") };
+    dir.join(name).to_string_lossy().into_owned()
+}
+
 /// Appends `address size name` to `/tmp/perf-<pid>.map` when `RAVA_PERF_MAP` is set, so
 /// `perf` can name compiled methods.
 pub fn perf_map(address: usize, size: usize, name: &str) {
@@ -205,7 +212,7 @@ pub fn perf_map(address: usize, size: usize, name: &str) {
         return;
     }
     let file = FILE.get_or_init(|| {
-        let path = format!("/tmp/perf-{}.map", std::process::id());
+        let path = dump_path(&format!("perf-{}.map", std::process::id()));
         std::fs::File::create(path).ok().map(Mutex::new)
     });
     if let Some(f) = file {
@@ -233,7 +240,7 @@ pub fn names() -> std::collections::BTreeMap<usize, (usize, String)> {
 pub fn flush_perf_map() {
     let lines = std::mem::take(&mut *PERF_LINES.lock().unwrap());
     if !lines.is_empty() {
-        let _ = std::fs::write(format!("/tmp/perf-{}.map", std::process::id()), lines.join("\n") + "\n");
+        let _ = std::fs::write(dump_path(&format!("perf-{}.map", std::process::id())), lines.join("\n") + "\n");
     }
 }
 

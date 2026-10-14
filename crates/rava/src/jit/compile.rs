@@ -158,7 +158,7 @@ fn compile_timed(m: &'static Method, tier: u8) -> Option<CompiledMethod> {
         // Raw code for `objdump -D -b binary -mi386:x86-64 --adjust-vma=<entry>`.
         let name = m.to_string();
         if name.contains(filter.to_str().unwrap_or("")) {
-            let file = format!("/tmp/rava-jit-{:x}.bin", entry);
+            let file = super::code_cache::dump_path(&format!("rava-jit-{entry:x}.bin"));
             // SAFETY: the code just installed (calls resolved).
             let _ = std::fs::write(&file, unsafe { std::slice::from_raw_parts(entry as *const u8, code.len()) });
             let map: String = e.dump_map.iter().flatten().map(|(off, m, bci)| format!("{off:x} {m}@{bci}\n")).collect();
