@@ -62,14 +62,14 @@ fn globals() -> &'static Mutex<HashMap<usize, usize>> {
     G.get_or_init(Default::default)
 }
 
-pub(super) fn new_global(o: Oop) -> Oop {
+pub(crate) fn new_global(o: Oop) -> Oop {
     if !o.is_null() {
         *globals().lock().unwrap().entry(o as usize).or_default() += 1;
     }
     o
 }
 
-pub(super) fn delete_global(o: Oop) {
+pub(crate) fn delete_global(o: Oop) {
     let mut g = globals().lock().unwrap();
     if let Some(n) = g.get_mut(&(o as usize)) {
         *n -= 1;
