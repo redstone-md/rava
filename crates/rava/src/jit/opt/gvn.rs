@@ -5,10 +5,13 @@
 //! repeat `a + 1` or `x * 3 + 1` that an earlier block already holds.
 //!
 //! Division and remainder stay (their zero checks are separate, but a fault site moved by an
-//! alias would be one more thing to prove).
+//! alias would be one more thing to prove). Numeric intrinsics with no state number too;
+//! memory-reading intrinsics and runtime calls do not.
 
 use super::dom::Dom;
 use super::ir::*;
+use crate::jit::intrinsics::Intrinsic;
+use crate::types::BasicType;
 use std::collections::HashMap;
 
 /// An operand: a value, or a constant by type and value (inlining makes a `Const` per use).
@@ -24,6 +27,31 @@ enum Key {
     Bin(u8, Ty, Opnd, Opnd),
     Convert(u8, Opnd),
     Compare(u8, Opnd, Opnd),
+    Numeric(Numeric, Ty, Opnd, Option<Opnd>),
+}
+
+/// Stateless computations on their arguments only. Keep every template parameter: rounding
+/// modes, integer widths and min/max are different operations even on the same SSA values.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+enum Numeric {
+    Round(u8),
+    Sqrt,
+    Abs(BasicType),
+    MinMax(BasicType, bool),
+    Bits(BasicType),
+    BitCount(u8, bool),
+}
+
+fn numeric(k: Intrinsic) -> Option<(Numeric, usize)> {
+    Some(match k {
+        Intrinsic::Round(mode) => (Numeric::Round(mode), 1),
+        Intrinsic::Sqrt => (Numeric::Sqrt, 1),
+        Intrinsic::Abs(ty) => (Numeric::Abs(ty), 1),
+        Intrinsic::MinMax(ty, max) => (Numeric::MinMax(ty, max), 2),
+        Intrinsic::Bits(ty) => (Numeric::Bits(ty), 1),
+        Intrinsic::BitCount(opcode, wide) => (Numeric::BitCount(opcode, wide), 1),
+        _ => return None,
+    })
 }
 
 pub fn number(g: &mut Graph) {
@@ -82,6 +110,14 @@ fn key(g: &Graph, v: V) -> Option<Key> {
         }
         Inst::Convert(op, x) => Key::Convert(op, opnd(g, x)),
         Inst::Compare(op, x, y) => Key::Compare(op, opnd(g, x), opnd(g, y)),
+        Inst::Intrinsic(k, ref args, None) => {
+            let (k, arity) = numeric(k)?;
+            if args.len() != arity {
+                return None;
+            }
+            // Preserve argument order, including floating min/max's NaN handling.
+            Key::Numeric(k, ty, opnd(g, args[0]), args.get(1).map(|&x| opnd(g, x)))
+        }
         _ => return None,
     })
 }
