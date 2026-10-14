@@ -70,6 +70,16 @@ impl Builder {
                 return self.add(Inst::InstanceOf(args[1], class), Ty::I);
             }
         }
+        // `Reference.refersTo0(o)` is the referent's load compared with `o` (each ThreadLocal
+        // lookup makes one), not a call that saves every register around it. The load stays
+        // where it is (ordered), as a collection may clear the referent between two of them.
+        if let (crate::jit::intrinsics::Intrinsic::Leaf(crate::jit::leaf::Leaf::RefersTo), [r, o]) = (k, &args[..]) {
+            let off = crate::natives::misc::referent_offset();
+            let referent = self.add(Inst::LoadField(*r, off as u32, crate::types::BasicType::Reference), Ty::A);
+            self.g.ordered.insert(referent);
+            let (one, zero) = (self.konst(Ty::I, 1), self.konst(Ty::I, 0));
+            return self.add(Inst::Select(Cmp::Eq, Ty::A, referent, *o, one, zero), Ty::I);
+        }
         // A plain Unsafe read of an allocation of this compilation at a constant offset is that
         // field's load (C2 does the same): escape analysis can then replace the object, as for
         // the getters of a record's `equals` and `hashCode` (`ObjectMethods`).
