@@ -14,6 +14,7 @@ once.
 | Linux, macOS | `kill -3 <pid>`, or `Ctrl+\` in the terminal running the program |
 | Windows | `Ctrl+Break` in the console running the program |
 | any, without a console | the environment variable `RAVA_DUMP_EVERY=<seconds>`: a dump every that many seconds |
+| any, output not kept | also `RAVA_DUMP_FILE=<path>`: the dumps are appended to that file instead of standard output |
 
 The dump goes to standard output, so a launcher that keeps the program's output (Prism
 Launcher's log, a server's console log) keeps the dump too. It looks like this:

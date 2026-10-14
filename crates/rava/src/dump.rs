@@ -1,7 +1,8 @@
 //! Thread dumps, as HotSpot prints them on `SIGQUIT` or Ctrl+Break: every Java thread with its
 //! state and frames, taken with the world stopped and printed to standard output once it runs
 //! again. `RAVA_DUMP_EVERY=<seconds>` also prints one at that interval, for programs started
-//! without a console (a launcher that only keeps the output).
+//! without a console (a launcher that only keeps the output). `RAVA_DUMP_FILE=<path>` appends
+//! the dumps to that file instead, for a launcher that keeps no output either.
 
 use crate::gc::safepoint::{self, NATIVE, RUNNING, STOPPED};
 use crate::runtime::{self as rt, vm_field};
@@ -29,6 +30,12 @@ pub fn print() {
     let patience = std::time::Duration::from_secs(2);
     let text = safepoint::try_with_world_stopped(patience, || collect(None)).unwrap_or_else(|| collect(Some(safepoint::holder())));
     use std::io::Write as _;
+    if let Some(path) = std::env::var_os("RAVA_DUMP_FILE") {
+        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+            let _ = f.write_all(text.as_bytes());
+            return;
+        }
+    }
     let mut out = std::io::stdout().lock();
     let _ = out.write_all(text.as_bytes());
     let _ = out.flush();
