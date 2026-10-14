@@ -112,7 +112,11 @@ impl Vm {
 
     /// Publishes a newly defined class; if another thread won the race, returns its class.
     pub(crate) fn publish(&self, loader: Oop, k: &'static Klass) -> &'static Klass {
-        *self.classes.write().unwrap().entry((loader as usize, k.name)).or_insert(k)
+        let k = *self.classes.write().unwrap().entry((loader as usize, k.name)).or_insert(k);
+        if loader.is_null() {
+            crate::natives::classloader::note_boot_class(&self.image, k.name);
+        }
+        k
     }
 
     /// Every class defined so far, in definition order.

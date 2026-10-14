@@ -3,7 +3,7 @@
 //! implements in libjvm plus the few libjava ones the boot needs), not library replacements.
 
 mod array;
-mod classloader;
+pub(crate) mod classloader;
 #[cfg(unix)]
 mod fs;
 #[cfg(unix)]

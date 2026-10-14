@@ -22,18 +22,18 @@ const JDK_LIBRARIES: &[&str] = &[
 ];
 
 /// The packages (internal form, `java/lang`) of the classes the boot loader has defined from the
-/// runtime image.
-fn boot_packages() -> std::collections::BTreeSet<String> {
-    let classes = vm().classes.read().unwrap();
-    let image = &vm().image;
-    let mut seen = std::collections::BTreeSet::new();
-    for &(loader, name) in classes.keys() {
-        let Some((package, _)) = name.as_str().rsplit_once('/') else { continue };
-        if loader == 0 && !seen.contains(package) && image.module_of_package(package).is_some() {
-            seen.insert(package.to_string());
-        }
+/// runtime image, added to as it defines them (`note_boot_class`): `Class.getPackage` of a JDK
+/// class asks for one each call (a game's render loop does, every frame), and a scan of every
+/// loaded class each time cost more than the caller's own work.
+static BOOT_PACKAGES: std::sync::RwLock<std::collections::BTreeSet<String>> = std::sync::RwLock::new(std::collections::BTreeSet::new());
+
+/// Notes a class the boot loader defined (`Vm::publish`).
+pub(crate) fn note_boot_class(image: &crate::jimage::JImage, name: crate::symbol::Symbol) {
+    let Some((package, _)) = name.as_str().rsplit_once('/') else { return };
+    if BOOT_PACKAGES.read().unwrap().contains(package) || image.module_of_package(package).is_none() {
+        return;
     }
-    seen
+    BOOT_PACKAGES.write().unwrap().insert(package.to_string());
 }
 
 pub(super) fn register(r: &mut NativeRegistry) {
@@ -85,12 +85,12 @@ pub(super) fn register(r: &mut NativeRegistry) {
     // located at their module in the runtime image (`jrt:/java.base`). `Class.getPackage` of a
     // JDK class and `Package.getPackages` are built on them.
     r.add("jdk/internal/loader/BootLoader", "getSystemPackageNames", "()[Ljava/lang/String;", |t, _| {
-        let names: Vec<Option<String>> = boot_packages().into_iter().map(Some).collect();
+        let names: Vec<Option<String>> = BOOT_PACKAGES.read().unwrap().iter().cloned().map(Some).collect();
         ret_ref(super::string_array(t, &names)?)
     });
     r.add("jdk/internal/loader/BootLoader", "getSystemPackageLocation", "(Ljava/lang/String;)Ljava/lang/String;", |t, a| {
         let name = rt::java_string_to_rust(a[0] as Oop);
-        if !boot_packages().contains(&name) {
+        if !BOOT_PACKAGES.read().unwrap().contains(&name) {
             return ret_ref(std::ptr::null_mut());
         }
         match vm().image.module_of_package(&name) {
