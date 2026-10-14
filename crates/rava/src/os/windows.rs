@@ -56,6 +56,52 @@ pub fn commit(p: usize, len: usize) {
     assert!(ok, "cannot commit {len} bytes of heap: {}", std::io::Error::last_os_error());
 }
 
+/// Ranges committed as they are reached, a megabyte at a time: the value stacks and the code
+/// cache. Committed whole, a thread's 64 MiB value stack charged the system's commit limit for
+/// memory it almost never touches (16 GiB for the 260 threads of a large modded client), and
+/// the code cache a gigabyte.
+static GROWING: std::sync::RwLock<Vec<(usize, usize, bool)>> = std::sync::RwLock::new(Vec::new());
+const GROW_STEP: usize = 1 << 20;
+
+/// Reserves `len` bytes (executable with `exec`; with `at`, exactly there or nothing), committed
+/// as they are first touched.
+pub fn reserve_growing(len: usize, at: Option<usize>, exec: bool) -> Option<usize> {
+    static GROWER: OnceLock<()> = OnceLock::new();
+    GROWER.get_or_init(|| {
+        // SAFETY: registers a handler that lives as long as the process.
+        unsafe { AddVectoredExceptionHandler(1, Some(on_growing_fault)) };
+    });
+    let p = reserve_uncommitted(len, at)?;
+    GROWING.write().unwrap().push((p, len, exec));
+    grow(p, GROW_STEP.min(len), exec);
+    Some(p)
+}
+
+/// Releases a range from `reserve_growing`.
+pub fn release_growing(p: usize, len: usize) {
+    GROWING.write().unwrap().retain(|&(b, _, _)| b != p);
+    release(p, len);
+}
+
+fn grow(p: usize, len: usize, exec: bool) -> bool {
+    let prot = if exec { PAGE_EXECUTE_READWRITE } else { PAGE_READWRITE };
+    // SAFETY: commits pages of a reservation this module made.
+    unsafe { !VirtualAlloc(p as *const _, len, MEM_COMMIT, prot).is_null() }
+}
+
+/// Commits the part of a growing range an access just reached, and runs the access again.
+unsafe extern "system" fn on_growing_fault(info: *mut EXCEPTION_POINTERS) -> i32 {
+    let record = &*(*info).ExceptionRecord;
+    if record.ExceptionCode != EXCEPTION_ACCESS_VIOLATION {
+        return CONTINUE_SEARCH;
+    }
+    let addr = record.ExceptionInformation[1];
+    let Ok(ranges) = GROWING.try_read() else { return CONTINUE_SEARCH };
+    let Some(&(base, len, exec)) = ranges.iter().find(|&&(b, l, _)| addr >= b && addr < b + l) else { return CONTINUE_SEARCH };
+    let start = base + (addr - base) / GROW_STEP * GROW_STEP;
+    if grow(start, GROW_STEP.min(base + len - start), exec) { CONTINUE_EXECUTION } else { CONTINUE_SEARCH }
+}
+
 /// Reserves `len` bytes below 2 GiB, or None.
 pub fn reserve_low(len: usize) -> Option<usize> {
     static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(4 << 20);
@@ -358,6 +404,10 @@ unsafe extern "system" fn on_exception(info: *mut EXCEPTION_POINTERS) -> i32 {
     let record = &*(*info).ExceptionRecord;
     if record.ExceptionCode != EXCEPTION_ACCESS_VIOLATION {
         return CONTINUE_SEARCH;
+    }
+    // A growing range's first touch, whichever of the two handlers runs first.
+    if on_growing_fault(info) == CONTINUE_EXECUTION {
+        return CONTINUE_EXECUTION;
     }
     let context = &mut *(*info).ContextRecord;
     let addr = record.ExceptionInformation[1];

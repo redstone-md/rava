@@ -30,9 +30,9 @@ fn region() -> &'static Mutex<Region> {
         // Just below the text, else anywhere.
         let hint = (text & !((2 << 20) - 1)).saturating_sub(RESERVE + GAP);
         let p = (hint != 0)
-            .then(|| crate::os::reserve(RESERVE, Some(hint), true))
+            .then(|| crate::os::reserve_growing(RESERVE, Some(hint), true))
             .flatten()
-            .or_else(|| crate::os::reserve(RESERVE, None, true))
+            .or_else(|| crate::os::reserve_growing(RESERVE, None, true))
             .expect("cannot reserve the code cache");
         // Transparent huge pages where the system offers them on request: hot code spread over
         // tens of megabytes then takes a few TLB entries instead of thousands. Memory is still

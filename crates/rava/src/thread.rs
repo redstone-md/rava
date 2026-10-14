@@ -107,7 +107,7 @@ struct ValueStack(*mut u64);
 
 impl ValueStack {
     fn new() -> ValueStack {
-        let p = crate::os::reserve(STACK_SLOTS * 8, None, false).expect("cannot map a value stack");
+        let p = crate::os::reserve_growing(STACK_SLOTS * 8, None, false).expect("cannot map a value stack");
         ValueStack(p as *mut u64)
     }
 
@@ -123,7 +123,7 @@ impl ValueStack {
 impl Drop for ValueStack {
     fn drop(&mut self) {
         // The mapping `new` made, no longer used.
-        crate::os::release(self.0 as usize, STACK_SLOTS * 8);
+        crate::os::release_growing(self.0 as usize, STACK_SLOTS * 8);
     }
 }
 
