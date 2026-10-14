@@ -1,5 +1,5 @@
 //! Natives of the Windows class library: files through handles (`java.io`, `WinNTFileSystem`,
-//! `sun.nio.fs.WindowsNativeDispatcher`), Winsock, the DNS configuration,
+//! `sun.nio.fs.WindowsNativeDispatcher`), Winsock, the DNS configuration, the registry,
 //! processes and the platform properties.
 
 mod args;
@@ -15,6 +15,7 @@ mod nio_ch;
 mod nio_fs;
 mod ntsystem;
 mod process;
+mod registry;
 mod security;
 mod selector;
 mod sockopt;
@@ -37,6 +38,7 @@ pub(super) fn register(r: &mut NativeRegistry) {
     nio_fs::register(r);
     ntsystem::register(r);
     process::register(r);
+    registry::register(r);
     security::register(r);
     selector::register(r);
     sockopt::register(r);
