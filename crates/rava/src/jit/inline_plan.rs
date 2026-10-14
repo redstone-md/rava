@@ -262,3 +262,18 @@ fn switch_targets(code: &[u8], pc: usize) -> Vec<usize> {
     }
     out
 }
+
+/// `RAVA_INLINE_LOG`: whether inlining decisions are logged at all, and prints `line` when it
+/// holds the variable's value (any line for `1`), so a run can follow a few methods without the
+/// cost of logging every compilation.
+pub(super) fn log_enabled() -> bool {
+    env_once!("RAVA_INLINE_LOG").is_some()
+}
+
+pub(super) fn log(line: std::fmt::Arguments) {
+    let Some(filter) = env_once!("RAVA_INLINE_LOG").and_then(|f| f.to_str()) else { return };
+    let line = line.to_string();
+    if filter == "1" || line.contains(filter) {
+        eprintln!("{line}");
+    }
+}

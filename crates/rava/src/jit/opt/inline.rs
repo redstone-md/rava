@@ -59,10 +59,10 @@ impl Builder {
             Some(t) if matches!(op, 0xb6 | 0xb9) => vec![(t, Guard::None)],
             _ => self.inline_targets(pc, op, m, pre.clone()),
         };
-        if plans.is_empty() && env_once!("RAVA_INLINE_LOG").is_some() {
+        if plans.is_empty() && crate::jit::inline_plan::log_enabled() {
             let cell = crate::jit::profile::describe(self.sc.m, pc);
             let indent = "  ".repeat(self.chain.len());
-            eprintln!("[opt-inline] {indent}{} @{} -> {m} call (no target: {cell})", self.sc.m, pc);
+            crate::jit::inline_plan::log(format_args!("[opt-inline] {indent}{} @{} -> {m} call (no target: {cell})", self.sc.m, pc));
         }
         // A complete receiver profile (every class the site saw is guarded): a receiver of
         // another class deoptimizes (C2's uncommon trap), noting its class for recompilation;
@@ -120,10 +120,10 @@ impl Builder {
             if !ok && intrinsic.is_none() && crate::jit::inline_plan::cold_site(target, freq) {
                 self.cold_call = true;
             }
-            if env_once!("RAVA_INLINE_LOG").is_some() {
+            if crate::jit::inline_plan::log_enabled() {
                 let indent = "  ".repeat(self.chain.len());
                 let why = if ok { String::new() } else { format!(" ({})", crate::jit::inline_plan::refusal(target, &self.chain, 3, self.spent, freq)) };
-                eprintln!("[opt-inline] {indent}{} @{} (freq {freq:.3}) -> {target} {}{why}", self.sc.m, s.bci, if ok { "inlined" } else { "call" });
+                crate::jit::inline_plan::log(format_args!("[opt-inline] {indent}{} @{} (freq {freq:.3}) -> {target} {}{why}", self.sc.m, s.bci, if ok { "inlined" } else { "call" }));
             }
             if !ok {
                 // A receiver class the profile names, whose target is not inlined: tested

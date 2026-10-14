@@ -26,9 +26,9 @@ impl Emitter {
         let n = target.param_slots() as usize;
         let consts = consts.unwrap_or_else(|| (0..n).map(|i| self.site_consts.get(args as usize + i).copied().flatten()).collect());
         let kind = decide(target, consts.first().copied().flatten(), &self.chain, self.tier, self.inlined_bytes, 1.0);
-        if env_once!("RAVA_INLINE_LOG").is_some() {
+        if super::inline_plan::log_enabled() {
             let indent = "  ".repeat(self.chain.len());
-            eprintln!("[inline] {indent}{} @{pc} -> {target} {}", self.m, if kind.is_some() { "inlined" } else { "call" });
+            super::inline_plan::log(format_args!("[inline] {indent}{} @{pc} -> {target} {}", self.m, if kind.is_some() { "inlined" } else { "call" }));
         }
         let kind = kind?;
         self.set_bci(pc);
