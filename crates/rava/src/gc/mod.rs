@@ -200,12 +200,14 @@ impl Heap {
         (live / 3).min(self.max_heap.saturating_sub(live)).max(self.min_trigger)
     }
 
-    /// A full collection is due once the old generation has doubled since the last one (or
-    /// fills the heap), or when generations are off (`RAVA_GC_GEN=0`).
+    /// A full collection is due once the old generation has grown by half since the last one
+    /// (or fills the heap), or when generations are off (`RAVA_GC_GEN=0`). Waiting for it to
+    /// double let dead old objects pile up to twice the live data: All the Mods 10 held an
+    /// 8.4 GiB heap for 3.8 GiB of live objects, its full collection costing 0.37 s.
     fn full_due(&self, s: &Space) -> bool {
         static GENERATIONAL: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
         let generational = *GENERATIONAL.get_or_init(|| std::env::var("RAVA_GC_GEN").map_or(true, |v| v != "0"));
-        !generational || s.live_after_gc > (2 * s.live_after_full).max(self.min_trigger) || s.live_after_gc + self.min_trigger > self.max_heap
+        !generational || s.live_after_gc > (s.live_after_full + s.live_after_full / 2).max(self.min_trigger) || s.live_after_gc + self.min_trigger > self.max_heap
     }
 
     pub fn max_bytes(&self) -> usize {
