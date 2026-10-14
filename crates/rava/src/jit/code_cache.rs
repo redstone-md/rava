@@ -194,6 +194,9 @@ fn reg_adapter(m: &crate::method::Method) -> usize {
 pub fn perf_map(address: usize, size: usize, name: &str) {
     use std::io::Write;
     static FILE: std::sync::OnceLock<Option<Mutex<std::fs::File>>> = std::sync::OnceLock::new();
+    if KEEP_NAMES.load(std::sync::atomic::Ordering::Relaxed) {
+        NAMES.lock().unwrap().insert(address, (size, name.to_string()));
+    }
     let Some(mode) = env_once!("RAVA_PERF_MAP") else { return };
     // `exit`: kept in memory and written when the VM exits (`flush_perf_map`), no write per
     // compilation (tools that serialize threads, such as valgrind, stall on them).
@@ -211,6 +214,20 @@ pub fn perf_map(address: usize, size: usize, name: &str) {
 }
 
 static PERF_LINES: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+/// Compiled code's names by address, kept for the sampling profiler (`sampler.rs`).
+static KEEP_NAMES: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static NAMES: Mutex<std::collections::BTreeMap<usize, (usize, String)>> = Mutex::new(std::collections::BTreeMap::new());
+
+/// Keeps the name of the code compiled from now on (`names`).
+pub fn keep_names() {
+    KEEP_NAMES.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// The kept names: start address to (size, name).
+pub fn names() -> std::collections::BTreeMap<usize, (usize, String)> {
+    NAMES.lock().unwrap().clone()
+}
 
 /// Writes the perf map kept in memory (`RAVA_PERF_MAP=exit`).
 pub fn flush_perf_map() {
