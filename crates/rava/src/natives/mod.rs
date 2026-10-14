@@ -45,6 +45,8 @@ mod unixfs;
 mod unixfs_ext;
 #[cfg(unix)]
 mod unixdns;
+#[cfg(unix)]
+mod unixprefs;
 #[cfg(target_os = "linux")]
 mod linux;
 #[cfg(target_os = "macos")]
@@ -107,6 +109,8 @@ impl NativeRegistry {
         unixfs_ext::register(&mut r);
         #[cfg(unix)]
         unixdns::register(&mut r);
+        #[cfg(unix)]
+        unixprefs::register(&mut r);
         #[cfg(target_os = "linux")]
         watch::register(&mut r);
         #[cfg(target_os = "linux")]
