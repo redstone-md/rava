@@ -19,6 +19,12 @@ public class JniTest {
     static native String globalRoundTrip(String s);
     static native int[] makeArray(int n);
     static native void foreignThreads();
+    static native char[] stringChars(String s);
+    static native byte[] stringBytes(String s);
+    static native String stringRoundTrip(String s);
+    static native char[] stringRegion(String s, int start, int len);
+    static native byte[] stringUtfRegion(String s, int start, int len);
+    static native long stringGetterLoop(String s, int iterations, int kind);
 
     static int calls;
     static volatile boolean done;
@@ -52,8 +58,62 @@ public class JniTest {
 
     static void onCall(int n, String s) { calls += n; System.out.println("callback " + n + " " + s); }
 
+    /** DataOutputStream supplies an independent modified UTF-8 encoding oracle. */
+    static byte[] modifiedUtf8(String s) throws java.io.IOException {
+        java.io.ByteArrayOutputStream bytes = new java.io.ByteArrayOutputStream();
+        new java.io.DataOutputStream(bytes).writeUTF(s);
+        byte[] framed = bytes.toByteArray();
+        return java.util.Arrays.copyOfRange(framed, 2, framed.length);
+    }
+
+    static void checkString(String s) throws java.io.IOException {
+        if (!java.util.Arrays.equals(stringChars(s), s.toCharArray())) throw new AssertionError("UTF-16 chars");
+        if (!java.util.Arrays.equals(stringBytes(s), modifiedUtf8(s))) throw new AssertionError("modified UTF-8 chars/length");
+        if (!s.equals(stringRoundTrip(s))) throw new AssertionError("modified UTF-8 round trip");
+        int[][] regions = {{0, s.length()}, {0, 0}, {s.length(), 0}, {s.length() / 2, s.length() - s.length() / 2}};
+        for (int[] r : regions) {
+            String sub = s.substring(r[0], r[0] + r[1]);
+            if (!java.util.Arrays.equals(stringRegion(s, r[0], r[1]), sub.toCharArray())) throw new AssertionError("UTF-16 region");
+            if (!java.util.Arrays.equals(stringUtfRegion(s, r[0], r[1]), modifiedUtf8(sub))) throw new AssertionError("modified UTF-8 region");
+        }
+    }
+
+    static void checkStrings() {
+        try {
+            for (String s : new String[] {"", "ASCII", "\u0000\u007f\u0080\u00ff", "\u07ff\u0800\uffff",
+                                           "\ud800x\udfff", "\ud83d\ude00"}) checkString(s);
+            char[] large = new char[16384];
+            for (int i = 0; i < large.length; i++) large[i] = (char) (i * 47);
+            checkString(new String(large));
+            int[][] invalid = {{-1, 1}, {0, -1}, {4, 0}, {Integer.MAX_VALUE, 1}, {0, Integer.MAX_VALUE}};
+            for (int[] r : invalid) {
+                try { stringRegion("abc", r[0], r[1]); throw new AssertionError("UTF-16 region bounds"); }
+                catch (StringIndexOutOfBoundsException expected) {}
+                try { stringUtfRegion("abc", r[0], r[1]); throw new AssertionError("modified UTF-8 region bounds"); }
+                catch (StringIndexOutOfBoundsException expected) {}
+            }
+        } catch (java.io.IOException e) { throw new AssertionError(e); }
+        System.out.println("strings: pass");
+    }
+
     public static void main(String[] args) {
         System.loadLibrary("jnitest");
+        // Optional microbenchmark: kind (0 length, 1 UTF length, 2 chars, 3 UTF chars),
+        // code units, iterations, and coder (0 ASCII, 1 UTF-16). Each sample is a new process.
+        if (args.length > 0 && args[0].equals("string-bench")) {
+            int kind = Integer.parseInt(args[1]), n = Integer.parseInt(args[2]), iterations = Integer.parseInt(args[3]);
+            boolean utf16 = args.length > 4 && args[4].equals("1");
+            char[] chars = new char[n];
+            for (int i = 0; i < n; i++) chars[i] = (char) (utf16 ? 0x800 + i % 1024 : 32 + i % 95);
+            String s = new String(chars);
+            stringGetterLoop(s, 2000, kind);
+            long started = System.nanoTime();
+            long checksum = stringGetterLoop(s, iterations, kind);
+            System.out.println("checksum " + checksum + " ns/call " + (System.nanoTime() - started) / (double) iterations);
+            return;
+        }
+        checkStrings();
+        if (args.length > 0 && args[0].equals("strings")) return;
         System.out.println(add(40, 2));
         System.out.println(mix((byte) -3, (short) -300, 'x', 100000, 1L << 40, 1.5f, 2.25, true));
         System.out.println(many(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18));

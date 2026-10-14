@@ -85,16 +85,16 @@ impl Gen<'_> {
                 },
                 Inst::Const(c) => Place::Imm(c),
                 // A copy (`split.rs`) is wherever its value is: nothing changes either; so is a
-                // phi's input from the entry block.
-                Inst::Copy(x) => match place.get(&g.resolve(x)) {
-                    Some(&p) => p,
+                // phi's selected input along the fast path.
+                Inst::Copy(x) => match place_of(g, &place, x) {
+                    Some(p) => p,
                     None => return,
                 },
                 Inst::Phi(ref ins) => {
                     let pred = path.iter().find(|p| p.0 == blk).expect("a block of the path").1;
                     let from = g.blocks[blk as usize].preds.iter().position(|&p| p == pred).expect("entered along the path");
-                    match place.get(&g.resolve(ins[from])) {
-                        Some(&p) => p,
+                    match place_of(g, &place, ins[from]) {
+                        Some(p) => p,
                         None => return,
                     }
                 }
@@ -110,9 +110,13 @@ impl Gen<'_> {
         if result.is_some_and(|r| operand(r).is_none()) {
             return;
         }
-        // Every operand computed here must have a place (`algebra.rs` makes constants outside
-        // any block, which the walk above never saw): else only the fast exit is given up.
-        if !body.iter().all(|&(v, _)| g.values[v as usize].inst.inputs().into_iter().all(|x| operand(x).is_some())) {
+        // Computed operands must have a place, including constants made outside any block.
+        // Copies and phis emit nothing; their selected source was checked above. A phi's
+        // other inputs belong to paths this exit never takes and need no place here.
+        if !body.iter().all(|&(v, _)| match &g.values[v as usize].inst {
+            Inst::Copy(_) | Inst::Phi(_) => true,
+            inst => inst.inputs().into_iter().all(|x| operand(x).is_some()),
+        }) {
             return;
         }
         let slow = self.a.new_label();

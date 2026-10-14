@@ -22,6 +22,27 @@ public class FastExitSem {
         return r;
     }
 
+    static int merged(int n, int bias) {
+        int r;
+        if (n <= 0) r = (bias + 1) + 2;
+        else r = merged(n - 1, bias * 3) + n;
+        return r;
+    }
+
+    static long mergedConstant(int n) {
+        long r;
+        if (n <= 0) r = 17L;
+        else r = mergedConstant(n - 1) + n;
+        return r;
+    }
+
+    static Object mergedRef(Object o, int n) {
+        Object r;
+        if (n <= 0) r = o;
+        else r = mergedRef(o, n - 1);
+        return r;
+    }
+
     static int constant(int n) {
         if (n > 40) return -1;
         return constant(n + 1) + 2;
@@ -82,12 +103,17 @@ public class FastExitSem {
             check += down(i % 9, i, -i);
             check += longs(i % 7, i * 1000000007L);
             check += shared(i % 12);
+            check += merged(i % 9 - 2, i * 1000000007);
+            check += mergedConstant(i % 9 - 2);
+            check += mergedRef(a, i % 7) == a ? 1 : 0;
+            check += mergedRef(null, i % 7) == null ? 1 : 0;
             check += constant(i % 45);
             check += refs(i % 5 == 0 ? null : "x", i % 4);
             effect(i % 10);
             check += negative(i % 6, i - 2000);
         }
         System.out.println("check " + check + " sum " + sum);
+        System.out.println("merged " + merged(0, Integer.MAX_VALUE) + " " + merged(-1, Integer.MIN_VALUE) + " " + merged(7, -3) + " " + mergedConstant(7));
         System.out.println(down(7, 5, 9) + " " + longs(5, Long.MAX_VALUE) + " " + shared(15) + " " + constant(0) + " " + refs("y", 0) + " " + negative(4, -9));
     }
 }
