@@ -59,6 +59,25 @@ pub fn main() -> ExitCode {
     code
 }
 
+/// `RAVA_STDERR=<file>`: the VM's diagnostics (`RAVA_*` logs) go to that file, appended, for a
+/// program started by a launcher that does not keep its error output (a game's).
+fn redirect_stderr() {
+    let Some(path) = std::env::var_os("RAVA_STDERR") else { return };
+    let Ok(file) = std::fs::OpenOptions::new().create(true).append(true).open(path) else { return };
+    #[cfg(windows)]
+    {
+        use std::os::windows::io::IntoRawHandle;
+        // SAFETY: the handle of a file kept open for the process's life.
+        unsafe { windows_sys::Win32::System::Console::SetStdHandle(windows_sys::Win32::System::Console::STD_ERROR_HANDLE, file.into_raw_handle() as _) };
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::io::IntoRawFd;
+        // SAFETY: duplicates a descriptor kept open for the process's life onto stderr.
+        unsafe { libc::dup2(file.into_raw_fd(), 2) };
+    }
+}
+
 fn fail(e: LaunchError) -> ExitCode {
     e.report();
     ExitCode::FAILURE
@@ -67,6 +86,7 @@ fn fail(e: LaunchError) -> ExitCode {
 /// Creates the VM, does what the command line asks, then ends the VM as `DestroyJavaVM` does.
 fn run(mut line: CommandLine, java_home: PathBuf) -> ExitCode {
     let started = Instant::now();
+    redirect_stderr();
     let jar = line.jar().map(str::to_owned);
     let options = std::mem::take(&mut line.settings).into_vm_options(java_home, jar.as_deref());
     let vm = match Vm::create(options) {

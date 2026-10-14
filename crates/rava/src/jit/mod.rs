@@ -36,6 +36,7 @@ mod inline_plan;
 mod intrinsics;
 pub(crate) mod leaf;
 mod opt;
+pub(crate) use opt::COMPILES as OPT_COMPILES;
 
 /// Indexes a newly defined class for class hierarchy analysis (`opt/cha.rs`).
 pub(crate) fn note_class(k: &'static crate::klass::Klass) {

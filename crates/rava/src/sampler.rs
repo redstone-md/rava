@@ -102,6 +102,10 @@ mod imp {
             let mut names: HashMap<u32, String> = HashMap::new();
             let mut used: HashMap<u32, u64> = HashMap::new();
             let mut last_report = std::time::Instant::now();
+            let started = last_report;
+            let mut last_used: HashMap<u32, u64> = HashMap::new();
+            let mut last_process = process_cpu();
+            let mut last_compiles = 0;
             let mut ctx: Box<Ctx> = Box::new(unsafe { std::mem::zeroed() });
             let mut pcs: Vec<(u32, usize, usize, usize)> = Vec::with_capacity(512);
             loop {
@@ -166,6 +170,24 @@ mod imp {
                         used.insert(s.id, s.used);
                     }
                     let _ = std::fs::write(&path, report(&counts, &names, &used));
+                    // The CPU each thread used in this report's ten seconds (`<file>.cpu`), to
+                    // tell a steady state from loading.
+                    let process = process_cpu();
+                    let compiles = crate::jit::OPT_COMPILES.load(Relaxed);
+                    let mut line = format!("{}	process={:.2}	opt-compiles={}", started.elapsed().as_secs(), process - last_process, compiles - last_compiles);
+                    last_compiles = compiles;
+                    last_process = process;
+                    for (id, &u) in &used {
+                        let d = u - last_used.get(id).copied().unwrap_or(0);
+                        if d > 0 {
+                            line += &format!("	{}={:.2}", names.get(id).map_or("?", |s| s.as_str()), d as f64 / 3.0e9);
+                        }
+                    }
+                    last_used = used.clone();
+                    use std::io::Write;
+                    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(format!("{}.cpu", path.to_string_lossy())) {
+                        let _ = writeln!(f, "{line}");
+                    }
                     // Libraries a program loads later (a game's natives, its graphics driver).
                     modules = all_modules();
                 }
@@ -185,6 +207,18 @@ mod imp {
                 (base, base + info.SizeOfImage as usize)
             })
         }
+    }
+
+    /// Seconds of CPU the whole process has used (user and kernel).
+    fn process_cpu() -> f64 {
+        use windows_sys::Win32::Foundation::FILETIME;
+        use windows_sys::Win32::System::Threading::{GetCurrentProcess, GetProcessTimes};
+        let z = || FILETIME { dwLowDateTime: 0, dwHighDateTime: 0 };
+        let (mut c, mut e, mut k, mut u) = (z(), z(), z(), z());
+        // SAFETY: a query of this process into locals.
+        unsafe { GetProcessTimes(GetCurrentProcess(), &mut c, &mut e, &mut k, &mut u) };
+        let t = |f: FILETIME| ((f.dwHighDateTime as u64) << 32 | f.dwLowDateTime as u64) as f64 / 1e7;
+        t(k) + t(u)
     }
 
     /// The address range of the VM's own executable.
