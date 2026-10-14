@@ -76,11 +76,12 @@ fn background() -> bool {
 fn queue() -> &'static Queue {
     static Q: OnceLock<Queue> = OnceLock::new();
     Q.get_or_init(|| {
-        // A compiler thread per core, at a lower priority: compilation takes the cores the
-        // application leaves idle (most of a server start runs on one or two threads) without
-        // competing with its threads when they are busy.
+        // A compiler thread per core (up to 8), at the application's priority as HotSpot's are:
+        // at a lower one (`RAVA_COMPILER_NICE`) they starved while world generation kept every
+        // core busy, and its hottest methods ran first-tier code for 10-30 s longer (a Paper
+        // start took 19-52 s instead of 17-20 s).
         let workers = std::env::var("RAVA_COMPILER_THREADS").ok().and_then(|v| v.parse().ok()).unwrap_or_else(|| crate::processors().clamp(2, 8));
-        let nice = std::env::var("RAVA_COMPILER_NICE").ok().and_then(|v| v.parse().ok()).unwrap_or(10);
+        let nice = std::env::var("RAVA_COMPILER_NICE").ok().and_then(|v| v.parse().ok()).unwrap_or(0);
         for i in 0..workers {
             std::thread::Builder::new().name(format!("rava-compiler-{i}")).stack_size(64 << 20).spawn(move || {
                 if nice != 0 {
