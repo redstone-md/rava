@@ -101,6 +101,8 @@ struct Intervals {
     /// Real uses by estimated executions (block profile frequencies), and the block at hand's.
     reads: Vec<f32>,
     block_freq: f32,
+    /// Real uses of each value (`reads[v] / uses[v]` is how often one runs on average).
+    uses: Vec<u32>,
     /// Blocks with real uses of each value (for `LoopMap::idle`), and the block at hand.
     use_blocks: Vec<Vec<B>>,
     block: B,
@@ -117,6 +119,7 @@ impl Intervals {
     fn used_at(&mut self, v: V, p: u32) {
         self.weight[v as usize] += self.block_weight;
         self.reads[v as usize] += self.block_freq;
+        self.uses[v as usize] += 1;
         let blocks = &mut self.use_blocks[v as usize];
         if blocks.last() != Some(&self.block) {
             blocks.push(self.block);
@@ -332,7 +335,7 @@ fn live_registers(g: &Graph, order: &[B], pos: &[u32], range: &[(u32, u32)], iv:
 fn intervals(g: &Graph, order: &[B], pos: &[u32], range: &[(u32, u32)], depth: &[u32], reads: &mut StateReads, states: bool) -> Intervals {
     let n = g.values.len();
     let live_in = liveness(g, order, reads, states);
-    let mut iv = Intervals { start: vec![u32::MAX; n], end: vec![0; n], used: vec![false; n], calls: Vec::new(), call_freq: Vec::new(), call_values: Vec::new(), weight: vec![0.0; n], block_weight: 1.0, reads: vec![0.0; n], block_freq: 0.0, use_blocks: vec![Vec::new(); n], block: 0, dirty: [Vec::new(), Vec::new()] };
+    let mut iv = Intervals { start: vec![u32::MAX; n], end: vec![0; n], used: vec![false; n], calls: Vec::new(), call_freq: Vec::new(), call_values: Vec::new(), weight: vec![0.0; n], block_weight: 1.0, reads: vec![0.0; n], block_freq: 0.0, uses: vec![0; n], use_blocks: vec![Vec::new(); n], block: 0, dirty: [Vec::new(), Vec::new()] };
     for &b in order {
         let (from, to) = range[b as usize];
         iv.block_weight = 8f32.powi(depth[b as usize].min(5) as i32);
@@ -488,12 +491,19 @@ fn scan(g: &Graph, iv: &mut Intervals, full: &Intervals, loops: &LoopMap, hints:
             continue;
         }
         // Spill the cheapest of this interval and the active ones in its register class: one
-        // idle through the loop here first, then the fewest loop-weighted uses per position.
+        // idle through the loop here first; then, in a rarely run block, one that is not hot
+        // (its reads run on average at least four times as often as this block) before one
+        // that is; else the fewest loop-weighted uses per position, which frees the register
+        // for the most later intervals. Uses per position alone spilled a hot loop's counter
+        // and bounds (long intervals) for the temporaries of a rarely taken branch in it
+        // (short ones), and every iteration reloaded them.
         let p = iv.start[v];
-        let cost = |x: usize| (!loops.idle(iv, x, p), iv.weight[x] / (iv.end[x] - iv.start[x] + 1) as f32);
+        let here = loops.block_at.get(p as usize).map_or(0.0, |&b| g.blocks[b as usize].freq);
+        let hot = |x: usize| iv.uses[x] > 0 && iv.reads[x] > 4.0 * here * iv.uses[x] as f32;
+        let cost = |x: usize| (!loops.idle(iv, x, p), hot(x), iv.weight[x] / (iv.end[x] - iv.start[x] + 1) as f32);
         let cheaper = |a: usize, b: usize| {
             let (ca, cb) = (cost(a), cost(b));
-            ca.0.cmp(&cb.0).then(ca.1.total_cmp(&cb.1)).then(iv.end[b].cmp(&iv.end[a]))
+            ca.0.cmp(&cb.0).then(ca.1.cmp(&cb.1)).then(ca.2.total_cmp(&cb.2)).then(iv.end[b].cmp(&iv.end[a]))
         };
         let victim = active.iter().copied().filter(|&a| allowed(loc[a])).min_by(|&a, &b| cheaper(a, b));
         match victim {
