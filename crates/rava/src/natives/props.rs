@@ -164,6 +164,49 @@ fn platform_properties(t: &mut Thread, _: &[u64]) -> JResult<u64> {
     ret_ref(string_array(t, &values)?)
 }
 
+/// `java.library.path` as HotSpot builds it for the system: on Linux `LD_LIBRARY_PATH` and then
+/// the system directories.
+#[cfg(target_os = "linux")]
+fn default_library_path() -> String {
+    let system = "/usr/java/packages/lib:/usr/lib64:/lib64:/lib:/usr/lib";
+    match std::env::var("LD_LIBRARY_PATH") {
+        Ok(l) if !l.is_empty() => format!("{l}:{system}"),
+        _ => system.into(),
+    }
+}
+
+/// On macOS `JAVA_LIBRARY_PATH`, the Java extension directories, `/usr/lib/java` and `.`.
+#[cfg(target_os = "macos")]
+fn default_library_path() -> String {
+    let home = std::env::var("HOME").unwrap_or_default();
+    let dirs = format!("{home}/Library/Java/Extensions:/Library/Java/Extensions:/Network/Library/Java/Extensions:/System/Library/Java/Extensions:/usr/lib/java:.");
+    match std::env::var("JAVA_LIBRARY_PATH") {
+        Ok(l) if !l.is_empty() => format!("{l}:{dirs}"),
+        _ => dirs,
+    }
+}
+
+/// On Windows LoadLibrary's own order: the launcher's directory, the system-wide Java
+/// directory, the system and Windows directories, `PATH`, and `.`.
+#[cfg(windows)]
+fn default_library_path() -> String {
+    use windows_sys::Win32::System::SystemInformation::{GetSystemDirectoryW, GetWindowsDirectoryW};
+    let dir = |f: unsafe extern "system" fn(*mut u16, u32) -> u32| {
+        let mut buf = [0u16; 260];
+        // SAFETY: a buffer of its stated length.
+        let n = unsafe { f(buf.as_mut_ptr(), buf.len() as u32) } as usize;
+        String::from_utf16_lossy(&buf[..n.min(buf.len())])
+    };
+    let exe = std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.display().to_string())).unwrap_or_default();
+    let windows = dir(GetWindowsDirectoryW);
+    let mut parts = vec![exe, format!("{windows}\\Sun\\Java\\bin"), dir(GetSystemDirectoryW), windows];
+    if let Ok(path) = std::env::var("PATH") {
+        parts.push(path);
+    }
+    parts.push(".".into());
+    parts.join(";")
+}
+
 fn vm_properties(t: &mut Thread, _: &[u64]) -> JResult<u64> {
     let v = vm();
     let home = v.options.java_home.to_string_lossy().into_owned();
@@ -178,7 +221,7 @@ fn vm_properties(t: &mut Thread, _: &[u64]) -> JResult<u64> {
         ("java.vm.info".into(), "mixed mode".into()),
         ("jdk.debug".into(), "release".into()),
         ("sun.boot.library.path".into(), format!("{home}/lib")),
-        ("java.library.path".into(), "/usr/java/packages/lib:/usr/lib64:/lib64:/lib:/usr/lib".into()),
+        ("java.library.path".into(), default_library_path()),
         ("java.class.path".into(), v.options.class_path.clone()),
         ("sun.java.launcher".into(), "SUN_STANDARD".into()),
         ("sun.management.compiler".into(), "rava tiered".into()),
