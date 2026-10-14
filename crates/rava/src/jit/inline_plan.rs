@@ -52,6 +52,10 @@ const HOT_INVOCATIONS: u32 = 2000;
 /// cold paths and dead code, while this budget counts every inlined body whole (measured on the
 /// server start: 8000 41.9 s, 16000 40.6 s; larger budgets gain nothing clear).
 const TIER2_BUDGET: usize = 16000;
+/// Bodies this small (a getter of a field of a field) inline past the budget: their code is
+/// smaller than the call's, and a large method full of them (a renderer's frame method) paid a
+/// call for each once its budget was spent.
+const TINY_SIZE: usize = 10;
 /// A callee whose optimized code is larger than this is called rather than inlined again
 /// (HotSpot's `InlineSmallCode`, 2500 bytes of C2 code): its own compilation already inlined
 /// what it calls. Optimized code here takes more bytes per bytecode than C2's, so the same
@@ -75,7 +79,7 @@ const MAX_TRIVIAL_SIZE: usize = 6;
 /// estimate; baseline tiers pass 1).
 pub(super) fn decide(target: &'static Method, first: Option<i64>, chain: &Chain, tier: u8, spent: usize, freq: f32) -> Option<Kind> {
     let size = target.code.map_or(0, |c| c.code.len());
-    if spent + size > if tier >= 2 { TIER2_BUDGET } else { TIER1_BUDGET } {
+    if spent + size > if tier >= 2 { TIER2_BUDGET } else { TIER1_BUDGET } && size > TINY_SIZE {
         return None;
     }
     if env_once!("RAVA_NO_INLINE").is_some() || target.is_abstract() || target.is_native() || intrinsic(target).is_some() {
@@ -109,7 +113,7 @@ fn compiled_too_large(target: &'static Method, freq: f32) -> bool {
 /// Why `decide` refuses `target` (for `RAVA_INLINE_LOG`).
 pub(super) fn refusal(target: &'static Method, chain: &Chain, tier: u8, spent: usize, freq: f32) -> &'static str {
     let size = target.code.map_or(0, |c| c.code.len());
-    if spent + size > if tier >= 2 { TIER2_BUDGET } else { TIER1_BUDGET } {
+    if spent + size > if tier >= 2 { TIER2_BUDGET } else { TIER1_BUDGET } && size > TINY_SIZE {
         return "inlining budget spent";
     }
     if target.is_abstract() || target.is_native() {
