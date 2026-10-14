@@ -2,11 +2,16 @@
 # Paper server start A/B: alternates builds on one host with a fixed Paper version, seed and a
 # fresh world per run, and keeps every run (not just a summary).
 #
-#   bench/paper_ab.sh [-n ROUNDS] [-b PAPER_BASE] [-o OUT] REV|java ...
+#   bench/paper_ab.sh [-n ROUNDS] [-b PAPER_BASE] [-o OUT] [-m SOURCE_MANIFEST]
+#                     REV|java|binary:/absolute/path ...
 #
 # REV is any git revision of this repository: it is built once (release profile) in its own
 # worktree under $AB_CACHE, so each result names the exact commit and binary. `java` runs the
 # same server on $JAVA_HOME's JVM. Each round runs every build once, in the given order.
+# `binary:/absolute/path` runs an existing executable without building or committing it;
+# its commit is recorded as `-`, with its full SHA256 and resolved path. This can validate
+# an uncommitted compiler change. env.txt records the checkout's source base and diff hashes,
+# not a claim about a prebuilt binary's source; -m preserves a supplied build/source manifest.
 #
 # PAPER_BASE is a directory with the server set up once (paper jar, eula.txt, libraries/ and
 # versions/ unpacked by a first run, server.properties with a fixed level-seed); each run copies
@@ -21,16 +26,20 @@
 #             to the "Done (" line, the server's own Done time, user/sys CPU, peak and current
 #             resident memory (MiB) at Done, milestone offsets;
 #   logs/     the server log of every run (gzip).
+#   source.diff, source-untracked.tsv   checkout changes and untracked file hashes at launch;
+#   source-manifest   an optional supplied manifest, copied verbatim.
 set -euo pipefail
 trap '' PIPE
 ROUNDS=3
 BASE=${PAPER_BASE:-${XDG_CACHE_HOME:-$HOME/.cache}/rava/paper-base}
 OUT=""
-while getopts n:b:o: opt; do
+MANIFEST=""
+while getopts n:b:o:m: opt; do
   case $opt in
     n) ROUNDS=$OPTARG ;;
     b) BASE=$OPTARG ;;
     o) OUT=$OPTARG ;;
+    m) MANIFEST=$OPTARG ;;
     *) sed -n '2,20p' "$0"; exit 2 ;;
   esac
 done
@@ -42,16 +51,39 @@ JAVA=${JAVA_HOME:-/usr/lib/jvm/java-21-openjdk-amd64}/bin/java
 JAR=$(cd "$BASE" && ls paper-*.jar 2>/dev/null | head -1 || true)
 if [ -f "$BASE/launch.args" ]; then ARGS=$(cat "$BASE/launch.args"); else ARGS="-jar $JAR --nogui"; fi
 OUT=${OUT:-$REPO/bench/results/$(date -u +%Y%m%d-%H%M%S)-$(hostname -s)}
-mkdir -p "$OUT/logs" "$CACHE"
+mkdir -p "$OUT/logs"
+file_sha256() { sha256sum < "$1" | cut -d' ' -f1; }
+if [ -n "$MANIFEST" ]; then
+  [ -f "$MANIFEST" ] || { echo "source manifest is not a file: $MANIFEST" >&2; exit 2; }
+  cp "$MANIFEST" "$OUT/source-manifest"
+fi
+SOURCE_BASE=$(git -C "$REPO" rev-parse HEAD)
+git -C "$REPO" diff --binary HEAD -- > "$OUT/source.diff"
+# git diff excludes untracked probes. Keep their hashes too, without treating them as built.
+: > "$OUT/source-untracked.tsv"
+git -C "$REPO" ls-files --others --exclude-standard -z | sort -z > "$OUT/source-untracked.paths"
+while IFS= read -r -d '' file; do
+  printf '%s\t%s\n' "$(file_sha256 "$REPO/$file")" "$file" >> "$OUT/source-untracked.tsv"
+done < "$OUT/source-untracked.paths"
+rm "$OUT/source-untracked.paths"
 
 # Builds (or reuses) each revision; label -> command, commit, binary hash.
 declare -A CMD COMMIT SHA
 for rev in "$@"; do
   if [ "$rev" = java ]; then
-    CMD[$rev]="$JAVA"; COMMIT[$rev]=-; SHA[$rev]=$(sha256sum "$(readlink -f "$JAVA")" | cut -c1-16)
+    CMD[$rev]="$JAVA"; COMMIT[$rev]=-; SHA[$rev]=$(file_sha256 "$(readlink -f "$JAVA")")
+    continue
+  fi
+  if [[ "$rev" == binary:* ]]; then
+    bin=${rev#binary:}
+    [[ "$bin" == /* && -f "$bin" && -x "$bin" ]] || {
+      echo "binary requires an absolute path to an executable file: $bin" >&2; exit 2;
+    }
+    CMD[$rev]=$(readlink -f "$bin"); COMMIT[$rev]=-; SHA[$rev]=$(file_sha256 "${CMD[$rev]}")
     continue
   fi
   c=$(git -C "$REPO" rev-parse --verify "$rev^{commit}")
+  mkdir -p "$CACHE"
   wt=$CACHE/$c
   # Revisions before the rename build the binary as rava-core.
   bin=$wt/target/release/rava; [ -x "$bin" ] || bin=$wt/target/release/rava-core
@@ -60,20 +92,25 @@ for rev in "$@"; do
     (cd "$wt" && cargo build --release >/dev/null 2>&1)
     bin=$wt/target/release/rava; [ -x "$bin" ] || bin=$wt/target/release/rava-core
   fi
-  CMD[$rev]=$bin; COMMIT[$rev]=$c; SHA[$rev]=$(sha256sum "$bin" | cut -c1-16)
+  CMD[$rev]=$bin; COMMIT[$rev]=$c; SHA[$rev]=$(file_sha256 "$bin")
 done
 
 {
   echo "date_utc $(date -u +%FT%TZ)"
-  echo "host $(hostname) nproc $(nproc) mem_kb $(awk '/MemTotal/{print $2}' /proc/meminfo)"
-  echo "cpu $(grep -m1 'model name' /proc/cpuinfo | cut -d: -f2- | sed 's/^ //')"
+  echo "host $(hostname) nproc $(nproc) mem_kb $(awk '/MemTotal/{print $2}' /proc/meminfo 2>/dev/null || echo -)"
+  cpu=$(grep -m1 'model name' /proc/cpuinfo 2>/dev/null | cut -d: -f2- | sed 's/^ //' || true)
+  echo "cpu ${cpu:--}"
   echo "kernel $(uname -r)"
   echo "rustc $(rustc --version 2>/dev/null || echo -)"
   echo "java $("$JAVA" -version 2>&1 | grep -v '^Picked up' | head -1)"
-  if [ -n "$JAR" ]; then echo "paper_jar $JAR $(sha256sum "$BASE/$JAR" | cut -d' ' -f1)"; fi
+  if [ -n "$JAR" ]; then echo "paper_jar $JAR $(file_sha256 "$BASE/$JAR")"; fi
   echo "args $ARGS"
   echo "server_properties $(tr -d '\r' < "$BASE/server.properties" | sha256sum | cut -d' ' -f1) $(tr -d '\r' < "$BASE/server.properties" | grep -E '^(level-seed|level-name|view-distance|simulation-distance)=' | tr '\n' ' ')"
-  echo "repo_head $(git -C "$REPO" rev-parse HEAD)"
+  echo "repo_head $SOURCE_BASE"
+  echo "source_base $SOURCE_BASE"
+  echo "source_diff_sha256 $(file_sha256 "$OUT/source.diff")"
+  echo "source_untracked_sha256 $(file_sha256 "$OUT/source-untracked.tsv")"
+  if [ -n "$MANIFEST" ]; then echo "source_manifest_sha256 $(file_sha256 "$OUT/source-manifest")"; fi
   for rev in "$@"; do echo "build $rev commit ${COMMIT[$rev]} sha256 ${SHA[$rev]} cmd ${CMD[$rev]}"; done
   env | grep -E '^(RAVA_|JAVA_HOME)' | sort | sed 's/^/env /' || true
   # The sandbox's JAVA_TOOL_OPTIONS hold its proxy and trust-store settings: noted, not copied.
@@ -84,14 +121,14 @@ done
 
 run_one() { # label round
   local label=$1 round=$2 d
-  d=$(mktemp -d /tmp/paper-ab-run.XXXXXX)
+  d=$(mktemp -d "${TMPDIR:-$OUT}/paper-ab-run.XXXXXX")
   cp -r "$BASE/." "$d/"
   rm -rf "$d"/world* "$d/logs" "$d/crash-reports"
   (cd "$d" && mkfifo in.fifo)
   local start end pid
   start=$(date +%s.%N)
   # shellcheck disable=SC2086 # ARGS is a word list
-  (cd "$d" && exec ${CMD[$label]} $ARGS < in.fifo > out.txt 2>&1) &
+  (cd "$d" && exec "${CMD[$label]}" $ARGS < in.fifo > out.txt 2>&1) &
   pid=$!
   exec 3> "$d/in.fifo"
   # A server that fails (or hangs) before "Done" is recorded as FAILED after RUN_LIMIT seconds.
@@ -102,10 +139,16 @@ run_one() { # label round
     sleep 0.1
   done
   end=$(date +%s.%N)
-  local ut=0 st=0 tck
+  local ut=- st=- tck
   tck=$(getconf CLK_TCK)
   local hwm=- rss=-
-  if [ -r /proc/$pid/stat ]; then read -r ut st < <(awk '{print $14, $15}' /proc/$pid/stat); fi
+  # comm is parenthesized and may contain spaces, including a prebuilt binary's file name.
+  local procstat
+  procstat=$(cat /proc/$pid/stat 2>/dev/null || true)
+  if [ -n "$procstat" ]; then
+    procstat=${procstat##*) }
+    read -r ut st <<< "$(awk '{print $12, $13}' <<< "$procstat")"
+  fi
   if [ -r /proc/$pid/status ]; then
     hwm=$(awk '/^VmHWM/{printf "%.0f", $2/1024}' /proc/$pid/status)
     rss=$(awk '/^VmRSS/{printf "%.0f", $2/1024}' /proc/$pid/status)
@@ -118,7 +161,7 @@ run_one() { # label round
   kill -9 $pid 2>/dev/null || true
   wait $pid 2>/dev/null || true
   local wall done_s ms
-  if grep -q 'Done (' "$d/out.txt"; then wall=$(echo "$end - $start" | bc); else wall=FAILED; fi
+  if grep -q 'Done (' "$d/out.txt"; then wall=$(python3 -c 'import sys; print(float(sys.argv[2]) - float(sys.argv[1]))' "$start" "$end"); else wall=FAILED; fi
   done_s=$(grep -o 'Done ([0-9.]*s)' "$d/out.txt" | grep -o '[0-9.]*' | head -1 || true)
   ms=$(python3 - "$d/out.txt" "$start" <<'PY'
 import sys, re, datetime
@@ -139,7 +182,7 @@ print(",".join(out))
 PY
 )
   printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$round" "$label" "${COMMIT[$label]}" "${SHA[$label]}" \
-    "$wall" "${done_s:--}" "$(echo "scale=1; $ut/$tck" | bc)" "$(echo "scale=1; $st/$tck" | bc)" "$hwm" "$rss" "$ms" >> "$OUT/runs.tsv"
+    "$wall" "${done_s:--}" "$(python3 -c 'import sys; print("-" if sys.argv[1] == "-" else f"{int(sys.argv[1]) / int(sys.argv[2]):.1f}")' "$ut" "$tck")" "$(python3 -c 'import sys; print("-" if sys.argv[1] == "-" else f"{int(sys.argv[1]) / int(sys.argv[2]):.1f}")' "$st" "$tck")" "$hwm" "$rss" "$ms" >> "$OUT/runs.tsv"
   gzip -c "$d/out.txt" > "$OUT/logs/r${round}-${label//\//_}.log.gz"
   rm -rf "$d"
   echo "round $round $label wall $wall done ${done_s:--} hwm ${hwm}M"
