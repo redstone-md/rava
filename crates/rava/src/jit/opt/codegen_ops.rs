@@ -163,9 +163,23 @@ impl Gen<'_> {
             return self.shift(v, w, op, x, y);
         }
         let r = self.out(v);
+        // `31 * h`: the constant second, for the forms below.
+        let (x, y) = if op == BinOp::Mul && self.g.constant(x).is_some() && self.g.constant(y).is_none() { (y, x) } else { (x, y) };
         if let (BinOp::Mul, Some(c)) = (op, self.g.constant(y).and_then(|c| i32::try_from(c).ok())) {
             let x = self.reg(x, r);
             match c {
+                // 2^n - 1 (a hash's 31): a shift and a subtraction.
+                7.. if (c as i64 + 1).count_ones() == 1 => {
+                    let t = if x == r {
+                        self.a.mov_rr(true, R::R11, x);
+                        R::R11
+                    } else {
+                        self.a.mov_rr(w, r, x);
+                        x
+                    };
+                    self.a.shift_ri(w, crate::jit::asm::Shift::Shl, r, (c as i64 + 1).trailing_zeros() as u8);
+                    self.a.alu_rr(w, Alu::Sub, r, t);
+                }
                 // A power of two is a shift; 3, 5 and 9 one `lea` (a cycle each, not three).
                 2.. if c.count_ones() == 1 => {
                     if x != r {

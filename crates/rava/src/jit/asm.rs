@@ -86,6 +86,9 @@ pub struct Asm {
     /// The spill store just emitted: (end, rsp displacement, register, width), so that a reload
     /// of that slot right after it becomes a register move (`load`).
     last_spill: Option<(u32, i32, R, bool)>,
+    /// The 64-bit register move just emitted: (end, destination, source), so that the move
+    /// back right after it (no label in between) is left out.
+    last_mov: Option<(u32, R, R)>,
 }
 
 /// Finished machine code and the call displacements its installation resolves.
@@ -289,7 +292,13 @@ impl Asm {
 
     // ---- moves ----
     pub fn mov_rr(&mut self, w: bool, dst: R, src: R) {
+        if w && (dst == src || self.last_mov.is_some_and(|(end, d, s)| end == self.pos() && (d, s) == (src, dst) && !(self.bound_at == end && !self.bound.is_empty()))) {
+            return;
+        }
         self.op_rr(w, &[0x89], src as u8, dst as u8);
+        if w {
+            self.last_mov = Some((self.pos(), dst, src));
+        }
     }
     pub fn load(&mut self, w: bool, dst: R, m: M) {
         // A reload of the stack slot just stored (no label in between): the register still has it.
@@ -410,6 +419,10 @@ impl Asm {
         self.op_rm(w, &[(op as u8) << 3 | 3], dst as u8, m);
     }
     pub fn alu_ri(&mut self, w: bool, op: Alu, dst: R, imm: i32) {
+        // `test r, r` sets the flags `cmp r, 0` does, a byte shorter.
+        if matches!(op, Alu::Cmp) && imm == 0 {
+            return self.test_rr(w, dst, dst);
+        }
         if (-128..128).contains(&imm) {
             self.op_rr(w, &[0x83], op as u8, dst as u8);
             self.b(imm as i8 as u8);

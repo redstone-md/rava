@@ -1,12 +1,13 @@
 // Multiplication by constants, which optimized code makes a shift (powers of two) or one `lea`
-// (3, 5, 9): int and long, negative operands, results that overflow, and the largest powers.
+// (3, 5, 9) or a shift and a subtraction (2^n - 1, a hash's 31), the constant on either side:
+// int and long, negative operands, results that overflow, and the largest powers.
 public class MulConstSem {
     static int ints(int x) {
-        return x * 2 ^ x * 4 * 7 ^ x * 8 ^ x * 64 ^ x * 1024 ^ x * 0x40000000 ^ x * 3 ^ x * 5 ^ x * 9 ^ x * -4 ^ x * 6;
+        return x * 2 ^ x * 4 * 7 ^ x * 8 ^ x * 64 ^ x * 1024 ^ x * 0x40000000 ^ x * 3 ^ x * 5 ^ x * 9 ^ x * -4 ^ x * 6 ^ 31 * x ^ x * 7 ^ x * 0x7fffffff ^ (31 * (31 * x + 7) + x);
     }
 
     static long longs(long x) {
-        return x * 2 ^ x * 8 ^ x * 64 ^ x * 0x40000000L ^ x * 3 ^ x * 5 ^ x * 9 ^ x * -8 ^ x * 10 ^ (x * 1024) >>> 3;
+        return x * 2 ^ x * 8 ^ x * 64 ^ x * 0x40000000L ^ x * 3 ^ x * 5 ^ x * 9 ^ x * -8 ^ x * 10 ^ (x * 1024) >>> 3 ^ 1023L * x ^ x * 63 ^ x * 0x7fffffffL;
     }
 
     static long index(long base, int i) {
