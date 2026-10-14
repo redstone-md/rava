@@ -1,6 +1,8 @@
 #include <jni.h>
 #include <string.h>
 #include <stdio.h>
+#include <stdlib.h>
+#include <stdint.h>
 #ifdef _WIN32
 #include <windows.h>
 #else
@@ -24,6 +26,86 @@ JNIEXPORT jstring JNICALL Java_JniTest_greet(JNIEnv *env, jclass c, jstring name
     snprintf(buf, sizeof buf, "hello %s", s);
     (*env)->ReleaseStringUTFChars(env, name, s);
     return (*env)->NewStringUTF(env, buf);
+}
+
+JNIEXPORT jcharArray JNICALL Java_JniTest_stringChars(JNIEnv *env, jclass c, jstring s) {
+    jsize n = (*env)->GetStringLength(env, s);
+    const jchar *chars = (*env)->GetStringChars(env, s, NULL);
+    if (chars == NULL) return NULL;
+    jcharArray out = (*env)->NewCharArray(env, n);
+    if (out != NULL) (*env)->SetCharArrayRegion(env, out, 0, n, chars);
+    (*env)->ReleaseStringChars(env, s, chars);
+    return out;
+}
+
+JNIEXPORT jbyteArray JNICALL Java_JniTest_stringBytes(JNIEnv *env, jclass c, jstring s) {
+    jsize n = (*env)->GetStringUTFLength(env, s);
+    const char *chars = (*env)->GetStringUTFChars(env, s, NULL);
+    if (chars == NULL) return NULL;
+    if (strlen(chars) != (size_t) n) {
+        (*env)->ThrowNew(env, (*env)->FindClass(env, "java/lang/AssertionError"), "modified UTF-8 length");
+        (*env)->ReleaseStringUTFChars(env, s, chars);
+        return NULL;
+    }
+    jbyteArray out = (*env)->NewByteArray(env, n);
+    if (out != NULL) (*env)->SetByteArrayRegion(env, out, 0, n, (const jbyte *) chars);
+    (*env)->ReleaseStringUTFChars(env, s, chars);
+    return out;
+}
+
+JNIEXPORT jstring JNICALL Java_JniTest_stringRoundTrip(JNIEnv *env, jclass c, jstring s) {
+    const char *chars = (*env)->GetStringUTFChars(env, s, NULL);
+    if (chars == NULL) return NULL;
+    jstring out = (*env)->NewStringUTF(env, chars);
+    (*env)->ReleaseStringUTFChars(env, s, chars);
+    return out;
+}
+
+JNIEXPORT jcharArray JNICALL Java_JniTest_stringRegion(JNIEnv *env, jclass c, jstring s, jint start, jint len) {
+    jsize n = (*env)->GetStringLength(env, s);
+    /* Size from the source so invalid ranges can reach the JNI bounds check without a huge malloc. */
+    jchar *chars = calloc((size_t) n + 1, sizeof(jchar));
+    if (chars == NULL) return NULL;
+    (*env)->GetStringRegion(env, s, start, len, chars);
+    if ((*env)->ExceptionCheck(env)) { free(chars); return NULL; }
+    jcharArray out = (*env)->NewCharArray(env, len);
+    if (out != NULL) (*env)->SetCharArrayRegion(env, out, 0, len, chars);
+    free(chars);
+    return out;
+}
+
+JNIEXPORT jbyteArray JNICALL Java_JniTest_stringUtfRegion(JNIEnv *env, jclass c, jstring s, jint start, jint len) {
+    jsize n = (*env)->GetStringLength(env, s);
+    char *chars = calloc((size_t) n * 3 + 1, 1);
+    if (chars == NULL) return NULL;
+    (*env)->GetStringUTFRegion(env, s, start, len, chars);
+    if ((*env)->ExceptionCheck(env)) { free(chars); return NULL; }
+    jsize bytes = (jsize) strlen(chars);
+    jbyteArray out = (*env)->NewByteArray(env, bytes);
+    if (out != NULL) (*env)->SetByteArrayRegion(env, out, 0, bytes, (const jbyte *) chars);
+    free(chars);
+    return out;
+}
+
+/* No Java allocations in the loop: measures JNI getters rather than return-array construction. */
+JNIEXPORT jlong JNICALL Java_JniTest_stringGetterLoop(JNIEnv *env, jclass c, jstring s, jint iterations, jint kind) {
+    jlong sum = 0;
+    for (jint i = 0; i < iterations; i++) {
+        if (kind == 0) sum += (*env)->GetStringLength(env, s);
+        else if (kind == 1) sum += (*env)->GetStringUTFLength(env, s);
+        else if (kind == 2) {
+            const jchar *chars = (*env)->GetStringChars(env, s, NULL);
+            if (chars == NULL) return sum;
+            sum += chars[0];
+            (*env)->ReleaseStringChars(env, s, chars);
+        } else {
+            const char *chars = (*env)->GetStringUTFChars(env, s, NULL);
+            if (chars == NULL) return sum;
+            sum += (unsigned char) chars[0];
+            (*env)->ReleaseStringUTFChars(env, s, chars);
+        }
+    }
+    return sum;
 }
 
 JNIEXPORT jint JNICALL Java_JniTest_sum(JNIEnv *env, jclass c, jintArray a) {

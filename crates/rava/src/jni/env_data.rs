@@ -5,6 +5,7 @@
 use super::env::{or_pending, SIZE};
 use super::{enter, refs, Env};
 use crate::heap::{obj, Oop};
+use crate::runtime::{string_view, StringView};
 use crate::thread::{JResult, Thread};
 use crate::types::BasicType;
 use std::ffi::c_char;
@@ -13,30 +14,49 @@ fn link(t: &mut Thread, r: crate::loader::LoadResult) -> JResult<&'static crate:
     r.map_err(|e| crate::runtime::link_error(t, e.into()))
 }
 
-/// `s` in modified UTF-8 (JVMS 4.4.7): NUL and supplementary characters' surrogates encoded
-/// as Java's class files do.
-fn modified_utf8(units: &[u16]) -> Vec<u8> {
-    let mut out = Vec::with_capacity(units.len());
-    for &u in units {
-        match u {
-            0x0001..=0x007f => out.push(u as u8),
-            0x0000 | 0x0080..=0x07ff => out.extend([0xc0 | (u >> 6) as u8, 0x80 | (u & 0x3f) as u8]),
-            _ => out.extend([0xe0 | (u >> 12) as u8, 0x80 | ((u >> 6) & 0x3f) as u8, 0x80 | (u & 0x3f) as u8]),
-        }
-    }
-    out
+/// Bytes in modified UTF-8 (JVMS 4.4.7), without constructing an encoded copy.
+fn modified_utf8_length(units: impl Iterator<Item = u16>) -> usize {
+    units.map(|u| 1 + (u == 0 || u >= 0x80) as usize + (u >= 0x800) as usize).sum()
 }
 
-/// A `malloc`ed copy of `bytes` followed by `nul` zero bytes.
-fn c_copy<T: Copy>(data: &[T], nul: usize) -> *mut T {
-    let size = std::mem::size_of::<T>();
-    // SAFETY: a fresh allocation of the copied length plus the terminator.
-    unsafe {
-        let p = libc::malloc((data.len() + nul) * size + 1) as *mut T;
-        std::ptr::copy_nonoverlapping(data.as_ptr(), p, data.len());
-        std::ptr::write_bytes((p as *mut u8).add(data.len() * size), 0, nul * size);
-        p
+/// Encodes into the caller's output, preserving NUL and individual surrogate code units.
+///
+/// # Safety
+/// `out` must have room for the units' modified UTF-8 encoding and one NUL byte.
+unsafe fn write_modified_utf8(units: impl Iterator<Item = u16>, mut out: *mut u8) {
+    for u in units {
+        match u {
+            0x0001..=0x007f => { *out = u as u8; out = out.add(1); }
+            0x0000 | 0x0080..=0x07ff => {
+                *out = 0xc0 | (u >> 6) as u8;
+                *out.add(1) = 0x80 | (u & 0x3f) as u8;
+                out = out.add(2);
+            }
+            _ => {
+                *out = 0xe0 | (u >> 12) as u8;
+                *out.add(1) = 0x80 | ((u >> 6) & 0x3f) as u8;
+                *out.add(2) = 0x80 | (u & 0x3f) as u8;
+                out = out.add(3);
+            }
+        }
     }
+    *out = 0;
+}
+
+/// Room for `len` elements and their zero terminator; null on allocation failure.
+fn alloc_chars<T>(len: usize) -> *mut T {
+    let Some(bytes) = len.checked_add(1).and_then(|n| n.checked_mul(std::mem::size_of::<T>())) else { return std::ptr::null_mut() };
+    // SAFETY: malloc returns suitably aligned storage; callers check for failure before writing.
+    unsafe { libc::malloc(bytes) as *mut T }
+}
+
+/// A checked string region. Reporting its error may allocate, so no view is used afterwards.
+fn string_region<'a>(t: &mut Thread, view: StringView<'a>, start: i32, len: i32) -> Option<StringView<'a>> {
+    let region = if start >= 0 && len >= 0 { view.region(start as usize, len as usize) } else { None };
+    if region.is_none() {
+        t.jni.exception = crate::runtime::throw_new(t, "java/lang/StringIndexOutOfBoundsException", "").0;
+    }
+    region
 }
 
 extern "C" fn new_string(env: *mut Env, chars: *const u16, len: i32) -> Oop {
@@ -51,7 +71,8 @@ extern "C" fn new_string(env: *mut Env, chars: *const u16, len: i32) -> Oop {
 extern "C" fn get_string_length(env: *mut Env, s: Oop) -> i32 {
     // In the VM while reading: a collection may move the string's young backing array.
     let (_t, _g) = enter(env);
-    crate::runtime::string_units(s).len() as i32
+    // SAFETY: a live JNI String, read without a safepoint while the VM guard is held.
+    unsafe { string_view(s) }.len() as i32
 }
 
 extern "C" fn get_string_chars(env: *mut Env, s: Oop, is_copy: *mut u8) -> *const u16 {
@@ -61,7 +82,17 @@ extern "C" fn get_string_chars(env: *mut Env, s: Oop, is_copy: *mut u8) -> *cons
         // SAFETY: the caller's out-parameter.
         unsafe { *is_copy = 1 };
     }
-    c_copy(&crate::runtime::string_units(s), 1)
+    // SAFETY: the VM guard keeps the backing array still; malloc does not poll or collect.
+    let view = unsafe { string_view(s) };
+    let out = alloc_chars::<u16>(view.len());
+    if !out.is_null() {
+        // SAFETY: room for every unit and its terminator; allocation succeeded.
+        unsafe {
+            for (i, u) in view.units().enumerate() { *out.add(i) = u; }
+            *out.add(view.len()) = 0;
+        }
+    }
+    out
 }
 
 extern "C" fn release_chars(_env: *mut Env, _s: Oop, p: *mut libc::c_void) {
@@ -85,7 +116,8 @@ extern "C" fn new_string_utf(env: *mut Env, bytes: *const c_char) -> Oop {
 extern "C" fn get_string_utf_length(env: *mut Env, s: Oop) -> i32 {
     // In the VM while reading: a collection may move the string's young backing array.
     let (_t, _g) = enter(env);
-    modified_utf8(&crate::runtime::string_units(s)).len() as i32
+    // SAFETY: a live JNI String, traversed without a safepoint while the VM guard is held.
+    modified_utf8_length(unsafe { string_view(s) }.units()) as i32
 }
 
 extern "C" fn get_string_utf_chars(env: *mut Env, s: Oop, is_copy: *mut u8) -> *const c_char {
@@ -95,31 +127,34 @@ extern "C" fn get_string_utf_chars(env: *mut Env, s: Oop, is_copy: *mut u8) -> *
         // SAFETY: the caller's out-parameter.
         unsafe { *is_copy = 1 };
     }
-    c_copy(&modified_utf8(&crate::runtime::string_units(s)), 1) as *const c_char
+    // SAFETY: the VM guard keeps the backing array still through both encoding passes.
+    let view = unsafe { string_view(s) };
+    let out = alloc_chars::<u8>(modified_utf8_length(view.units()));
+    if !out.is_null() {
+        // SAFETY: allocation succeeded, sized by the same code units plus their terminator.
+        unsafe { write_modified_utf8(view.units(), out) };
+    }
+    out as *const c_char
 }
 
 extern "C" fn get_string_region(env: *mut Env, s: Oop, start: i32, len: i32, buf: *mut u16) {
     // In the VM while reading: a collection may move the string's young backing array.
-    let (_t, _g) = enter(env);
-    let u = crate::runtime::string_units(s);
-    let (a, n) = (start.max(0) as usize, len.max(0) as usize);
-    if let Some(src) = u.get(a..a + n) {
-        // SAFETY: the caller's buffer of `len` units.
-        unsafe { std::ptr::copy_nonoverlapping(src.as_ptr(), buf, n) };
+    let (t, _g) = enter(env);
+    // SAFETY: a live JNI String; a successful region is used without a safepoint.
+    if let Some(view) = string_region(t, unsafe { string_view(s) }, start, len) {
+        // SAFETY: the caller's buffer of `len` units (no write for an empty region).
+        for (i, u) in view.units().enumerate() { unsafe { *buf.add(i) = u }; }
     }
 }
 
 extern "C" fn get_string_utf_region(env: *mut Env, s: Oop, start: i32, len: i32, buf: *mut u8) {
     // In the VM while reading: a collection may move the string's young backing array.
-    let (_t, _g) = enter(env);
-    let u = crate::runtime::string_units(s);
-    let (a, n) = (start.max(0) as usize, len.max(0) as usize);
-    if let Some(src) = u.get(a..a + n) {
-        let b = modified_utf8(src);
-        // SAFETY: the caller's buffer, large enough for the region's encoding and a NUL.
-        unsafe {
-            std::ptr::copy_nonoverlapping(b.as_ptr(), buf, b.len());
-            *buf.add(b.len()) = 0;
+    let (t, _g) = enter(env);
+    // SAFETY: a live JNI String; a successful region is used without a safepoint.
+    if let Some(view) = string_region(t, unsafe { string_view(s) }, start, len) {
+        if !buf.is_null() {
+            // SAFETY: the caller's buffer, large enough for the region's encoding and a NUL.
+            unsafe { write_modified_utf8(view.units(), buf) };
         }
     }
 }
@@ -270,4 +305,33 @@ pub(super) fn fill(t: &mut [usize; SIZE]) {
     t[223] = release_elements as *const () as usize;
     t[224] = get_string_chars as *const () as usize;
     t[225] = release_chars as *const () as usize;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{alloc_chars, modified_utf8_length, write_modified_utf8};
+
+    #[test]
+    fn modified_utf8_boundaries_and_surrogates() {
+        let units = [0, 1, 0x7f, 0x80, 0x7ff, 0x800, 0xd800, 0xdc00, 0xffff];
+        let expected = [0xc0, 0x80, 1, 0x7f, 0xc2, 0x80, 0xdf, 0xbf, 0xe0, 0xa0, 0x80,
+                        0xed, 0xa0, 0x80, 0xed, 0xb0, 0x80, 0xef, 0xbf, 0xbf, 0];
+        let mut encoded = [0xff; 21];
+        // SAFETY: this fixed output includes room for every encoded unit and its terminator.
+        unsafe { write_modified_utf8(units.into_iter(), encoded.as_mut_ptr()) };
+        assert_eq!(encoded, expected);
+        assert_eq!(modified_utf8_length(units.into_iter()), expected.len() - 1);
+    }
+
+    #[test]
+    fn every_utf16_unit_round_trips_through_the_classfile_decoder() {
+        let units: Vec<u16> = (0..=u16::MAX).collect();
+        let mut encoded = vec![0xff; 3 * units.len() + 1];
+        // SAFETY: three bytes per code unit plus its terminator is the encoding's upper bound.
+        unsafe { write_modified_utf8(units.iter().copied(), encoded.as_mut_ptr()) };
+        let len = encoded.iter().position(|&b| b == 0).unwrap();
+        assert_eq!(modified_utf8_length(units.iter().copied()), len);
+        assert_eq!(crate::symbol::decode_modified_utf8(&encoded[..len]), units);
+        assert!(alloc_chars::<u16>(usize::MAX).is_null());
+    }
 }
