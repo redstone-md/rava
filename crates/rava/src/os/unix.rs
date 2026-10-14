@@ -337,6 +337,17 @@ pub fn write_stderr(bytes: &[u8]) {
     unsafe { libc::write(2, bytes.as_ptr() as *const libc::c_void, bytes.len()) };
 }
 
+/// Reserves `len` bytes (executable with `exec`; with `at`, exactly there or nothing) whose
+/// pages exist once touched, as anonymous memory always is here.
+pub fn reserve_growing(len: usize, at: Option<usize>, exec: bool) -> Option<usize> {
+    reserve(len, at, exec)
+}
+
+/// Releases a range from `reserve_growing`.
+pub fn release_growing(p: usize, len: usize) {
+    release(p, len);
+}
+
 /// Makes `file` the process's standard error, for the VM's diagnostics and Java's `System.err`.
 pub fn redirect_stderr(file: std::fs::File) -> bool {
     use std::os::fd::AsRawFd;
