@@ -13,6 +13,7 @@ pub use mirror::{klass_of_mirror, mirror_of, primitive_by_name, primitive_mirror
 pub(crate) use mirror::klass_offset as mirror_klass_offset;
 pub(crate) use mirror::protection_domain_offset as mirror_protection_domain_offset;
 pub use strings::{intern, intern_modified_utf8 as intern_literal, intern_str, java_string_to_rust, new_string, new_string_utf16, string_units};
+pub(crate) use strings::{string_view, StringView};
 
 use crate::heap::{obj, Oop};
 use crate::klass::Klass;
