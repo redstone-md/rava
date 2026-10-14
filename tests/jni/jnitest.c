@@ -1,6 +1,11 @@
 #include <jni.h>
 #include <string.h>
 #include <stdio.h>
+#ifdef _WIN32
+#include <windows.h>
+#else
+#include <pthread.h>
+#endif
 
 JNIEXPORT jint JNICALL Java_JniTest_add(JNIEnv *env, jclass c, jint a, jint b) { return a + b; }
 
@@ -86,6 +91,53 @@ JNIEXPORT jintArray JNICALL Java_JniTest_makeArray(JNIEnv *env, jclass c, jint n
     for (jint i = 0; i < n; i++) buf[i] = i * i;
     (*env)->SetIntArrayRegion(env, a, 0, n, buf);
     return a;
+}
+
+/* Threads the VM did not start, as a driver's callback thread is: each finds itself detached
+ * (GetEnv gives JNI_EDETACHED and a null env), attaches (named, as a daemon, or without
+ * arguments), calls into Java and detaches; the last one, a daemon, ends still attached. */
+static JavaVM *jvm;
+static jclass test_class;
+
+static void foreign_body(int mode) {
+    JNIEnv *env = (JNIEnv *) (void *) 0x8a00000000LL;
+    jint rc = (*jvm)->GetEnv(jvm, (void **) &env, JNI_VERSION_1_8);
+    jboolean detached = rc == JNI_EDETACHED && env == NULL;
+    JavaVMAttachArgs args = {JNI_VERSION_1_8, mode == 0 ? "native-worker" : NULL, NULL};
+    if (mode == 1 || mode == 3) rc = (*jvm)->AttachCurrentThreadAsDaemon(jvm, (void **) &env, &args);
+    else rc = (*jvm)->AttachCurrentThread(jvm, (void **) &env, mode == 2 ? NULL : &args);
+    if (rc != JNI_OK) return;
+    JNIEnv *again = NULL;
+    (*jvm)->GetEnv(jvm, (void **) &again, JNI_VERSION_1_8);
+    jmethodID m = (*env)->GetStaticMethodID(env, test_class, "onForeign", "(IZZ)V");
+    (*env)->CallStaticVoidMethod(env, test_class, m, mode, detached, again == env);
+    if ((*env)->ExceptionCheck(env)) {
+        (*env)->ExceptionDescribe(env);
+        (*env)->ExceptionClear(env);
+    }
+    if (mode != 3) (*jvm)->DetachCurrentThread(jvm);
+}
+
+#ifdef _WIN32
+static DWORD WINAPI foreign_main(LPVOID mode) { foreign_body((int) (intptr_t) mode); return 0; }
+#else
+static void *foreign_main(void *mode) { foreign_body((int) (intptr_t) mode); return NULL; }
+#endif
+
+JNIEXPORT void JNICALL Java_JniTest_foreignThreads(JNIEnv *env, jclass c) {
+    (*env)->GetJavaVM(env, &jvm);
+    test_class = (*env)->NewGlobalRef(env, c);
+    for (intptr_t mode = 0; mode < 4; mode++) {
+#ifdef _WIN32
+        HANDLE h = CreateThread(NULL, 0, foreign_main, (LPVOID) mode, 0, NULL);
+        WaitForSingleObject(h, INFINITE);
+        CloseHandle(h);
+#else
+        pthread_t th;
+        pthread_create(&th, NULL, foreign_main, (void *) mode);
+        pthread_join(th, NULL);
+#endif
+    }
 }
 
 JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM *vm, void *reserved) {

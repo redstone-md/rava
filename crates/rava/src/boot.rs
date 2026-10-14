@@ -61,6 +61,14 @@ pub fn construct(t: &mut Thread, class_name: &str, desc: &str, args: &[u64]) -> 
     Ok(o)
 }
 
+static MAIN_GROUP: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// The `main` thread group, once the VM has made it.
+pub fn main_thread_group() -> Option<Oop> {
+    let g = MAIN_GROUP.load(std::sync::atomic::Ordering::Acquire);
+    (g != 0).then_some(g as Oop)
+}
+
 /// Brings the JDK up to the point where application classes can be loaded and run.
 pub fn boot(t: &mut Thread) -> JResult<()> {
     for c in ["java/lang/Object", "java/lang/String", "java/lang/System", "java/lang/Class", "java/lang/ThreadGroup"] {
@@ -74,6 +82,8 @@ pub fn boot(t: &mut Thread) -> JResult<()> {
         "(Ljava/lang/ThreadGroup;Ljava/lang/String;)V",
         &[system_group as u64, main_name as u64],
     )?;
+    // Kept for threads native code attaches later, which join it as HotSpot's do.
+    MAIN_GROUP.store(crate::jni::new_global(main_group) as usize, std::sync::atomic::Ordering::Release);
     create_initial_thread(t, main_group)?;
     set_unsafe_constants(t)?;
     for c in ["java/lang/Module", "java/lang/reflect/Method", "java/lang/ref/Finalizer"] {

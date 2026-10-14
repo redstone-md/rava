@@ -18,6 +18,7 @@ public class JniTest {
     static native int registered(int x);
     static native String globalRoundTrip(String s);
     static native int[] makeArray(int n);
+    static native void foreignThreads();
 
     static int calls;
     static volatile boolean done;
@@ -38,6 +39,17 @@ public class JniTest {
         }
         return r;
     }
+    static final java.util.List<Thread> foreign = new java.util.ArrayList<>();
+
+    /** Called by threads C started and attached (mode 0 named, 1 daemon, 2 no arguments, 3 a daemon never detached). */
+    static void onForeign(int mode, boolean detachedBefore, boolean sameEnv) {
+        Thread t = Thread.currentThread();
+        String name = t.getName().startsWith("Thread-") ? "Thread-<n>" : t.getName();
+        System.out.println("foreign " + mode + " detachedBefore=" + detachedBefore + " sameEnv=" + sameEnv + " name=" + name
+                + " daemon=" + t.isDaemon() + " group=" + t.getThreadGroup().getName() + " alive=" + t.isAlive() + " state=" + t.getState());
+        if (mode < 3) foreign.add(t);
+    }
+
     static void onCall(int n, String s) { calls += n; System.out.println("callback " + n + " " + s); }
 
     public static void main(String[] args) {
@@ -88,5 +100,9 @@ public class JniTest {
             throw new RuntimeException(e);
         }
         System.out.println("hot " + acc + " " + t.count);
+        foreignThreads();
+        for (Thread f : foreign) System.out.println("after detach alive=" + f.isAlive() + " state=" + f.getState());
+        System.gc();
+        System.out.println("gc after a thread ended attached");
     }
 }

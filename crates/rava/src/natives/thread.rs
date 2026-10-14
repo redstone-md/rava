@@ -290,6 +290,55 @@ pub(crate) fn terminate(t: &mut Thread, jt: Oop) {
     sync::exit(jt);
 }
 
+/// Makes `t`, a thread native code attached through the invocation interface, a Java thread
+/// as HotSpot's `AttachCurrentThread` does: a new `java.lang.Thread` in `group`, named `name`
+/// (else `Thread-<n>`), already current while its constructor runs (which takes it for an
+/// attached thread). A non-daemon one keeps the VM from ending until it detaches.
+pub(crate) fn adopt(t: &mut Thread, group: Oop, name: Option<&str>, daemon: bool) -> JResult<()> {
+    let thread_class = crate::loader::boot_class!("java/lang/Thread").expect("Thread");
+    let jt = rt::alloc_instance(t, thread_class)?;
+    t.java_thread = jt;
+    mark_started(t, jt);
+    let (desc, arg) = match name {
+        Some(n) => ("(Ljava/lang/ThreadGroup;Ljava/lang/String;)V", rt::new_string(t, n)?),
+        None => ("(Ljava/lang/ThreadGroup;Ljava/lang/Runnable;)V", std::ptr::null_mut()),
+    };
+    let init = thread_class.declared_method(Symbol::intern("<init>"), Symbol::intern(desc)).expect("Thread constructor");
+    let jt = t.java_thread;
+    if let Err(e) = t.call(init, &[jt as u64, group as u64, arg as u64]) {
+        mark_terminated(jt);
+        t.java_thread = std::ptr::null_mut();
+        return Err(e);
+    }
+    // SAFETY: the constructed thread's field holder.
+    unsafe { obj::write::<bool>(obj::read_ref(jt, holder_offset()), daemon_offset(), daemon) };
+    if !daemon {
+        *non_daemon().0.lock().unwrap() += 1;
+    }
+    mark_started(t, jt);
+    Ok(())
+}
+
+/// Ends a thread `adopt` made Java: with `exit`, as `DetachCurrentThread` does (`Thread.exit()`,
+/// joiners notified); without, only marked terminated (the OS thread ended without detaching,
+/// and no Java code runs on its way out).
+pub(crate) fn release(t: &mut Thread, exit: bool) {
+    let jt = t.java_thread;
+    if jt.is_null() {
+        return;
+    }
+    // SAFETY: an adopted thread's holder exists once `adopt` returned.
+    let daemon = unsafe { obj::read::<bool>(obj::read_ref(jt, holder_offset()), daemon_offset()) };
+    if exit {
+        terminate(t, jt);
+    } else {
+        mark_terminated(jt);
+    }
+    if !daemon {
+        non_daemon_ended();
+    }
+}
+
 fn run_thread(jt: Oop, daemon: bool) {
     let mut t = Thread::new();
     t.java_thread = jt;
