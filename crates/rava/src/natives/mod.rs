@@ -43,6 +43,12 @@ pub(crate) mod unsafe_mem;
 mod unixfs;
 #[cfg(unix)]
 mod unixfs_ext;
+#[cfg(unix)]
+mod unixdns;
+#[cfg(unix)]
+mod unixprefs;
+#[cfg(target_os = "macos")]
+mod macos_prefs;
 #[cfg(target_os = "linux")]
 mod linux;
 #[cfg(target_os = "macos")]
@@ -103,6 +109,12 @@ impl NativeRegistry {
         unixfs::register(&mut r);
         #[cfg(unix)]
         unixfs_ext::register(&mut r);
+        #[cfg(unix)]
+        unixdns::register(&mut r);
+        #[cfg(unix)]
+        unixprefs::register(&mut r);
+        #[cfg(target_os = "macos")]
+        macos_prefs::register(&mut r);
         #[cfg(target_os = "linux")]
         watch::register(&mut r);
         #[cfg(target_os = "linux")]
