@@ -138,7 +138,8 @@ impl Shared<'_> {
         let cell = CLASS_SIZES[class] as usize;
         let run = &mut runs.0[class];
         if run.1 + cell > run.2 {
-            self.finish_run(*run);
+            // Retire the run even if no replacement can be allocated.
+            self.finish_run(std::mem::take(run));
             let promote = self.promote.lock().unwrap();
             let space: *mut super::space::Space = *promote;
             // SAFETY: the space's page lists and fresh pages change only under this lock; the
