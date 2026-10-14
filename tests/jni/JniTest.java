@@ -164,5 +164,36 @@ public class JniTest {
         for (Thread f : foreign) System.out.println("after detach alive=" + f.isAlive() + " state=" + f.getState());
         System.gc();
         System.out.println("gc after a thread ended attached");
+        twoLoaders();
+    }
+
+    // A second class loader's copy of a class binds its natives to its own copy of the library
+    // (LWJGL bundled twice: each copy installs its own allocator in its own library).
+    static void twoLoaders() {
+        try {
+            java.io.File dir = new java.io.File(".").getAbsoluteFile();
+            java.io.File copy = new java.io.File(dir, "copy");
+            copy.mkdirs();
+            String lib = System.mapLibraryName("jnitest");
+            java.nio.file.Files.copy(new java.io.File(dir, lib).toPath(), new java.io.File(copy, lib).toPath(), java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+            Copy.set(1);
+            ClassLoader other = new java.net.URLClassLoader(new java.net.URL[] {dir.toURI().toURL()}, null);
+            Class<?> c = Class.forName("JniTest$Copy", true, other);
+            c.getMethod("load", String.class).invoke(null, new java.io.File(copy, lib).getPath());
+            c.getMethod("set", int.class).invoke(null, 2);
+            System.out.println("two loaders: own " + Copy.get() + " other " + c.getMethod("get").invoke(null) + " distinct " + (c != Copy.class));
+        } catch (Exception e) {
+            System.out.println("two loaders: " + e);
+        }
+    }
+
+    public static class Copy {
+        public static native void set(int v);
+
+        public static native int get();
+
+        public static void load(String path) {
+            System.load(path);
+        }
     }
 }

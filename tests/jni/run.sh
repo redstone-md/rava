@@ -15,6 +15,6 @@ set -e
 javac -nowarn -d "$W" "$T/JniTest.java" 2>/dev/null
 ${CC:-cc} -shared -fPIC -O2 -I"$J/include" -I"$J/include/$inc" -o "$W/$lib" "$T/jnitest.c"
 set +e
-want=$(cd "$W" && java -Djava.library.path=. -cp . JniTest 2>&1 | grep -v "Picked up")
+want=$(cd "$W" && java --enable-native-access=ALL-UNNAMED -Djava.library.path=. -cp . JniTest 2>&1 | grep -v "Picked up")
 got=$(cd "$W" && "$R" -Djava.library.path=. -cp . JniTest 2>&1 | grep -v "Picked up")
 if [ "$got" == "$want" ]; then echo "jni: pass"; else echo "jni: FAIL"; diff <(echo "$got") <(echo "$want"); exit 1; fi

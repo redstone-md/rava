@@ -230,3 +230,8 @@ JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM *vm, void *reserved) {
     if ((*env)->RegisterNatives(env, c, m, 1) != 0) return JNI_ERR;
     return JNI_VERSION_1_8;
 }
+
+/* State kept by each loaded copy of the library. */
+static int copy_state;
+JNIEXPORT void JNICALL Java_JniTest_00024Copy_set(JNIEnv *env, jclass c, jint v) { copy_state = v; }
+JNIEXPORT jint JNICALL Java_JniTest_00024Copy_get(JNIEnv *env, jclass c) { return copy_state; }

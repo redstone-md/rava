@@ -117,17 +117,24 @@ pub(super) fn register(r: &mut NativeRegistry) {
             // The JDK's libraries: the VM supplies their natives itself, so the handle is an
             // opaque non-zero one, with the JNI version JNI_OnLoad would have reported (1.8),
             // which JDK 25 checks. Any other library is opened and its JNI_OnLoad run (`jni`).
+            let lib = crate::jdk::library();
+            let impl_class = "jdk/internal/loader/NativeLibraries$NativeLibraryImpl";
             let (handle, version) = if a[2] != 0 {
                 (1, 0x0001_0008)
             } else {
                 let path = rt::java_string_to_rust(a[1] as Oop);
-                match crate::jni::load_for_java(t, &path, a[3] != 0)? {
+                // The class that asked: its loader's native methods bind to this library.
+                static FROM: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
+                let from = lib.optional_field(&FROM, impl_class, "fromClass", "Ljava/lang/Class;").and_then(|off| {
+                    // SAFETY: a live NativeLibraryImpl; the offset from its layout.
+                    let mirror = unsafe { obj::read_ref(a[0] as Oop, off) };
+                    (!mirror.is_null()).then(|| rt::klass_of_mirror(mirror)).flatten()
+                });
+                match crate::jni::load_for_java(t, &path, from, a[3] != 0)? {
                     Some((h, v)) => (h as i64, v),
                     None => return ret_bool(false),
                 }
             };
-            let lib = crate::jdk::library();
-            let impl_class = "jdk/internal/loader/NativeLibraries$NativeLibraryImpl";
             static HANDLE: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
             static VERSION: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
             // SAFETY: a live NativeLibraryImpl; offsets from its layout.

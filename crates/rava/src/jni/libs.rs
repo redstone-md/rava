@@ -3,28 +3,35 @@
 //! mangled class and method names, then, for an overloaded method, `__` and the mangled
 //! argument descriptor. `RegisterNatives` binds a method directly.
 
+use crate::klass::Klass;
 use crate::method::Method;
 use crate::thread::{JResult, Thread};
 use std::sync::atomic::Ordering;
 use std::sync::Mutex;
 
-/// Handles of the libraries loaded so far, in load order.
-fn loaded() -> &'static Mutex<Vec<usize>> {
-    static L: Mutex<Vec<usize>> = Mutex::new(Vec::new());
+/// The libraries loaded so far, in load order: each handle with the class that loaded it,
+/// which names the class loader whose native methods it serves (the loader itself moves with
+/// the heap; the class's reference to it is kept current).
+fn loaded() -> &'static Mutex<Vec<(Option<&'static Klass>, usize)>> {
+    static L: Mutex<Vec<(Option<&'static Klass>, usize)>> = Mutex::new(Vec::new());
     &L
 }
 
-/// Opens the library at `path` and runs its `JNI_OnLoad`. Returns the handle and the JNI
-/// version it asked for, or the loader's error.
-pub(crate) fn load(t: &mut Thread, path: &str) -> Result<(usize, i32), String> {
+/// Opens the library at `path` for the class loader of `from` and runs its `JNI_OnLoad`.
+/// Returns the handle and the JNI version it asked for, or the loader's error.
+pub(crate) fn load(t: &mut Thread, path: &str, from: Option<&'static Klass>) -> Result<(usize, i32), String> {
     // The handle is kept for the life of the VM.
     let h = crate::os::library_open(path)?;
     {
         let mut l = loaded().lock().unwrap();
-        if l.contains(&h) {
+        let seen = l.iter().any(|&(_, x)| x == h);
+        let loader = from.map_or(std::ptr::null_mut(), |k| k.loader());
+        if !l.iter().any(|&(k, x)| x == h && k.map_or(std::ptr::null_mut(), |k| k.loader()) == loader) {
+            l.push((from, h));
+        }
+        if seen {
             return Ok((h, super::VERSION));
         }
-        l.push(h);
     }
     let on_load = symbol(h, "JNI_OnLoad");
     if on_load == 0 {
@@ -55,8 +62,12 @@ pub(crate) fn entry(m: &'static Method) -> Option<usize> {
     let short = format!("Java_{}_{}", mangle(m.holder.name.as_str()), mangle(m.name.as_str()));
     let args = m.desc.as_str().strip_prefix('(').and_then(|d| d.split(')').next()).unwrap_or("");
     let long = format!("{short}__{}", mangle(args));
-    let libs = loaded().lock().unwrap().clone();
-    let f = libs.iter().find_map(|&h| [symbol(h, &short), symbol(h, &long)].into_iter().find(|&a| a != 0))?;
+    // The libraries of the method's own class loader first (JNI: a class loader's libraries
+    // serve its classes; two loaders' copies of a library each bind to their own), then any.
+    let loader = m.holder.loader();
+    let libs: Vec<(bool, usize)> = loaded().lock().unwrap().iter().map(|&(k, h)| (k.map_or(std::ptr::null_mut(), |k| k.loader()) == loader, h)).collect();
+    let find = |own: bool| libs.iter().filter(|l| l.0 == own).find_map(|&(_, h)| [symbol(h, &short), symbol(h, &long)].into_iter().find(|&a| a != 0));
+    let f = find(true).or_else(|| find(false))?;
     m.jni_entry.store(f, Ordering::Release);
     super::stub::bind(m, f);
     Some(f)
@@ -92,8 +103,8 @@ fn mangle(s: &str) -> String {
 /// `NativeLibraries.load` for a library the VM does not supply: loads it, recording its
 /// handle and JNI version in the `NativeLibraryImpl`; false (or UnsatisfiedLinkError, when
 /// asked to throw) if it cannot be opened.
-pub(crate) fn load_for_java(t: &mut Thread, path: &str, throw: bool) -> JResult<Option<(usize, i32)>> {
-    match load(t, path) {
+pub(crate) fn load_for_java(t: &mut Thread, path: &str, from: Option<&'static Klass>, throw: bool) -> JResult<Option<(usize, i32)>> {
+    match load(t, path, from) {
         Ok(r) => Ok(Some(r)),
         Err(msg) if throw => Err(crate::runtime::throw_new(t, "java/lang/UnsatisfiedLinkError", &format!("Can't load library: {path}: {msg}"))),
         Err(_) => Ok(None),
