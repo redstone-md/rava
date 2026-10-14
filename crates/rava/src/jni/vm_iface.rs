@@ -48,12 +48,15 @@ fn current_env() -> Option<*mut c_void> {
 }
 
 extern "C" fn get_env(_vm: *const c_void, penv: *mut *mut c_void, version: i32) -> i32 {
+    // SAFETY: the caller's out-parameter, null when the thread is not attached (callers rely
+    // on it: LWJGL attaches when it reads back null).
+    unsafe { *penv = std::ptr::null_mut() };
     if !(0x0001_0001..=super::VERSION).contains(&version) {
         return JNI_EVERSION;
     }
     match current_env() {
         Some(env) => {
-            // SAFETY: the caller's out-parameter.
+            // SAFETY: as above.
             unsafe { *penv = env };
             JNI_OK
         }
