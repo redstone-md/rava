@@ -40,6 +40,8 @@ pub(super) struct Shared<'a> {
     /// The cells young again this collection (`Space::aging`): a reference to one of them keeps
     /// its card dirty, as one to a copy does.
     pub(super) young_again: &'a [(usize, usize)],
+    /// Aging objects marked from once-only roots (`pin`).
+    pinned: Mutex<Vec<usize>>,
     /// Objects marked from thread stacks (conservatively) and from the other roots (RAVA_GC_LOG).
     by_stacks: AtomicUsize,
     by_roots: AtomicUsize,
@@ -208,6 +210,16 @@ enum Task {
 }
 
 impl Shared<'_> {
+    /// Notes the aging objects among `refs`, roots a collection hears of once (objects a new
+    /// class or compiled code references, `recent.rs`): no later young collection marks them
+    /// again, so they must not be young again (`age` leaves them old).
+    fn pin(&self, refs: &[usize]) {
+        let aging: Vec<usize> = refs.iter().copied().filter(|&r| in_ranges(self.young_again, r)).collect();
+        if !aging.is_empty() {
+            self.pinned.lock().unwrap().extend(aging);
+        }
+    }
+
     /// Marks the object `r` points at exactly, queuing it if new.
     fn precise(&self, r: usize, out: &mut Vec<usize>) {
         if r != 0 && self.mark_start(r) {
@@ -266,6 +278,7 @@ impl Shared<'_> {
             Task::Classes(from, to) => {
                 let mut refs = Vec::new();
                 crate::vm::vm().class_roots(&classes[from..to], &mut |o| refs.push(o as usize));
+                self.pin(&refs);
                 refs.into_iter().for_each(|r| self.precise(r, out));
                 crate::vm::vm().class_statics(&classes[from..to], &mut |slot| static_slot(slot, out));
             }
@@ -281,7 +294,10 @@ impl Shared<'_> {
                     }
                 }
             }
-            Task::Noted => roots.noted.iter().for_each(|&r| self.precise(r, out)),
+            Task::Noted => {
+                self.pin(roots.noted);
+                roots.noted.iter().for_each(|&r| self.precise(r, out));
+            }
             Task::Other(young) => {
                 let mut refs = Vec::new();
                 crate::vm::vm().other_roots(young, &mut |o| refs.push(o as usize));
@@ -428,6 +444,7 @@ pub(super) fn mark(space: &mut Space, young: bool) -> usize {
         marked: AtomicUsize::new(0),
         promoted: Mutex::new(Vec::new()),
         young_again: &second_chance,
+        pinned: Mutex::new(Vec::new()),
         by_stacks: AtomicUsize::new(0),
         by_roots: AtomicUsize::new(0),
     };
@@ -501,7 +518,9 @@ pub(super) fn mark(space: &mut Space, young: bool) -> usize {
     // Only young collections age objects; a full one leaves every survivor old.
     if young && super::evacuate::enabled() {
         promoted.sort_unstable();
-        space.aging = age(space, &aging, &promoted);
+        let mut pinned = shared.pinned.into_inner().unwrap();
+        pinned.sort_unstable();
+        space.aging = age(space, &aging, &promoted, &pinned);
     }
     marked
 }
@@ -513,8 +532,9 @@ pub(super) fn mark(space: &mut Space, young: bool) -> usize {
 pub(super) const TENURE: u8 = 8;
 
 /// The aging cells after a young collection: the survivors among `aging`, one collection older
-/// (until `TENURE`), and the cells this one promoted into (`promoted`, sorted).
-fn age(space: &Space, aging: &[(usize, usize, u8)], promoted: &[(usize, usize)]) -> Vec<(usize, usize, u8)> {
+/// (until `TENURE`), and the cells this one promoted into (`promoted`, sorted). Survivors a
+/// once-only root holds (`pinned`, sorted) are old for good.
+fn age(space: &Space, aging: &[(usize, usize, u8)], promoted: &[(usize, usize)], pinned: &[usize]) -> Vec<(usize, usize, u8)> {
     let mut out: Vec<(usize, usize, u8)> = promoted.iter().map(|&(s, e)| (s, e, 1)).collect();
     for &(start, end, years) in aging {
         if years + 1 >= TENURE {
@@ -527,8 +547,9 @@ fn age(space: &Space, aging: &[(usize, usize, u8)], promoted: &[(usize, usize)])
         let mut run: Option<usize> = None;
         for cell in meta.cell_of(start - page)..meta.cell_of(end - page) {
             let at = page + cell * size;
-            // Survivors, less the cells a copy of this collection took (those are age 1).
-            let live = meta.marks[cell / 64] & (1u64 << (cell % 64)) != 0 && !in_ranges(promoted, at);
+            // Survivors, less the cells a copy of this collection took (those are age 1) and
+            // those pinned.
+            let live = meta.marks[cell / 64] & (1u64 << (cell % 64)) != 0 && !in_ranges(promoted, at) && pinned.binary_search(&at).is_err();
             match (live, run) {
                 (true, None) => run = Some(at),
                 (false, Some(s)) => {
