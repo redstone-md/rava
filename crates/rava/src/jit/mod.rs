@@ -177,6 +177,14 @@ const LEAF_NATIVES: &[(&str, &str, &str)] = &[
     ("java/lang/reflect/Array", "newArray", "(Ljava/lang/Class;I)Ljava/lang/Object;"),
     ("java/lang/System", "nanoTime", "()J"),
     ("java/lang/System", "currentTimeMillis", "()J"),
+    // Off-heap memory (LWJGL's memCopy and memSet, under every vertex buffer write).
+    ("jdk/internal/misc/Unsafe", "copyMemory0", "(Ljava/lang/Object;JLjava/lang/Object;JJ)V"),
+    ("jdk/internal/misc/Unsafe", "setMemory0", "(Ljava/lang/Object;JJB)V"),
+    ("jdk/internal/misc/Unsafe", "copySwapMemory0", "(Ljava/lang/Object;JLjava/lang/Object;JJJ)V"),
+    ("jdk/internal/misc/Unsafe", "allocateMemory0", "(J)J"),
+    ("jdk/internal/misc/Unsafe", "reallocateMemory0", "(JJ)J"),
+    ("jdk/internal/misc/Unsafe", "freeMemory0", "(J)V"),
+    ("java/lang/reflect/Array", "getLength", "(Ljava/lang/Object;)I"),
 ];
 
 /// The implementation of `m` when it is a leaf native (see `LEAF_NATIVES`).
