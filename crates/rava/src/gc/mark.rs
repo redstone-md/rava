@@ -614,3 +614,7 @@ struct Roots<'a> {
     /// The cells young again this collection (`Space::aging`).
     second_chance: &'a [(usize, usize)],
 }
+
+#[cfg(test)]
+#[path = "evacuate_tests.rs"]
+mod evacuate_tests;
