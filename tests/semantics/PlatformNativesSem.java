@@ -19,6 +19,7 @@ public class PlatformNativesSem {
     }
 
     public static void main(String[] args) throws Exception {
+        java.util.logging.Logger.getLogger("java.util.prefs").setLevel(java.util.logging.Level.OFF);
         ByteArrayOutputStream bytes = new ByteArrayOutputStream();
         try (ObjectOutputStream out = new ObjectOutputStream(bytes)) {
             out.writeObject(new Point());
@@ -32,14 +33,22 @@ public class PlatformNativesSem {
         System.out.println("suid " + ObjectStreamClass.lookup(Point.class).getSerialVersionUID() + " " + ObjectStreamClass.lookup(Plain.class).getSerialVersionUID());
 
         Path file = Files.createTempFile("rava-probe", ".txt");
+        var unsafeField = sun.misc.Unsafe.class.getDeclaredField("theUnsafe");
+        unsafeField.setAccessible(true);
+        sun.misc.Unsafe unsafe = (sun.misc.Unsafe) unsafeField.get(null);
         try {
             Files.write(file, new byte[8192]);
             try (FileChannel ch = FileChannel.open(file, StandardOpenOption.READ, StandardOpenOption.WRITE)) {
                 MappedByteBuffer m = ch.map(FileChannel.MapMode.READ_WRITE, 0, 8192);
-                m.put(100, (byte) 42);
-                m.load();
-                m.isLoaded();
-                m.force();
+                try {
+                    m.put(100, (byte) 42);
+                    m.load();
+                    m.isLoaded();
+                    m.force();
+                } finally {
+                    // Windows cannot delete a file while a mapped section still holds it.
+                    unsafe.invokeCleaner(m);
+                }
             }
             System.out.println("mapped " + Files.readAllBytes(file)[100]);
             System.out.println("content type " + Files.probeContentType(file));
