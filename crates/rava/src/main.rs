@@ -2,7 +2,7 @@
 /// all the time, and glibc's malloc took about half of their time in its lists (All The Mods
 /// 10: compilation 178 -> 152 s of CPU, class parsing 9.7 -> 7.3 s).
 #[global_allocator]
-static ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
+static ALLOCATOR: rava::memlog::Counting<mimalloc::MiMalloc> = rava::memlog::Counting(mimalloc::MiMalloc);
 
 extern "C" {
     fn mi_option_set(option: i32, value: std::ffi::c_long);

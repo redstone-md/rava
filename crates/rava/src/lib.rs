@@ -18,6 +18,7 @@ pub mod launcher;
 pub mod link;
 pub mod loader;
 pub mod low;
+pub mod memlog;
 pub mod method;
 pub mod natives;
 pub mod os;

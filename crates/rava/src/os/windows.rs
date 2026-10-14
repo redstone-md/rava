@@ -317,6 +317,19 @@ pub fn write_stderr(bytes: &[u8]) {
     unsafe { WriteFile(GetStdHandle(STD_ERROR_HANDLE), bytes.as_ptr(), bytes.len() as u32, &mut written, std::ptr::null_mut()) };
 }
 
+/// The process's resident (working set) and committed (private) bytes.
+pub fn process_memory() -> (usize, usize) {
+    // SAFETY: fills a counters struct whose size is passed.
+    unsafe {
+        let mut c: PROCESS_MEMORY_COUNTERS = std::mem::zeroed();
+        c.cb = std::mem::size_of::<PROCESS_MEMORY_COUNTERS>() as u32;
+        if GetProcessMemoryInfo(GetCurrentProcess(), &mut c, c.cb) == 0 {
+            return (0, 0);
+        }
+        (c.WorkingSetSize, c.PagefileUsage)
+    }
+}
+
 /// Makes `file` the process's standard error, for the VM's diagnostics and Java's `System.err`.
 pub fn redirect_stderr(file: std::fs::File) -> bool {
     use std::os::windows::io::IntoRawHandle;

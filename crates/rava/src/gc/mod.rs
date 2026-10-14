@@ -302,6 +302,11 @@ impl Heap {
         }
     }
 
+    /// Live bytes the last collection left (`memlog`).
+    pub fn live_after_gc(&self) -> usize {
+        self.space.lock().unwrap().live_after_gc
+    }
+
     pub fn used_bytes(&self) -> usize {
         let s = self.space.lock().unwrap();
         (s.fresh - s.base) - s.empty.len() * PAGE_SIZE + s.large_bytes
