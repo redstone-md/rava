@@ -213,6 +213,10 @@ fn compile_timed(m: &'static Method, osr: Option<u32>) -> Option<CompiledMethod>
     verify(&g, m, "g.merge_chains");
     unroll::unroll(&mut g);
     verify(&g, m, "unroll::unroll");
+    if env_once!("RAVA_NO_UNROLL4").is_none() {
+        unroll::unroll_partially(&mut g);
+        verify(&g, m, "unroll::unroll_partially");
+    }
     algebra::simplify_late(&mut g);
     verify(&g, m, "algebra::simplify_late");
     gvn::number(&mut g);
