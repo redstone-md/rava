@@ -1,7 +1,8 @@
 //! Bytecode to SSA by abstract interpretation over basic blocks (C1's graph builder): the
 //! operand stack and locals hold values; blocks reached from several places get a phi per live
 //! slot, created on first entry and completed as the other predecessors are built. Exception
-//! handlers are not compiled: an exception leaves compiled code through deoptimization.
+//! handlers are compiled only for an `athrow` the same method catches further on (`throw_to`);
+//! any other exception leaves compiled code through deoptimization.
 //!
 //! Callees are inlined into the same graph (`inline.rs`): each method being built is a `Scope`,
 //! and an inlined scope's returns jump to a continuation block in its caller.
@@ -22,6 +23,10 @@ pub(super) struct Scope {
     an: Analysis,
     /// Instructions from which every path throws (`analysis::throw_paths`).
     throws: Vec<bool>,
+    /// For each `athrow` a handler of this method after it covers: that handler and the class
+    /// it catches (None: any). The throw jumps there once the exception is an instance; else it
+    /// deoptimizes, and the interpreter looks for the handler.
+    pub throw_to: HashMap<usize, (usize, Option<&'static crate::klass::Klass>)>,
     /// Conditional branches with a direction left to the interpreter (true: the jump), decided
     /// once per scope as its blocks are made, since profiles change while it compiles.
     pub pruned: HashMap<usize, bool>,
@@ -81,6 +86,7 @@ impl Scope {
             code: info.code,
             an,
             throws: crate::jit::analysis::throw_paths(info.code),
+            throw_to: HashMap::new(),
             pruned: HashMap::new(),
             unreached: Default::default(),
             blocks: HashMap::new(),
@@ -306,13 +312,36 @@ impl Builder {
         Some(())
     }
 
-    /// One block per reachable leader (exception handlers excluded), with its predecessor count.
+    /// One block per reachable leader (exception handlers excluded, but those a compiled
+    /// `athrow` jumps to), with its predecessor count.
     fn make_blocks(&mut self) {
         let sc = &mut self.sc;
-        let handlers: Vec<usize> = sc.m.code.unwrap().handlers.iter().map(|h| h.handler as usize).collect();
+        let table = &sc.m.code.unwrap().handlers;
+        let handlers: Vec<usize> = table.iter().map(|h| h.handler as usize).collect();
+        // The first handler covering each `athrow`, when it comes after it (a handler covering
+        // its own rethrow would be a loop) and catches any exception or a resolved class.
         let mut pc = 0;
         while pc < sc.code.len() {
-            if sc.an.depth[pc].is_some() && sc.an.leader[pc] && !handlers.contains(&pc) {
+            if sc.code[pc] == 0xbf && sc.an.depth[pc].is_some() {
+                if let Some(h) = table.iter().find(|h| (h.start as usize..h.end as usize).contains(&pc)) {
+                    let catch = match h.catch_type {
+                        0 => Some(None),
+                        i => match sc.m.holder.peek_resolved(i) {
+                            Some(crate::link::Resolved::Class(k)) => Some(Some(k)),
+                            _ => None,
+                        },
+                    };
+                    if let (Some(catch), true) = (catch, h.handler as usize > pc && sc.an.depth[h.handler as usize].is_some()) {
+                        sc.throw_to.insert(pc, (h.handler as usize, catch));
+                    }
+                }
+            }
+            pc += insn_len(sc.code, pc);
+        }
+        let targets: Vec<usize> = sc.throw_to.values().map(|t| t.0).collect();
+        let mut pc = 0;
+        while pc < sc.code.len() {
+            if sc.an.depth[pc].is_some() && sc.an.leader[pc] && (!handlers.contains(&pc) || targets.contains(&pc)) {
                 let b = self.g.new_block(pc as i32);
                 sc.blocks.insert(pc, b);
             }
@@ -330,6 +359,7 @@ impl Builder {
             let len = insn_len(sc.code, pc);
             if sc.an.depth[pc].is_some() && live[pc] {
                 let mut succ = successors(sc.code, pc, len);
+                succ.extend(sc.throw_to.get(&pc).map(|t| t.0));
                 // A switch makes one edge per distinct target (`build_ops::switch`).
                 if matches!(sc.code[pc], 0xaa | 0xab) {
                     succ.sort_unstable();
@@ -415,6 +445,7 @@ impl Builder {
             }
             let len = insn_len(code, pc);
             work.extend(successors(code, pc, len).into_iter().filter(|&s| !prunes(&pruned, code, pc, s)));
+            work.extend(self.sc.throw_to.get(&pc).map(|t| t.0));
         }
         self.sc.pruned = pruned.clone();
         (pruned, live)

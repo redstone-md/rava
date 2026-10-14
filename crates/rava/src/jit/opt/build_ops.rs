@@ -179,6 +179,22 @@ impl Builder {
             }
             0xbe => self.array_length(),
             0xbf => {
+                if let Some(&(handler, catch)) = self.sc.throw_to.get(&pc) {
+                    // A null exception, or one of a class the handler does not catch, leaves
+                    // for the interpreter at the throw (which then throws the NPE or unwinds).
+                    let s = self.state();
+                    let exc = self.pop();
+                    self.null_check(exc, s.clone());
+                    if let Some(k) = catch.filter(|k| !self.exact_class(exc).is_some_and(|c| c.is_subtype_of(k))) {
+                        let is = self.add(Inst::InstanceOf(exc, k), Ty::I);
+                        let one = self.konst(Ty::I, 1);
+                        self.add(Inst::Guard(Cmp::Eq, Ty::I, is, one, s), Ty::I);
+                    }
+                    self.sc.stack.clear();
+                    self.push(exc);
+                    self.goto(handler);
+                    return Some(false);
+                }
                 self.deopt();
                 return Some(false);
             }
