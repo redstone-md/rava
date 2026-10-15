@@ -51,7 +51,7 @@ impl Builder {
     pub(super) fn call_or_inline(&mut self, pc: usize, op: u8, m: &'static Method, callee: Callee, args: Vec<V>, s: Rc<State>, pre: Rc<State>) -> bool {
         // A receiver whose class is known exactly dispatches statically (C2's type-based
         // devirtualization): no profile or guard is needed.
-        let exact = (op != 0xb8).then(|| args.first().and_then(|&r| self.exact_class(r))).flatten();
+        let exact = (op != 0xb8).then(|| args.first().and_then(|&r| self.exact_receiver_class(r))).flatten();
         // A receiver whose exact class does not have the method can only be null (a field of a
         // final class's type cast to an unrelated interface): no static target then.
         let exact = exact.filter(|k| k.is_subtype_of(m.holder));
@@ -392,10 +392,17 @@ impl Builder {
     /// whose inputs agree (a boxing method's cached or fresh box), else what a class guard
     /// established on this path.
     pub(super) fn exact_class(&self, v: V) -> Option<&'static Klass> {
-        self.exact_class_within(v, 4)
+        self.exact_class_within(v, 4, false)
     }
 
-    fn exact_class_within(&self, v: V, depth: u32) -> Option<&'static Klass> {
+    /// The class a call's receiver has if it is not null: a merge of an allocation with null
+    /// (a method returning a new iterator, or null when there is nothing to iterate) is the
+    /// allocation's class, as a null receiver throws before any dispatch.
+    pub(super) fn exact_receiver_class(&self, v: V) -> Option<&'static Klass> {
+        self.exact_class_within(v, 4, true)
+    }
+
+    fn exact_class_within(&self, v: V, depth: u32, or_null: bool) -> Option<&'static Klass> {
         let r = self.g.resolve(v);
         let leaf = |k: &'static Klass| matches!(k.kind, crate::klass::KlassKind::Instance) && k.access & crate::klass::ACC_FINAL != 0;
         match self.g.inst(r) {
@@ -406,13 +413,13 @@ impl Builder {
                 }
                 // Only null passes a cast to a class its exact one is not a subtype of.
                 if depth > 0 {
-                    if let Some(c) = self.exact_class_within(*x, depth - 1).filter(|c| c.is_subtype_of(k)) {
+                    if let Some(c) = self.exact_class_within(*x, depth - 1, or_null).filter(|c| c.is_subtype_of(k)) {
                         return Some(c);
                     }
                 }
             }
             Inst::LoadIndexed(a, _, BasicType::Reference) if depth > 0 => {
-                if let Some(crate::klass::KlassKind::ObjArray { elem }) = self.exact_class_within(*a, depth - 1).map(|k| &k.kind) {
+                if let Some(crate::klass::KlassKind::ObjArray { elem }) = self.exact_class_within(*a, depth - 1, false).map(|k| &k.kind) {
                     if leaf(elem) {
                         return Some(elem);
                     }
@@ -421,7 +428,10 @@ impl Builder {
             Inst::Phi(inputs) if depth > 0 && self.complete_phis.contains(&r) => {
                 let mut k: Option<&'static Klass> = None;
                 for &x in inputs {
-                    let c = self.exact_class_within(x, depth - 1)?;
+                    if or_null && self.g.ty(r) == Ty::A && self.g.constant_value(x) == Some(0) {
+                        continue;
+                    }
+                    let c = self.exact_class_within(x, depth - 1, or_null)?;
                     if k.is_some_and(|k| !std::ptr::eq(k, c)) {
                         return None;
                     }
@@ -489,6 +499,9 @@ impl Builder {
         let callee = std::mem::replace(&mut self.sc, caller);
         self.chain.pop();
         ok?;
+        // The body is built: every merge in it has all its inputs (a ternary's result, say, a
+        // new object or null, whose class calls on it may then dispatch by).
+        self.complete_phis.extend(callee.phis.values().flatten().flatten().copied());
         if let (Some((exit, handler, _)), false) = (callee.catch_out, callee.catch_exits.is_empty()) {
             self.catch_from_body(exit, handler, &callee.catch_exits, s.bci as usize);
         }

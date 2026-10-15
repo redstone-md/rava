@@ -59,7 +59,7 @@ pub(super) struct Scope {
     /// Entry state of each block reached so far: locals, stack and the values known non-null.
     entry: HashMap<B, (Vec<Option<V>>, Vec<Option<V>>, super::build_cache::Facts)>,
     /// The phi of each slot (locals, then stack) of merge blocks.
-    phis: HashMap<B, Vec<Option<V>>>,
+    pub(super) phis: HashMap<B, Vec<Option<V>>>,
     /// Blocks with an entry state, not built yet.
     ready: Vec<B>,
     pub locals: Vec<Option<V>>,
