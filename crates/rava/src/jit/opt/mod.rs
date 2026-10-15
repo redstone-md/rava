@@ -216,6 +216,9 @@ fn compile_timed(m: &'static Method, osr: Option<u32>) -> Option<CompiledMethod>
     verify(&g, m, "algebra::simplify");
     loadnum::number(&mut g);
     verify(&g, m, "loadnum::number");
+    // Class words and fields now one value: the branches on them a dominating one decided.
+    conds::eliminate(&mut g);
+    verify(&g, m, "conds::eliminate (after loadnum)");
     licm::hoist(&mut g);
     verify(&g, m, "licm::hoist");
     rce::eliminate(&mut g);
