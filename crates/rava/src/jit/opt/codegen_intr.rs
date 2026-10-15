@@ -175,22 +175,22 @@ impl Gen<'_> {
             Intrinsic::Abs(ty) => self.abs(v, ty, args[0]),
             // Class queries read the mirror's class (null for a primitive) in place.
             Intrinsic::Leaf(crate::jit::leaf::Leaf::IsPrimitive) => {
-                let m = self.reg(args[0], R::Rcx);
+                let m = self.reg(args[0], R::R11);
                 let r = self.out(v);
-                self.a.load(true, R::Rcx, mem(m, crate::runtime::mirror_klass_offset() as i32));
+                self.a.load(true, R::R11, mem(m, crate::runtime::mirror_klass_offset() as i32));
                 self.a.alu_rr(false, Alu::Xor, r, r);
-                self.a.test_rr(true, R::Rcx, R::Rcx);
+                self.a.test_rr(true, R::R11, R::R11);
                 self.a.setcc(Cond::E, r);
                 self.put(v, r);
             }
             Intrinsic::Leaf(crate::jit::leaf::Leaf::IsInterface) => {
                 let done = self.a.new_label();
-                let m = self.reg(args[0], R::Rcx);
-                self.a.load(true, R::Rcx, mem(m, crate::runtime::mirror_klass_offset() as i32));
+                let m = self.reg(args[0], R::R11);
+                self.a.load(true, R::R11, mem(m, crate::runtime::mirror_klass_offset() as i32));
                 self.a.alu_rr(false, Alu::Xor, R::Rax, R::Rax);
-                self.a.test_rr(true, R::Rcx, R::Rcx);
+                self.a.test_rr(true, R::R11, R::R11);
                 self.a.jcc(Cond::E, done);
-                self.a.load_zx(2, R::Rax, mem(R::Rcx, offset_of!(Klass, access) as i32));
+                self.a.load_zx(2, R::Rax, mem(R::R11, offset_of!(Klass, access) as i32));
                 self.a.shift_ri(false, crate::jit::asm::Shift::Shr, R::Rax, crate::klass::ACC_INTERFACE.trailing_zeros() as u8);
                 self.a.alu_ri(false, Alu::And, R::Rax, 1);
                 self.a.bind(done);
@@ -270,19 +270,19 @@ impl Gen<'_> {
     fn min_max(&mut self, v: V, ty: BasicType, max: bool, x: V, y: V) {
         let wide = matches!(ty, BasicType::Long | BasicType::Double);
         self.load(R::Rax, x);
-        self.load(R::Rcx, y);
+        self.load(R::R11, y);
         if matches!(ty, BasicType::Int | BasicType::Long) {
-            self.a.alu_rr(wide, Alu::Cmp, R::Rax, R::Rcx);
-            self.a.cmov(true, if max { Cond::L } else { Cond::G }, R::Rax, R::Rcx);
+            self.a.alu_rr(wide, Alu::Cmp, R::Rax, R::R11);
+            self.a.cmov(true, if max { Cond::L } else { Cond::G }, R::Rax, R::R11);
         } else {
             let (nan, a_above, b_above, done) = (self.a.new_label(), self.a.new_label(), self.a.new_label(), self.a.new_label());
             self.a.mov_xr(wide, X(0), R::Rax);
-            self.a.mov_xr(wide, X(1), R::Rcx);
+            self.a.mov_xr(wide, X(1), R::R11);
             self.a.fcmp(wide, X(0), X(1));
             self.a.jcc(Cond::P, nan);
             self.a.jcc(Cond::A, a_above);
             self.a.jcc(Cond::B, b_above);
-            self.a.alu_rr(wide, if max { Alu::And } else { Alu::Or }, R::Rax, R::Rcx);
+            self.a.alu_rr(wide, if max { Alu::And } else { Alu::Or }, R::Rax, R::R11);
             self.a.jmp(done);
             self.a.bind(nan);
             self.a.farith_rr(wide, 0x58, X(0), X(1));
@@ -290,7 +290,7 @@ impl Gen<'_> {
             self.a.jmp(done);
             // The larger operand is kept for max, the other one for min.
             self.a.bind(if max { b_above } else { a_above });
-            self.a.mov_rr(true, R::Rax, R::Rcx);
+            self.a.mov_rr(true, R::Rax, R::R11);
             self.a.bind(if max { a_above } else { b_above });
             self.a.bind(done);
         }
@@ -310,19 +310,19 @@ impl Gen<'_> {
         match ty {
             BasicType::Int | BasicType::Long => {
                 let wide = ty == BasicType::Long;
-                self.a.mov_rr(true, R::Rcx, R::Rax);
-                self.a.neg(wide, R::Rcx);
-                self.a.cmov(wide, Cond::S, R::Rcx, R::Rax);
+                self.a.mov_rr(true, R::R11, R::Rax);
+                self.a.neg(wide, R::R11);
+                self.a.cmov(wide, Cond::S, R::R11, R::Rax);
                 if wide {
-                    self.a.mov_rr(true, R::Rax, R::Rcx);
+                    self.a.mov_rr(true, R::Rax, R::R11);
                 } else {
-                    self.a.movsxd(R::Rax, R::Rcx);
+                    self.a.movsxd(R::Rax, R::R11);
                 }
             }
             BasicType::Float => self.a.alu_ri(false, Alu::And, R::Rax, i32::MAX),
             _ => {
-                self.a.mov_ri(R::Rcx, i64::MAX);
-                self.a.alu_rr(true, Alu::And, R::Rax, R::Rcx);
+                self.a.mov_ri(R::R11, i64::MAX);
+                self.a.alu_rr(true, Alu::And, R::Rax, R::R11);
             }
         }
         self.put(v, R::Rax);

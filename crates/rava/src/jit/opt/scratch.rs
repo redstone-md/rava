@@ -28,7 +28,20 @@ pub fn clobbers(g: &Graph, v: V) -> (bool, bool) {
         // A byte or non-float element store puts the value through rdx.
         Inst::StoreIndexed(_, _, BasicType::Float | BasicType::Double, _) => NONE,
         Inst::StoreIndexed(..) => (false, true),
-        Inst::Intrinsic(crate::jit::intrinsics::Intrinsic::BitCount(..), ..) => NONE,
+        // Through rax, r11 and the SSE registers only.
+        Inst::Intrinsic(
+            crate::jit::intrinsics::Intrinsic::BitCount(..)
+            | crate::jit::intrinsics::Intrinsic::Bits(_)
+            | crate::jit::intrinsics::Intrinsic::Round(_)
+            | crate::jit::intrinsics::Intrinsic::Sqrt
+            | crate::jit::intrinsics::Intrinsic::Fma(_)
+            | crate::jit::intrinsics::Intrinsic::MinMax(..)
+            | crate::jit::intrinsics::Intrinsic::Abs(_)
+            | crate::jit::intrinsics::Intrinsic::CurrentThread
+            | crate::jit::intrinsics::Intrinsic::GetClass
+            | crate::jit::intrinsics::Intrinsic::Leaf(crate::jit::leaf::Leaf::IsPrimitive | crate::jit::leaf::Leaf::IsInterface),
+            ..
+        ) => NONE,
         // A cast to a final class or one at a primary depth tests through r11 and rax.
         Inst::CheckCast(_, k, _) if crate::jit::emit_obj::primary_depth(k).is_some() || matches!(k.kind, crate::klass::KlassKind::TypeArray { .. }) || matches!(k.kind, crate::klass::KlassKind::Instance) && k.access & crate::klass::ACC_FINAL != 0 => NONE,
         // An object of up to 128 bytes past its header is cleared without a loop counter; the
