@@ -107,9 +107,12 @@ pub fn hoist(g: &mut Graph) {
                             Inst::LoadField(o, ..) if class_word(g, *o) => true,
                             Inst::ArrayLength(o) => known_nonnull(g, known, *o) && !typed.contains(&g.resolve(*o)),
                             Inst::LoadStatic(addr, _) => !barrier && !inits && !stored_statics.contains(addr) && !g.ordered.contains(&v),
+                            // A final field keeps its value across calls too (JLS 17.5.3 lets a
+                            // compiler cache it): a string's bytes and coder in a loop over its
+                            // characters whose rare path calls out.
                             Inst::LoadField(o, off, _) => {
                                 let o = g.resolve(*o);
-                                !barrier && (g.final_loads.contains(&v) || !stored.iter().any(|&(o, h)| o == *off && Graph::fields_may_alias(g.field_holders.get(&v).copied(), h))) && !g.ordered.contains(&v) && known_nonnull(g, known, o) && (*off == 0 || !typed.contains(&o))
+                                (g.final_loads.contains(&v) || !barrier && !stored.iter().any(|&(o, h)| o == *off && Graph::fields_may_alias(g.field_holders.get(&v).copied(), h))) && !g.ordered.contains(&v) && known_nonnull(g, known, o) && (*off == 0 || !typed.contains(&o))
                             }
                             _ => false,
                         };
