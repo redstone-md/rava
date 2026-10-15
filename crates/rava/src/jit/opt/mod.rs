@@ -33,6 +33,7 @@ mod consts;
 mod dce;
 mod guards;
 mod gvn;
+mod initstores;
 mod hints;
 mod licm;
 mod loadnum;

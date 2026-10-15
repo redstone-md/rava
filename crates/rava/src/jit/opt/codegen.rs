@@ -113,6 +113,8 @@ pub(super) struct Gen<'a> {
     consts: HashMap<u64, Label>,
     /// Sign and magnitude masks, 16 bytes each (`mask_mem`).
     masks: HashMap<u64, Label>,
+    /// The bytes of each new object its block stores before they can be read (`initstores.rs`).
+    pub(super) inited: HashMap<V, u128>,
     /// Out-of-line runtime calls: (entry, helper, argument, where to continue with rax).
     /// Runtime calls of slow paths, emitted after the body (`codegen/stubs.rs`).
     pub slow_calls: Vec<SlowCall>,
@@ -331,6 +333,7 @@ pub(super) fn generate(g: &Graph, al: &Allocation, m: &'static Method, frame_slo
         restore_stubs: Vec::new(),
         consts: HashMap::new(),
         masks: HashMap::new(),
+        inited: super::initstores::covered(g),
         slow_calls: Vec::new(),
         unbarriered: super::barrier::unbarriered(g),
         short_loops: super::polls::short_loops(g),

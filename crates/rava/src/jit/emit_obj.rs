@@ -373,6 +373,36 @@ pub(crate) fn clear(a: &mut Asm, obj: R, mut from: i32, to: i32, zero: R, cursor
     a.jcc(Cond::Ne, top);
 }
 
+/// `clear` of an object of at most 128 bytes, leaving out the bytes `covered` (a bit each) that
+/// stores right after the allocation write before anything reads them.
+pub(crate) fn clear_uncovered(a: &mut Asm, obj: R, mut from: i32, to: i32, zero: R, covered: u128) {
+    prefetch_ahead(a, mem(obj, to));
+    let all = |at: i32, n: i32| (covered >> at) & ((1u128 << n) - 1) == (1u128 << n) - 1;
+    let mut zeroed = false;
+    let mut put = |a: &mut Asm, at: i32, wide: bool| {
+        if !std::mem::replace(&mut zeroed, true) {
+            a.alu_rr(false, Alu::Xor, zero, zero);
+        }
+        a.store(wide, mem(obj, at), zero);
+    };
+    if from % 8 != 0 && from < to {
+        if !all(from, 4) {
+            put(a, from, false);
+        }
+        from += 4;
+    }
+    let mut off = from;
+    while off < to {
+        match (all(off, 4), all(off + 4, 4)) {
+            (true, true) => {}
+            (true, false) => put(a, off + 4, false),
+            (false, true) => put(a, off, false),
+            (false, false) => put(a, off, true),
+        }
+        off += 8;
+    }
+}
+
 /// Clears `[from, end)` (registers, both multiples of 8, `from < end`) of a new object with
 /// `zero` (clobbered); leaves the flags changed.
 pub(crate) fn clear_to(a: &mut Asm, from: R, end: R, zero: R) {

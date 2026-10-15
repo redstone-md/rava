@@ -513,7 +513,10 @@ impl Gen<'_> {
                 self.a.alu_rm(true, Alu::Cmp, R::R11, at(end));
                 self.a.jcc(Cond::A, slow);
                 self.a.store(true, at(bump), R::R11);
-                crate::jit::emit_obj::clear(&mut self.a, R::Rax, 4, k.instance_size() as i32, R::R11, R::Rcx);
+                match self.inited.get(&v) {
+                    Some(&covered) if k.instance_size() <= 128 => crate::jit::emit_obj::clear_uncovered(&mut self.a, R::Rax, 4, k.instance_size() as i32, R::R11, covered),
+                    _ => crate::jit::emit_obj::clear(&mut self.a, R::Rax, 4, k.instance_size() as i32, R::R11, R::Rcx),
+                }
                 self.a.store_imm32(mem(R::Rax, 0), crate::heap::klass_word(k) as i32);
             }
             None => self.a.jmp(slow),
