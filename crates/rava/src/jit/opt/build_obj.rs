@@ -177,6 +177,9 @@ impl Builder {
                     Some(&v) if !volatile => v,
                     _ => {
                         let v = self.add(Inst::LoadField(o, offset, ty), Ty::of(ty));
+                        if let Some((k, _)) = crate::jit::fold::field_decl(self.sc.m, self.u2(pc)) {
+                            self.g.field_holders.insert(v, k);
+                        }
                         self.note_declared(v, pc);
                         let in_init = self.chain.iter().any(|(m, _)| m.name == "<init>");
                         if !in_init && crate::jit::fold::field_decl(self.sc.m, self.u2(pc)).is_some_and(|(_, f)| f.access & ACC_FINAL != 0) {
@@ -188,6 +191,10 @@ impl Builder {
                             self.g.ordered.insert(v);
                         } else {
                             self.loads.insert((o, offset), v);
+                            match crate::jit::fold::field_decl(self.sc.m, self.u2(pc)) {
+                                Some((k, _)) => self.field_holders.insert((o, offset), k),
+                                None => self.field_holders.remove(&(o, offset)),
+                            };
                         }
                         v
                     }
@@ -199,7 +206,12 @@ impl Builder {
                 let v = self.pop();
                 let o = self.pop();
                 self.null_check(o, s);
-                self.add(Inst::StoreField(o, offset, ty, v), Ty::I);
+                self.store_holder = crate::jit::fold::field_decl(self.sc.m, self.u2(pc)).map(|(k, _)| k);
+                let holder = self.store_holder;
+                let st = self.add(Inst::StoreField(o, offset, ty, v), Ty::I);
+                if let Some(k) = holder {
+                    self.g.field_holders.insert(st, k);
+                }
                 if volatile {
                     self.add(Inst::Fence, Ty::I);
                 }

@@ -333,6 +333,8 @@ pub struct Graph {
     /// Loads of final instance fields outside constructors: a store to another field at the
     /// same offset (of another class) does not change them (`licm.rs`).
     pub final_loads: std::collections::HashSet<V>,
+    /// The class declaring the field of a field load or store made from bytecode (`loadnum.rs`).
+    pub field_holders: std::collections::HashMap<V, &'static crate::klass::Klass>,
     /// The receiver of an instance method, never null.
     pub receiver: Option<V>,
     /// Allocations removed as non-escaping, rebuilt on deoptimization (`escape.rs`).

@@ -76,6 +76,10 @@ impl Builder {
         }
         match inst {
             Inst::Call(..) | Inst::Monitor(..) | Inst::Fence => self.loads.clear(),
+            // A plain Unsafe store to off-heap memory (a null base, lwjgl's `memPutInt`) cannot
+            // be any object's field or array element: what is known about those stays (a vertex
+            // writer's camera rotation is read once for all four corners of a quad).
+            Inst::Intrinsic(crate::jit::intrinsics::Intrinsic::UnsafePut(_, false), ref args, _) if self.g.constant_value(args[1]) == Some(0) => {}
             Inst::Intrinsic(k, ..) if !k.is_pure() => self.loads.clear(),
             // Any array may be the one stored to: element values are forgotten (`ELEM`).
             Inst::StoreIndexed(arr, idx, bt, x) => {
@@ -86,7 +90,18 @@ impl Builder {
             }
             // Another object's field at this offset may be the same one.
             Inst::StoreField(o, off, bt, x) => {
-                self.loads.retain(|&(_, f), _| f != off);
+                let holder = self.store_holder.take();
+                let holders = &self.field_holders;
+                let unrelated = |key: &(V, u32)| match (holder, holders.get(key)) {
+                    (Some(a), Some(&b)) => !a.is_subtype_of(b) && !b.is_subtype_of(a),
+                    _ => false,
+                };
+                self.loads.retain(|key, _| key.1 != off || unrelated(key));
+                if let Some(h) = holder {
+                    self.field_holders.insert((o, off), h);
+                } else {
+                    self.field_holders.remove(&(o, off));
+                }
                 // A stored value reads back unchanged unless the field narrows it.
                 if matches!(bt, BasicType::Int | BasicType::Long | BasicType::Float | BasicType::Double | BasicType::Reference) {
                     self.loads.insert((o, off), x);

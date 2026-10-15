@@ -33,6 +33,7 @@ mod guards;
 mod gvn;
 mod hints;
 mod licm;
+mod loadnum;
 mod rce;
 mod liveness;
 mod locals;
@@ -213,6 +214,8 @@ fn compile_timed(m: &'static Method, osr: Option<u32>) -> Option<CompiledMethod>
     verify(&g, m, "select::convert");
     algebra::simplify(&mut g);
     verify(&g, m, "algebra::simplify");
+    loadnum::number(&mut g);
+    verify(&g, m, "loadnum::number");
     licm::hoist(&mut g);
     verify(&g, m, "licm::hoist");
     rce::eliminate(&mut g);
@@ -233,6 +236,8 @@ fn compile_timed(m: &'static Method, osr: Option<u32>) -> Option<CompiledMethod>
     }
     algebra::simplify_late(&mut g);
     verify(&g, m, "algebra::simplify_late");
+    loadnum::number(&mut g);
+    verify(&g, m, "loadnum::number (late)");
     gvn::number(&mut g);
     verify(&g, m, "gvn::number");
     consts::hoist(&mut g);

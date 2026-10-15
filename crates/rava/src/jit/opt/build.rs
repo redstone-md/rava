@@ -176,6 +176,11 @@ pub(super) struct Builder {
     pub boxes: HashMap<V, (&'static crate::klass::Klass, V)>,
     /// Phis made with all their inputs (the results of inlined bodies with several returns).
     pub complete_phis: std::collections::HashSet<V>,
+    /// The class declaring each cached field load's field (`loads`), and that of the field a
+    /// store being added writes: a store forgets only loads of fields an object could have
+    /// both of (one class a subclass of the other).
+    pub field_holders: HashMap<(V, u32), &'static crate::klass::Klass>,
+    pub store_holder: Option<&'static crate::klass::Klass>,
     /// The call about to be made is at a site without a receiver profile.
     pub unprofiled_call: bool,
     /// The call about to be made was refused inlining as cold.
@@ -252,7 +257,7 @@ impl Builder {
     fn new(sc: Scope) -> Builder {
         let m = sc.m;
         let speculate = m.deopt_recompiles.load(std::sync::atomic::Ordering::Relaxed) < super::SPECULATIVE_RECOMPILES;
-        Builder { g: Graph::default(), extent: sc.frame_end(), sc, cur: 0, spent: 0, chain: vec![(m, None)], seq: 0, speculate, trapped: Default::default(), facts: Default::default(), stable: HashMap::new(), numbered: HashMap::new(), loads: HashMap::new(), exact: Vec::new(), declared: HashMap::new(), boxes: HashMap::new(), complete_phis: Default::default(), unprofiled_call: false, cold_call: false, fallback_call: false, bounds: Vec::new(), exits: HashMap::new() }
+        Builder { g: Graph::default(), extent: sc.frame_end(), sc, cur: 0, spent: 0, chain: vec![(m, None)], seq: 0, speculate, trapped: Default::default(), facts: Default::default(), stable: HashMap::new(), numbered: HashMap::new(), loads: HashMap::new(), exact: Vec::new(), declared: HashMap::new(), boxes: HashMap::new(), complete_phis: Default::default(), field_holders: HashMap::new(), store_holder: None, unprofiled_call: false, cold_call: false, fallback_call: false, bounds: Vec::new(), exits: HashMap::new() }
     }
 
     /// Makes `block` the current one, next in code order, with the caches of its single
