@@ -19,13 +19,31 @@ pub fn thread(g: &mut Graph) {
         while i < g.blocks[m as usize].preds.len() {
             let pred = g.blocks[m as usize].preds[i];
             let Inst::Phi(inputs) = g.inst(p) else { unreachable!() };
-            let known = g.constant(g.resolve(inputs[i]));
-            let target = known.map(|c| {
+            let input = g.resolve(inputs[i]);
+            let known = g.constant(input);
+            let decide = |c: i64| {
                 let (x, y) = if phi_left { (c, k) } else { (k, c) };
                 if super::canon::branch(cmp, ty, x, y) { then } else { other }
-            });
-            match target {
-                Some(t) if redirect_ok(g, pred, m, t) => redirect(g, pred, i, m, t),
+            };
+            let target = known.map(decide);
+            // A choice between two constants (an inlined boolean test, `ASCII.isDigit`): the
+            // predecessor branches on the choice's own condition.
+            let chosen = match (target, g.inst(input)) {
+                (None, &Inst::Select(c2, ty2 @ (Ty::I | Ty::J | Ty::A), a2, b2, t, f)) => match (g.constant(g.resolve(t)), g.constant(g.resolve(f))) {
+                    (Some(x), Some(y)) => Some((c2, ty2, a2, b2, decide(x), decide(y))),
+                    _ => None,
+                },
+                _ => None,
+            };
+            match (target, chosen) {
+                (Some(t), _) if redirect_ok(g, pred, m, t) => redirect(g, pred, i, m, t),
+                (None, Some((_, _, _, _, tt, tf))) if tt == tf && redirect_ok(g, pred, m, tt) => redirect(g, pred, i, m, tt),
+                (None, Some((c2, ty2, a2, b2, tt, tf))) if tt != tf && redirect_ok(g, pred, m, tt) && redirect_ok(g, pred, m, tf) => {
+                    add_edge(g, pred, i, m, tt);
+                    add_edge(g, pred, i, m, tf);
+                    g.blocks[pred as usize].term = Term::If { cmp: c2, ty: ty2, a: a2, b: b2, then: tt, other: tf, unordered: false };
+                    detach(g, i, m);
+                }
                 _ => i += 1,
             }
         }
@@ -97,6 +115,14 @@ fn redirect_ok(g: &Graph, pred: B, m: B, t: B) -> bool {
 /// Makes `pred` (the `i`th predecessor of `m`) jump to `t`: `t`'s phis take, for the new edge,
 /// what they took from `m`, read through `m`'s phis as `pred` brought them.
 fn redirect(g: &mut Graph, pred: B, i: usize, m: B, t: B) {
+    add_edge(g, pred, i, m, t);
+    g.blocks[pred as usize].term = Term::Goto(t);
+    detach(g, i, m);
+}
+
+/// Adds the edge `pred` -> `t` (`pred` the `i`th predecessor of `m`, which precedes `t`): `t`'s
+/// phis take what they took from `m`, read through `m`'s phis as `pred` brought them.
+fn add_edge(g: &mut Graph, pred: B, i: usize, m: B, t: B) {
     let j = g.blocks[t as usize].preds.iter().position(|&x| x == m).expect("m precedes t");
     let m_insts = g.blocks[m as usize].insts.clone();
     let through = |g: &Graph, x: V| -> V {
@@ -115,7 +141,11 @@ fn redirect(g: &mut Graph, pred: B, i: usize, m: B, t: B) {
         }
     }
     g.blocks[t as usize].preds.push(pred);
-    g.blocks[pred as usize].term = Term::Goto(t);
+}
+
+/// Removes the `i`th predecessor of `m` (and the matching phi inputs).
+fn detach(g: &mut Graph, i: usize, m: B) {
+    let m_insts = g.blocks[m as usize].insts.clone();
     g.blocks[m as usize].preds.remove(i);
     for v in m_insts {
         if let Inst::Phi(ins) = &mut g.values[v as usize].inst {

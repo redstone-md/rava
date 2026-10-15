@@ -88,6 +88,16 @@ pub fn simplify(g: &mut Graph) {
                         }
                         changed = true;
                     }
+                    // A choice of two constants compared with a constant is the inner choice's
+                    // condition choosing between this choice's values (a boolean method's
+                    // result tested again by its caller).
+                    Inst::Select(cmp, Ty::I | Ty::J, x, k, t, f) if inner_choice(g, x, k).is_some() => {
+                        let (c2, ty2, a2, b2, xt, xf, k) = inner_choice(g, x, k).unwrap();
+                        let cty = g.ty(g.resolve(x));
+                        let pick = |c: i64| if super::canon::branch(cmp, cty, c, k) { t } else { f };
+                        g.values[v as usize].inst = Inst::Select(c2, ty2, a2, b2, pick(xt), pick(xf));
+                        changed = true;
+                    }
                     // `x * 1.0` and `x / 1.0` are `x` exactly (a NaN stays NaN, -0 stays -0), as
                     // C2 folds them: a vector's literal 1 component through a matrix transform.
                     Inst::Bin(op @ (BinOp::Mul | BinOp::Div), a, c) if matches!(ty, Ty::F | Ty::D) => {
@@ -350,4 +360,12 @@ fn narrowed(g: &Graph, bt: crate::types::BasicType, x: V) -> Option<V> {
         _ => false,
     };
     ok.then(|| g.resolve(y))
+}
+
+/// `x` as a choice between two constants and `k` a constant: (the choice's condition, its
+/// operand type and operands, its two constants, `k`).
+fn inner_choice(g: &Graph, x: V, k: V) -> Option<(Cmp, Ty, V, V, i64, i64, i64)> {
+    let k = g.constant(g.resolve(k))?;
+    let Inst::Select(c2, ty2, a2, b2, t, f) = *g.inst(g.resolve(x)) else { return None };
+    Some((c2, ty2, a2, b2, g.constant(g.resolve(t))?, g.constant(g.resolve(f))?, k))
 }
