@@ -51,13 +51,7 @@ pub fn number(g: &mut Graph) {
                 Inst::LoadField(o, off, bt) if !g.ordered.contains(&v) => {
                     let key = (g.resolve(o), off, bt);
                     let holder = g.field_holders.get(&v).copied();
-                    let found = known.get(&key).and_then(|list| {
-                        list.iter().rev().take(MAX_CANDIDATES).find(|k| {
-                            let dominates = if k.block == b { k.at < at } else { dom.dominates(index[k.block as usize], index[b as usize]) };
-                            dominates && clear(g, k.block, k.at, b, at, off, holder.or(k.holder))
-                        }).map(|k| k.value)
-                    });
-                    match found {
+                    match find(g, &dom, &index, &known, key, holder, b, at) {
                         Some(x) if g.ty(x) == g.ty(v) => {
                             g.alias[v as usize] = g.resolve(x);
                             gone.insert(v);
@@ -66,8 +60,14 @@ pub fn number(g: &mut Graph) {
                     }
                 }
                 Inst::StoreField(o, off, bt, x) if forwardable(bt) => {
-                    let holder = g.field_holders.get(&v).copied();
-                    known.entry((g.resolve(o), off, bt)).or_default().push(Known { block: b, at, value: g.resolve(x), holder });
+                    let (key, holder, x) = ((g.resolve(o), off, bt), g.field_holders.get(&v).copied(), g.resolve(x));
+                    // Storing the value the field already has (a copy's fields stored again
+                    // unchanged by the method that scales the others) changes nothing.
+                    if find(g, &dom, &index, &known, key, holder, b, at) == Some(x) {
+                        gone.insert(v);
+                        continue;
+                    }
+                    known.entry(key).or_default().push(Known { block: b, at, value: x, holder });
                 }
                 _ => {}
             }
@@ -78,6 +78,17 @@ pub fn number(g: &mut Graph) {
             blk.insts.retain(|v| !gone.contains(v));
         }
     }
+}
+
+/// The value a dominating load or store left in the field, if nothing on the way may change it.
+#[allow(clippy::too_many_arguments)]
+fn find(g: &Graph, dom: &Dom, index: &[usize], known: &HashMap<Key, Vec<Known>>, key: Key, holder: Option<&'static Klass>, b: B, at: usize) -> Option<V> {
+    known.get(&key).and_then(|list| {
+        list.iter().rev().take(MAX_CANDIDATES).find(|k| {
+            let dominates = if k.block == b { k.at < at } else { dom.dominates(index[k.block as usize], index[b as usize]) };
+            dominates && clear(g, k.block, k.at, b, at, key.1, holder.or(k.holder))
+        }).map(|k| g.resolve(k.value))
+    })
 }
 
 /// A stored value reads back unchanged unless the field narrows it.

@@ -71,6 +71,16 @@ pub fn simplify(g: &mut Graph) {
                             changed = true;
                         }
                     }
+                    // The bits of a constant float (`Math.abs(x) == 1` on an inlined argument).
+                    Inst::Intrinsic(crate::jit::intrinsics::Intrinsic::Bits(_), ref args, _) if g.constant(g.resolve(args[0])).is_some() => {
+                        let x = g.constant(g.resolve(args[0])).unwrap();
+                        g.values[v as usize].inst = Inst::Const(match ty {
+                            Ty::I => x as u32 as i32 as i64,
+                            Ty::F => x as u32 as i64,
+                            _ => x,
+                        });
+                        changed = true;
+                    }
                     _ => {}
                 }
             }
