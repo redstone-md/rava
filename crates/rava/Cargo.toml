@@ -17,6 +17,7 @@ mimalloc = { version = "0.1.52", default-features = false }
 windows-sys = { version = "0.59", features = [
     "Win32_Foundation",
     "Win32_Globalization",
+    "Win32_Media",
     "Win32_NetworkManagement_IpHelper",
     "Win32_NetworkManagement_Ndis",
     "Win32_Networking_WinSock",

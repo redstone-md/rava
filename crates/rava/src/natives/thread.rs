@@ -195,6 +195,7 @@ fn sleep0(t: &mut Thread, a: &[u64]) -> JResult<u64> {
     let jt = t.java_thread;
     let deadline = std::time::Instant::now() + std::time::Duration::from_nanos(a[0].min(i64::MAX as u64));
     set_status(t, STATUS_SLEEPING);
+    let _resolution = crate::os::HighResolution::for_millis(a[0].div_ceil(1_000_000));
     let interrupted = match t.gc_record {
         None => {
             crate::gc::safepoint::blocking(t, || std::thread::sleep(deadline - std::time::Instant::now()));

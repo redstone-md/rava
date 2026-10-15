@@ -164,6 +164,7 @@ impl Monitor {
 
     /// `Object.wait` by the owner `me`, run blocked outside Java.
     pub fn wait(&self, me: u64, millis: i64, interrupted: &dyn Fn() -> bool) -> Result<(), WaitError> {
+        let _resolution = crate::os::HighResolution::for_millis(millis.max(0) as u64);
         let mut g = self.lock();
         if self.owner.load(Relaxed) != me {
             return Err(WaitError::NotOwner);

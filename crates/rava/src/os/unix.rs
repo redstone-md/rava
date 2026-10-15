@@ -201,6 +201,15 @@ pub fn memory_status() -> (i64, i64, i64, i64) {
 }
 
 /// Names the calling thread (the first 15 bytes, the limit on Linux).
+/// Timer resolution needs no raising here.
+pub struct HighResolution;
+
+impl HighResolution {
+    pub fn for_millis(_ms: u64) -> HighResolution {
+        HighResolution
+    }
+}
+
 /// A handle of the calling thread (none needed: priorities are not changed here).
 pub fn current_thread_handle() -> usize {
     0

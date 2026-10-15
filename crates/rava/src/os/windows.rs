@@ -192,6 +192,31 @@ pub fn memory_status() -> (i64, i64, i64, i64) {
 }
 
 /// Names the calling thread.
+/// While held, the system timer ticks every millisecond (HotSpot's `HighResolutionInterval`):
+/// a timed wait of a period that is not a multiple of 10 ms would otherwise wake on the
+/// default 15.6 ms tick.
+pub struct HighResolution(bool);
+
+impl HighResolution {
+    pub fn for_millis(ms: u64) -> HighResolution {
+        let on = ms % 10 != 0;
+        if on {
+            // SAFETY: paired with timeEndPeriod in drop.
+            unsafe { windows_sys::Win32::Media::timeBeginPeriod(1) };
+        }
+        HighResolution(on)
+    }
+}
+
+impl Drop for HighResolution {
+    fn drop(&mut self) {
+        if self.0 {
+            // SAFETY: ends the period begun in `for_millis`.
+            unsafe { windows_sys::Win32::Media::timeEndPeriod(1) };
+        }
+    }
+}
+
 /// A handle of the calling thread usable from other threads (kept for the thread's life).
 pub fn current_thread_handle() -> usize {
     use windows_sys::Win32::Foundation::{DuplicateHandle, DUPLICATE_SAME_ACCESS};
