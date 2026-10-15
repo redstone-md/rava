@@ -76,6 +76,9 @@ pub fn hoist(g: &mut Graph) {
         }
         let mut known = nonnull[index[pre as usize]].clone();
         let order: Vec<B> = dom.rpo.iter().copied().filter(|&b| l.body[b as usize]).collect();
+        // The blocks every iteration runs: those dominating each back edge's source.
+        let latches: Vec<usize> = h.preds.iter().filter(|&&p| l.body[p as usize]).map(|&p| index[p as usize]).collect();
+        let every_iteration: Vec<bool> = (0..n).map(|b| l.body[b] && index[b] != usize::MAX && latches.iter().all(|&i| i != usize::MAX && dom.dominates(index[b], i))).collect();
         // A hoisted load makes its null check invariant, and the check's predicate lets the
         // loads through the loaded object follow (`this.a.b.c`).
         loop {
@@ -109,10 +112,12 @@ pub fn hoist(g: &mut Graph) {
                             Inst::LoadStatic(addr, _) => !barrier && !inits && !stored_statics.contains(addr) && !g.ordered.contains(&v),
                             // A final field keeps its value across calls too (JLS 17.5.3 lets a
                             // compiler cache it): a string's bytes and coder in a loop over its
-                            // characters whose rare path calls out.
+                            // characters whose rare path calls out. Only from a block every
+                            // iteration runs: a load from a branch may rely on what selected it
+                            // (which object, of which class, the branch reads).
                             Inst::LoadField(o, off, _) => {
                                 let o = g.resolve(*o);
-                                (g.final_loads.contains(&v) || !barrier && !stored.iter().any(|&(o, h)| o == *off && Graph::fields_may_alias(g.field_holders.get(&v).copied(), h))) && !g.ordered.contains(&v) && known_nonnull(g, known, o) && (*off == 0 || !typed.contains(&o))
+                                (g.final_loads.contains(&v) && (!barrier || every_iteration[b as usize]) || !barrier && !stored.iter().any(|&(o, h)| o == *off && Graph::fields_may_alias(g.field_holders.get(&v).copied(), h))) && !g.ordered.contains(&v) && known_nonnull(g, known, o) && (*off == 0 || !typed.contains(&o))
                             }
                             _ => false,
                         };
