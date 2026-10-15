@@ -170,7 +170,15 @@ impl Builder {
             }
             let body = match intrinsic {
                 Some(i) => Some(self.intrinsic_body(i, target, &args, k)),
-                None => self.inline_body(target, &args, s.clone(), k, first),
+                None => {
+                    // A body whose own compilation was too large holds to C2's polymorphic
+                    // inlining, as does everything it inlines.
+                    let shallow = crate::jit::inline_plan::over_large(target, freq);
+                    self.shallow += shallow as u32;
+                    let body = self.inline_body(target, &args, s.clone(), k, first);
+                    self.shallow -= shallow as u32;
+                    body
+                }
             };
             self.exact.truncate(exact_mark);
             let Some(r) = body else {
@@ -286,7 +294,7 @@ impl Builder {
             if receivers.is_empty() {
                 receivers.extend(crate::jit::profile::major_receiver(self.sc.m, pc));
             }
-            if receivers.is_empty() {
+            if receivers.is_empty() && self.shallow == 0 {
                 receivers.extend(crate::jit::profile::frequent_receivers(self.sc.m, pc));
             }
             receivers.into_iter().filter_map(|k| crate::link::select_method(k, m).filter(|t| !t.is_abstract()).map(|t| (t, Guard::Klass(k)))).collect()

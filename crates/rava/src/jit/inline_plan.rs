@@ -93,7 +93,7 @@ pub(super) fn decide(target: &'static Method, first: Option<i64>, chain: &Chain,
     if env_once!("RAVA_NO_INLINE").is_some() || target.is_abstract() || target.is_native() || intrinsic(target).is_some() {
         return None;
     }
-    if tier >= 3 && (compiled_too_large(target, freq) || cold_site(target, freq) || super::opt::excluded(target)) {
+    if tier >= 3 && (compiled_too_large(target, freq) && !over_large(target, freq) || cold_site(target, freq) || super::opt::excluded(target)) {
         return None;
     }
     if is_leaf(target) {
@@ -128,6 +128,15 @@ fn compiled_too_large(target: &'static Method, freq: f32) -> bool {
     target.compiled().is_some_and(|c| c.tier >= 2 && c.size > limit) && !target.has_annotation("Ljdk/internal/vm/annotation/ForceInline;")
 }
 
+/// A small callee whose own optimized code is too large to inline, run several times per entry
+/// (a regex matcher's per-position test, whose compilation inlined the whole pattern behind
+/// it): inlined anyway, its body holding to C2's polymorphic inlining (`Builder::shallow`), so
+/// the caller's loop makes no call per element.
+pub(super) fn over_large(target: &'static Method, freq: f32) -> bool {
+    freq >= LOOP_SITE && target.code.is_some_and(|c| c.code.len() <= MAX_INLINE_SIZE) && compiled_too_large(target, freq)
+}
+const LOOP_SITE: f32 = 2.0;
+
 /// Why `decide` refuses `target` (for `RAVA_INLINE_LOG`).
 pub(super) fn refusal(target: &'static Method, chain: &Chain, tier: u8, spent: usize, freq: f32) -> &'static str {
     let size = target.code.map_or(0, |c| c.code.len());
@@ -137,7 +146,7 @@ pub(super) fn refusal(target: &'static Method, chain: &Chain, tier: u8, spent: u
     if target.is_abstract() || target.is_native() {
         return "no bytecode";
     }
-    if tier >= 3 && compiled_too_large(target, freq) {
+    if tier >= 3 && compiled_too_large(target, freq) && !over_large(target, freq) {
         return "compiled code too large";
     }
     if tier >= 3 && cold_site(target, freq) {

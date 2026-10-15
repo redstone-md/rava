@@ -149,6 +149,9 @@ pub(super) struct Builder {
     pub spent: usize,
     /// The scopes being built, outermost first, with their first argument when constant.
     pub chain: Vec<(&'static Method, Option<i64>)>,
+    /// Inlined bodies entered over their own too large compilation (`inline_plan::over_large`):
+    /// while any is being built, megamorphic sites inline only a major receiver.
+    pub shallow: u32,
     /// Code order of the next block to build.
     seq: u32,
     /// Whether this compilation may speculate (see `speculates`).
@@ -261,7 +264,7 @@ impl Builder {
     fn new(sc: Scope) -> Builder {
         let m = sc.m;
         let speculate = m.deopt_recompiles.load(std::sync::atomic::Ordering::Relaxed) < super::SPECULATIVE_RECOMPILES;
-        Builder { g: Graph::default(), extent: sc.frame_end(), sc, cur: 0, spent: 0, chain: vec![(m, None)], seq: 0, speculate, trapped: Default::default(), facts: Default::default(), stable: HashMap::new(), numbered: HashMap::new(), loads: HashMap::new(), exact: Vec::new(), declared: HashMap::new(), boxes: HashMap::new(), complete_phis: Default::default(), field_holders: HashMap::new(), store_holder: None, unprofiled_call: false, cold_call: false, fallback_call: false, bounds: Vec::new(), exits: HashMap::new() }
+        Builder { g: Graph::default(), extent: sc.frame_end(), sc, cur: 0, spent: 0, chain: vec![(m, None)], shallow: 0, seq: 0, speculate, trapped: Default::default(), facts: Default::default(), stable: HashMap::new(), numbered: HashMap::new(), loads: HashMap::new(), exact: Vec::new(), declared: HashMap::new(), boxes: HashMap::new(), complete_phis: Default::default(), field_holders: HashMap::new(), store_holder: None, unprofiled_call: false, cold_call: false, fallback_call: false, bounds: Vec::new(), exits: HashMap::new() }
     }
 
     /// Makes `block` the current one, next in code order, with the caches of its single
