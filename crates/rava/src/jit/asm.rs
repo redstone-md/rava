@@ -357,6 +357,10 @@ impl Asm {
             self.last_spill = Some((self.pos(), m.disp, src, w));
         }
         self.keep(start, None, Self::stack_slot(m).then_some(m.disp));
+        // The register stored to a spill slot holds it.
+        if Self::stack_slot(m) && !(self.bound_at == start && !self.bound.is_empty()) {
+            self.held = Some((self.pos(), src, m.disp, w));
+        }
     }
     /// After an instruction emitted from `start` that writes at most register `reg` and spill
     /// slot `slot`: whether a register still holds its spill slot.
