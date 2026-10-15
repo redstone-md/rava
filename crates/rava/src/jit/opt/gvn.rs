@@ -4,6 +4,8 @@
 //! only within an extended block; inlined bodies, unrolled copies and the paths after a merge
 //! repeat `a + 1` or `x * 3 + 1` that an earlier block already holds.
 //!
+//! Array lengths and class words, which nothing changes, number too.
+//!
 //! Division and remainder stay (their zero checks are separate, but a fault site moved by an
 //! alias would be one more thing to prove).
 
@@ -24,6 +26,8 @@ enum Key {
     Bin(u8, Ty, Opnd, Opnd),
     Convert(u8, Opnd),
     Compare(u8, Opnd, Opnd),
+    ArrayLength(V),
+    ClassWord(Ty, V),
 }
 
 pub fn number(g: &mut Graph) {
@@ -83,6 +87,10 @@ fn key(g: &Graph, v: V) -> Option<Key> {
         }
         Inst::Convert(op, x) => Key::Convert(op, opnd(g, x)),
         Inst::Compare(op, x, y) => Key::Compare(op, opnd(g, x), opnd(g, y)),
+        // What never changes once an object exists: an array's length and an object's class
+        // word, read again after calls (a dominating read has already done any null check).
+        Inst::ArrayLength(x) => Key::ArrayLength(g.resolve(x)),
+        Inst::LoadField(x, 0, _) if !g.ordered.contains(&v) => Key::ClassWord(ty, g.resolve(x)),
         _ => return None,
     })
 }
