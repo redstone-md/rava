@@ -34,8 +34,12 @@ pub fn eliminate(g: &mut Graph) {
         walk.push((i, true));
         let b = rpo[i];
         known.extend(proved_on_entry(g, b).map(|(x, k)| (x, k, true)));
+        known.extend(nonnull_on_entry(g, b).and_then(|x| object_klass().map(|o| (x, o, true))));
         let proves = |known: &[(V, &'static Klass, bool)], x: V, k: &'static Klass, nonnull: bool| {
+            let is_nonnull = || known.iter().any(|&(y, _, nn)| y == x && nn);
             known.iter().any(|&(y, kk, nn)| y == x && (nn || !nonnull) && kk.is_subtype_of(k))
+                // Every reference is an Object; a field's value an instance of its declared type.
+                || (is_object(k) || g.declared_types.get(&x).is_some_and(|d| d.is_subtype_of(k))) && (!nonnull || is_nonnull())
         };
         for &v in &g.blocks[b as usize].insts {
             if g.resolve(v) != v {
@@ -74,6 +78,40 @@ pub fn eliminate(g: &mut Graph) {
     for blk in &mut g.blocks {
         blk.insts.retain(|v| !casts.iter().any(|c| c.0 == *v) && !checks.contains(v));
     }
+}
+
+fn is_object(k: &'static Klass) -> bool {
+    k.super_klass.is_none() && matches!(k.kind, crate::klass::KlassKind::Instance) && !k.is_interface()
+}
+
+/// java.lang.Object, once loaded.
+fn object_klass() -> Option<&'static Klass> {
+    static O: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    let a = *O.get_or_init(|| crate::vm::vm().find_loaded(std::ptr::null_mut(), crate::symbol::Symbol::intern("java/lang/Object")).map_or(0, |k| k as *const Klass as usize));
+    // SAFETY: classes are immortal.
+    (a != 0).then(|| unsafe { &*(a as *const Klass) })
+}
+
+/// The value the branch into `b` proved non-null: entered only from a test of it against null
+/// on the side where it is not.
+fn nonnull_on_entry(g: &Graph, b: B) -> Option<V> {
+    let [p] = g.blocks[b as usize].preds[..] else { return None };
+    let Term::If { cmp, ty: Ty::A, a, b: y, then, other, .. } = g.blocks[p as usize].term else { return None };
+    if then == other {
+        return None;
+    }
+    let (a, y) = (g.resolve(a), g.resolve(y));
+    let x = match (g.constant(a), g.constant(y)) {
+        (None, Some(0)) => a,
+        (Some(0), None) => y,
+        _ => return None,
+    };
+    let holds = match cmp {
+        Cmp::Ne => then == b,
+        Cmp::Eq => other == b,
+        _ => return None,
+    };
+    holds.then_some(x)
 }
 
 /// What the branch into `b` proved: entered only from a test of `x instanceof K` on the side

@@ -1,56 +1,36 @@
-// A field declared with a final class holds exactly that class or null: calls on its value
-// bind statically (here `toString`/`hashCode`, whose profiles other receivers pollute), and a
-// null in it still throws.
+// Casts and instanceof tests on values loaded from fields (their declared types: an array of
+// objects, an interface, a class), null among them, and on any reference against Object.
 public class DeclaredTypeSem {
-    static final class Name { final String ns, path; Name(String a, String b) { ns = a; path = b; } }
-    static final class Holder { String s; Integer i; Holder(String s, Integer i) { this.s = s; this.i = i; } }
-    static String label = "lbl";
-    interface Shape { int sides(int k); }
-    static final class Plain { }
-    static Plain none;
+    interface Shape { int area(); }
+    static final class Sq implements Shape { final int s; Sq(int s) { this.s = s; } public int area() { return s * s; } }
+    static class Holder { Object[] arr; Shape shape; CharSequence text; Object any; }
 
-    // Only null passes the cast of a `Plain` to `Shape`; the call then throws.
-    static int sides(Object o) { return ((Shape) o).sides(3); }
-    static int viaField() { Object o = none; return o == null ? -1 : ((Shape) o).sides(4); }
-    static int castNull() { try { return ((Shape) (Object) none).sides(5); } catch (NullPointerException e) { return -2; } }
-
-    static int use(Holder h) {
-        Object o = h.s;
-        Object p = h.i;
-        return o.toString().length() + o.hashCode() % 97 + p.hashCode() + label.toString().length();
+    static long test(Holder h) {
+        long r = 0;
+        if (h.arr instanceof Object[]) r += ((Object[]) h.arr).length;
+        if (h.shape instanceof Shape) r += ((Shape) h.shape).area();
+        if (h.text instanceof CharSequence) r += h.text.length();
+        if (h.text instanceof String) r += 1000;
+        Object a = h.any;
+        if (a instanceof Object) r += 7;
+        if (a != null && a instanceof Object[]) r += 11;
+        Object x = (Object) h.shape;
+        if (x instanceof Sq) r += 13;
+        return r;
     }
 
-    static String key(Name n) { return n.ns + "." + n.path; }
-
     public static void main(String[] args) {
-        // Pollute the shared call sites with other receivers first.
-        Object[] mixed = { 1, 2L, 'c', Boolean.TRUE, java.util.List.of(1), "s" };
-        int junk = 0;
-        for (int r = 0; r < 20000; r++) junk += mixed[r % mixed.length].toString().length() + mixed[r % mixed.length].hashCode() % 7;
-        long acc = 0;
-        Holder h = new Holder("value", 41);
-        Name n = new Name("minecraft", "overworld");
-        for (int r = 0; r < 30000; r++) acc += use(h) + key(n).length();
-        System.out.println("acc " + acc + " " + junk + " " + key(n));
-        try {
-            use(new Holder(null, 1));
-        } catch (NullPointerException e) {
-            System.out.println("npe s");
+        Holder[] hs = new Holder[6];
+        for (int i = 0; i < hs.length; i++) {
+            Holder h = new Holder();
+            if (i % 2 == 0) h.arr = i % 4 == 0 ? new String[3] : new Object[2];
+            if (i % 3 != 0) h.shape = new Sq(i);
+            h.text = i == 1 ? null : i % 2 == 0 ? "abc" : new StringBuilder("xy");
+            h.any = i == 4 ? null : i == 5 ? new Integer[1] : "s";
+            hs[i] = h;
         }
-        try {
-            use(new Holder("x", null));
-        } catch (NullPointerException e) {
-            System.out.println("npe i");
-        }
-        label = null;
-        try {
-            use(h);
-        } catch (NullPointerException e) {
-            System.out.println("npe static");
-        }
-        System.out.println(key(new Name(null, "p")));
         long t = 0;
-        for (int r = 0; r < 30000; r++) t += viaField() + castNull() + sides((Shape) k -> k * 2);
-        System.out.println("casts " + t);
+        for (int i = 0; i < 300000; i++) t = t * 31 + test(hs[i % hs.length]);
+        System.out.println(t);
     }
 }

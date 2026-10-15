@@ -333,6 +333,9 @@ pub struct Graph {
     /// Loads of final instance fields outside constructors: a store to another field at the
     /// same offset (of another class) does not change them (`licm.rs`).
     pub final_loads: std::collections::HashSet<V>,
+    /// The declared type of a field a load reads (a class the value is an instance of, or null),
+    /// as C2 types loads by the field's declared type (`typecheck.rs`).
+    pub declared_types: std::collections::HashMap<V, &'static crate::klass::Klass>,
     /// The class declaring the field of a field load or store made from bytecode (`loadnum.rs`).
     pub field_holders: std::collections::HashMap<V, &'static crate::klass::Klass>,
     /// The receiver of an instance method, never null.

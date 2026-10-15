@@ -24,6 +24,9 @@ impl Builder {
         if let Some(k) = declared_class(holder, f.desc.as_str()) {
             self.declared.insert(v, k);
         }
+        if let Some(k) = declared_type(holder, f.desc.as_str()) {
+            self.g.declared_types.insert(v, k);
+        }
     }
 
     /// Records the exact classes of the compiled method `m`'s parameters (`args`, the receiver
@@ -495,6 +498,25 @@ pub(super) fn box_value_of(m: &'static Method) -> bool {
 /// The class a value declared with type `desc` in `holder` has exactly when not null: a final
 /// class already loaded, a primitive array, or an array of either whose array class exists (no
 /// other class is assignable to any of them).
+/// The loaded class a field declared with `desc` holds instances of (any class, or an array
+/// of a loaded class), if loaded.
+fn declared_type(holder: &'static Klass, desc: &str) -> Option<&'static Klass> {
+    let elem = desc.trim_start_matches('[');
+    let mut dims = desc.len() - elem.len();
+    let mut k = match elem.strip_prefix('L').and_then(|d| d.strip_suffix(';')) {
+        Some(name) => crate::vm::vm().find_loaded(holder.loader(), crate::symbol::Symbol::intern(name))?,
+        None if dims > 0 && elem.len() == 1 && "ZCFDBSIJ".contains(elem) => {
+            dims -= 1;
+            crate::vm::vm().primitive_array_class(BasicType::from_desc(elem.as_bytes()[0])).ok()?
+        }
+        None => return None,
+    };
+    for _ in 0..dims {
+        k = k.array_klass.get().copied()?;
+    }
+    Some(k)
+}
+
 fn declared_class(holder: &'static Klass, desc: &str) -> Option<&'static Klass> {
     let elem = desc.trim_start_matches('[');
     let mut dims = desc.len() - elem.len();
