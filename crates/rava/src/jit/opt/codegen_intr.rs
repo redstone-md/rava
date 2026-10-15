@@ -151,6 +151,17 @@ impl Gen<'_> {
                 self.put(v, R::Rax);
             }
             Intrinsic::MinMax(ty, max) => self.min_max(v, ty, max, args[0], args[1]),
+            Intrinsic::MulHigh(unsigned) => {
+                // rdx:rax := rax * r11 (rdx is scratch: `scratch.rs`).
+                self.load(R::Rax, args[0]);
+                self.load(R::R11, args[1]);
+                if unsigned {
+                    self.a.mul_wide(true, R::R11);
+                } else {
+                    self.a.imul_wide(true, R::R11);
+                }
+                self.put(v, R::Rdx);
+            }
             Intrinsic::CompareAndSet(ty) => {
                 // [unsafe, o, offset, expected, x]; a null base makes the offset absolute.
                 let heap = self.arrays.contains(&self.g.resolve(args[1]));

@@ -486,6 +486,10 @@ impl Asm {
     pub fn imul_wide(&mut self, w: bool, src: R) {
         self.op_rr(w, &[0xF7], 5, src as u8);
     }
+    /// One-operand `mul src`: the unsigned double-width product of rax and src in rdx:rax.
+    pub fn mul_wide(&mut self, w: bool, src: R) {
+        self.op_rr(w, &[0xF7], 4, src as u8);
+    }
     /// `cdq` / `cqo` then `idiv src` (quotient rax, remainder rdx).
     pub fn idiv(&mut self, w: bool, src: R) {
         if w {
