@@ -868,6 +868,19 @@ impl Gen<'_> {
             // before it: the method loads as the interface compares), else a scan of its itable
             // in place (`stubs::itable_lookup`).
             let (scan, block) = (self.a.new_label(), self.a.new_label());
+            // This compiled site's own last receiver class and target (C2's inline cache per
+            // call site): an inlined copy of a megamorphic site often sees one class.
+            let slot = megamorphic.then(|| crate::low::leak([0usize; 2]) as *const [usize; 2] as usize);
+            if let Some(slot) = slot {
+                let other = self.a.new_label();
+                let at = self.absolute(slot, R::Rax);
+                self.a.alu_rm(true, Alu::Cmp, k, at);
+                self.a.jcc(Cond::Ne, other);
+                let at = self.absolute(slot + 8, R::Rax);
+                self.a.load(true, R::Rdx, at);
+                self.a.jmp(done);
+                self.a.bind(other);
+            }
             let hit = offset_of!(Klass, itable_hit) as i32;
             self.a.mov_ri(R::Rsi, m.holder as *const Klass as i64);
             self.a.load(true, R::Rax, mem(k, hit));
@@ -888,7 +901,17 @@ impl Gen<'_> {
             self.a.bind(block);
             self.a.load(true, R::Rax, mem(R::Rax, 8 * m.index() as i32));
             self.a.test_rr(true, R::Rax, R::Rax);
-            self.a.jcc(Cond::Ne, found);
+            match slot {
+                Some(slot) => {
+                    self.a.jcc(Cond::E, learn);
+                    let at = self.absolute(slot, R::R11);
+                    self.a.store(true, at, k);
+                    let at = self.absolute(slot + 8, R::R11);
+                    self.a.store(true, at, R::Rax);
+                    self.a.jmp(found);
+                }
+                None => self.a.jcc(Cond::Ne, found),
+            }
             self.a.bind(learn);
         }
         if reg {

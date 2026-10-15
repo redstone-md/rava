@@ -133,9 +133,11 @@ fn compiled_too_large(target: &'static Method, freq: f32) -> bool {
 /// it): inlined anyway, its body holding to C2's polymorphic inlining (`Builder::shallow`), so
 /// the caller's loop makes no call per element.
 pub(super) fn over_large(target: &'static Method, freq: f32) -> bool {
-    freq >= LOOP_SITE && target.code.is_some_and(|c| c.code.len() <= MAX_INLINE_SIZE) && compiled_too_large(target, freq)
+    freq >= LOOP_SITE && target.code.is_some_and(|c| c.code.len() <= OVER_LARGE_SIZE) && compiled_too_large(target, freq)
 }
 const LOOP_SITE: f32 = 2.0;
+/// Bytecode of a callee `over_large` takes: a node test of a pattern matcher (37) and the like.
+const OVER_LARGE_SIZE: usize = 64;
 
 /// Why `decide` refuses `target` (for `RAVA_INLINE_LOG`).
 pub(super) fn refusal(target: &'static Method, chain: &Chain, tier: u8, spent: usize, freq: f32) -> &'static str {
