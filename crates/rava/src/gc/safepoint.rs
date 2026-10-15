@@ -28,6 +28,8 @@ pub struct Record {
     pub waiting_on: AtomicUsize,
     /// The object whose monitor this thread is blocked entering, or 0 (for `ThreadInfo`).
     pub blocked_on: AtomicUsize,
+    /// The OS thread, for setting its priority from another thread (`os::set_java_priority`).
+    pub os_thread: usize,
 }
 
 struct Registry {
@@ -145,6 +147,7 @@ pub fn attach(t: &mut Thread) {
         parker: crate::parker::Parker::default(),
         waiting_on: AtomicUsize::new(0),
         blocked_on: AtomicUsize::new(0),
+        os_thread: crate::os::current_thread_handle(),
     }));
     t.gc_record = Some(rec);
     registry().threads.lock().unwrap().push(rec);

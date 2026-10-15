@@ -192,6 +192,31 @@ pub fn memory_status() -> (i64, i64, i64, i64) {
 }
 
 /// Names the calling thread.
+/// A handle of the calling thread usable from other threads (kept for the thread's life).
+pub fn current_thread_handle() -> usize {
+    use windows_sys::Win32::Foundation::{DuplicateHandle, DUPLICATE_SAME_ACCESS};
+    let mut h: HANDLE = std::ptr::null_mut();
+    // SAFETY: duplicates the pseudo-handle of the calling thread into a real one.
+    unsafe { DuplicateHandle(GetCurrentProcess(), GetCurrentThread(), GetCurrentProcess(), &mut h, 0, 0, DUPLICATE_SAME_ACCESS) };
+    h as usize
+}
+
+/// Sets the scheduling priority of thread `handle` (0: the calling thread) for Java priority
+/// `p` (1..=10), as HotSpot maps them on Windows: 1-2 lowest, 3-4 below normal, 5-6 normal,
+/// 7-8 above normal, 9-10 highest.
+pub fn set_java_priority(handle: usize, p: i32) {
+    use windows_sys::Win32::System::Threading::{THREAD_PRIORITY_ABOVE_NORMAL, THREAD_PRIORITY_HIGHEST, THREAD_PRIORITY_LOWEST, THREAD_PRIORITY_NORMAL};
+    let prio = match p {
+        ..=2 => THREAD_PRIORITY_LOWEST,
+        3 | 4 => THREAD_PRIORITY_BELOW_NORMAL,
+        5 | 6 => THREAD_PRIORITY_NORMAL,
+        7 | 8 => THREAD_PRIORITY_ABOVE_NORMAL,
+        _ => THREAD_PRIORITY_HIGHEST,
+    };
+    // SAFETY: a thread handle of this process, else the calling thread's pseudo-handle.
+    unsafe { SetThreadPriority(if handle == 0 { GetCurrentThread() } else { handle as HANDLE }, prio) };
+}
+
 pub fn set_thread_name(name: &std::ffi::CStr) {
     let w: Vec<u16> = name.to_string_lossy().encode_utf16().chain(std::iter::once(0)).collect();
     // SAFETY: names the calling thread with a NUL-terminated wide string.

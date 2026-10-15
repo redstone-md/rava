@@ -201,6 +201,14 @@ pub fn memory_status() -> (i64, i64, i64, i64) {
 }
 
 /// Names the calling thread (the first 15 bytes, the limit on Linux).
+/// A handle of the calling thread (none needed: priorities are not changed here).
+pub fn current_thread_handle() -> usize {
+    0
+}
+
+/// Java thread priorities leave scheduling alone, as HotSpot's default policy on Unix does.
+pub fn set_java_priority(_handle: usize, _p: i32) {}
+
 pub fn set_thread_name(name: &std::ffi::CStr) {
     // SAFETY: names the calling thread with a NUL-terminated string.
     #[cfg(target_os = "linux")]

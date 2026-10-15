@@ -16,6 +16,7 @@ vm_field!(status_offset, "java/lang/Thread$FieldHolder", "threadStatus", "I");
 vm_field!(interrupted_offset, "java/lang/Thread", "interrupted", "Z");
 vm_field!(name_offset, "java/lang/Thread", "name", "Ljava/lang/String;");
 vm_field!(daemon_offset, "java/lang/Thread$FieldHolder", "daemon", "Z");
+vm_field!(priority_offset, "java/lang/Thread$FieldHolder", "priority", "I");
 
 /// The started non-daemon threads still running: the VM ends only when none is left.
 fn non_daemon() -> &'static (std::sync::Mutex<usize>, std::sync::Condvar) {
@@ -111,7 +112,16 @@ pub(super) fn register(r: &mut NativeRegistry) {
         ret_void()
     });
     r.add(T, "ensureMaterializedForStackWalk", "(Ljava/lang/Object;)V", |_, _| ret_void());
-    r.add(T, "setPriority0", "(I)V", |_, _| ret_void());
+    // As HotSpot, the priority becomes the OS thread's (a game raises its render thread's).
+    r.add(T, "setPriority0", "(I)V", |t, a| {
+        let p = a[1] as i32;
+        if a[0] as Oop == t.java_thread {
+            crate::os::set_java_priority(0, p);
+        } else if let Some(rec) = record_of(a[0] as Oop) {
+            crate::os::set_java_priority(rec.os_thread, p);
+        }
+        ret_void()
+    });
     // An instance method, called on the current thread: a[0] is the thread, a[1] the name.
     r.add(T, "setNativeName", "(Ljava/lang/String;)V", |_, a| {
         set_os_thread_name(&rt::java_string_to_rust(a[1] as Oop));
@@ -346,6 +356,12 @@ fn run_thread(jt: Oop, daemon: bool) {
     // Attached, the thread keeps its own object alive.
     starting().lock().unwrap().retain(|&o| o != jt as usize);
     mark_started(&t, jt);
+    // The priority set before the start.
+    // SAFETY: a started thread has its field holder.
+    let priority = unsafe { obj::read::<i32>(obj::read_ref(jt, holder_offset()), priority_offset()) };
+    if priority != 5 {
+        crate::os::set_java_priority(0, priority);
+    }
     // SAFETY: the attached thread's own object; its name is a live String (or null).
     let name = unsafe { obj::read_ref(jt, name_offset()) };
     if !name.is_null() {
