@@ -201,6 +201,8 @@ pub(super) fn build(m: &'static Method) -> Option<(Graph, i32)> {
     // The entry block reads the parameters, then enters bci 0 like any other edge.
     let start = b.g.new_block(-1);
     b.start_block(start);
+    // Runs as often as the code it enters (no current block to inherit from).
+    b.g.blocks[start as usize].freq = b.sc.frequency(b.sc.start);
     let mut slot = 0u16;
     if !m.is_static() {
         let this = b.g.add(start, Inst::Param(0), Ty::A);
@@ -234,6 +236,8 @@ pub(super) fn build_osr(m: &'static Method, bci: usize, types: &[Option<Ty>]) ->
     let mut b = Builder::new(sc);
     let start = b.g.new_block(-1);
     b.start_block(start);
+    // Runs as often as the code it enters (no current block to inherit from).
+    b.g.blocks[start as usize].freq = b.sc.frequency(b.sc.start);
     for (slot, &ty) in types.iter().enumerate() {
         // The second half of a long or double is live with it.
         let half = slot > 0 && types[slot - 1].is_some_and(Ty::wide);
