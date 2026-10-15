@@ -31,6 +31,7 @@ mod ir;
 mod conds;
 mod consts;
 mod dce;
+mod deadstore;
 mod guards;
 mod gvn;
 mod initstores;
@@ -249,6 +250,8 @@ fn compile_timed(m: &'static Method, osr: Option<u32>) -> Option<CompiledMethod>
     verify(&g, m, "algebra::simplify_late");
     loadnum::number(&mut g);
     verify(&g, m, "loadnum::number (late)");
+    deadstore::eliminate(&mut g);
+    verify(&g, m, "deadstore::eliminate");
     gvn::number(&mut g);
     verify(&g, m, "gvn::number");
     consts::hoist(&mut g);
