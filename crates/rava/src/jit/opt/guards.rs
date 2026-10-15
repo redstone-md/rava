@@ -88,7 +88,9 @@ pub(super) fn branches(g: &mut Graph, l: &Loop, pre: B, block_of: &[usize], nonn
         Inst::LoadField(o, 0, BasicType::Int) => Some(g.resolve(o)).filter(|&o| outside(o) && nonnull.contains(&o)),
         _ => None,
     };
-    let cold = |b: B| b != 0 && g.blocks[b as usize].insts.is_empty() && matches!(g.blocks[b as usize].term, Term::Deopt(_));
+    // A deoptimizing block with nothing but merges (a single-input phi of an inlined body's
+    // local) does no work before leaving.
+    let cold = |b: B| b != 0 && g.blocks[b as usize].insts.iter().all(|&v| g.resolve(v) != v || matches!(g.inst(v), Inst::Phi(_))) && matches!(g.blocks[b as usize].term, Term::Deopt(_));
     // (block, test, type, operands, each operand's object whose class word to reload, stay, exit)
     let mut hoisted: Vec<(usize, Cmp, Ty, V, V, [Option<V>; 2], B, B)> = Vec::new();
     for (bi, blk) in g.blocks.iter().enumerate() {
@@ -117,7 +119,15 @@ pub(super) fn branches(g: &mut Graph, l: &Loop, pre: B, block_of: &[usize], nonn
         let (a, b) = (operand(a, reload[0]), operand(b, reload[1]));
         g.add(pre, Inst::Guard(cmp, ty, a, b, ps.clone()), Ty::I);
         g.blocks[bi].term = Term::Goto(stay);
-        g.blocks[exit as usize].preds.retain(|&p| p as usize != bi);
+        // The exit loses this edge, and its phis their input from it.
+        while let Some(k) = g.blocks[exit as usize].preds.iter().position(|&p| p as usize == bi) {
+            g.blocks[exit as usize].preds.remove(k);
+            for v in g.blocks[exit as usize].insts.clone() {
+                if let Inst::Phi(ins) = &mut g.values[v as usize].inst {
+                    ins.remove(k);
+                }
+            }
+        }
     }
     true
 }
