@@ -73,7 +73,8 @@ fn key(g: &Graph, v: V) -> Option<Key> {
     let ty = g.ty(v);
     Some(match *g.inst(v) {
         Inst::Neg(x) => Key::Neg(ty, opnd(g, x)),
-        Inst::Bin(op, x, y) if !matches!(op, BinOp::Div | BinOp::Rem) => {
+        // Float division never traps: it numbers like any arithmetic.
+        Inst::Bin(op, x, y) if !matches!(op, BinOp::Div | BinOp::Rem) || matches!(ty, Ty::F | Ty::D) => {
             let (mut x, mut y) = (opnd(g, x), opnd(g, y));
             if matches!(op, BinOp::Add | BinOp::Mul | BinOp::And | BinOp::Or | BinOp::Xor) && y < x {
                 std::mem::swap(&mut x, &mut y);
