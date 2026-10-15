@@ -14,6 +14,10 @@ use super::ir::*;
 pub fn thread(g: &mut Graph) {
     let reads = reads(g);
     for m in 0..g.blocks.len() as B {
+        if let Some(p) = switch_shape(g, m, &reads) {
+            thread_switch(g, m, p);
+            continue;
+        }
         let Some((p, cmp, ty, k, phi_left, then, other)) = shape(g, m, &reads) else { continue };
         let mut i = 0;
         while i < g.blocks[m as usize].preds.len() {
@@ -104,6 +108,47 @@ fn shape(g: &Graph, m: B, reads: &[u32]) -> Option<(V, Cmp, Ty, i64, bool, B, B)
     };
     let own = |v: V| blk.insts.contains(&v);
     (own(p) && matches!(g.inst(p), Inst::Phi(_)) && reads[p as usize] == 1 && blk.insts.iter().all(|&v| only_phi(v))).then_some((p, cmp, ty, k, phi_left, then, other))
+}
+
+/// A merge `m` switching on its phi (read by nothing else), holding only phis and constants.
+fn switch_shape(g: &Graph, m: B, reads: &[u32]) -> Option<V> {
+    let blk = &g.blocks[m as usize];
+    let Term::Switch { key, .. } = blk.term else { return None };
+    if blk.loop_header || g.loop_entry.contains_key(&m) || blk.preds.len() < 2 {
+        return None;
+    }
+    let p = g.resolve(key);
+    let only_phi = |v: V| match g.inst(v) {
+        Inst::Phi(_) => g.resolve(v) != v || v == p,
+        Inst::Const(_) => true,
+        _ => false,
+    };
+    (blk.insts.contains(&p) && matches!(g.inst(p), Inst::Phi(_)) && reads[p as usize] == 1 && blk.insts.iter().all(|&v| only_phi(v))).then_some(p)
+}
+
+/// Sends each predecessor of `m` that brings a constant key straight to its case's block.
+fn thread_switch(g: &mut Graph, m: B, p: V) {
+    let mut i = 0;
+    while i < g.blocks[m as usize].preds.len() {
+        let pred = g.blocks[m as usize].preds[i];
+        let Inst::Phi(inputs) = g.inst(p) else { unreachable!() };
+        let target = g.constant(g.resolve(inputs[i])).map(|c| match &g.blocks[m as usize].term {
+            Term::Switch { cases, default, .. } => cases.iter().find(|&&(k, _)| k as i64 == c as i32 as i64).map_or(*default, |&(_, b)| b),
+            _ => unreachable!(),
+        });
+        match target {
+            Some(t) if redirect_ok(g, pred, m, t) => redirect(g, pred, i, m, t),
+            _ => i += 1,
+        }
+    }
+    if g.blocks[m as usize].preds.is_empty() {
+        let blk = &mut g.blocks[m as usize];
+        let succ = std::mem::replace(&mut blk.term, Term::None).successors();
+        blk.insts.clear();
+        for s in succ {
+            drop_pred(g, s, m);
+        }
+    }
 }
 
 /// Whether `pred` (jumping to `m`) may jump to `t` instead.
