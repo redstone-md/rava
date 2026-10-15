@@ -37,10 +37,24 @@ impl Asm {
         if double { 0xF2 } else { 0xF3 }
     }
     pub fn fload(&mut self, double: bool, x: X, m: M) {
+        // A reload of the spill slot just stored (no label in between) is a register move: the
+        // load would wait for the store to forward.
+        if let (Some((end, disp, src)), true) = (self.last_fspill, Self::stack_slot(m)) {
+            if end == self.pos() && disp == m.disp && !(self.bound_at == end && !self.bound.is_empty()) {
+                if x.0 != src {
+                    self.mov_xx(x, X(src));
+                }
+                return;
+            }
+        }
         self.sse_rm(Self::fp(double), false, 0x10, x.0, m);
     }
     pub fn fstore(&mut self, double: bool, m: M, x: X) {
         self.sse_rm(Self::fp(double), false, 0x11, x.0, m);
+        // Spill slots are stored whole (a double's width), so any reload reads what was stored.
+        if double && Self::stack_slot(m) {
+            self.last_fspill = Some((self.pos(), m.disp, x.0));
+        }
     }
     /// `addsd/subsd/mulsd/divsd x, [m]` by opcode (0x58, 0x5C, 0x59, 0x5E).
     pub fn farith_m(&mut self, double: bool, op: u8, x: X, m: M) {

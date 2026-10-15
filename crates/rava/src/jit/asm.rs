@@ -86,6 +86,8 @@ pub struct Asm {
     /// The spill store just emitted: (end, rsp displacement, register, width), so that a reload
     /// of that slot right after it becomes a register move (`load`).
     last_spill: Option<(u32, i32, R, bool)>,
+    /// The same for an SSE register (`fload`).
+    last_fspill: Option<(u32, i32, u8)>,
     /// The 64-bit register move just emitted: (end, destination, source), so that the move
     /// back right after it (no label in between) is left out.
     last_mov: Option<(u32, R, R)>,
