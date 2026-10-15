@@ -94,11 +94,12 @@ pub struct Asm {
     /// The 64-bit register move just emitted: (end, destination, source), so that the move
     /// back right after it (no label in between) is left out.
     last_mov: Option<(u32, R, R)>,
-    /// A register known to hold a spill slot: (position up to which that is known, register,
-    /// rsp displacement, width). Only the emitters that say what they write (`keep`) carry it
-    /// forward; any other instruction, or a label, ends it. A reload of the slot into the
-    /// register is then left out (`load`).
-    held: Option<(u32, R, i32, bool)>,
+    /// Registers known to hold a spill or frame slot: (register, slot base, displacement,
+    /// width), valid at position `held_at`. Only the emitters that say what they write (`keep`)
+    /// carry them forward; any other instruction, or a label, ends them. A reload of a slot a
+    /// register holds is then left out, or becomes a register move (`load`).
+    held: Vec<(R, R, i32, bool)>,
+    held_at: u32,
 }
 
 /// Finished machine code and the call displacements its installation resolves.
@@ -327,28 +328,33 @@ impl Asm {
     pub fn load(&mut self, w: bool, dst: R, m: M) {
         let start = self.pos();
         let unbound = !(self.bound_at == start && !self.bound.is_empty());
-        if Self::stack_slot(m) {
-            // The register already holds the slot.
-            if unbound && self.held == Some((start, dst, m.disp, w)) {
-                return;
-            }
-            // A reload of the stack slot just stored (no label in between): the register still
-            // has it.
-            if let Some((end, disp, src, sw)) = self.last_spill {
-                if end == start && disp == m.disp && sw == w && unbound {
-                    if dst != src {
-                        self.mov_rr(w, dst, src);
+        if let Some((base, disp)) = Self::slot_of(m) {
+            if unbound && self.held_at == start {
+                // A register already holds the slot.
+                if let Some(&(r, ..)) = self.held.iter().find(|&&(_, b, d, hw)| (b, d, hw) == (base, disp, w)) {
+                    if r != dst {
+                        self.mov_rr(w, dst, r);
+                        self.note(dst, base, disp, w);
                     }
-                    self.held = Some((self.pos(), dst, m.disp, w));
                     return;
                 }
             }
-            self.op_rm(w, &[0x8B], dst as u8, m);
-            self.held = Some((self.pos(), dst, m.disp, w));
-            return;
+        }
+        // A reload of the stack slot just stored (no label in between): the register still has it.
+        if let (Some((end, disp, src, sw)), true) = (self.last_spill, Self::stack_slot(m)) {
+            if end == start && disp == m.disp && sw == w && unbound {
+                if dst != src {
+                    self.mov_rr(w, dst, src);
+                }
+                self.note(dst, R::Rsp, m.disp, w);
+                return;
+            }
         }
         self.op_rm(w, &[0x8B], dst as u8, m);
         self.keep(start, Some(dst), None);
+        if let Some((base, disp)) = Self::slot_of(m).filter(|&(b, _)| b != dst) {
+            self.note(dst, base, disp, w);
+        }
     }
     pub fn store(&mut self, w: bool, m: M, src: R) {
         let start = self.pos();
@@ -356,19 +362,44 @@ impl Asm {
         if Self::stack_slot(m) {
             self.last_spill = Some((self.pos(), m.disp, src, w));
         }
-        self.keep(start, None, Self::stack_slot(m).then_some(m.disp));
-        // The register stored to a spill slot holds it.
-        if Self::stack_slot(m) && !(self.bound_at == start && !self.bound.is_empty()) {
-            self.held = Some((self.pos(), src, m.disp, w));
+        self.keep(start, None, Some(m));
+        // The register stored to a slot holds it.
+        if let Some((base, disp)) = Self::slot_of(m) {
+            self.note(src, base, disp, w);
         }
     }
-    /// After an instruction emitted from `start` that writes at most register `reg` and spill
-    /// slot `slot`: whether a register still holds its spill slot.
-    fn keep(&mut self, start: u32, reg: Option<R>, slot: Option<i32>) {
-        self.held = match self.held {
-            Some((at, r, disp, w)) if at == start && reg != Some(r) && slot != Some(disp) && !(self.bound_at == start && !self.bound.is_empty()) => Some((self.pos(), r, disp, w)),
-            _ => None,
-        };
+    /// Records that `r` holds the slot at `disp` from `base` (with `held` valid here).
+    fn note(&mut self, r: R, base: R, disp: i32, w: bool) {
+        if self.held_at != self.pos() || self.bound_at == self.pos() && !self.bound.is_empty() {
+            return;
+        }
+        self.held.retain(|&(hr, ..)| hr != r);
+        if self.held.len() >= 8 {
+            self.held.remove(0);
+        }
+        self.held.push((r, base, disp, w));
+    }
+    /// After an instruction emitted from `start` that writes at most register `reg` and memory
+    /// `m`: which registers still hold slots.
+    fn keep(&mut self, start: u32, reg: Option<R>, m: Option<M>) {
+        if self.held_at != start || self.bound_at == start && !self.bound.is_empty() {
+            self.held.clear();
+        } else {
+            if let Some(r) = reg {
+                self.held.retain(|&(hr, b, ..)| hr != r && b != r);
+            }
+            match m.map(|m| (m, Self::slot_of(m))) {
+                Some((_, Some((base, disp)))) => self.held.retain(|&(_, b, d, _)| (b, d) != (base, disp)),
+                // A store through another register may reach the frame, never a spill slot.
+                Some((_, None)) => self.held.retain(|&(_, b, ..)| b == R::Rsp),
+                None => {}
+            }
+        }
+        self.held_at = self.pos();
+    }
+    /// `[rsp + disp]` or `[r13 + disp]` (a spill slot, or a frame slot while r13 holds the frame).
+    fn slot_of(m: M) -> Option<(R, i32)> {
+        (matches!(m.base, R::Rsp | R::R13) && m.index.is_none() && m.rip.is_none() && !m.nobase).then_some((m.base, m.disp))
     }
     /// `[rsp + disp]`: a spill slot, which only this code's own moves write.
     fn stack_slot(m: M) -> bool {
@@ -408,7 +439,9 @@ impl Asm {
         self.op_rr(w, &[0x0F, opcode], dst as u8, src as u8);
     }
     pub fn movsxd(&mut self, dst: R, src: R) {
+        let start = self.pos();
         self.op_rr(true, &[0x63], dst as u8, src as u8);
+        self.keep(start, Some(dst), None);
     }
     pub fn mov_ri(&mut self, dst: R, imm: i64) {
         if imm >= 0 && imm <= u32::MAX as i64 {
@@ -443,8 +476,10 @@ impl Asm {
     }
     /// `mov qword [m], imm32` (sign-extended).
     pub fn store_imm(&mut self, m: M, imm: i32) {
+        let start = self.pos();
         self.op_rm(true, &[0xC7], 0, m);
         self.d32(imm);
+        self.keep(start, None, Some(m));
     }
     /// `lea dst, [base + disp32]` with a displacement patched later; returns its position.
     pub fn lea_patchable(&mut self, dst: R, base: R) -> u32 {
@@ -518,7 +553,9 @@ impl Asm {
         self.keep(start, None, None);
     }
     pub fn imul_rr(&mut self, w: bool, dst: R, src: R) {
+        let start = self.pos();
         self.op_rr(w, &[0x0F, 0xAF], dst as u8, src as u8);
+        self.keep(start, Some(dst), None);
     }
     /// `imul dst, [m]`.
     pub fn imul_rm(&mut self, w: bool, dst: R, m: M) {
@@ -558,8 +595,10 @@ impl Asm {
     }
     /// Shift `r` by an immediate count.
     pub fn shift_ri(&mut self, w: bool, op: Shift, r: R, count: u8) {
+        let start = self.pos();
         self.op_rr(w, &[0xC1], op as u8, r as u8);
         self.b(count);
+        self.keep(start, Some(r), None);
     }
     pub fn setcc(&mut self, c: Cond, r: R) {
         self.rex(false, 0, 0, r as u8, (4..8).contains(&(r as u8)));
