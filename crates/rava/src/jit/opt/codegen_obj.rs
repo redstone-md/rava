@@ -329,7 +329,33 @@ impl Gen<'_> {
 
     /// The class of array `a` when known here: allocated in this code, or a constant.
     fn known_array_class(&self, a: V) -> Option<&'static Klass> {
+        self.known_array_class_within(a, 4)
+    }
+
+    /// `known_array_class`, through up to `depth` merges whose inputs all have the one class
+    /// (a fresh array a loop carries).
+    fn known_array_class_within(&self, a: V, depth: u32) -> Option<&'static Klass> {
         let mut r = self.g.resolve(a);
+        while let Inst::Copy(x) = *self.g.inst(r) {
+            r = self.g.resolve(x);
+        }
+        if let Inst::Phi(ins) = self.g.inst(r) {
+            if depth == 0 {
+                return None;
+            }
+            let mut k: Option<&'static Klass> = None;
+            for &x in ins {
+                if self.g.resolve(x) == r {
+                    continue;
+                }
+                let c = self.known_array_class_within(x, depth - 1)?;
+                if k.is_some_and(|k| !std::ptr::eq(k, c)) {
+                    return None;
+                }
+                k = Some(c);
+            }
+            return k;
+        }
         if let Inst::CheckCast(x, ..) = *self.g.inst(r) {
             r = self.g.resolve(x);
         }
