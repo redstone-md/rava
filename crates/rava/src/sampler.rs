@@ -95,6 +95,10 @@ mod imp {
         crate::jit::code_cache::keep_names();
         let _ = std::thread::Builder::new().name("rava-sampler".into()).spawn(move || {
             let mut counts: HashMap<(u32, usize, usize, usize), u64> = HashMap::new();
+            // RAVA_SAMPLE_WINDOW: each ten seconds' samples also on their own (`<file>.w<secs>`),
+            // to see a steady state apart from loading.
+            let windowed = std::env::var_os("RAVA_SAMPLE_WINDOW").is_some();
+            let mut window: HashMap<(u32, usize, usize, usize), u64> = HashMap::new();
             let stubs = module_ranges(&["ntdll.dll", "win32u.dll"]);
             let system = module_ranges(&["ntdll.dll", "win32u.dll", "KERNELBASE.dll", "kernel32.dll", "user32.dll", "gdi32.dll", "gdi32full.dll"]);
             let mut modules = all_modules();
@@ -163,6 +167,9 @@ mod imp {
                 }
                 for &key in &pcs {
                     *counts.entry(key).or_default() += 1;
+                    if windowed {
+                        *window.entry(key).or_default() += 1;
+                    }
                 }
                 if last_report.elapsed().as_secs() >= 10 {
                     last_report = std::time::Instant::now();
@@ -171,6 +178,10 @@ mod imp {
                         used.insert(s.id, s.used);
                     }
                     let _ = std::fs::write(&path, report(&counts, &names, &used));
+                    if windowed {
+                        let _ = std::fs::write(format!("{}.w{}", path.to_string_lossy(), started.elapsed().as_secs()), report(&window, &names, &used));
+                        window.clear();
+                    }
                     // The CPU each thread used in this report's ten seconds (`<file>.cpu`), to
                     // tell a steady state from loading.
                     let process = process_cpu();
