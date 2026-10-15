@@ -101,9 +101,19 @@ pub(super) fn decide(target: &'static Method, first: Option<i64>, chain: &Chain,
     }
     // Tier 3 (the optimizing tier) weighs its call sites by their estimated frequency; tier 2
     // by the callee's invocations.
-    let hot = if tier >= 3 { freq >= HOT_SITE } else { tier >= 2 && target.invocations.load(Ordering::Relaxed) >= HOT_INVOCATIONS };
+    let hot = if tier >= 3 { hot_site(target, freq) } else { tier >= 2 && target.invocations.load(Ordering::Relaxed) >= HOT_INVOCATIONS };
     framed_ok(target, first, chain, hot, tier >= 3).then_some(Kind::Framed)
 }
+
+/// A hot call site for the optimizing tier: run at least `HOT_SITE` times per entry, or, as
+/// C2's `InlineFrequencyCount` counts calls too, a callee called very often from a site not
+/// rare (`HOT_SITE_SHARE`): a recursion that splits evenly sits right at `HOT_SITE`, and the
+/// profile's noise picked its inlining at random.
+fn hot_site(target: &'static Method, freq: f32) -> bool {
+    freq >= HOT_SITE || freq >= HOT_SITE_SHARE && target.invocations.load(Ordering::Relaxed) >= HOT_CALLEE_CALLS
+}
+const HOT_SITE_SHARE: f32 = 0.1;
+const HOT_CALLEE_CALLS: u32 = 10_000;
 
 /// A call site too rarely run to inline more than a trivial method there (`@ForceInline` aside).
 pub(super) fn cold_site(target: &'static Method, freq: f32) -> bool {
@@ -114,7 +124,7 @@ pub(super) fn cold_site(target: &'static Method, freq: f32) -> bool {
 /// it probably inlined much itself), a quarter of that at a call site that is not hot (C2's
 /// "already compiled into a medium method"). `@ForceInline` methods are exempt, as in C2.
 fn compiled_too_large(target: &'static Method, freq: f32) -> bool {
-    let limit = if freq >= HOT_SITE { INLINE_SMALL_CODE } else { INLINE_SMALL_CODE / 4 };
+    let limit = if hot_site(target, freq) { INLINE_SMALL_CODE } else { INLINE_SMALL_CODE / 4 };
     target.compiled().is_some_and(|c| c.tier >= 2 && c.size > limit) && !target.has_annotation("Ljdk/internal/vm/annotation/ForceInline;")
 }
 
@@ -146,7 +156,7 @@ pub(super) fn refusal(target: &'static Method, chain: &Chain, tier: u8, spent: u
     if target.has_annotation("Ljdk/internal/vm/annotation/DontInline;") {
         return "@DontInline";
     }
-    if info.code.len() > HOT_INLINE_SIZE || (tier >= 3 && freq < HOT_SITE && info.code.len() > MAX_INLINE_SIZE) {
+    if info.code.len() > HOT_INLINE_SIZE || (tier >= 3 && !hot_site(target, freq) && info.code.len() > MAX_INLINE_SIZE) {
         return "bytecode too large";
     }
     "jsr or other"
