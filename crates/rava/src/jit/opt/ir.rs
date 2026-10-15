@@ -455,6 +455,25 @@ impl Graph {
     /// The value `v` stands for.
     /// The constant `v` holds, also through the copies that keep a wide constant in a register
     /// (`reload.rs`): for code that only needs to know the value, not where it is.
+    /// Whether `w` is a plain Unsafe store to off-heap memory: through a null base, or the raw
+    /// address `algebra::fold_unsafe_addresses` made the base. It cannot change any object's
+    /// field.
+    pub fn is_raw_put(&self, w: V) -> bool {
+        match self.inst(w) {
+            Inst::Intrinsic(crate::jit::intrinsics::Intrinsic::UnsafePut(_, false), args, _) => self.constant_value(args[1]) == Some(0) || self.ty(self.resolve(args[1])) == Ty::J,
+            _ => false,
+        }
+    }
+
+    /// Whether a store to a field declared by `b` may change one declared by `a` at the same
+    /// offset: unless both are known and unrelated (no object has both).
+    pub fn fields_may_alias(a: Option<&'static crate::klass::Klass>, b: Option<&'static crate::klass::Klass>) -> bool {
+        match (a, b) {
+            (Some(a), Some(b)) => a.is_subtype_of(b) || b.is_subtype_of(a),
+            _ => true,
+        }
+    }
+
     pub fn constant_value(&self, v: V) -> Option<i64> {
         let mut v = self.resolve(v);
         while let Inst::Copy(x) = self.values[v as usize].inst {

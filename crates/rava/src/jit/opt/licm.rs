@@ -51,15 +51,18 @@ pub fn hoist(g: &mut Graph) {
         }
         // The loop's memory effects.
         let mut barrier = false;
-        let mut stored: HashSet<u32> = HashSet::new();
+        // Fields stored in the loop: offset and declaring class (when known).
+        let mut stored: Vec<(u32, Option<&'static crate::klass::Klass>)> = Vec::new();
         for b in (0..n).filter(|&b| l.body[b]) {
             for &v in &g.blocks[b].insts {
                 match g.inst(v) {
                     Inst::Call(..) | Inst::Monitor(..) | Inst::Fence => barrier = true,
+                    // A vertex written to off-heap memory changes no field.
+                    Inst::Intrinsic(..) if g.is_raw_put(v) => {}
                     Inst::Intrinsic(k, ..) if !k.is_pure() => barrier = true,
                     Inst::LoadField(..) if g.ordered.contains(&v) => barrier = true,
                     Inst::StoreField(_, off, ..) => {
-                        stored.insert(*off);
+                        stored.push((*off, g.field_holders.get(&v).copied()));
                     }
                     _ => {}
                 }
@@ -99,7 +102,7 @@ pub fn hoist(g: &mut Graph) {
                             Inst::ArrayLength(o) => known_nonnull(g, known, *o) && !typed.contains(&g.resolve(*o)),
                             Inst::LoadField(o, off, _) => {
                                 let o = g.resolve(*o);
-                                !barrier && (g.final_loads.contains(&v) || !stored.contains(off)) && !g.ordered.contains(&v) && known_nonnull(g, known, o) && (*off == 0 || !typed.contains(&o))
+                                !barrier && (g.final_loads.contains(&v) || !stored.iter().any(|&(o, h)| o == *off && Graph::fields_may_alias(g.field_holders.get(&v).copied(), h))) && !g.ordered.contains(&v) && known_nonnull(g, known, o) && (*off == 0 || !typed.contains(&o))
                             }
                             _ => false,
                         };

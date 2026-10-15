@@ -98,18 +98,13 @@ fn forwardable(bt: BasicType) -> bool {
 
 /// Whether instruction `w` may change a field at `off` declared by `holder` (if known).
 fn kills(g: &Graph, w: V, off: u32, holder: Option<&'static Klass>) -> bool {
-    use crate::jit::intrinsics::Intrinsic;
     match *g.inst(w) {
         Inst::Call(..) | Inst::Monitor(..) | Inst::Fence | Inst::InitCheck(..) => true,
-        // A null base, or the raw address `algebra::fold_unsafe_addresses` made the base.
-        Inst::Intrinsic(Intrinsic::UnsafePut(_, false), ref args, _) if g.constant_value(args[1]) == Some(0) || g.ty(g.resolve(args[1])) == Ty::J => false,
+        Inst::Intrinsic(..) if g.is_raw_put(w) => false,
         Inst::Intrinsic(k, ..) => !k.is_pure(),
         Inst::LoadField(..) => g.ordered.contains(&w),
         Inst::StoreField(_, off2, ..) if off2 != off => false,
-        Inst::StoreField(..) => match (holder, g.field_holders.get(&w)) {
-            (Some(a), Some(&b)) => a.is_subtype_of(b) || b.is_subtype_of(a),
-            _ => true,
-        },
+        Inst::StoreField(..) => Graph::fields_may_alias(holder, g.field_holders.get(&w).copied()),
         _ => false,
     }
 }
