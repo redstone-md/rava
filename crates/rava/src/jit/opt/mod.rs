@@ -3,6 +3,7 @@
 //! not support are refused and keep the baseline compiler's code. See `docs/core/opt-tier.md`.
 
 mod algebra;
+mod backedges;
 mod barrier;
 mod booleans;
 mod build;
@@ -222,6 +223,9 @@ fn compile_timed(m: &'static Method, osr: Option<u32>) -> Option<CompiledMethod>
     verify(&g, m, "conds::eliminate (after loadnum)");
     flags::merge(&mut g);
     verify(&g, m, "flags::merge");
+    backedges::split(&mut g);
+    phis::fold_trivial(&mut g);
+    verify(&g, m, "backedges::split");
     licm::hoist(&mut g);
     verify(&g, m, "licm::hoist");
     rce::eliminate(&mut g);
