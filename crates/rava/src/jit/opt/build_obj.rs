@@ -255,7 +255,7 @@ impl Builder {
         if op != 0xb8 {
             self.null_check(args[0], pre.clone());
         }
-        if self.allocate_instance(m, &args, &pre, &s) || self.new_array_reflective(m, &args, &pre) || self.fold_class_query(m, &args) || self.floor_pow2(m, &args) || self.caller_class(m) || self.mh_hints(m, &args) {
+        if self.allocate_instance(m, &args, &pre, &s) || self.new_array_reflective(m, &args, &pre) || self.clone_array(pc, m, &args, &pre) || self.fold_class_query(m, &args) || self.floor_pow2(m, &args) || self.caller_class(m) || self.mh_hints(m, &args) {
             return Some(true);
         }
         if let (0xb6 | 0xb8, Some(k)) = (op, crate::jit::intrinsics::bound_intrinsic(m)) {
@@ -436,6 +436,37 @@ impl Builder {
             self.g.uninit.insert(v);
         }
         self.exact.push((v, k));
+        self.push(v);
+        true
+    }
+
+    /// `clone()` of an array whose class is known (a primitive array named by the call, or one
+    /// whose exact class this code knows): a new array of that class and length, and a copy of
+    /// the elements (C2's array clone intrinsic). The native clone went through an adapter,
+    /// the runtime's allocation and a copy call each time.
+    fn clone_array(&mut self, pc: usize, m: &'static Method, args: &[V], pre: &Rc<State>) -> bool {
+        if m.holder.name != "java/lang/Object" || m.name != "clone" || args.len() != 1 {
+            return false;
+        }
+        let named = self.sc.cf.member_ref(self.u2(pc)).and_then(|(class, ..)| {
+            let c = class.as_str();
+            (c.len() == 2 && c.starts_with('[') && "ZCFDBSIJ".contains(&c[1..])).then(|| crate::vm::vm().primitive_array_class(BasicType::from_desc(c.as_bytes()[1])).ok()).flatten()
+        });
+        let Some(k) = named.or_else(|| self.exact_class(args[0])).filter(|k| k.is_array()) else { return false };
+        let len = self.add(Inst::ArrayLength(args[0]), Ty::I);
+        let v = self.add(Inst::NewArray(k, len, pre.clone()), Ty::A);
+        let primitive = matches!(k.kind, crate::klass::KlassKind::TypeArray { .. });
+        if primitive {
+            // Every element is written before anything can read it.
+            self.g.uninit.insert(v);
+        }
+        self.exact.push((v, k));
+        let zero = self.konst(Ty::I, 0);
+        let copy = self.intrinsic_inst(crate::jit::intrinsics::Intrinsic::ArrayCopy, vec![args[0], zero, v, zero, len], Some(pre.clone()), Ty::I);
+        if primitive {
+            self.g.copy_into.insert(copy, k);
+        }
+        self.g.copy_from.insert(copy, k);
         self.push(v);
         true
     }
