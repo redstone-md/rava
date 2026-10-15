@@ -94,6 +94,11 @@ pub struct Asm {
     /// The 64-bit register move just emitted: (end, destination, source), so that the move
     /// back right after it (no label in between) is left out.
     last_mov: Option<(u32, R, R)>,
+    /// A register known to hold a spill slot: (position up to which that is known, register,
+    /// rsp displacement, width). Only the emitters that say what they write (`keep`) carry it
+    /// forward; any other instruction, or a label, ends it. A reload of the slot into the
+    /// register is then left out (`load`).
+    held: Option<(u32, R, i32, bool)>,
 }
 
 /// Finished machine code and the call displacements its installation resolves.
@@ -312,28 +317,54 @@ impl Asm {
         if w && (dst == src || self.last_mov.is_some_and(|(end, d, s)| end == self.pos() && (d, s) == (src, dst) && !(self.bound_at == end && !self.bound.is_empty()))) {
             return;
         }
+        let start = self.pos();
         self.op_rr(w, &[0x89], src as u8, dst as u8);
         if w {
             self.last_mov = Some((self.pos(), dst, src));
         }
+        self.keep(start, Some(dst), None);
     }
     pub fn load(&mut self, w: bool, dst: R, m: M) {
-        // A reload of the stack slot just stored (no label in between): the register still has it.
-        if let (Some((end, disp, src, sw)), true) = (self.last_spill, Self::stack_slot(m)) {
-            if end == self.pos() && disp == m.disp && sw == w && !(self.bound_at == end && !self.bound.is_empty()) {
-                if dst != src {
-                    self.mov_rr(w, dst, src);
-                }
+        let start = self.pos();
+        let unbound = !(self.bound_at == start && !self.bound.is_empty());
+        if Self::stack_slot(m) {
+            // The register already holds the slot.
+            if unbound && self.held == Some((start, dst, m.disp, w)) {
                 return;
             }
+            // A reload of the stack slot just stored (no label in between): the register still
+            // has it.
+            if let Some((end, disp, src, sw)) = self.last_spill {
+                if end == start && disp == m.disp && sw == w && unbound {
+                    if dst != src {
+                        self.mov_rr(w, dst, src);
+                    }
+                    self.held = Some((self.pos(), dst, m.disp, w));
+                    return;
+                }
+            }
+            self.op_rm(w, &[0x8B], dst as u8, m);
+            self.held = Some((self.pos(), dst, m.disp, w));
+            return;
         }
         self.op_rm(w, &[0x8B], dst as u8, m);
+        self.keep(start, Some(dst), None);
     }
     pub fn store(&mut self, w: bool, m: M, src: R) {
+        let start = self.pos();
         self.op_rm(w, &[0x89], src as u8, m);
         if Self::stack_slot(m) {
             self.last_spill = Some((self.pos(), m.disp, src, w));
         }
+        self.keep(start, None, Self::stack_slot(m).then_some(m.disp));
+    }
+    /// After an instruction emitted from `start` that writes at most register `reg` and spill
+    /// slot `slot`: whether a register still holds its spill slot.
+    fn keep(&mut self, start: u32, reg: Option<R>, slot: Option<i32>) {
+        self.held = match self.held {
+            Some((at, r, disp, w)) if at == start && reg != Some(r) && slot != Some(disp) && !(self.bound_at == start && !self.bound.is_empty()) => Some((self.pos(), r, disp, w)),
+            _ => None,
+        };
     }
     /// `[rsp + disp]`: a spill slot, which only this code's own moves write.
     fn stack_slot(m: M) -> bool {
@@ -351,16 +382,20 @@ impl Asm {
     }
     /// `movsx r64, byte/word [m]` (size 1 or 2), `movsxd r64, dword [m]` (size 4).
     pub fn load_sx(&mut self, size: u8, dst: R, m: M) {
+        let start = self.pos();
         match size {
             1 => self.op_rm(true, &[0x0F, 0xBE], dst as u8, m),
             2 => self.op_rm(true, &[0x0F, 0xBF], dst as u8, m),
             _ => self.op_rm(true, &[0x63], dst as u8, m),
         }
+        self.keep(start, Some(dst), None);
     }
     /// `movzx r32, byte/word [m]`.
     pub fn load_zx(&mut self, size: u8, dst: R, m: M) {
         let op = if size == 1 { [0x0F, 0xB6] } else { [0x0F, 0xB7] };
+        let start = self.pos();
         self.op_rm(false, &op, dst as u8, m);
+        self.keep(start, Some(dst), None);
     }
     /// `movsxd dst, src32`.
     /// `popcnt` / `lzcnt` / `tzcnt` (`F3 0F B8/BD/BC`), 64-bit with `w`.
@@ -425,7 +460,9 @@ impl Asm {
         self.op_rm(w, &[0x8D], dst as u8, m);
     }
     pub fn lea(&mut self, dst: R, m: M) {
+        let start = self.pos();
         self.op_rm(true, &[0x8D], dst as u8, m);
+        self.keep(start, Some(dst), None);
     }
 
     // ---- arithmetic ----
@@ -433,13 +470,16 @@ impl Asm {
         self.op_rr(w, &[(op as u8) << 3 | 1], src as u8, dst as u8);
     }
     pub fn alu_rm(&mut self, w: bool, op: Alu, dst: R, m: M) {
+        let start = self.pos();
         self.op_rm(w, &[(op as u8) << 3 | 3], dst as u8, m);
+        self.keep(start, (!matches!(op, Alu::Cmp)).then_some(dst), None);
     }
     pub fn alu_ri(&mut self, w: bool, op: Alu, dst: R, imm: i32) {
         // `test r, r` sets the flags `cmp r, 0` does, a byte shorter.
         if matches!(op, Alu::Cmp) && imm == 0 {
             return self.test_rr(w, dst, dst);
         }
+        let start = self.pos();
         if (-128..128).contains(&imm) {
             self.op_rr(w, &[0x83], op as u8, dst as u8);
             self.b(imm as i8 as u8);
@@ -447,6 +487,7 @@ impl Asm {
             self.op_rr(w, &[0x81], op as u8, dst as u8);
             self.d32(imm);
         }
+        self.keep(start, (!matches!(op, Alu::Cmp)).then_some(dst), None);
     }
     pub fn alu_mi(&mut self, w: bool, op: Alu, m: M, imm: i32) {
         if (-128..128).contains(&imm) {
@@ -468,7 +509,9 @@ impl Asm {
         self.b(imm);
     }
     pub fn test_rr(&mut self, w: bool, a: R, b: R) {
+        let start = self.pos();
         self.op_rr(w, &[0x85], b as u8, a as u8);
+        self.keep(start, None, None);
     }
     pub fn imul_rr(&mut self, w: bool, dst: R, src: R) {
         self.op_rr(w, &[0x0F, 0xAF], dst as u8, src as u8);
@@ -548,11 +591,14 @@ impl Asm {
         self.d32(0);
     }
     pub fn jcc(&mut self, c: Cond, l: Label) {
+        let start = self.pos();
         self.branches.push((self.pos(), self.fixups.len()));
         self.b(0x0F);
         self.b(0x80 + c as u8);
         self.fixups.push((self.pos(), l));
         self.d32(0);
+        // The fall-through path still has the registers; the target starts at a label.
+        self.keep(start, None, None);
     }
     pub fn call_r(&mut self, r: R) {
         self.op_rr(false, &[0xFF], 2, r as u8);
