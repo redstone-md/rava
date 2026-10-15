@@ -37,6 +37,7 @@ struct Region {
 
 /// Adds the copies; returns them (the graph then needs allocating again).
 pub fn split(g: &mut Graph, loc: &[Loc]) -> Vec<V> {
+    let mut added = loops(g, loc);
     let spilled = |g: &Graph, x: V| matches!(loc.get(x as usize), Some(Loc::Stack(_) | Loc::Frame(_))) && !matches!(g.inst(x), Inst::Const(_));
     // The key of a read of `x` by `by` (None: not worth a copy). A wide constant is only taken
     // from instructions that read any register alike (not intrinsics or guards, whose code
@@ -108,7 +109,6 @@ pub fn split(g: &mut Graph, loc: &[Loc]) -> Vec<V> {
     }
     // Later starts first: copies inserted into a block do not move the indices before them.
     regions.sort_by_key(|r| std::cmp::Reverse(r.start));
-    let mut added = Vec::new();
     for region in regions {
         let (root, from) = region.start;
         // The copies go after the root's phis and parameters (both defined on entry).
@@ -163,6 +163,83 @@ pub fn split(g: &mut Graph, loc: &[Loc]) -> Vec<V> {
     added
 }
 
+/// A loop's own copies: a value spilled for its whole interval because a rarely taken path of a
+/// loop (a call, many temporaries) left no register there, defined before the loop and read in
+/// it more often than the loop is entered, gets a `Copy` at the end of the loop's preheader
+/// that the loop reads instead. The copy lives across the whole loop, so it gets a register
+/// only when one is free there throughout (a callee-saved one, or saved around a rare call);
+/// otherwise `undo_spilled` takes it back. Innermost loops first: an enclosing loop's copy then
+/// feeds the inner one's.
+fn loops(g: &mut Graph, loc: &[Loc]) -> Vec<V> {
+    let spilled = |g: &Graph, x: V| matches!(loc.get(x as usize), Some(Loc::Stack(_) | Loc::Frame(_))) && !matches!(g.inst(x), Inst::Const(_) | Inst::Phi(_));
+    let dom = super::dom::Dom::new(g);
+    let mut def: HashMap<V, B> = HashMap::new();
+    for (b, blk) in g.blocks.iter().enumerate() {
+        for &v in &blk.insts {
+            def.insert(v, b as B);
+        }
+    }
+    let mut added = Vec::new();
+    for l in dom.loops(g).iter().rev() {
+        let h = l.header as usize;
+        let outside: Vec<B> = g.blocks[h].preds.iter().copied().filter(|&p| !l.body[p as usize]).collect();
+        let [pre] = outside[..] else { continue };
+        if !matches!(g.blocks[pre as usize].term, Term::Goto(t) if t as usize == h) {
+            continue;
+        }
+        let entry = g.blocks[pre as usize].freq.max(1e-3);
+        // Reads in the loop of each value defined outside it, with their blocks' frequency.
+        let mut reads: HashMap<V, (f32, Vec<Read>)> = HashMap::new();
+        for b in (0..g.blocks.len()).filter(|&b| l.body[b]) {
+            let f = g.blocks[b].freq;
+            for &v in &g.blocks[b].insts {
+                if g.resolve(v) != v || matches!(g.inst(v), Inst::Phi(_)) {
+                    continue;
+                }
+                for x in g.inst(v).inputs() {
+                    let x = g.resolve(x);
+                    if spilled(g, x) && def.get(&x).is_some_and(|&d| !l.body[d as usize]) {
+                        let e = reads.entry(x).or_insert((0.0, Vec::new()));
+                        e.0 += f;
+                        e.1.push(Read::Inst(v));
+                    }
+                }
+            }
+            for x in g.blocks[b].term.inputs() {
+                let x = g.resolve(x);
+                if spilled(g, x) && def.get(&x).is_some_and(|&d| !l.body[d as usize]) {
+                    let e = reads.entry(x).or_insert((0.0, Vec::new()));
+                    e.0 += f;
+                    e.1.push(Read::Term(b as B));
+                }
+            }
+        }
+        let mut hot: Vec<(V, Vec<Read>)> = reads.into_iter().filter(|(_, (f, _))| *f >= 2.0 * entry).map(|(x, (_, rs))| (x, rs)).collect();
+        hot.sort_by_key(|(x, _)| *x);
+        for (x, rs) in hot {
+            let c = g.add(pre, Inst::Copy(x), g.ty(x));
+            added.push(c);
+            for r in rs {
+                match r {
+                    Read::Inst(v) => {
+                        let mut inst = std::mem::replace(&mut g.values[v as usize].inst, Inst::Fence);
+                        let aliases: Vec<V> = inst.inputs().into_iter().filter(|&u| g.resolve(u) == x).collect();
+                        inst.map_inputs(|u| if aliases.contains(&u) { c } else { u });
+                        g.values[v as usize].inst = inst;
+                    }
+                    Read::Term(b) => {
+                        let mut term = std::mem::replace(&mut g.blocks[b as usize].term, Term::None);
+                        let aliases: Vec<V> = term.inputs().into_iter().filter(|&u| g.resolve(u) == x).collect();
+                        term.map_inputs(|u| if aliases.contains(&u) { c } else { u });
+                        g.blocks[b as usize].term = term;
+                    }
+                }
+            }
+        }
+    }
+    added
+}
+
 /// Takes back the copies `split` added that got no register after all (a load and a store
 /// more, for nothing): their reads go back to the original. Returns whether any did.
 pub fn undo_spilled(g: &mut Graph, copies: &[V], loc: &[Loc]) -> bool {
@@ -173,7 +250,13 @@ pub fn undo_spilled(g: &mut Graph, copies: &[V], loc: &[Loc]) -> bool {
     if back.is_empty() {
         return false;
     }
-    let to = |u: V| back.get(&u).copied().unwrap_or(u);
+    // A copy of a copy taken back too reads the first one's source.
+    let to = |mut u: V| {
+        while let Some(&x) = back.get(&u) {
+            u = x;
+        }
+        u
+    };
     for b in 0..g.blocks.len() {
         g.blocks[b].insts.retain(|v| !back.contains_key(v));
         let mut term = std::mem::replace(&mut g.blocks[b].term, Term::None);
