@@ -71,6 +71,17 @@ pub fn simplify(g: &mut Graph) {
                             changed = true;
                         }
                     }
+                    // `x * 1.0` and `x / 1.0` are `x` exactly (a NaN stays NaN, -0 stays -0), as
+                    // C2 folds them: a vector's literal 1 component through a matrix transform.
+                    Inst::Bin(op @ (BinOp::Mul | BinOp::Div), a, c) if matches!(ty, Ty::F | Ty::D) => {
+                        let one = |x: V| g.constant(g.resolve(x)) == Some(if ty == Ty::F { 1.0f32.to_bits() as i64 } else { 1.0f64.to_bits() as i64 });
+                        let same = if one(c) { Some(a) } else if op == BinOp::Mul && one(a) { Some(c) } else { None };
+                        if let Some(same) = same {
+                            g.alias[v as usize] = g.resolve(same);
+                            gone.push(v);
+                            changed = true;
+                        }
+                    }
                     // The bits of a constant float (`Math.abs(x) == 1` on an inlined argument).
                     Inst::Intrinsic(crate::jit::intrinsics::Intrinsic::Bits(_), ref args, _) if g.constant(g.resolve(args[0])).is_some() => {
                         let x = g.constant(g.resolve(args[0])).unwrap();
