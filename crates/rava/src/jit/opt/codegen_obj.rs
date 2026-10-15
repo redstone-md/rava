@@ -869,15 +869,18 @@ impl Gen<'_> {
             // in place (`stubs::itable_lookup`).
             let (scan, block) = (self.a.new_label(), self.a.new_label());
             // This compiled site's own last receiver class and target (C2's inline cache per
-            // call site): an inlined copy of a megamorphic site often sees one class.
-            let slot = megamorphic.then(|| crate::low::leak([0usize; 2]) as *const [usize; 2] as usize);
+            // call site): an inlined copy of a megamorphic site often sees one class. One word,
+            // the class word low and the method (in low memory) high, so a thread reading it
+            // while another refreshes it never pairs one class with another's method.
+            let slot = megamorphic.then(|| crate::low::leak(std::sync::atomic::AtomicU64::new(0)) as *const std::sync::atomic::AtomicU64 as usize);
             if let Some(slot) = slot {
                 let other = self.a.new_label();
                 let at = self.absolute(slot, R::Rax);
-                self.a.alu_rm(true, Alu::Cmp, k, at);
+                self.a.load(true, R::Rax, at);
+                self.a.alu_rr(false, Alu::Cmp, R::Rax, k);
                 self.a.jcc(Cond::Ne, other);
-                let at = self.absolute(slot + 8, R::Rax);
-                self.a.load(true, R::Rdx, at);
+                self.a.shift_ri(true, Shift::Shr, R::Rax, 32);
+                self.a.mov_rr(true, R::Rdx, R::Rax);
                 self.a.jmp(done);
                 self.a.bind(other);
             }
@@ -904,10 +907,15 @@ impl Gen<'_> {
             match slot {
                 Some(slot) => {
                     self.a.jcc(Cond::E, learn);
-                    let at = self.absolute(slot, R::R11);
-                    self.a.store(true, at, k);
-                    let at = self.absolute(slot + 8, R::R11);
-                    self.a.store(true, at, R::Rax);
+                    // A method above 4 GiB is not cached.
+                    self.a.mov_rr(true, R::R11, R::Rax);
+                    self.a.shift_ri(true, Shift::Shr, R::R11, 32);
+                    self.a.jcc(Cond::Ne, found);
+                    self.a.mov_rr(true, R::R11, R::Rax);
+                    self.a.shift_ri(true, Shift::Shl, R::R11, 32);
+                    self.a.alu_rr(true, Alu::Or, R::R11, k);
+                    let at = self.absolute(slot, R::Rsi);
+                    self.a.store(true, at, R::R11);
                     self.a.jmp(found);
                 }
                 None => self.a.jcc(Cond::Ne, found),
