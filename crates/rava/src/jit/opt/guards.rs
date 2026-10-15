@@ -121,3 +121,49 @@ pub(super) fn branches(g: &mut Graph, l: &Loop, pre: B, block_of: &[usize], nonn
     }
     true
 }
+
+/// A guard that a dominating guard of the same test already passed goes (two loops' hoisted
+/// checks of one receiver's class, landing in one preheader, or two inlined bodies'). Operands
+/// are compared after numbering, constants by value.
+pub fn dedupe(g: &mut Graph) {
+    let dom = Dom::new(g);
+    let index = dom.index(g.blocks.len());
+    let operand = |g: &Graph, x: V| -> (bool, i64) {
+        let x = g.resolve(x);
+        match g.constant(x) {
+            Some(c) => (true, c),
+            None => (false, x as i64),
+        }
+    };
+    type Key = (Cmp, Ty, (bool, i64), (bool, i64));
+    let mut seen: Vec<(B, usize, Key, V)> = Vec::new();
+    let mut gone: Vec<(V, V)> = Vec::new();
+    for &b in &dom.rpo {
+        for (pos, &v) in g.blocks[b as usize].insts.iter().enumerate() {
+            if g.resolve(v) != v {
+                continue;
+            }
+            let Inst::Guard(cmp, ty, x, y, _) = *g.inst(v) else { continue };
+            let key = (cmp, ty, operand(g, x), operand(g, y));
+            let earlier = seen.iter().find(|&&(sb, sp, ref sk, _)| *sk == key && if sb == b { sp < pos } else { dom.dominates(index[sb as usize], index[b as usize]) });
+            match earlier {
+                Some(&(.., w)) => gone.push((v, w)),
+                None => seen.push((b, pos, key, v)),
+            }
+        }
+    }
+    if gone.is_empty() {
+        return;
+    }
+    if g.alias.len() < g.values.len() {
+        let n = g.alias.len();
+        g.alias.extend(n as V..g.values.len() as V);
+    }
+    for &(v, w) in &gone {
+        g.alias[v as usize] = w;
+    }
+    let gone: HashSet<V> = gone.into_iter().map(|(v, _)| v).collect();
+    for blk in &mut g.blocks {
+        blk.insts.retain(|v| !gone.contains(v));
+    }
+}

@@ -259,6 +259,8 @@ fn compile_timed(m: &'static Method, osr: Option<u32>) -> Option<CompiledMethod>
     verify(&g, m, "deadstore::eliminate");
     gvn::number(&mut g);
     verify(&g, m, "gvn::number");
+    guards::dedupe(&mut g);
+    verify(&g, m, "guards::dedupe");
     consts::hoist(&mut g);
     verify(&g, m, "consts::hoist");
     g.prune_unreachable();
