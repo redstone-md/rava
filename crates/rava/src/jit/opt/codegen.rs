@@ -128,6 +128,12 @@ pub(super) struct Gen<'a> {
     /// References kept compressed in their register (`narrow_refs`).
     pub(super) narrow: std::collections::HashSet<V>,
     pub(super) pending_null: Option<Label>,
+    /// The instructions after the current one in its block (for `deferred_decode`).
+    pub(super) next: [Option<V>; 2],
+    /// A compressed reference loaded into its register and not yet decoded, and the
+    /// instruction that uses it as a base right after (`[r*8 + d]`); decoded after that one,
+    /// so the shift is off the chain of dependent loads.
+    pub(super) deferred_decode: Vec<(V, R, V)>,
     /// Loop headers whose test back edges repeat (`rotations`), with their successor in the loop.
     rotations: HashMap<B, B>,
     faults: Vec<(Label, Label)>,
@@ -326,6 +332,8 @@ pub(super) fn generate(g: &Graph, al: &Allocation, m: &'static Method, frame_slo
         implicit: implicit_null_checks(g, &al.loc),
         narrow: narrow_refs(g, al),
         pending_null: None,
+        next: [None; 2],
+        deferred_decode: Vec::new(),
         rotations: rotations(g),
         faults: Vec::new(),
         fused: fused_type_tests(g),
@@ -374,7 +382,8 @@ pub(super) fn generate(g: &Graph, al: &Allocation, m: &'static Method, frame_slo
             let n = insts.iter().take_while(|&&v| matches!(g.inst(v), Inst::Param(_))).count();
             insts[..n].sort_by_key(|&v| al.loc[v as usize] == Loc::Reg(R::Rsi));
         }
-        for &v in &insts {
+        for (k, &v) in insts.iter().enumerate() {
+            gen.next = [insts.get(k + 1).copied(), insts.get(k + 2).copied()];
             if trace {
                 let at = gen.a.new_label();
                 gen.a.bind(at);
@@ -383,6 +392,19 @@ pub(super) fn generate(g: &Graph, al: &Allocation, m: &'static Method, frame_slo
             let pending = gen.pending_null.is_some();
             gen.preserve = gen.live_at.get(&v).copied().unwrap_or(gen.all_registers());
             gen.inst(v);
+            // A load of a reference through another one decodes the first after itself, which
+            // may defer its own decode in turn.
+            for k in (0..gen.deferred_decode.len()).rev() {
+                let (x, r, user) = gen.deferred_decode[k];
+                if user == v {
+                    gen.deferred_decode.remove(k);
+                    if al.loc[v as usize] != Loc::Reg(r) {
+                        gen.a.shift_ri(true, crate::jit::asm::Shift::Shl, r, 3);
+                    }
+                } else {
+                    debug_assert!(x == v || matches!(g.inst(v), Inst::NullCheck(..)), "a deferred decode outlives its use");
+                }
+            }
             // A fused class-word load (and the constants after it) leaves the check to the branch.
             let deferred = gen.fused.contains(&v) && matches!(g.inst(v), Inst::LoadField(..)) || matches!(g.inst(v), Inst::Const(_));
             assert!(!pending || gen.pending_null.is_none() || deferred, "an implicit null check without its access");

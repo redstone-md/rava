@@ -56,6 +56,9 @@ impl Gen<'_> {
                 self.fault_site();
                 if self.narrow.contains(&v) {
                     self.a.load(false, r, at);
+                } else if let Some(user) = self.decode_later(v, bt, r) {
+                    self.a.load(false, r, at);
+                    self.deferred_decode.push((v, r, user));
                 } else {
                     load_typed_to(&mut self.a, r, bt, at);
                 }
@@ -237,7 +240,29 @@ impl Gen<'_> {
     /// The address of element `idx` of `arr` (a constant index folded into the displacement).
     /// The field at `off` of object `o`, through its compressed reference if it is kept
     /// compressed (`codegen::narrow_refs`).
+    /// The instruction right after reference load `v` (past an implicit null check of it) that
+    /// reads it only as the object of a field load or array length, when `v`'s register may
+    /// hold it compressed until then (no home slot or state written meanwhile).
+    fn decode_later(&self, v: V, bt: BasicType, r: R) -> Option<V> {
+        if bt != BasicType::Reference || !crate::heap::COMPRESSED || self.loc[v as usize] != Loc::Reg(r) || self.home[v as usize].is_some() {
+            return None;
+        }
+        let base_of = |w: V| match *self.g.inst(w) {
+            Inst::LoadField(o, ..) => self.g.resolve(o) == v && !self.fused.contains(&w),
+            Inst::ArrayLength(o) => self.g.resolve(o) == v,
+            _ => false,
+        };
+        match self.next {
+            [Some(w), _] if base_of(w) => Some(w),
+            [Some(n), Some(w)] if matches!(*self.g.inst(n), Inst::NullCheck(o, _) if self.g.resolve(o) == v) && self.implicit.contains(&n) && base_of(w) => Some(w),
+            _ => None,
+        }
+    }
+
     pub(super) fn field(&mut self, o: V, off: i32) -> M {
+        if let Some(&(_, r, _)) = self.deferred_decode.iter().find(|&&(x, ..)| x == self.g.resolve(o)) {
+            return crate::jit::asm::mem_narrow(r, off);
+        }
         let ro = self.reg(o, R::Rax);
         if self.narrow.contains(&self.g.resolve(o)) {
             crate::jit::asm::mem_narrow(ro, off)
