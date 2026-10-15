@@ -151,6 +151,7 @@ impl Builder {
                 if volatile {
                     // Acquire: later loads read memory again.
                     self.loads.clear();
+                    self.g.ordered.insert(v);
                 }
                 self.push(v);
             }

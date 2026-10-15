@@ -53,6 +53,8 @@ pub fn hoist(g: &mut Graph) {
         let mut barrier = false;
         // Fields stored in the loop: offset and declaring class (when known).
         let mut stored: Vec<(u32, Option<&'static crate::klass::Klass>)> = Vec::new();
+        // Statics stored in the loop, and whether it initializes a class (which may store any).
+        let (mut stored_statics, mut inits): (HashSet<usize>, bool) = (HashSet::new(), false);
         for b in (0..n).filter(|&b| l.body[b]) {
             for &v in &g.blocks[b].insts {
                 match g.inst(v) {
@@ -60,7 +62,11 @@ pub fn hoist(g: &mut Graph) {
                     // A vertex written to off-heap memory changes no field.
                     Inst::Intrinsic(..) if g.is_raw_put(v) => {}
                     Inst::Intrinsic(k, ..) if !k.is_pure() => barrier = true,
-                    Inst::LoadField(..) if g.ordered.contains(&v) => barrier = true,
+                    Inst::LoadField(..) | Inst::LoadStatic(..) if g.ordered.contains(&v) => barrier = true,
+                    Inst::StoreStatic(addr, ..) => {
+                        stored_statics.insert(*addr);
+                    }
+                    Inst::InitCheck(..) => inits = true,
                     Inst::StoreField(_, off, ..) => {
                         stored.push((*off, g.field_holders.get(&v).copied()));
                     }
@@ -100,6 +106,7 @@ pub fn hoist(g: &mut Graph) {
                             // loop can change it, and a class word is never null.
                             Inst::LoadField(o, ..) if class_word(g, *o) => true,
                             Inst::ArrayLength(o) => known_nonnull(g, known, *o) && !typed.contains(&g.resolve(*o)),
+                            Inst::LoadStatic(addr, _) => !barrier && !inits && !stored_statics.contains(addr) && !g.ordered.contains(&v),
                             Inst::LoadField(o, off, _) => {
                                 let o = g.resolve(*o);
                                 !barrier && (g.final_loads.contains(&v) || !stored.iter().any(|&(o, h)| o == *off && Graph::fields_may_alias(g.field_holders.get(&v).copied(), h))) && !g.ordered.contains(&v) && known_nonnull(g, known, o) && (*off == 0 || !typed.contains(&o))

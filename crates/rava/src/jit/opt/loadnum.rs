@@ -16,8 +16,10 @@ use crate::klass::Klass;
 use crate::types::BasicType;
 use std::collections::{HashMap, HashSet};
 
-/// A field: the object, the offset, the type read.
-type Key = (V, u32, BasicType);
+/// A field: the object, the offset, the type read; or a static field: `STATIC` and the slot's
+/// address.
+type Key = (V, u64, BasicType);
+const STATIC: V = V::MAX;
 
 /// Where a field's value is known: the instruction's block and position, and the value.
 #[derive(Clone, Copy)]
@@ -48,8 +50,22 @@ pub fn number(g: &mut Graph) {
                 continue;
             }
             match *g.inst(v) {
+                // Statics a loop reads per element (a color's components) are read once.
+                Inst::LoadStatic(addr, bt) if !g.ordered.contains(&v) => {
+                    let key = (STATIC, addr as u64, bt);
+                    match find(g, &dom, &index, &known, key, None, b, at) {
+                        Some(x) if g.ty(x) == g.ty(v) => {
+                            g.alias[v as usize] = g.resolve(x);
+                            gone.insert(v);
+                        }
+                        _ => known.entry(key).or_default().push(Known { block: b, at, value: v, holder: None }),
+                    }
+                }
+                Inst::StoreStatic(addr, bt, x) if forwardable(bt) => {
+                    known.entry((STATIC, addr as u64, bt)).or_default().push(Known { block: b, at, value: g.resolve(x), holder: None });
+                }
                 Inst::LoadField(o, off, bt) if !g.ordered.contains(&v) => {
-                    let key = (g.resolve(o), off, bt);
+                    let key = (g.resolve(o), off as u64, bt);
                     let holder = g.field_holders.get(&v).copied();
                     match find(g, &dom, &index, &known, key, holder, b, at) {
                         Some(x) if g.ty(x) == g.ty(v) => {
@@ -60,7 +76,7 @@ pub fn number(g: &mut Graph) {
                     }
                 }
                 Inst::StoreField(o, off, bt, x) if forwardable(bt) => {
-                    let (key, holder, x) = ((g.resolve(o), off, bt), g.field_holders.get(&v).copied(), g.resolve(x));
+                    let (key, holder, x) = ((g.resolve(o), off as u64, bt), g.field_holders.get(&v).copied(), g.resolve(x));
                     // Storing the value the field already has (a copy's fields stored again
                     // unchanged by the method that scales the others) changes nothing.
                     if find(g, &dom, &index, &known, key, holder, b, at) == Some(x) {
@@ -86,7 +102,7 @@ fn find(g: &Graph, dom: &Dom, index: &[usize], known: &HashMap<Key, Vec<Known>>,
     known.get(&key).and_then(|list| {
         list.iter().rev().take(MAX_CANDIDATES).find(|k| {
             let dominates = if k.block == b { k.at < at } else { dom.dominates(index[k.block as usize], index[b as usize]) };
-            dominates && clear(g, k.block, k.at, b, at, key.1, holder.or(k.holder))
+            dominates && clear(g, k.block, k.at, b, at, key, holder.or(k.holder))
         }).map(|k| g.resolve(k.value))
     })
 }
@@ -96,13 +112,24 @@ fn forwardable(bt: BasicType) -> bool {
     matches!(bt, BasicType::Int | BasicType::Long | BasicType::Float | BasicType::Double | BasicType::Reference)
 }
 
-/// Whether instruction `w` may change a field at `off` declared by `holder` (if known).
-fn kills(g: &Graph, w: V, off: u32, holder: Option<&'static Klass>) -> bool {
+/// Whether instruction `w` may change the field `key` declared by `holder` (if known).
+fn kills(g: &Graph, w: V, key: Key, holder: Option<&'static Klass>) -> bool {
+    if key.0 == STATIC {
+        return match *g.inst(w) {
+            Inst::Call(..) | Inst::Monitor(..) | Inst::Fence | Inst::InitCheck(..) => true,
+            Inst::Intrinsic(..) if g.is_raw_put(w) => false,
+            Inst::Intrinsic(k, ..) => !k.is_pure(),
+            Inst::LoadField(..) | Inst::LoadStatic(..) => g.ordered.contains(&w),
+            Inst::StoreStatic(addr, ..) => addr as u64 == key.1,
+            _ => false,
+        };
+    }
+    let off = key.1 as u32;
     match *g.inst(w) {
         Inst::Call(..) | Inst::Monitor(..) | Inst::Fence | Inst::InitCheck(..) => true,
         Inst::Intrinsic(..) if g.is_raw_put(w) => false,
         Inst::Intrinsic(k, ..) => !k.is_pure(),
-        Inst::LoadField(..) => g.ordered.contains(&w),
+        Inst::LoadField(..) | Inst::LoadStatic(..) => g.ordered.contains(&w),
         Inst::StoreField(_, off2, ..) if off2 != off => false,
         Inst::StoreField(..) => Graph::fields_may_alias(holder, g.field_holders.get(&w).copied()),
         _ => false,
@@ -111,8 +138,8 @@ fn kills(g: &Graph, w: V, off: u32, holder: Option<&'static Klass>) -> bool {
 
 /// Whether no path from position `ka` of block `a` to position `vb` of block `b` (which `a`
 /// dominates, or precedes it in the same block) changes the field.
-fn clear(g: &Graph, a: B, ka: usize, b: B, vb: usize, off: u32, holder: Option<&'static Klass>) -> bool {
-    let range_clear = |blk: B, from: usize, to: usize| g.blocks[blk as usize].insts[from..to].iter().all(|&w| g.resolve(w) != w || !kills(g, w, off, holder));
+fn clear(g: &Graph, a: B, ka: usize, b: B, vb: usize, key: Key, holder: Option<&'static Klass>) -> bool {
+    let range_clear = |blk: B, from: usize, to: usize| g.blocks[blk as usize].insts[from..to].iter().all(|&w| g.resolve(w) != w || !kills(g, w, key, holder));
     if a == b {
         return range_clear(a, ka + 1, vb);
     }
