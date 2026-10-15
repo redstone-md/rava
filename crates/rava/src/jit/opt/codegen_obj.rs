@@ -335,6 +335,9 @@ impl Gen<'_> {
         }
         match *self.g.inst(r) {
             Inst::NewArray(k, ..) => Some(k),
+            // A field declared as an array of a primitive type holds exactly that class (a
+            // `byte[]` field never a `boolean[]`).
+            _ if self.g.declared_types.get(&r).is_some_and(|k| matches!(k.kind, crate::klass::KlassKind::TypeArray { .. })) => self.g.declared_types.get(&r).copied(),
             _ => self.g.constant_value(r).filter(|&o| o != 0 && self.g.ty(r) == Ty::A).map(|o| crate::jit::fold::class_of(o as usize)),
         }
     }
