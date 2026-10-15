@@ -78,12 +78,6 @@ impl Gen<'_> {
         }
     }
 
-    /// A bit mask (sign or magnitude) in xmm1.
-    pub fn xmask(&mut self, bits: i64) {
-        self.a.mov_ri(R::R11, bits);
-        self.a.mov_xr(true, X(1), R::R11);
-    }
-
     /// Stores `v` (slot encoding) into the memory at `m`.
     pub fn store_val(&mut self, m: M, v: V) {
         match self.loc[v as usize] {

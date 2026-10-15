@@ -16,6 +16,13 @@ impl Gen<'_> {
         crate::jit::asm::rip(l)
     }
 
+    /// A 16-byte aligned constant with `bits` in its low half, for a packed SSE operation.
+    pub fn mask_mem(&mut self, bits: i64) -> M {
+        let a = &mut self.a;
+        let l = *self.masks.entry(bits as u64).or_insert_with(|| a.new_label());
+        crate::jit::asm::rip(l)
+    }
+
     /// Saves the registers call `v` clobbers that hold values live across it.
     pub fn save_around(&mut self, v: V) {
         for &(l, slot) in self.saves.get(&v).into_iter().flatten() {

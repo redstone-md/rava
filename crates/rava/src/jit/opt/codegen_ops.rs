@@ -137,8 +137,8 @@ impl Gen<'_> {
         if matches!(ty, Ty::F | Ty::D) {
             let r = self.xout(v);
             self.xload(r, x);
-            self.xmask(if ty == Ty::D { i64::MIN } else { 0x8000_0000 });
-            self.a.fxor(ty == Ty::D, r, X(1));
+            let m = self.mask_mem(if ty == Ty::D { i64::MIN } else { 0x8000_0000 });
+            self.a.fxor_m(ty == Ty::D, r, m);
             return self.xput(v, r);
         }
         let r = self.out(v);

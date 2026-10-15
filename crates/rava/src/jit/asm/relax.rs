@@ -91,6 +91,19 @@ impl Asm {
         for r in &mut self.relocs {
             r.0 = new_pos(r.0);
         }
+        // The aligned data at the end (nothing but data follows it) moved with the code before
+        // it: padded back to a 16-byte boundary.
+        if let Some(tail) = self.aligned_tail {
+            let at = new_pos(tail);
+            let pad = (16 - at % 16) % 16;
+            out.splice(at as usize..at as usize, std::iter::repeat(0xCC).take(pad as usize));
+            for p in self.labels.iter_mut().flatten() {
+                if *p >= at {
+                    *p += pad;
+                }
+            }
+            self.aligned_tail = Some(at + pad);
+        }
         self.buf = out;
     }
 

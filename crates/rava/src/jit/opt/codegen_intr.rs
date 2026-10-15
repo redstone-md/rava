@@ -302,8 +302,8 @@ impl Gen<'_> {
         if matches!(ty, BasicType::Float | BasicType::Double) {
             let r = self.xout(v);
             self.xload(r, x);
-            self.xmask(if ty == BasicType::Double { i64::MAX } else { 0x7fff_ffff });
-            self.a.fand(ty == BasicType::Double, r, X(1));
+            let m = self.mask_mem(if ty == BasicType::Double { i64::MAX } else { 0x7fff_ffff });
+            self.a.fand_m(ty == BasicType::Double, r, m);
             return self.xput(v, r);
         }
         self.load(R::Rax, x);

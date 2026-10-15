@@ -109,6 +109,8 @@ pub(super) struct Gen<'a> {
     restore_stubs: Vec<(Label, V, Label)>,
     /// Constants placed after the code for RIP-relative operands.
     consts: HashMap<u64, Label>,
+    /// Sign and magnitude masks, 16 bytes each (`mask_mem`).
+    masks: HashMap<u64, Label>,
     /// Out-of-line runtime calls: (entry, helper, argument, where to continue with rax).
     /// Runtime calls of slow paths, emitted after the body (`codegen/stubs.rs`).
     pub slow_calls: Vec<SlowCall>,
@@ -326,6 +328,7 @@ pub(super) fn generate(g: &Graph, al: &Allocation, m: &'static Method, frame_slo
         save_base: al.save_base,
         restore_stubs: Vec::new(),
         consts: HashMap::new(),
+        masks: HashMap::new(),
         slow_calls: Vec::new(),
         unbarriered: super::barrier::unbarriered(g),
         short_loops: super::polls::short_loops(g),
@@ -423,6 +426,11 @@ pub(super) fn generate(g: &Graph, al: &Allocation, m: &'static Method, frame_slo
     pool.sort_by_key(|&(bits, _)| bits);
     for (bits, l) in pool {
         gen.a.data8(l, bits);
+    }
+    let mut masks: Vec<(u64, Label)> = gen.masks.drain().collect();
+    masks.sort_by_key(|&(bits, _)| bits);
+    for (bits, l) in masks {
+        gen.a.data16(l, bits);
     }
     let mut marks: Vec<Label> = gen.faults.iter().flat_map(|&(at, to)| [at, to]).collect();
     let nfaults = marks.len();

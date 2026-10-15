@@ -161,6 +161,14 @@ impl Asm {
     pub fn fxor(&mut self, double: bool, x: X, y: X) {
         self.sse_rr(if double { 0x66 } else { 0 }, false, 0x57, x.0, y.0);
     }
+    /// `xorpd/xorps x, [m]` (`m` 16-byte aligned).
+    pub fn fxor_m(&mut self, double: bool, x: X, m: M) {
+        self.sse_rm(if double { 0x66 } else { 0 }, false, 0x57, x.0, m);
+    }
+    /// `andpd/andps x, [m]` (`m` 16-byte aligned).
+    pub fn fand_m(&mut self, double: bool, x: X, m: M) {
+        self.sse_rm(if double { 0x66 } else { 0 }, false, 0x54, x.0, m);
+    }
     /// `andpd/andps x, y`.
     pub fn fand(&mut self, double: bool, x: X, y: X) {
         self.sse_rr(if double { 0x66 } else { 0 }, false, 0x54, x.0, y.0);

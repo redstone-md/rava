@@ -88,6 +88,9 @@ pub struct Asm {
     last_spill: Option<(u32, i32, R, bool)>,
     /// The same for an SSE register (`fload`).
     last_fspill: Option<(u32, i32, u8)>,
+    /// Where the 16-byte aligned data at the end of the code starts (`data16`), realigned when
+    /// branch relaxation moves it.
+    aligned_tail: Option<u32>,
     /// The 64-bit register move just emitted: (end, destination, source), so that the move
     /// back right after it (no label in between) is left out.
     last_mov: Option<(u32, R, R)>,
@@ -154,6 +157,18 @@ impl Asm {
         }
         self.bind(l);
         self.buf.extend_from_slice(&bits.to_le_bytes());
+    }
+
+    /// Emits 16 bytes at a 16-byte aligned label (code is installed 16-byte aligned): `bits` in
+    /// the low half, a mask an SSE instruction reads whole.
+    pub fn data16(&mut self, l: Label, bits: u64) {
+        while self.buf.len() % 16 != 0 {
+            self.b(0xCC);
+        }
+        self.aligned_tail.get_or_insert(self.pos());
+        self.bind(l);
+        self.buf.extend_from_slice(&bits.to_le_bytes());
+        self.buf.extend_from_slice(&0u64.to_le_bytes());
     }
 
     /// Pads with multi-byte nops (Intel's recommended forms) to a multiple of `n`, a power of two.
