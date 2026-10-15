@@ -173,6 +173,16 @@ impl Asm {
     pub fn fand(&mut self, double: bool, x: X, y: X) {
         self.sse_rr(if double { 0x66 } else { 0 }, false, 0x54, x.0, y.0);
     }
+    /// `pshufd dst, src, imm`: dword lanes of `src` picked by `imm` (0 broadcasts the low
+    /// dword, 0x44 the low qword).
+    pub fn pshufd(&mut self, dst: X, src: X, imm: u8) {
+        self.sse_rr(0x66, false, 0x70, dst.0, src.0);
+        self.b(imm);
+    }
+    /// `movdqu [m], x`: sixteen bytes, any alignment.
+    pub fn store_x128(&mut self, m: M, x: X) {
+        self.sse_rm(0xF3, false, 0x7F, x.0, m);
+    }
     /// `movq/movd x, r`.
     pub fn mov_xr(&mut self, w: bool, x: X, r: R) {
         self.sse_rr(0x66, w, 0x6E, x.0, r as u8);

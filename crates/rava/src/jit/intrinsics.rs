@@ -55,6 +55,10 @@ pub(super) enum Intrinsic {
     MulHigh(bool),
     /// `Math.fma` on doubles (`true`) or floats: one `vfmadd`, where the processor has FMA.
     Fma(bool),
+    /// The elements of an array (argument 0) of `1 << n` bytes from index (1) up to index (2)
+    /// set to a value (3): the loop `for (i = from; i < to; i++) a[i] = x` (`opt/fill.rs`),
+    /// whose range the loop's bounds checks proved, stored sixteen bytes at a time.
+    FillRange(u8),
 }
 
 impl Intrinsic {
@@ -66,7 +70,7 @@ impl Intrinsic {
     /// The baseline compiler emits it in place (else it calls the method, whose body computes
     /// the same result).
     pub(super) fn in_baseline(self) -> bool {
-        !matches!(self, Intrinsic::ArrayCopy | Intrinsic::Libm(_) | Intrinsic::Leaf(_) | Intrinsic::Fma(_) | Intrinsic::MulHigh(_))
+        !matches!(self, Intrinsic::ArrayCopy | Intrinsic::Libm(_) | Intrinsic::Leaf(_) | Intrinsic::Fma(_) | Intrinsic::MulHigh(_) | Intrinsic::FillRange(_))
     }
 
     /// Reads memory that stores or a collection change: not computed once before a loop.
@@ -82,7 +86,7 @@ impl Intrinsic {
     pub(super) fn is_pure(self) -> bool {
         match self {
             Intrinsic::Leaf(l) => !l.writes(),
-            _ => !matches!(self, Intrinsic::UnsafePut(..) | Intrinsic::CompareAndSet(_) | Intrinsic::IdentityHash | Intrinsic::UnsafeGet(_, true) | Intrinsic::ArrayCopy),
+            _ => !matches!(self, Intrinsic::UnsafePut(..) | Intrinsic::CompareAndSet(_) | Intrinsic::IdentityHash | Intrinsic::UnsafeGet(_, true) | Intrinsic::ArrayCopy | Intrinsic::FillRange(_)),
         }
     }
 }
@@ -211,7 +215,7 @@ impl Emitter {
     pub(super) fn try_intrinsic(&mut self, pc: usize, depth: u16, m: &'static Method, args: i32) -> bool {
         let Some(k) = bound_intrinsic(m).filter(|k| k.in_baseline()) else { return false };
         match k {
-            Intrinsic::ArrayCopy | Intrinsic::Libm(_) | Intrinsic::Leaf(_) | Intrinsic::Fma(_) | Intrinsic::MulHigh(_) => unreachable!("not emitted by the baseline compiler"),
+            Intrinsic::ArrayCopy | Intrinsic::Libm(_) | Intrinsic::Leaf(_) | Intrinsic::Fma(_) | Intrinsic::MulHigh(_) | Intrinsic::FillRange(_) => unreachable!("not emitted by the baseline compiler"),
             Intrinsic::BitCount(opcode, wide) => {
                 self.a.load(true, R::Rax, self.stk(args));
                 self.a.bit_count(opcode, wide, R::Rax, R::Rax);

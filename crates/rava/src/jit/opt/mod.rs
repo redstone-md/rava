@@ -21,6 +21,7 @@ mod codegen_obj;
 mod codegen_ops;
 mod polls;
 mod deopt;
+mod fill;
 mod dom;
 mod escape;
 mod fields;
@@ -240,6 +241,10 @@ fn compile_timed(m: &'static Method, osr: Option<u32>) -> Option<CompiledMethod>
     verify(&g, m, "thread::thread");
     g.merge_chains();
     verify(&g, m, "g.merge_chains");
+    if env_once!("RAVA_NO_FILL").is_none() {
+        fill::convert(&mut g);
+        verify(&g, m, "fill::convert");
+    }
     unroll::unroll(&mut g);
     verify(&g, m, "unroll::unroll");
     if env_once!("RAVA_NO_UNROLL4").is_none() {
