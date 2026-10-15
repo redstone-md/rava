@@ -90,6 +90,12 @@ impl Facts {
                     return Some(r);
                 }
             }
+            // The same test with its operands the other way round (`a == b`, then `b == a`).
+            if f.a == q.b && f.b == q.a {
+                if let Some(r) = decides(f.cmp, mirror(q.cmp)) {
+                    return Some(r);
+                }
+            }
         }
         // Integer ranges against constants.
         let Key::Const(c) = q.b else { return None };
