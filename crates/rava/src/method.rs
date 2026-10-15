@@ -129,14 +129,31 @@ impl Method {
         self.overridden.load(std::sync::atomic::Ordering::SeqCst)
     }
 
-    /// Records that a loaded class overrides this method.
+    /// Records that a loaded class overrides this method, and sets the flags of the compiled
+    /// code that depends on its being unique.
     pub(crate) fn mark_overridden(&self) {
         self.overridden.store(true, std::sync::atomic::Ordering::SeqCst);
+        if let Some(flags) = dependents().lock().unwrap().remove(&(self as *const Method as usize)) {
+            for f in flags {
+                f.store(true, std::sync::atomic::Ordering::SeqCst);
+            }
+        }
     }
 
-    /// Address of the overridden flag (one byte, non-zero once overridden) for generated code.
-    pub(crate) fn overridden_flag(&self) -> usize {
-        self.overridden as *const std::sync::atomic::AtomicBool as usize
+    /// Makes `flag` (one compilation's dependency byte) set once a class overrides this method.
+    pub(crate) fn add_dependent(&self, flag: &'static std::sync::atomic::AtomicBool) {
+        {
+            let mut all = dependents().lock().unwrap();
+            let list = all.entry(self as *const Method as usize).or_default();
+            if !list.iter().any(|f| std::ptr::eq(*f, flag)) {
+                list.push(flag);
+            }
+        }
+        // Overridden before the registration: `mark_overridden` stored the flag before taking
+        // the lock, so this sees it.
+        if self.is_overridden() {
+            flag.store(true, std::sync::atomic::Ordering::SeqCst);
+        }
     }
 
     /// Runs native code: declared `native`, or a JDK method whose body the VM supplies.
@@ -280,4 +297,10 @@ impl std::fmt::Display for Method {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         std::fmt::Debug::fmt(self, f)
     }
+}
+
+/// The dependency flags of compiled code, by the method whose uniqueness it assumed.
+fn dependents() -> &'static std::sync::Mutex<std::collections::HashMap<usize, Vec<&'static std::sync::atomic::AtomicBool>>> {
+    static D: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<usize, Vec<&'static std::sync::atomic::AtomicBool>>>> = std::sync::OnceLock::new();
+    D.get_or_init(Default::default)
 }

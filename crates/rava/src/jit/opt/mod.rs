@@ -23,6 +23,7 @@ mod deopt;
 mod dom;
 mod escape;
 mod fields;
+mod flags;
 mod freq;
 mod inline;
 mod ir;
@@ -219,6 +220,8 @@ fn compile_timed(m: &'static Method, osr: Option<u32>) -> Option<CompiledMethod>
     // Class words and fields now one value: the branches on them a dominating one decided.
     conds::eliminate(&mut g);
     verify(&g, m, "conds::eliminate (after loadnum)");
+    flags::merge(&mut g);
+    verify(&g, m, "flags::merge");
     licm::hoist(&mut g);
     verify(&g, m, "licm::hoist");
     rce::eliminate(&mut g);

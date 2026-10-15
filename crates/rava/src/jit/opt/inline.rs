@@ -346,7 +346,12 @@ impl Builder {
         let (entry, expect) = match guard {
             Guard::None => return None,
             Guard::Unique(pre) => {
-                self.add(Inst::FlagCheck(target.overridden_flag(), pre), Ty::I);
+                let flag = *self.g.deps.get_or_insert_with(|| crate::low::leak(std::sync::atomic::AtomicBool::new(false)));
+                target.add_dependent(flag);
+                let v = self.add(Inst::FlagCheck(flag as *const std::sync::atomic::AtomicBool as usize, pre), Ty::I);
+                if let Some(r) = receiver {
+                    self.g.flag_receivers.insert(v, r);
+                }
                 return None;
             }
             Guard::Klass(k) => (self.klass_of(receiver?), k as *const Klass as i64),

@@ -337,6 +337,11 @@ pub struct Graph {
     pub field_holders: std::collections::HashMap<V, &'static crate::klass::Klass>,
     /// The receiver of an instance method, never null.
     pub receiver: Option<V>,
+    /// The byte this compilation's checks that inlined methods are still unique test, set
+    /// once any of them is overridden (`Method::add_dependent`).
+    pub deps: Option<&'static std::sync::atomic::AtomicBool>,
+    /// The receiver of each such check (`flags.rs`).
+    pub flag_receivers: std::collections::HashMap<V, V>,
     /// Allocations removed as non-escaping, rebuilt on deoptimization (`escape.rs`).
     pub virtuals: std::collections::HashMap<V, Virtual>,
     /// Virtual and interface calls whose site had no receiver profile when compiled: the code
