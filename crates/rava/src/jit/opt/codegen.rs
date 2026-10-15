@@ -49,6 +49,8 @@ pub struct SlowCall {
     pub fail: Option<Label>,
     /// The registers to keep around the call (`Allocation::live_at`).
     pub preserve: super::regalloc::Preserve,
+    /// Where the code after `back` expects the helper's result (it returns it in rax).
+    pub result: R,
 }
 
 pub(super) struct Gen<'a> {

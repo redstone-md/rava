@@ -435,23 +435,25 @@ impl Gen<'_> {
             _ => runtime::d2l as *const () as usize,
         };
         let a = self.xreg(x, X(0));
-        self.a.cvtt_f2i(from_double, to_long, R::Rax, a);
+        // Straight into the result's register (the helper's result is moved there too).
+        let r = self.out(v);
+        self.a.cvtt_f2i(from_double, to_long, r, a);
         let done = self.a.new_label();
         if to_long {
             self.a.mov_ri(R::R11, i64::MIN);
-            self.a.alu_rr(true, Alu::Cmp, R::Rax, R::R11);
+            self.a.alu_rr(true, Alu::Cmp, r, R::R11);
         } else {
-            self.a.alu_ri(false, Alu::Cmp, R::Rax, i32::MIN);
+            self.a.alu_ri(false, Alu::Cmp, r, i32::MIN);
         }
         // The saturating slow path is out of line (after the method's code).
         let slow = self.a.new_label();
         self.a.jcc(Cond::E, slow);
         self.a.bind(done);
-        self.slow_calls.push(super::codegen::SlowCall { entry: slow, back: done, addr: helper, args: vec![Arg::Val(x)], link: None, fail: None, preserve: self.preserve });
+        self.slow_calls.push(super::codegen::SlowCall { entry: slow, back: done, addr: helper, args: vec![Arg::Val(x)], link: None, fail: None, preserve: self.preserve, result: r });
         if !to_long {
-            self.a.movsxd(R::Rax, R::Rax);
+            self.a.movsxd(r, r);
         }
-        self.put(v, R::Rax);
+        self.put(v, r);
     }
 
     /// `a cmp b ? t : f`: compare, then the false value into rax and a conditional move of the

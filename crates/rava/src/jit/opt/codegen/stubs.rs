@@ -57,6 +57,9 @@ impl Gen<'_> {
             }
             self.preserve = c.preserve;
             self.call_preserving(c.addr, &c.args);
+            if c.result != R::Rax {
+                self.a.mov_rr(true, c.result, R::Rax);
+            }
             if let Some(f) = c.fail {
                 self.a.test_rr(true, R::Rax, R::Rax);
                 self.a.jcc(crate::jit::asm::Cond::E, f);

@@ -71,6 +71,23 @@ pub fn simplify(g: &mut Graph) {
                             changed = true;
                         }
                     }
+                    // A byte, char or short store keeps the value's low bits, which narrowing
+                    // conversions to as many bits or more do not change: the conversion goes.
+                    Inst::StoreField(_, _, bt, x) | Inst::StoreIndexed(_, _, bt, x) if narrowed(g, bt, x).is_some() => {
+                        let y = narrowed(g, bt, x).unwrap();
+                        match &mut g.values[v as usize].inst {
+                            Inst::StoreField(_, _, _, x) | Inst::StoreIndexed(_, _, _, x) => *x = y,
+                            _ => unreachable!(),
+                        }
+                        changed = true;
+                    }
+                    Inst::Intrinsic(crate::jit::intrinsics::Intrinsic::UnsafePut(bt, false), ref args, _) if args.len() > 3 && narrowed(g, bt, args[3]).is_some() => {
+                        let y = narrowed(g, bt, args[3]).unwrap();
+                        if let Inst::Intrinsic(_, args, _) = &mut g.values[v as usize].inst {
+                            args[3] = y;
+                        }
+                        changed = true;
+                    }
                     // `x * 1.0` and `x / 1.0` are `x` exactly (a NaN stays NaN, -0 stays -0), as
                     // C2 folds them: a vector's literal 1 component through a matrix transform.
                     Inst::Bin(op @ (BinOp::Mul | BinOp::Div), a, c) if matches!(ty, Ty::F | Ty::D) => {
@@ -320,4 +337,17 @@ fn identity(op: BinOp, ty: Ty, a: V, b: V, x: Option<i64>, y: Option<i64>) -> Op
         (BinOp::And, Some(c), _) if ones(c) => Some(b),
         _ => None,
     }
+}
+
+/// The input of a narrowing conversion `x` whose low bits a store of `bt` keeps unchanged.
+fn narrowed(g: &Graph, bt: crate::types::BasicType, x: V) -> Option<V> {
+    use crate::types::BasicType;
+    let Inst::Convert(op, y) = *g.inst(g.resolve(x)) else { return None };
+    // i2b keeps 8 bits, i2c and i2s 16.
+    let ok = match bt {
+        BasicType::Byte => matches!(op, 0x91 | 0x92 | 0x93),
+        BasicType::Char | BasicType::Short => matches!(op, 0x92 | 0x93),
+        _ => false,
+    };
+    ok.then(|| g.resolve(y))
 }
