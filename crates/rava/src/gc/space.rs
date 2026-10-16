@@ -249,6 +249,11 @@ impl Space {
     /// A page of size class `class` with a free run, owned by the caller from now on, and that
     /// run (`next_run_in`): `(page, start, end)`. A reused page with only short holes left goes back
     /// unowned until the next collection sweeps it again.
+    /// Bytes of pages in use (not empty, not released) and of live large blocks.
+    pub fn in_use(&self) -> usize {
+        (self.fresh - self.base) - (self.empty.len() + self.released.len()) * PAGE_SIZE + self.large_bytes
+    }
+
     pub fn take_run(&mut self, class: usize) -> Option<(usize, usize, usize)> {
         while let Some(p) = self.partial[class].pop() {
             let addr = self.page_addr(p);

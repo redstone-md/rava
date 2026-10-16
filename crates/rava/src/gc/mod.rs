@@ -25,7 +25,7 @@ mod space;
 mod statics;
 
 use crate::thread::Thread;
-use space::{class_of, Space, CLASSES, CLASS_SIZES, LARGE_THRESHOLD, PAGE_SIZE};
+use space::{class_of, Space, CLASSES, CLASS_SIZES, LARGE_THRESHOLD};
 use std::sync::Mutex;
 
 /// A thread's allocation cache for one size class: a bump range (a run of free cells) in
@@ -76,6 +76,20 @@ impl Default for AllocCache {
     fn default() -> Self {
         AllocCache { classes: [ClassCache::default(); CLASSES], pending: 0 }
     }
+}
+
+thread_local! {
+    /// Set while this thread allocates past `-Xmx` (`beyond_limit`).
+    static BEYOND_LIMIT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Runs `f` with this thread's allocations exempt from `-Xmx`: for the `OutOfMemoryError` that
+/// reports a full heap (HotSpot preallocates it) and for objects deoptimization must rebuild.
+pub fn beyond_limit<R>(f: impl FnOnce() -> R) -> R {
+    let was = BEYOND_LIMIT.with(|b| b.replace(true));
+    let r = f();
+    BEYOND_LIMIT.with(|b| b.set(was));
+    r
 }
 
 pub struct Heap {
@@ -151,6 +165,14 @@ impl Heap {
         self.flush_pending(t);
         self.maybe_collect(t);
         let mut space = self.space.lock().unwrap();
+        if self.over_limit(&space, CLASS_SIZES[class] as usize) {
+            drop(space);
+            self.collect(t);
+            space = self.space.lock().unwrap();
+            if self.over_limit(&space, CLASS_SIZES[class] as usize) {
+                return None;
+            }
+        }
         let (page, bump, end) = match space.take_run(class) {
             Some(r) => r,
             None => {
@@ -179,8 +201,22 @@ impl Heap {
     #[cold]
     fn allocate_large(&self, t: &mut Thread, bytes: usize) -> Option<*mut u8> {
         self.maybe_collect(t);
+        if self.over_limit(&self.space.lock().unwrap(), bytes) {
+            self.collect(t);
+            if self.over_limit(&self.space.lock().unwrap(), bytes) {
+                return None;
+            }
+        }
         let addr = self.space.lock().unwrap().alloc_large(bytes);
         addr.map(|a| a as *mut u8)
+    }
+
+    /// Whether `bytes` more would take the heap's data past `-Xmx`: what the last collection left
+    /// live and what was allocated since (HotSpot's limit, which a full collection decides). Not
+    /// for what this thread must allocate regardless (`beyond_limit`).
+    fn over_limit(&self, s: &Space, bytes: usize) -> bool {
+        let data = s.live_after_gc + s.allocated_since_gc + self.small_allocated.load(std::sync::atomic::Ordering::Relaxed);
+        data + bytes > self.max_heap && !BEYOND_LIMIT.with(|b| b.get())
     }
 
     fn maybe_collect(&self, t: &mut Thread) {
@@ -197,7 +233,7 @@ impl Heap {
     /// How much may be allocated between collections that leave `live` bytes (the young
     /// generation's size): half the live data, within the maximum heap size.
     fn young_budget(&self, live: usize) -> usize {
-        (live / 3).min(self.max_heap.saturating_sub(live)).max(self.min_trigger)
+        (live / 3).max(self.min_trigger).min(self.max_heap.saturating_sub(live))
     }
 
     /// A full collection is due once the old generation has grown by half since the last one
@@ -310,8 +346,7 @@ impl Heap {
     }
 
     pub fn used_bytes(&self) -> usize {
-        let s = self.space.lock().unwrap();
-        (s.fresh - s.base) - s.empty.len() * PAGE_SIZE + s.large_bytes
+        self.space.lock().unwrap().in_use()
     }
 
     pub fn contains(&self, addr: usize) -> bool {

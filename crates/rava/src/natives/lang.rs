@@ -165,7 +165,7 @@ fn object_clone(t: &mut Thread, a: &[u64]) -> JResult<u64> {
         }
         k.instance_size() as usize
     };
-    let dst = vm().heap.allocate(t, size).ok_or_else(|| throw_new(t, "java/lang/OutOfMemoryError", "Java heap space"))? as Oop;
+    let dst = vm().heap.allocate(t, size).ok_or_else(|| crate::gc::beyond_limit(|| throw_new(t, "java/lang/OutOfMemoryError", "Java heap space")))? as Oop;
     // SAFETY: both ranges are `size` bytes; the fresh copy gets a clean mark word.
     unsafe {
         std::ptr::copy_nonoverlapping(src as *const u8, dst as *mut u8, size);

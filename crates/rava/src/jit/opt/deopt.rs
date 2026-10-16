@@ -252,7 +252,7 @@ pub extern "sysv64" fn deopt(t: *mut Thread, base: *mut u64, desc: *const u8, sa
         unsafe { *base.add(slot as usize) = v };
     }
     for (r, fields) in desc.remats.iter().zip(&remat_fields) {
-        let mem = vm().heap.allocate(t, r.klass.instance_size() as usize).expect("heap space to rebuild a scalar-replaced object on deopt");
+        let mem = crate::gc::beyond_limit(|| vm().heap.allocate(t, r.klass.instance_size() as usize)).expect("heap space to rebuild a scalar-replaced object on deopt");
         // SAFETY: fresh zeroed memory of the instance size.
         let obj = unsafe { crate::heap::init_instance(mem, r.klass) };
         for (&(offset, _, ty), &raw) in r.fields.iter().zip(fields) {

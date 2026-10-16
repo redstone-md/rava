@@ -9,7 +9,8 @@
 # JitNpeSiteSem, JitThrowNullSem, NpeSem) are guest-visible output rava does not produce yet.
 # A probe's `// rava-env: VAR=value ...` line sets environment variables for rava's run (to
 # keep methods out of the optimizing tier, say). A `// sem-flags: ...` line passes options to
-# javac, java and rava alike (`--enable-preview --release 21` for a preview API).
+# javac, java and rava alike (`--enable-preview --release 21` for a preview API); a
+# `// sem-run-flags: ...` line passes options to java and rava only (`-Xmx64m`).
 R=${R:-$(dirname "$0")/../../target/release/rava}
 W=${1:-$(mktemp -d)}
 # macOS has no timeout(1) unless coreutils is installed.
@@ -24,7 +25,7 @@ for f in "$(dirname "$0")"/*Sem.java; do
   mkdir -p "$d"
   cp="$d${SEM_CP:+:$SEM_CP}"
   flags=$(sed -n 's|^// sem-flags: ||p' "$f")
-  run_flags=$(echo "$flags" | sed 's/--release [0-9]*//')
+  run_flags="$(echo "$flags" | sed 's/--release [0-9]*//') $(sed -n 's|^// sem-run-flags: ||p' "$f")"
   if [ ! -f "$d/$n.class" ] || [ "$f" -nt "$d/$n.class" ]; then
     rm -f "$d"/*.class "$d/expected.txt"
     javac -nowarn $flags -cp "$cp" -d "$d" "$f" 2>/dev/null || { echo "skip $n (javac; SEM_CP?)"; continue; }

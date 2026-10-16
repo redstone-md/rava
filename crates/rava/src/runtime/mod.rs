@@ -92,7 +92,8 @@ pub fn alloc_array(t: &mut Thread, k: &'static Klass, length: i32) -> JResult<Oo
 }
 
 fn out_of_memory(t: &mut Thread) -> Throw {
-    throw_new(t, "java/lang/OutOfMemoryError", "Java heap space")
+    // The error itself is allocated past the limit that it reports.
+    crate::gc::beyond_limit(|| throw_new(t, "java/lang/OutOfMemoryError", "Java heap space"))
 }
 
 /// Creates and returns a new exception of `class` with `message` (JVMS "throws X").
