@@ -47,5 +47,6 @@ fn main() -> std::process::ExitCode {
     #[cfg(windows)]
     unsafe { mi_option_set(MI_OPTION_PAGE_COMMIT_ON_DEMAND, 1) };
     let _ = rava::memlog::ALLOCATOR_COMMITTED.set(allocator_committed);
+    rava::memlog::count_from_start();
     rava::launcher::main()
 }

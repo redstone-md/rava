@@ -49,10 +49,17 @@ unsafe impl<A: GlobalAlloc> GlobalAlloc for Counting<A> {
     }
 }
 
+/// Counts the VM's allocations from the start of the process when `RAVA_MEM_LOG` is set, so
+/// that what creating the VM allocates is counted too (the report starts later).
+pub fn count_from_start() {
+    if std::env::var_os("RAVA_MEM_LOG").is_some() {
+        COUNTING.store(true, Relaxed);
+    }
+}
+
 /// Starts the report thread when `RAVA_MEM_LOG` asks for one.
 pub fn start() {
     let Some(secs) = std::env::var("RAVA_MEM_LOG").ok().and_then(|v| v.parse::<u64>().ok()).filter(|&s| s > 0) else { return };
-    // From here on (what the launcher allocated before is not counted, a few megabytes).
     COUNTING.store(true, Relaxed);
     let _ = std::thread::Builder::new().name("rava-mem-log".into()).spawn(move || loop {
         std::thread::sleep(std::time::Duration::from_secs(secs));
