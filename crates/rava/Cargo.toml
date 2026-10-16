@@ -1,6 +1,6 @@
 [package]
 name = "rava"
-version = "0.0.4-alpha"
+version = "0.0.1-alpha"
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
