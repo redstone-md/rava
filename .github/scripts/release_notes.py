@@ -12,16 +12,16 @@ import sys
 
 REPO = 'redstone-md/rava'
 GROUPS = [
-    ('feat', '✨ Features'),
-    ('perf', '⚡ Performance'),
-    ('fix', '🐛 Fixes'),
-    ('refactor', '🧹 Refactoring'),
-    ('docs', '📚 Documentation'),
-    ('test', '🧪 Tests'),
-    ('bench', '📊 Benchmarks'),
-    ('build', '📦 Build and CI'),
-    ('ci', '📦 Build and CI'),
-    ('chore', '🔧 Maintenance'),
+    ('feat', 'Features'),
+    ('perf', 'Performance'),
+    ('fix', 'Fixes'),
+    ('refactor', 'Refactoring'),
+    ('docs', 'Documentation'),
+    ('test', 'Tests'),
+    ('bench', 'Benchmarks'),
+    ('build', 'Build and CI'),
+    ('ci', 'Build and CI'),
+    ('chore', 'Maintenance'),
 ]
 # What each archive runs on, by the platform in its name.
 PLATFORMS = [
@@ -103,7 +103,7 @@ def main():
         out.append(open(highlights).read().strip())
         out.append('')
 
-    out += ['## 📥 Download', '', '| Platform | Archive | Size | SHA-256 |', '|---|---|---:|---|']
+    out += ['## Download', '', '| Platform | Archive | Size | SHA-256 |', '|---|---|---:|---|']
     rows = []
     for archive in archives:
         name = os.path.basename(archive)
@@ -131,9 +131,9 @@ def main():
         f'.\\rava-{version}-windows-x86_64\\bin\\rava.exe -version',
         '```',
         '',
-        'Then wherever you would type `java`, type `rava`.',
+        'Then type `rava` wherever you would type `java`.',
         '',
-        '## 📝 Changes',
+        '## Changes',
         '',
     ]
     if prev:
