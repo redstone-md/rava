@@ -73,5 +73,11 @@ unchanged.
      `GALLIUM_DRIVER=zink` and loads that `opengl32.dll` by full path before the program
      starts, so GLFW's and LWJGL's later `LoadLibrary("opengl32.dll")` get Mesa's module. An
      LWJGL test reports `zink Vulkan 1.4 (NVIDIA GeForce RTX 5070)`, OpenGL 4.6.
+   - First GPU measurement (Fabric 1.21.1 with Sodium 0.5.11, frozen scene, RTX 5070,
+     driver 617.14): Zink 1283-1297 fps against 1092 on NVIDIA's OpenGL driver at the same
+     550 visible sections, 1344 against 1131 at about 790. The frames and the log's errors are
+     the same in both modes. NVIDIA's OpenGL driver runs in its threaded mode there, whose
+     hand-offs took most of the render thread; Zink does not use it. One GPU is not enough to
+     change the default.
 5. **Java 8** (1.12.2 with Forge's LaunchWrapper): the Java 8 class library's contract with the
    VM (no modules, its own natives and `Unsafe`). This comes after the modern client works.
