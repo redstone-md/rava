@@ -42,7 +42,10 @@ fn main() -> std::process::ExitCode {
     // freed (at once, the kernel cleared those pages again for each: compile CPU on All The
     // Mods 10 152 s; 100 ms 130 s and 7.26 GB resident, against 7.09 at once and 7.37 at 1 s).
     // SAFETY: a plain option setter, safe at any time.
-    unsafe { mi_option_set(MI_OPTION_PURGE_DELAY, 100) };
+    // (MIMALLOC_PURGE_DELAY, read by mimalloc itself, still decides when set.)
+    if std::env::var_os("MIMALLOC_PURGE_DELAY").is_none() {
+        unsafe { mi_option_set(MI_OPTION_PURGE_DELAY, 100) };
+    }
     // SAFETY: as above.
     #[cfg(windows)]
     unsafe { mi_option_set(MI_OPTION_PAGE_COMMIT_ON_DEMAND, 1) };
