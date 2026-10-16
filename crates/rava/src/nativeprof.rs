@@ -58,7 +58,11 @@ pub fn allocated(p: usize, size: usize) {
         return;
     }
     let left = COUNTDOWN.with(|c| {
-        let left = c.get() - size as isize;
+        // A new thread starts at a random point of the interval: starting at zero sampled the
+        // first allocation of every thread, which put the GC workers' first page tables at the
+        // top of the profile.
+        let start = if c.get() == 0 { (p.wrapping_mul(0x9E37_79B9_7F4A_7C15) >> 32) % interval + 1 } else { 0 };
+        let left = c.get() + start as isize - size as isize;
         c.set(if left <= 0 { left + interval as isize } else { left });
         left
     });
@@ -108,7 +112,7 @@ pub fn report() -> Vec<String> {
         let mut top: Vec<_> = by_stack.into_iter().collect();
         top.sort_by(|a, b| b.1 .0.cmp(&a.1 .0));
         lines.push(format!("[native-prof] {} MiB live in sampled stacks", total >> 20));
-        for (frames, (bytes, n)) in top.into_iter().take(60) {
+        for (frames, (bytes, n)) in top.into_iter().take(400) {
             let offsets: Vec<String> = frames.iter().filter(|&&f| f != 0).map(|&f| format!("{:x}", f.wrapping_sub(base))).collect();
             lines.push(format!("[native-prof] {:>7} KiB {:>6} {}", bytes >> 10, n, offsets.join(" ")));
         }
