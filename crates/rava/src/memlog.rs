@@ -9,6 +9,10 @@ use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering::Relaxed};
 /// Bytes the VM holds from its allocator, counted only while RAVA_MEM_LOG reports: one
 /// counter every thread updates on each allocation cost a Paper start 30% (7.7 -> 10.0 s).
 static ALLOCATED: AtomicIsize = AtomicIsize::new(0);
+
+/// The bytes the allocator itself holds committed, when the binary can say (`main.rs` sets it):
+/// with many short-lived threads it can be far more than what the VM holds from it.
+pub static ALLOCATOR_COMMITTED: std::sync::OnceLock<fn() -> usize> = std::sync::OnceLock::new();
 static COUNTING: AtomicBool = AtomicBool::new(false);
 
 /// A global allocator counting the bytes held through `A`.
@@ -56,12 +60,13 @@ pub fn start() {
         let (rss, committed) = crate::os::process_memory();
         let vm = crate::vm::vm();
         eprintln!(
-            "[mem] resident {} MiB, committed {} MiB | heap {} MiB (live after last gc {} MiB) | vm allocations {} MiB | low arena {} MiB | code {} MiB | {} classes, {} threads | monitors inflated {}, thin-lock sleeps {}",
+            "[mem] resident {} MiB, committed {} MiB | heap {} MiB (live after last gc {} MiB) | vm allocations {} MiB (allocator committed {} MiB) | low arena {} MiB | code {} MiB | {} classes, {} threads | monitors inflated {}, thin-lock sleeps {}",
             mb(rss),
             mb(committed),
             mb(vm.heap.used_bytes()),
             mb(vm.heap.live_after_gc()),
             mb(ALLOCATED.load(Relaxed).max(0) as usize),
+            mb(ALLOCATOR_COMMITTED.get().map_or(0, |f| f())),
             mb(crate::low::reserved_bytes()),
             mb(crate::jit::code_cache::used_bytes()),
             vm.loaded_class_count(),
