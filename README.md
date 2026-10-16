@@ -248,8 +248,7 @@ Same 4-vCPU Xeon @ 2.1 GHz, JDK 21, alternating rounds:
 | All The Mods 10 server, resident memory | **7.3 GB** | 8.2 GB | after two tick sprints |
 
 HotSpot's hello world reads a class-data archive; rava never does, every launch starts from
-class files. Most of the server gap is world generation. What was measured and changed, step by
-step, is in [docs/progress.md](docs/progress.md).
+class files. Most of the server gap is world generation.
 
 <br>
 
@@ -321,7 +320,6 @@ dist/              the distribution build
 | [**Java releases**](docs/jdk-versions.md) | which class libraries run and how releases differ |
 | [**Platforms**](docs/platforms-roadmap.md) | the Linux, macOS and Windows ports |
 | [**Patches**](docs/patches.md) | program-specific changes, installed by the owner |
-| [**Progress log**](docs/progress.md) | what was measured and changed, step by step |
 
 ## 📐 Rules
 

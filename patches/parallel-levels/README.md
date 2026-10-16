@@ -70,4 +70,4 @@ watchdog then stops the server). Test a modpack with the patch before you rely o
 something goes wrong, remove the jar or start with `-Drava.parallelLevels=false`.
 
 Results with the patch installed measure the patch as well as the VM. They are reported
-apart from rava-versus-HotSpot comparisons (`docs/progress.md`).
+apart from rava-versus-HotSpot comparisons.
