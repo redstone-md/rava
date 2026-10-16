@@ -7,11 +7,12 @@
 //!
 //! What may change a field: a call, a monitor, a fence, a class initialization, an intrinsic
 //! that writes memory (a plain store to off-heap memory through a null base cannot be any
-//! object's field), an acquiring (volatile) load, and a store to a field at the same offset
+//! object's field, nor can an array copy or fill write one), an acquiring (volatile) load, and a store to a field at the same offset
 //! unless both fields' classes are known and unrelated (no object has both).
 
 use super::dom::Dom;
 use super::ir::*;
+use crate::jit::intrinsics::Intrinsic;
 use crate::klass::Klass;
 use crate::types::BasicType;
 use std::collections::{HashMap, HashSet};
@@ -117,7 +118,7 @@ fn kills(g: &Graph, w: V, key: Key, holder: Option<&'static Klass>) -> bool {
     if key.0 == STATIC {
         return match *g.inst(w) {
             Inst::Call(..) | Inst::Monitor(..) | Inst::Fence | Inst::InitCheck(..) => true,
-            Inst::Intrinsic(..) if g.is_raw_put(w) => false,
+            Inst::Intrinsic(..) if g.is_raw_put(w) || writes_elements_only(g, w) => false,
             Inst::Intrinsic(k, ..) => !k.is_pure(),
             Inst::LoadField(..) | Inst::LoadStatic(..) => g.ordered.contains(&w),
             Inst::StoreStatic(addr, ..) => addr as u64 == key.1,
@@ -127,13 +128,19 @@ fn kills(g: &Graph, w: V, key: Key, holder: Option<&'static Klass>) -> bool {
     let off = key.1 as u32;
     match *g.inst(w) {
         Inst::Call(..) | Inst::Monitor(..) | Inst::Fence | Inst::InitCheck(..) => true,
-        Inst::Intrinsic(..) if g.is_raw_put(w) => false,
+        Inst::Intrinsic(..) if g.is_raw_put(w) || writes_elements_only(g, w) => false,
         Inst::Intrinsic(k, ..) => !k.is_pure(),
         Inst::LoadField(..) | Inst::LoadStatic(..) => g.ordered.contains(&w),
         Inst::StoreField(_, off2, ..) if off2 != off => false,
         Inst::StoreField(..) => Graph::fields_may_alias(holder, g.field_holders.get(&w).copied()),
         _ => false,
     }
+}
+
+/// Whether intrinsic `w` writes array elements and nothing else (a copy or fill of a range,
+/// such as a growing builder's copy of its array), so no field or static changes.
+fn writes_elements_only(g: &Graph, w: V) -> bool {
+    matches!(g.inst(w), Inst::Intrinsic(Intrinsic::ArrayCopy | Intrinsic::FillRange(_), ..))
 }
 
 /// Whether no path from position `ka` of block `a` to position `vb` of block `b` (which `a`
