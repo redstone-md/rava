@@ -1,14 +1,16 @@
 # Per-tick Paper measurements
 
-This optional external plugin records Paper 1.21.1 `ServerTickEndEvent.getTickDuration()` in
-milliseconds. It does not change VM policy, tick logic or thread checks. Capture commands run
-on the main thread. The listener skips the command tick and the requested warmup ticks, then
-stores duration/tick number in preallocated arrays. Sorting, entity/player counts and CSV/JSON
-output run on the main thread after the captured window. End-event listener overhead and work
-after the event are outside Paper's reported duration; the result is this API's measurement,
-not the complete tick-loop wall time.
+An optional plugin that records Paper 1.21.1's `ServerTickEndEvent.getTickDuration()` for every
+tick, in milliseconds. It changes no VM policy, tick logic or thread checks. Capture commands run
+on the main thread. The listener skips the tick that ran the command and the requested warmup
+ticks, then stores each duration and tick number in preallocated arrays. Sorting, entity and
+player counts, and the CSV and JSON output happen on the main thread after the capture window.
 
-Build once against the same prepared Paper base used for every VM. Use JDK 21 and Python 3.11+:
+The figure is what this API reports, not the whole tick loop's wall time: the listener's own cost
+and any work after the event fall outside Paper's duration.
+
+Build the plugin once against the same prepared Paper base used for every VM, with JDK 21 and
+Python 3.11 or newer:
 
 ```sh
 JAVA_HOME=/absolute/jdk21 bench/tick-measure/build.sh /absolute/paper-base /absolute/build-output
@@ -19,38 +21,52 @@ python3 bench/tick_measure.py --base /absolute/paper-base \
   --warmup-ticks 1000 --ticks 3000 --mode paced
 ```
 
-The base must use loopback port 25599, query/RCON disabled, seed 20260930 (or `--seed` with the
-same value as the base), and a simple `level-name`. The runner copies the base for each fresh
-process and removes overworld, nether and end saves. All other configuration stays identical;
-the plugin is added to each copy. A trusted JSON array via `--server-args-json` supplies identical
-JVM arguments before `-jar` when needed; after a prepared Paper JAR only `nogui` is allowed.
-Argument files and port/world/config overrides are refused; no shell interprets arguments. Output
-must be outside BASE. `--affinity 2,3` pins
-only the child process to explicitly allowed CPU numbers. Choose CPUs using the actual host's
-topology, and record/keep the same CPU set across VMs. Do not run another benchmark or profiler
-alongside timed runs.
+## The base
 
-Inputs alternate forward/reverse process order each round. `manifest.json` records binary,
-plugin, server/library JAR and configuration SHA256s plus commands/counts. Supply a reviewed
-`--source-manifest` to identify an uncommitted candidate; binary hashes alone do not prove which
-source built it. Each run preserves stdout, server logs, crash reports, raw tick CSV, per-phase
-JSON and command timing. Cleanup stops or, after a timeout, kills only the runner's direct child.
-Failure exits nonzero. Output directories must be new, preventing accidental overwrite.
+The base uses loopback port 25599, has query and RCON disabled, seed 20260930 (or `--seed` with
+the base's value) and a simple `level-name`. For each fresh process the runner copies the base,
+removes the overworld, nether and end saves and adds the plugin. Nothing else in the
+configuration changes.
 
-`paced` requires ordinary 20 TPS scheduling. `sprint` starts and arms capture atomically on the
-main thread through Paper's tick manager, attests sprint state for every captured tick, and stops
-its sprint after capture;
-this measures flat-out throughput under a different schedule. Compare each mode separately.
-Quantiles use nearest-rank definitions; `over_50ms` counts recorded ticks beyond the20TPS
-budget. Keep p50/p95/p99 per phase and fresh process, rather than relabeling averages as p50 or
-pooling all runs into a reassuring single percentile. Few hundred ticks validate the harness;
-they do not establish a stable p99. Use sufficiently long windows and independent process runs.
+`--server-args-json` takes a trusted JSON array of JVM arguments, passed unchanged before `-jar`.
+After the Paper jar only `nogui` is allowed. The runner refuses argument files and port, world or
+config overrides, and no shell interprets the arguments. The output directory must be new and
+outside the base, so a run never overwrites an earlier one.
 
-The default 350-mob scenario has **zero connected players**. `forceload` keeps chunks loaded
-but does not establish normal player-nearby full AI activation. Results include player counts
-at arm/after capture and entity counts after capture. Those boundary counts are not a simulation
-checksum or a continuous activation audit. Do not call this a full-AI or real-player benchmark.
-For that follow-up, use genuine version-matched protocol clients on port 25599, fixed identities
-and positions near the pen, wait for player join and loaded chunks, keep clients on separate
-CPUs, and preserve joins/disconnects/client scripts and per-tick player-presence evidence.
-Retain a separate zero-player control. Do not disable activation checks to manufacture load.
+`--affinity 2,3` pins only the server process, to CPU numbers you list. Pick them from the host's
+actual topology and keep the same set for every VM. Run nothing else, benchmark or profiler,
+during timed runs.
+
+## What a run keeps
+
+Each round alternates the process order, forward then reverse. `manifest.json` records the
+SHA-256 of the binaries, the plugin, the server and library jars and the configuration, along
+with the commands and counts. A binary hash does not say which source built it, so give an
+uncommitted candidate a reviewed `--source-manifest`. Every run keeps its stdout, server logs,
+crash reports, the raw tick CSV, per-phase JSON and command timings. Cleanup stops the runner's
+direct child, killing it only after a timeout. A failure exits nonzero.
+
+## Modes and quantiles
+
+`paced` needs ordinary 20 TPS scheduling. `sprint` starts the sprint and arms the capture in one
+step on the main thread through Paper's tick manager, checks that every captured tick ran in the
+sprint, and stops the sprint after the capture. It measures flat-out throughput under a different
+schedule, so compare each mode only with itself.
+
+Quantiles are nearest-rank. `over_50ms` counts recorded ticks over the 20 TPS budget. Report
+p50, p95 and p99 per phase and per process; an average is not a p50, and pooling every run into
+one percentile hides the spread. A few hundred ticks show that the harness works but are too few
+for a stable p99, so use long windows and several independent processes.
+
+## Players
+
+The default scenario has 350 mobs and no connected players. `forceload` keeps the chunks loaded
+but does not switch on the full AI that a nearby player would. The results include the player
+count when the capture is armed and after it, and the entity count after it. Those counts are not
+a simulation checksum or a record of AI activation through the run, so this is not a full-AI or
+real-player benchmark.
+
+A real-player follow-up would use version-matched protocol clients on port 25599, with fixed
+identities and positions near the pen. It would wait for the players to join and their chunks to
+load, keep the clients on separate CPUs, and keep the join and disconnect logs, client scripts and
+per-tick player counts. Keep a zero-player control beside it, and leave the activation checks on.
