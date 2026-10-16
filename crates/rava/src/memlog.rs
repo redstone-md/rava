@@ -24,6 +24,7 @@ unsafe impl<A: GlobalAlloc> GlobalAlloc for Counting<A> {
         let p = self.0.alloc(layout);
         if !p.is_null() && COUNTING.load(Relaxed) {
             ALLOCATED.fetch_add(layout.size() as isize, Relaxed);
+            crate::nativeprof::allocated(p as usize, layout.size());
         }
         p
     }
@@ -31,19 +32,23 @@ unsafe impl<A: GlobalAlloc> GlobalAlloc for Counting<A> {
         let p = self.0.alloc_zeroed(layout);
         if !p.is_null() && COUNTING.load(Relaxed) {
             ALLOCATED.fetch_add(layout.size() as isize, Relaxed);
+            crate::nativeprof::allocated(p as usize, layout.size());
         }
         p
     }
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        self.0.dealloc(ptr, layout);
         if COUNTING.load(Relaxed) {
             ALLOCATED.fetch_sub(layout.size() as isize, Relaxed);
+            crate::nativeprof::freed(ptr as usize);
         }
+        self.0.dealloc(ptr, layout);
     }
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
         let p = self.0.realloc(ptr, layout, new_size);
         if !p.is_null() && COUNTING.load(Relaxed) {
             ALLOCATED.fetch_add(new_size as isize - layout.size() as isize, Relaxed);
+            crate::nativeprof::freed(ptr as usize);
+            crate::nativeprof::allocated(p as usize, new_size);
         }
         p
     }
@@ -53,6 +58,7 @@ unsafe impl<A: GlobalAlloc> GlobalAlloc for Counting<A> {
 /// that what creating the VM allocates is counted too (the report starts later).
 pub fn count_from_start() {
     if std::env::var_os("RAVA_MEM_LOG").is_some() {
+        crate::nativeprof::init();
         COUNTING.store(true, Relaxed);
     }
 }
@@ -81,5 +87,8 @@ pub fn start() {
             crate::sync::INFLATIONS.load(Relaxed),
             crate::sync::THIN_SLEEPS.load(Relaxed),
         );
+        for line in crate::nativeprof::report() {
+            eprintln!("{line}");
+        }
     });
 }

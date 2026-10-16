@@ -352,6 +352,12 @@ pub fn module(pc: usize, name: &mut [u8]) -> Option<(usize, usize)> {
     Some((info.dli_fbase as usize, n))
 }
 
+
+/// Where the executable is loaded (unknown here: offsets are absolute addresses).
+pub fn exe_base() -> usize {
+    0
+}
+
 /// Return addresses of the calling thread's native frames, innermost first; how many fit.
 pub fn native_frames(out: &mut [usize]) -> usize {
     // SAFETY: backtrace(3) into a buffer of the length passed.

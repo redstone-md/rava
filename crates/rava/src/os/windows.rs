@@ -356,6 +356,14 @@ pub fn module(pc: usize, name: &mut [u8]) -> Option<(usize, usize)> {
     Some((m as usize, n))
 }
 
+/// Where the executable is loaded (for offsets into it).
+pub fn exe_base() -> usize {
+    let mut m: HMODULE = std::ptr::null_mut();
+    // SAFETY: looks up the module holding this function, without a reference.
+    unsafe { GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, exe_base as *const u16, &mut m) };
+    m as usize
+}
+
 /// Return addresses of the calling thread's native frames, innermost first; how many fit.
 pub fn native_frames(out: &mut [usize]) -> usize {
     // SAFETY: captures into a buffer of the length passed.

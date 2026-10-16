@@ -17,6 +17,7 @@ pub mod klass;
 pub mod launcher;
 pub mod link;
 pub mod loader;
+pub mod nativeprof;
 pub mod low;
 pub mod memlog;
 pub mod method;
