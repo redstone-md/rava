@@ -1,14 +1,14 @@
-# RAVA Vault защищённые ядра модов
+# RAVA Vault: защищённые ядра модов
 
 ## Назначение и граница защиты
 
-RAVA Vault — проект функции protected modules для авторов модов и модпаков. Она разделяет открытый loader bridge и закрытое вычислительное ядро. В рекомендуемом режиме закрытое ядро исполняется на сервисе автора и никогда не передаётся компьютеру игрока или недоверенного владельца Minecraft server.
+RAVA Vault — проект функции protected modules для авторов модов и модпаков. Мод делится на открытый loader bridge и закрытое вычислительное ядро. В рекомендуемом режиме закрытое ядро исполняется на сервисе автора и не попадает ни на компьютер игрока, ни к недоверенному владельцу Minecraft server.
 
-Из дампа клиента нельзя получить реализацию, которую клиент не получал. При этом клиент получает результаты и может анализировать поведение, записывать ответы, делиться разрешённой сессией либо пытаться восстановить похожий алгоритм. Защита confidentiality реализации не равна запрету любых утечек и имитации поведения.
+Реализацию, которую клиент не получал, из дампа клиента не достать. Но клиент получает результаты: он может анализировать поведение, записывать ответы, делиться разрешённой сессией или пытаться восстановить похожий алгоритм. Конфиденциальность реализации не означает, что исключены любые утечки и имитация поведения.
 
-Полностью локальное автономное исполнение на обычном компьютере, где получатель контролирует OS, VM, native libraries и debugger, не даёт гарантии невозможности извлечения. Изменённая сборка открытой RAVA может записать plaintext в точке загрузки, IR, JIT code или данные во время исполнения. Удаление исходного bytecode и ключа после компиляции не удаляет исполняемую реализацию и её поведение.
+Полностью локальное автономное исполнение на обычном компьютере, где получатель контролирует OS, VM, native libraries и debugger, не гарантирует, что ядро нельзя извлечь. Изменённая сборка открытой RAVA может записать plaintext в момент загрузки, а также IR, JIT code или данные во время исполнения. Если удалить исходный bytecode и ключ после компиляции, исполняемая реализация и её поведение всё равно остаются.
 
-Сам Java также способен использовать серверное исполнение и hardware isolation. Отличие продукта RAVA — встроенный module lifecycle, SDK для loader bridge, подписанные contracts, управление лицензиями и инструмент публикации. У Rust или особого bytecode format нет исключительного свойства физически невозможного копирования.
+Серверное исполнение и hardware isolation доступны и обычной Java. RAVA отличается встроенным module lifecycle, SDK для loader bridge, подписанными contracts, управлением лицензиями и инструментом публикации. Ни Rust, ни особый формат bytecode сами по себе не делают копирование физически невозможным.
 
 ## Режимы
 
@@ -18,42 +18,42 @@ RAVA Vault — проект функции protected modules для авторо
 | Attested worker, следующий этап | Изолированный worker внутри hardware TEE, ключ выдаётся после проверки attestation | Может защитить core от недоверенного hosting administrator в пределах модели hardware | Требуются поддерживаемое железо, проверяемые measurements, обновления, отсутствие guest admin/debug доступа у получателя и isolation от произвольных mods |
 | Local licensed container | Encrypted package на клиенте, plaintext или машинный код возникает локально | Ограничивает случайное копирование и повышает цену анализа | Root/modified RAVA/native injection остаются способами извлечения; не отвечает требованию абсолютной confidentiality |
 
-Для моделей, текстур, звука и иной информации, которую необходимо отдать renderer или показать игроку, полноценный запрет копирования не обеспечивается. В Vault можно держать генератор/правила на backend; опубликованный результат всё равно доступен получателю.
+Модели, текстуры, звук и всё остальное, что нужно отдать renderer или показать игроку, от копирования не защитить. Vault может держать на backend генератор или правила, но опубликованный результат получателю всё равно доступен.
 
-Hardware attestation является проверкой evidence по заданной policy. Она не означает автоматическую безопасность приложения и не устраняет все side channels. SEV-SNP защищает guest от определённых host/hypervisor угроз; если недоверенный получатель управляет самим guest или выполняет произвольный native code в защищённом worker, граница защиты нарушена.
+Hardware attestation — это проверка evidence по заданной policy. Она не делает приложение безопасным автоматически и не закрывает все side channels. SEV-SNP защищает guest от некоторых угроз со стороны host/hypervisor. Если же недоверенный получатель управляет самим guest или запускает произвольный native code в защищённом worker, граница защиты нарушена.
 
 ## Что считается ценным ядром
 
-Подходящие задачи: proprietary generation rules, author-owned procedural algorithms, серверная проверка лицензий, сложные batch decisions, экономические и progression rules, которые можно применять по сериализованному input. Оптимальный контракт возвращает конечный результат или ограниченный effect plan.
+Подходят proprietary generation rules, собственные процедурные алгоритмы автора, серверная проверка лицензий, сложные batch decisions, экономические правила и правила progression, если их можно применить к сериализованному input. Лучший контракт возвращает конечный результат или ограниченный effect plan.
 
-Rendering, каждое чтение block state, каждый predicate в entity tick и операции, которым нужна свободная работа с Minecraft heap, не подходят для удалённого вызова без изменения архитектуры. Ценное ядро должно быть выделено автором явно. Автоматического превращения произвольного existing mod jar в недампимый объект нет.
+Rendering, каждое чтение block state, каждый predicate в entity tick и операции, которым нужен свободный доступ к Minecraft heap, без изменения архитектуры удалённо вызывать нельзя. Автор должен явно выделить ценное ядро. Превратить произвольный готовый mod jar в объект, который нельзя сдампить, автоматически не получится.
 
 ## Компоненты
 
-1. **Publisher tool** собирает public bridge и private core отдельно, фиксирует API contract и version digest, подписывает manifest. Private core не входит в bridge jar.
-2. **Loader bridge SDK** имеет адаптеры Forge, Fabric и NeoForge. Он участвует в обычной регистрации модов, events и Mixins, преобразует inputs в ограниченные immutable messages.
-3. **RAVA module manager** проверяет public manifest, организует sessions, typed serialization, quotas, async batches и применение results. Его интерфейс program-agnostic; Minecraft-specific integration живёт в SDK/mod, не в policy VM.
-4. **Entitlement service** проверяет право account/server instance использовать module/version и выдаёт короткую session capability. Решение принимает backend.
-5. **Execution worker** владеет private implementation и private state. Worker не загружает произвольные клиентские mods, plugins, JNI или patches.
-6. **Result applier** на стороне Minecraft проверяет epoch/world version/entity handles и применяет effect plan в детерминированном порядке на owner thread.
+1. Publisher tool собирает public bridge и private core по отдельности, фиксирует API contract и version digest и подписывает manifest. Private core в bridge jar не входит.
+2. Loader bridge SDK содержит адаптеры для Forge, Fabric и NeoForge. Он участвует в обычной регистрации модов, events и Mixins и превращает inputs в ограниченные immutable messages.
+3. RAVA module manager проверяет public manifest и отвечает за sessions, typed serialization, quotas, async batches и применение results. Его интерфейс не зависит от программы: интеграция с Minecraft живёт в SDK или моде, а не в policy VM.
+4. Entitlement service проверяет, есть ли у account или server instance право на module/version, и выдаёт короткую session capability. Решение принимает backend.
+5. Execution worker владеет private implementation и private state. Он не загружает произвольные клиентские mods, plugins, JNI или patches.
+6. Result applier на стороне Minecraft проверяет epoch, world version и entity handles и применяет effect plan в детерминированном порядке на owner thread.
 
-RAVA module manager нельзя считать надёжным verifier на машине под контролем получателя. Клиентские подписи/проверки помогают поддерживаемому клиенту, а security decisions об авторизации и выдаче секретов остаются на backend или hardware-backed verifier.
+На машине, которую контролирует получатель, RAVA module manager не может быть надёжным verifier. Подписи и проверки на клиенте помогают поддерживаемому клиенту, но решения об авторизации и выдаче секретов принимает backend или hardware-backed verifier.
 
 ## Контейнер и подпись
 
-Предлагаемое расширение — .rvault. Это новый формат и API, которых пока нет в текущем репозитории.
+Предлагаемое расширение — .rvault. Это новый формат и API; в текущем репозитории их пока нет.
 
 Public manifest содержит formatVersion, publisherId, moduleId, moduleVersion, executionMode, apiDigest, publicBridgeDigest, loaderCompatibility, exports, input/output size limits, capabilities, allowed protocol version и signingKeyId.
 
-Для remote mode публичный контейнер содержит manifest и bridge metadata, а private payload хранится на worker. Это исключает ненужную доставку ciphertext/ключей на клиент.
+В remote mode публичный контейнер содержит manifest и bridge metadata, а private payload хранится на worker. Ciphertext и ключи на клиент тогда не попадают вовсе.
 
-Publisher подписывает canonical manifest и digests payloads, а не произвольную JSON serialization. Signature отвечает за origin/integrity; encryption отвечает за confidentiality. Применять готовые проверенные реализации Ed25519 и AEAD, без собственного шифра. Key rotation и key revocation входят в publisher trust store.
+Publisher подписывает canonical manifest и digests payloads, а не произвольную JSON serialization. Подпись отвечает за origin и integrity, шифрование — за confidentiality. Использовать готовые проверенные реализации Ed25519 и AEAD, собственный шифр не писать. Key rotation и key revocation входят в publisher trust store.
 
-Шифрование payloads для storage/attested worker должно связывать publisher/module/version/apiDigest через authenticated additional data. Для каждого ciphertext нужна корректная уникальность nonce относительно ключа. Ключи private core не входят в bridge, diagnostic output, environment dumps и клиентские capability tokens.
+Шифрование payloads для storage и attested worker должно привязывать publisher/module/version/apiDigest через authenticated additional data. Nonce каждого ciphertext должен быть уникален для своего ключа. Ключи private core не попадают в bridge, diagnostic output, environment dumps и клиентские capability tokens.
 
 ## Предлагаемый API
 
-API намеренно работает с typed values и opaque handles, без Java object references:
+API работает с typed values и opaque handles и намеренно не использует Java object references:
 
     ProtectedModules.open(moduleId, apiDigest, entitlement)
     ModuleSession.submitBatch(worldEpoch, requestSequence, deadline, inputs)
@@ -61,47 +61,47 @@ API намеренно работает с typed values и opaque handles, бе�
     ResultBatch.effects
     ModuleSession.close()
 
-Это форма будущего API, не существующие методы RAVA. SDK может генерировать typed interface из contract, чтобы mod author не работал с сырыми payloads.
+Это набросок будущего API, а не существующие методы RAVA. SDK может генерировать typed interface из contract, чтобы автору мода не приходилось работать с сырыми payloads.
 
-ResultBatch включает module/version/apiDigest, session epoch, request sequence, input digest, ordered result records и status. Client проверяет freshness/world identity перед application. Immutable input snapshots создаются на owner thread; worker не получает указатель на Java heap.
+ResultBatch содержит module/version/apiDigest, session epoch, request sequence, input digest, упорядоченные result records и status. Перед применением клиент проверяет freshness и world identity. Immutable input snapshots создаются на owner thread, и указателя на Java heap worker не получает.
 
-Ошибки имеют явные outcomes: Denied, Expired, IncompatibleContract, StaleWorld, DeadlineExceeded, ServiceUnavailable, ResourceLimit, WorkerFailure. Они не превращаются автоматически в отключение проверки лицензии или выдачу private core.
+У ошибок явные outcomes: Denied, Expired, IncompatibleContract, StaleWorld, DeadlineExceeded, ServiceUnavailable, ResourceLimit, WorkerFailure. Ни одна из них не должна автоматически отключать проверку лицензии или приводить к выдаче private core.
 
 ## Session lifecycle
 
 1. Public bridge регистрируется стандартным loader. Module manager проверяет signed manifest и соответствие API/bridge digests.
-2. Backend аутентифицирует account/server instance и проверяет entitlement. Лицензия проверяется на сервере для каждого авторизационно значимого действия.
-3. Backend открывает capability с ограничением module/version/exports, session epoch, expiry, quota и session/channel binding. Public build hash, присланный обычным клиентом, не является attestation.
-4. Client передаёт bounded batch с sequence number, epoch и deadline через authenticated transport.
-5. Worker валидирует contract, capability, limits, replay policy и inputs, выполняет private code и возвращает bounded result. Core bytes никогда не отправляются в ответе.
-6. Result applier отвергает устаревшие результаты и применяет валидные effects на owner thread в определённом порядке.
-7. Renewal/expiry/revocation закрывает доступ на backend. In-flight requests имеют определённый исход; world save/checkpoint не уничтожается из-за недоступности сервиса.
+2. Backend аутентифицирует account или server instance и проверяет entitlement. Лицензия проверяется на сервере для каждого действия, значимого для авторизации.
+3. Backend открывает capability, ограниченную module/version/exports, session epoch, expiry, quota и session/channel binding. Public build hash, присланный обычным клиентом, attestation не является.
+4. Клиент передаёт bounded batch с sequence number, epoch и deadline через authenticated transport.
+5. Worker проверяет contract, capability, limits, replay policy и inputs, выполняет private code и возвращает bounded result. Байты core в ответе не отправляются никогда.
+6. Result applier отбрасывает устаревшие результаты и применяет валидные effects на owner thread в заданном порядке.
+7. Renewal, expiry и revocation закрывают доступ на backend. У in-flight requests определённый исход. Если сервис недоступен, world save или checkpoint от этого не теряется.
 
-Для повторов idempotent operation backend связывает result с request ID и input digest. Повтор с другим input под тем же ID отвергается. Для stateful actions обработка sequence/epoch исключает двойное применение. Local clock не считается источником истины для entitlement expiry.
+Для повторов idempotent operation backend связывает result с request ID и input digest. Повтор с тем же ID, но другим input отвергается. В stateful actions обработка sequence и epoch не даёт применить действие дважды. Локальные часы не считаются источником истины для entitlement expiry.
 
-Сессию, которой полностью управляет adversarial client, можно relay-ить или использовать как oracle. Quotas, limited exports и backend state уменьшают злоупотребление, но не доказывают невозможность передачи доступа другому человеку. Hardware session keys дают дополнительные свойства только при реальной attestation защищённой среды.
+Сессию, которой полностью управляет adversarial client, можно relay-ить или использовать как oracle. Quotas, ограниченные exports и состояние на backend сокращают злоупотребления, но не доказывают, что доступ нельзя передать другому человеку. Hardware session keys дают дополнительные свойства только при настоящей attestation защищённой среды.
 
-## Совместимость с Forge Fabric и NeoForge
+## Совместимость с Forge, Fabric и NeoForge
 
-Обычный bridge jar остаётся видимым loader: metadata, event registration, public resources, Mixins и debugging работают стандартно. Private core не объявляется обычным class resource и не передаётся transformers.
+Обычный bridge jar виден loader как есть: metadata, event registration, public resources, Mixins и debugging работают стандартно. Private core не объявляется обычным class resource и не передаётся transformers.
 
-Mixin применяется к class bytecode до definition; transformed classes могут экспортироваться стандартными debugging tools. Поэтому sensitive implementation, встроенная в такой target/Mixin, проходит через доступный loader pipeline. Private core выносится за его границу; публичные wrappers могут быть скопированы без раскрытия core.
+Mixin применяется к class bytecode до definition, а transformed classes можно экспортировать стандартными debugging tools. Значит, sensitive implementation, встроенная в такой target или Mixin, проходит через доступный loader pipeline. Поэтому private core выносится за его границу. Публичные wrappers можно скопировать, и core при этом не раскрывается.
 
-В remote core и корректно изолированном attested worker клиентские Mixins, ASM, reflection и access transformers не получают private core для изменения. Они могут работать с public bridge и Minecraft classes. Это явная compatibility boundary: авторы, которым нужно смешивать чужие callbacks и objects с private internals, должны переработать этот контракт. Для local licensed container под контролем получателя такая гарантия отсутствует.
+В remote core и в правильно изолированном attested worker клиентские Mixins, ASM, reflection и access transformers не получают private core, который можно было бы изменить. Они работают с public bridge и классами Minecraft. Это явная граница совместимости: авторам, которым нужно смешивать чужие callbacks и objects с private internals, придётся переработать контракт. Для local licensed container под контролем получателя такой гарантии нет.
 
-Native modules и Unsafe в Minecraft process не должны иметь доступ к private worker address space. В remote MVP это обеспечивается размещением worker вне клиентской машины. Обычный локальный child process сам по себе не создаёт нужной OS security boundary: родительский процесс или native mod под тем же OS account может иметь доступ к его памяти. Нужны отдельная identity, ограниченные process permissions и sandbox policy; от владельца OS с admin/root такая программная изоляция не защищает.
+Native modules и Unsafe в процессе Minecraft не должны иметь доступа к адресному пространству private worker. В remote MVP это обеспечивается тем, что worker работает не на клиентской машине. Обычный локальный child process сам по себе нужной границы безопасности OS не создаёт: родительский процесс или native mod под тем же OS account может читать его память. Нужны отдельная identity, ограниченные process permissions и sandbox policy. От владельца OS с правами admin/root такая программная изоляция не защищает.
 
 ## Производительность
 
-DRM не должен добавлять synchronous network round trip на каждую операцию горячего tick loop. Для обычного server tick 20 TPS бюджет составляет 50 ms; network jitter может съесть его независимо от эффективности JIT.
+DRM не должен добавлять синхронный network round trip к каждой операции горячего tick loop. Для обычного server tick при 20 TPS бюджет составляет 50 ms, и network jitter может съесть его целиком, как бы хорошо ни работал JIT.
 
-Использовать coarse-grained batches, асинхронную подготовку работы, ограниченные сообщения, pooling buffers и owner-thread application. Наиболее подходящие задачи — generation/precomputation и decisions с заранее известным сроком. Inputs должны минимизировать объём world snapshot.
+Использовать coarse-grained batches, асинхронную подготовку работы, ограниченные сообщения, pooling buffers и применение результатов на owner thread. Лучше всего подходят generation/precomputation и decisions с заранее известным сроком. Inputs должны передавать как можно меньше world snapshot.
 
-Fallback задаёт автор для каждого export. Допустимы ожидание вне критического tick, отказ от нового protected action, использование ранее разрешённого result или публичная degraded functionality. Передача private implementation для автономного fallback меняет гарантию confidentiality и требует отдельного local mode.
+Fallback для каждого export задаёт автор. Допустимы ожидание вне критического tick, отказ от нового protected action, ранее разрешённый result или публичная degraded functionality. Если ради автономного fallback передать private implementation, гарантия confidentiality меняется, и для этого нужен отдельный local mode.
 
-TEE worker рядом с Minecraft host может уменьшить latency, но включает serialization, enclave/VM boundary overhead и restrictions. Ни remote mode, ни TEE не дают автоматического ускорения VM. Сравнивать RAVA/JVM performance без DRM и overhead выбранного DRM mode отдельно.
+TEE worker рядом с Minecraft host может снизить latency, но добавляет serialization, накладные расходы на границе enclave/VM и свои ограничения. Ни remote mode, ни TEE не ускоряют VM сами по себе. Производительность RAVA/JVM без DRM и overhead выбранного режима DRM сравнивать по отдельности.
 
-## Threat cases и ожидаемый результат
+## Сценарии угроз и ожидаемый результат
 
 | Сценарий | Remote core |
 | --- | --- |
@@ -114,30 +114,30 @@ TEE worker рядом с Minecraft host может уменьшить latency, �
 | Копирование визуального результата | Возможно; renderable output уже раскрыт пользователю |
 | Offline на обычном PC | Remote core недоступен; заранее выбранная degraded/offline functionality сохраняет явный контракт |
 
-Не внедрять kernel drivers, скрытое сканирование чужих процессов и destructive reactions. Это не создаёт надёжную confidentiality boundary и повышает стоимость поддержки и риск аварий.
+Kernel drivers, скрытое сканирование чужих процессов и destructive reactions не внедрять. Надёжной границы конфиденциальности они не дают, а стоимость поддержки и риск аварий повышают.
 
 ## План реализации
 
-**Этап 1 — proof of boundary.** Один public bridge и один private batch operation на отдельном авторском worker. Зафиксировать contract, entitlements, expiry, serialization и errors. Проверить packet/class/memory dumps клиента: private core не должен быть передан вообще. Это проверка protocol design, а не попытка доказать отсутствие любых side channels.
+Этап 1, proof of boundary. Один public bridge и одна private batch operation на отдельном worker автора. Зафиксировать contract, entitlements, expiry, serialization и errors. Проверить дампы пакетов, классов и памяти клиента: private core не должен передаваться вовсе. Этап проверяет protocol design и не пытается доказать отсутствие любых side channels.
 
-**Этап 2 — RAVA integration.** Generic module manager плюс SDK для одного supported loader version. Добавить quotas, ordered result applier, stale-world rejection, session cleanup и cancellation. Измерить overhead/latency under load, validate save consistency при service failure.
+Этап 2, интеграция с RAVA. Generic module manager и SDK для одной поддерживаемой версии loader. Добавить quotas, ordered result applier, отказ от stale world, очистку и отмену сессий. Измерить overhead и latency под нагрузкой, проверить согласованность save при отказе сервиса.
 
-**Этап 3 — publisher tooling и три loaders.** Signed manifests, reproducible bridge digests, key rotation, diagnostic privacy, Forge/Fabric/NeoForge adapters, compatibility matrix и migration policy. Loader versions нужно закреплять и тестировать отдельно.
+Этап 3, publisher tooling и три loader. Signed manifests, reproducible bridge digests, key rotation, diagnostic privacy, адаптеры Forge/Fabric/NeoForge, compatibility matrix и migration policy. Версии loader нужно закреплять и тестировать по отдельности.
 
-**Этап 4 — attested worker.** Выбрать hardware platform под реальные deployment requirements. Проверять fresh attestation, worker image/module/contract measurements, security patch level и debug policy; связывать выдачу secret key с этой evidence и защищённым session key. Не загружать arbitrary mods в trusted worker.
+Этап 4, attested worker. Выбрать hardware platform под реальные требования развёртывания. Проверять fresh attestation, measurements образа worker, модуля и contract, security patch level и debug policy. Выдачу secret key привязывать к этому evidence и к защищённому session key. Произвольные mods в trusted worker не загружать.
 
-Local licensed container является отдельным дополнительным продуктовым режимом с более слабой гарантией. Он не должен выпускаться под обещанием невозможного dump.
+Local licensed container — отдельный дополнительный режим продукта с более слабой гарантией. Выпускать его с обещанием, что дамп невозможен, нельзя.
 
 ## Критерии готовности
 
 - Private core отсутствует в клиентском distribution, class resources, IR/JIT dumps, crash reports и network responses.
-- Backend authorizes operations независимо от client-side checks; expired/revoked/wrong-module capabilities отвергаются.
-- Bounded schema отсекает oversized/malformed messages; output не способен произвольно выполнять code на client.
-- Replay, retries, world restart, stale epochs и partial application имеют deterministic semantics.
-- Service outage и worker crash не портят world save и не приводят к скрытому раскрытию core.
-- Все public bridges работают с заявленными loader/mod versions, а incompatible signatures fail clearly.
-- p95/p99 latency и overhead измерены на целевых workloads; горячий tick не блокируется на непредсказуемом RPC.
-- Для TEE отдельно проверены hostile-host/debug/snapshot scenarios и trust assumptions. На обычном client нельзя объявлять эти свойства автоматически.
+- Backend авторизует операции независимо от проверок на клиенте; expired, revoked и wrong-module capabilities отвергаются.
+- Bounded schema отсекает oversized и malformed messages; output не может выполнить произвольный code на клиенте.
+- У replay, retries, world restart, stale epochs и partial application детерминированная семантика.
+- Service outage и worker crash не портят world save и не раскрывают core.
+- Все public bridges работают с заявленными версиями loader и модов, а incompatible signatures дают понятную ошибку.
+- p95/p99 latency и overhead измерены на целевых нагрузках; горячий tick не блокируется на непредсказуемом RPC.
+- Для TEE отдельно проверены сценарии hostile host, debug и snapshot, а также trust assumptions. На обычном клиенте эти свойства автоматически заявлять нельзя.
 
 ## Основные источники
 
@@ -152,4 +152,3 @@ Local licensed container является отдельным дополните�
 - [RAVA patch dump](https://github.com/redstone-md/rava/blob/fa9e35daeba0fbf802a3aaeb1ae01ebfc596e733/crates/rava/src/patch/mod.rs#L139-L165): существующая возможность dump targeted bytecode.
 
 Это спецификация новой функции. Production implementation, infrastructure и loader adapters в текущий репозиторий не внесены.
-

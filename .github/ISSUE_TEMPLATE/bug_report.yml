@@ -1,5 +1,5 @@
 name: Bug report
-description: A program behaves differently under rava than under java, crashes or hangs
+description: A program behaves differently under rava than under java, or crashes or hangs
 labels: [bug]
 body:
   - type: markdown
@@ -50,5 +50,5 @@ body:
     id: log
     attributes:
       label: Output or log
-      description: The full output (or a link to it, e.g. mclo.gs); for a hang, a thread dump.
+      description: The full output, or a link to it (e.g. mclo.gs). For a hang, a thread dump.
       render: text

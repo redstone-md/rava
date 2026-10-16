@@ -1,8 +1,8 @@
 # mod-fixes
 
-Fixes for costly code in popular mods, for NeoForge 1.21.1 servers. Each fix gives the mod's
-results, faster; a fix whose mod is not installed, or whose code changed, does nothing (rava
-reports an edit without target and leaves the class alone).
+Fixes for expensive code in popular mods, for NeoForge 1.21.1 servers. Each fix gives the same
+results as the mod, only faster. A fix whose mod is not installed, or whose code changed, does
+nothing: rava reports an edit without a target and leaves the class alone.
 
 | mod | problem | fix |
 |---|---|---|

@@ -1,14 +1,14 @@
 # Runtime performance validation, 2026-10-14
 
 This report measures generic JNI string operations and compiled calls against baseline
-`bed0e219`. It does not establish a client FPS, server MSPT or whole-application throughput
-improvement. All processes start cold; the changes introduce no application-specific
-policies, class or heap snapshots, or persistent compiled-code caches.
+`bed0e219`. It does not show any improvement in client FPS, server MSPT or whole-application
+throughput. Every process starts cold. The changes add no application-specific policies, no
+class or heap snapshots and no persistent compiled-code caches.
 
 ## Artifact identity
 
-The final local Linux release measurements use these exact binaries, built with the same
-Rust release profile and Temurin JDK/class library 21.0.12.1+1:
+The final local Linux release measurements use these exact binaries. Both were built with the
+same Rust release profile and Temurin JDK/class library 21.0.12.1+1:
 
 | Artifact | SHA-256 |
 |---|---|
@@ -19,16 +19,16 @@ The candidate includes compact-string JNI access, shared-return fast exits, regi
 hints for eligible virtual/interface calls, and platform-native compatibility fixes.
 [Pre-commit CI run 38506857225](https://github.com/redstone-md/rava/actions/runs/38506857225)
 passed the semantic, JNI and patch checks on Linux, Windows, macOS Intel and macOS ARM64
-with the pinned patch. The four documented helpful-NPE-message probes remain expected
-failures. CI-built Paper executables have their separate artifact identities below.
+with the pinned patch. The four documented helpful-NPE-message probes still fail, as
+expected. The CI-built Paper executables have their own artifact identities, listed below.
 
 ## JNI string getters
 
-Ten cases, five cold processes per case and VM: **150 process samples**. Each process warms
-the native loop for 2,000 iterations, then measures 20,000 calls. VM order alternates between
-samples; every checksum is checked. JNI sample metadata does not record CPU affinity.
-Values below are median nanoseconds per call, including the corresponding release for
-character-buffer getters.
+Ten cases, five cold processes per case and VM, 150 process samples in total. Each process
+warms the native loop for 2,000 iterations and then measures 20,000 calls. VM order
+alternates between samples, and every checksum is checked. The JNI sample metadata does not
+record CPU affinity. The values are median nanoseconds per call. For the character-buffer
+getters they include the matching release call.
 
 | Operation | UTF-16 units | Content | Baseline | Candidate | HotSpot |
 |---|---:|---|---:|---:|---:|
@@ -43,48 +43,48 @@ character-buffer getters.
 | GetStringUTFChars | 4,096 | ASCII | 2,526.58 | 1,853.33 | 4,765.45 |
 | GetStringUTFChars | 4,096 | UTF-16 | 8,188.51 | 6,913.03 | 8,185.58 |
 
-GetStringLength avoids decoding the backing array merely to obtain its length. Other
-getters avoid unnecessary intermediate UTF-16 vectors. HotSpot remains faster for length
-queries in these cases; the UTF-length and character-buffer results concern these exact
-inputs and APIs. Functional JNI tests also cover modified UTF-8 and checked regions; region
-APIs are not independently timed here. Borrowed string contents must not cross Java
-allocation, calls or safepoints.
+GetStringLength no longer decodes the backing array just to get its length. The other getters
+skip intermediate UTF-16 vectors they did not need. HotSpot is still faster for length queries
+in these cases. The UTF-length and character-buffer results apply to these exact inputs and
+APIs only. Functional JNI tests also cover modified UTF-8 and checked regions, but the region
+APIs are not timed separately here. Borrowed string contents must not cross a Java
+allocation, a call or a safepoint.
 
 ## Shared-return fast exits
 
-FastReturnBench uses recursive calls whose fast and slow results join at one return phi.
-There are three cold processes per VM, with VM order rotated between processes. Each
-process has three warm-up and three measured rounds; the reported value is the median of
-the three per-process best rounds. These runs are pinned to available CPU 8.
+FastReturnBench makes recursive calls whose fast and slow results join at one return phi.
+It runs three cold processes per VM, rotating VM order between processes. Each process does
+three warm-up rounds and three measured rounds. The reported value is the median of the
+three per-process best rounds. These runs are pinned to available CPU 8.
 
 | Nanoseconds per call | Baseline | Candidate | HotSpot |
 |---|---:|---:|---:|
 | Arithmetic result through shared return | 1.83 | 1.39 | 1.06 |
 | Constant result through shared return | 1.75 | 1.33 | 1.02 |
 
-All nine processes return checksum `141557760`. Candidate runtime is about 24% lower than
-baseline in both cases, while remaining about 31% and 30% above HotSpot respectively.
-The theoretical recursive-call count includes calls eliminated by inlining.
+All nine processes return checksum `141557760`. In both cases the candidate takes about 24%
+less time than baseline and is still about 31% and 30% slower than HotSpot, respectively.
+The theoretical recursive-call count includes calls that inlining removes.
 
-Generated code confirms the mechanism: the arithmetic fast path returns at offset `0x1e`
-before the first prologue push at `0x1f`; the constant path returns at `0x1a` before its push
-at `0x1b`. Baseline starts the prologue at `0x10`. Slow branches still enter the prologue.
-Dump inspection used disposable binaries with only an equal-length dump-path replacement
-because `/tmp` was unavailable; timing used the unmodified release binaries above.
-FastExitSem matches HotSpot in default, optimizing-all and few-register modes, with graph
-verification enabled for the latter two.
+The generated code shows the mechanism. The arithmetic fast path returns at offset `0x1e`,
+before the first prologue push at `0x1f`. The constant path returns at `0x1a`, before its
+push at `0x1b`. Baseline starts the prologue at `0x10`. Slow branches still enter the
+prologue. `/tmp` was unavailable, so the dumps came from throwaway binaries whose only change
+was an equal-length replacement of the dump path. Timing used the unmodified release binaries
+listed above. FastExitSem matches HotSpot in default, optimizing-all and few-register modes;
+the last two ran with graph verification enabled.
 
 ## ABI hints and rejected collector experiment
 
-An isolated generated-code comparison proves that eligible virtual/interface argument
-hints remove two register moves, six bytes, from a generic field-argument call site.
-Profiled/cold sites and values live across calls retain their previous handling. Dispatch
-timings are highly variable, with tier/inlining changes between processes; a stable runtime
-benefit and a HotSpot dispatch advantage have not been established.
+An isolated comparison of generated code shows that eligible virtual/interface argument hints
+remove two register moves (six bytes) from a generic call site that passes a field as an
+argument. Profiled and cold sites, and values live across calls, are handled as before.
+Dispatch timings vary widely, and tiering and inlining decisions differ between processes.
+Neither a stable runtime gain nor a HotSpot dispatch advantage has been shown.
 
-The proposed task-wide dirty-card drain was rejected. It regressed a focused scanner
-comparison over hot metadata, while whole-VM allocation results stayed near noise. The
-existing scanner remains; DirtyCardsSem and YoungCardsBench are retained for future work.
+The proposed task-wide dirty-card drain was rejected. It made a focused scanner comparison
+over hot metadata slower, and whole-VM allocation results stayed near noise. The existing
+scanner stays. DirtyCardsSem and YoungCardsBench are kept for later work.
 
 ## Verified CI Paper startup
 
@@ -92,16 +92,16 @@ existing scanner remains; DirtyCardsSem and YoungCardsBench are retained for fut
 completed successfully. The downloaded [artifact 11869516741](https://github.com/redstone-md/rava/actions/runs/38509430246/artifacts/11869516741)
 was checked against its source manifest and binary hashes. It applies patch SHA-256
 `5f8f21d022298fc8bdde112601e12a7e94140862f088311ba48c8b15c15fef25` to `bed0e219`.
-These x86-64-v2 CI executables are distinct from the local microbenchmark binaries:
+These x86-64-v2 CI executables are not the local microbenchmark binaries:
 
 | CI executable | SHA-256 |
 |---|---|
 | Baseline | `59ed7c3c5ede5029d5d3822a82c11a63b5770d886565b99d3db9e63543b273c0` |
 | Candidate | `21ae929e940efffda4d5d15c1221079721d13b1b13afb0a184095ade963e2e28` |
 
-Three fresh-world starts per VM, with order reversed in the second round: all nine compressed
-logs contain a real `Done` line. The host was a four-vCPU AMD EPYC 7763 CI runner, using
-Paper 1.21.1 build 133, seed `20260930`, view/simulation distance 10 and port 25599.
+Each VM ran three fresh-world starts, with the order reversed in the second round. All nine
+compressed logs contain a real `Done` line. The host was a four-vCPU AMD EPYC 7763 CI runner,
+running Paper 1.21.1 build 133 with seed `20260930`, view/simulation distance 10 and port 25599.
 
 | Median | Baseline | Candidate | HotSpot |
 |---|---:|---:|---:|
@@ -109,18 +109,19 @@ Paper 1.21.1 build 133, seed `20260930`, view/simulation distance 10 and port 25
 | Paper logged Done duration, seconds | 22.817 | 22.573 | 27.774 |
 | Peak resident memory, MB | 1,167 | 1,170 | 1,096 |
 
-The candidate median elapsed time is 1.23% below baseline: three samples do not establish a
-strong end-to-end gain. It is 18.62% below HotSpot, but most of that gap already exists in
-baseline RAVA and cannot be attributed to this patch. Earlier local `03aa1a57` Paper figures
-are superseded by this verified artifact comparison. Startup does not establish tick
-performance. Client validation still needs a real modpack and graphics-capable host;
-no client FPS or server MSPT improvement is claimed.
+The candidate's median elapsed time is 1.23% below baseline. Three samples are not enough to
+call that an end-to-end gain. It is 18.62% below HotSpot, but most of that gap is already
+there in baseline RAVA and does not come from this patch. This verified artifact comparison
+replaces the earlier local `03aa1a57` Paper figures. Startup time says nothing about tick
+performance. Client validation still needs a real modpack and a graphics-capable host. No client
+FPS or server MSPT improvement is claimed.
 
 ## Reproducing the generic checks
 
 Set RAVA_BASE and RAVA_CANDIDATE to separately built release executables, and JAVA_HOME to
-JDK 21. Check executable hashes before running; use the same host and rotate process order.
-CPU pinning is optional where unavailable; record the choice rather than silently changing it.
+JDK 21. Check the executable hashes before running. Use the same host and rotate process
+order. Skip CPU pinning where it is unavailable, but record that choice instead of changing it
+silently.
 
 ```sh
 cargo build --release
@@ -140,8 +141,8 @@ R="$RAVA_CANDIDATE" tests/jni/run.sh
 bench/paper_ab.sh "binary:$RAVA_CANDIDATE"
 ```
 
-For FastReturnBench, repeat three cold processes per VM in rotated order. For JNI, use five
-processes per case and VM; kinds 0/1/2/3 select length/UTF length/chars/UTF chars, coder 0/1
-selects ASCII/UTF-16. Substitute RAVA_BASE and the JDK `java` executable for each comparison.
-Keep raw samples, checksums, host details and build manifests; do not turn a local microbench
-ratio into an application-wide claim.
+For FastReturnBench, run three cold processes per VM in rotated order. For JNI, run five
+processes per case and VM. Kinds 0/1/2/3 select length/UTF length/chars/UTF chars, and coder
+0/1 selects ASCII/UTF-16. Substitute RAVA_BASE and the JDK `java` executable for each
+comparison. Keep the raw samples, checksums, host details and build manifests. A local
+microbenchmark ratio is not an application-wide result.

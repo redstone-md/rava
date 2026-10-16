@@ -5,7 +5,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        Thanks for reporting. If you came from the link rava printed, the fields below are already filled in from the crash. Please add what you were doing, and attach the `rava_crash_<pid>.log` file rava wrote in its working directory (for a game, the instance's game folder).
+        Thanks for reporting. If you came from the link rava printed, the fields below are already filled in from the crash. Add what you were doing and attach the `rava_crash_<pid>.log` file rava wrote in its working directory (for a game, the instance's game folder).
   - type: textarea
     id: what
     attributes:
@@ -66,4 +66,4 @@ body:
     id: log
     attributes:
       label: Crash report and log
-      description: Drag the rava_crash_<pid>.log file here, and the game or program log (or a link to it, e.g. mclo.gs).
+      description: Drag the rava_crash_<pid>.log file here, plus the game or program log or a link to it (e.g. mclo.gs).

@@ -1,9 +1,9 @@
 # Platforms: Linux, macOS and Windows
 
 rava was written for Linux on x86-64 and now also runs on macOS and Windows (x86-64). This page
-records what tied the VM to Linux, the order in which it came apart, and where each port
-stands ([Status](#status)). The rules stayed: one VM, nothing keyed to a program, the `java`
-command line unchanged.
+records what tied the VM to Linux, the order in which those ties were removed, and where each
+port stands ([Status](#status)). The rules did not change: one VM, nothing keyed to a program,
+the `java` command line unchanged.
 
 ## What was Linux-specific
 
@@ -22,8 +22,8 @@ command line unchanged.
 ## Order
 
 1. **Platform layer** (`src/os/`): address space, faults, threads, libraries, process facts behind
-   one interface, Linux first, with no change in behavior. The JDK natives specific to Linux are
-   compiled only there.
+   one interface, Linux first, with no change in behavior. Linux-specific JDK natives are
+   compiled only on Linux.
 2. **macOS on x86-64**: the layer for macOS, the BSD class library's natives, a CI job and a
    release archive. Apple Silicon Macs run it through Rosetta 2 until step 5.
 3. **Windows on x86-64**: the layer for Windows, the Win64 ABI in JNI calls, the Windows class
@@ -33,15 +33,15 @@ command line unchanged.
 
 ## Status
 
-- **Platform layer**: done (`src/os/`: `unix.rs` for Linux and macOS, `windows.rs`). The heap
-  reserves its range uncommitted and commits each page as allocation reaches it (a no-op on
+- Platform layer: done (`src/os/`: `unix.rs` for Linux and macOS, `windows.rs`). The heap
+  reserves its range uncommitted and commits each page when allocation reaches it (a no-op on
   Unix).
-- **macOS x86-64**: done. The binary links with a 4 KiB `__PAGEZERO`; the heap takes the first
+- macOS x86-64: done. The binary links with a 4 KiB `__PAGEZERO`, and the heap takes the first
   free range from 4 GiB. Natives of the BSD class library: `KQueue`, `BsdNativeDispatcher`, path
   normalization, `F_FULLFSYNC`, socket options; `NetworkInterface` from `getifaddrs`. CI runs the
   semantic probes, the JNI test and the patches test on an Intel Mac, with the same four
   red-by-design probes as Linux.
-- **Windows x86-64**: the JDK boots and runs programs; tested here with a MinGW build under Wine
+- Windows x86-64: the JDK boots and runs programs. Tested here with a MinGW build under Wine
   and in CI on Windows runners. Done: platform properties, `java.io` over handles,
   `WinNTFileSystem`, `WindowsNativeDispatcher` (files and security), file channels, sockets over
   Winsock behind the shared socket layer (`natives/sock`), the `WEPoll` selector over `WSAPoll`, asynchronous channels over completion ports,
@@ -50,5 +50,5 @@ command line unchanged.
   stubs (natives take the generic path), `ProcessHandle.Info`, AWT. Under Wine, 124 of 132
   semantic probes match HotSpot's Linux output; the others are the four helpful-NPE probes and
   output that differs by design on Windows (the ANSI code page, path syntax, interfaces).
-- **Release matrix**: the release workflow builds and checks a tar.gz for Linux and macOS and a
-  zip for Windows and publishes them together.
+- Release matrix: the release workflow builds and checks a tar.gz for Linux and macOS and a
+  zip for Windows, and publishes them together.

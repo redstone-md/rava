@@ -3,12 +3,13 @@
 A patch is a jar a server owner drops into `rava-patches/` next to the server (the working
 directory rava starts in). At startup rava reads every patch there; while the program runs, it
 edits the classes a patch targets as they are defined and loads the patch's own classes.
-Nothing else is needed: no command-line flag, no agent, no change to the server's start
-script. Without a `rava-patches/` directory nothing changes.
+There is no command-line flag, no agent and no change to the server's start script. Without
+a `rava-patches/` directory, rava behaves exactly as before.
 
 rava itself stays program-agnostic (no-adapt, no-snapshot): it knows nothing of what a patch
-targets. A patch is the owner's choice of third-party code, like a mod, and its effect is the
-patch's own; results with patches installed are reported separately from VM comparisons.
+targets. A patch is third-party code the owner chooses to install, like a mod, and its effect
+belongs to the patch. Results with patches installed are reported separately from VM
+comparisons.
 
 ## Installing
 
@@ -21,8 +22,8 @@ server/
 
 A patch is a `.jar` or an unpacked directory with the same layout. rava prints one line per
 patch at startup (`[rava] patch parallel-levels 1 from rava-patches/parallel-levels.jar`)
-and one line per edited class. To turn patches off, remove them, or start with
-`RAVA_PATCHES=0`; `RAVA_PATCHES=dir` reads them from another directory.
+and one line per edited class. To turn patches off, remove them or start with
+`RAVA_PATCHES=0`. `RAVA_PATCHES=dir` reads them from another directory.
 
 ## Format
 
@@ -40,32 +41,32 @@ field <class> <name> <descriptor>
 static-field <class> <name> <descriptor>
 ```
 
-Class names are internal names (`net/minecraft/server/MinecraftServer`), descriptors JVM
-descriptors (`(Ljava/util/function/BooleanSupplier;)V`).
+Class names are internal names (`net/minecraft/server/MinecraftServer`), and descriptors are
+JVM descriptors (`(Ljava/util/function/BooleanSupplier;)V`).
 
-- **`open C`** makes class `C` public and not final; **`open C m`** does the same for every
+- `open C` makes class `C` public and not final. `open C m` does the same for every
   field and method of `C` named `m`. Patch code can then use them directly.
-- **`field C f D`** adds a public instance field `f` of type `D` to `C` (`static-field` a
-  static one), initially zero or null: state a patch keeps per object, such as a cache. The
+- `field C f D` adds a public instance field `f` of type `D` to `C` (`static-field` adds a
+  static one), initially zero or null. It holds state a patch keeps per object, such as a cache. The
   edit fails if `C` already has a field `f`.
-- **`redirect C.m(D) O.n(E) -> H.h`** replaces, inside the method `C.m(D)` only, every call
+- `redirect C.m(D) O.n(E) -> H.h` replaces, inside the method `C.m(D)` only, every call
   of `O.n(E)` by a call of the static method `H.h`. For an instance call, `h` takes the
   receiver first: `static R h(O receiver, E...)`; for a static call it has `n`'s descriptor.
   The hook may call the original method itself. Constructor calls cannot be redirected.
-  **`redirect C.* ...`** does it in every method of `C`: when other mods have wrapped the
+  `redirect C.* ...` does the same in every method of `C`. When other mods have wrapped the
   call (Mixin's `@WrapOperation` moves it into a generated bridge method with an unstable
-  name), the redirect still reaches it and their wrappers keep running around the hook.
+  name), the redirect still reaches it, and their wrappers keep running around the hook.
 
 Edits are applied when a class loader other than the boot loader defines the class (JDK
-classes are never edited). All edits of one class apply or none do: if a method, member or
+classes are never edited). Either all edits of one class apply or none do. If a method, member or
 call site is missing (another version of the program), rava prints which edit has no target
 and leaves the class unchanged. Edits never change code length, so stack maps and exception
-tables stay valid and the edited class verifies and compiles as any other.
+tables stay valid, and the edited class verifies and compiles like any other.
 
 A patch's own classes are defined lazily, once each, by the class loader of the code that
 first names them (normally the loader of the edited class), and they see the program's
-classes as that code does. Code of any other loader naming the class gets the same class, so
-its static state is shared: a patch editing classes of two loaders can coordinate through
+classes as that code does. Code of any other loader that names the class gets the same class, so
+its static state is shared. A patch that edits classes of two loaders can coordinate through
 it, provided the class only names classes its defining loader sees. Put them in a package of
 their own (`dev/rava/patches/<id>/`).
 

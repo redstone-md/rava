@@ -29,4 +29,6 @@
 | patches | jars in `rava-patches/` next to the program redirect calls and open members of the classes it defines ([patches.md](patches.md)) | program-specific changes live in code the owner installs, never in the VM |
 
 The rules (no workload-specific tuning, no snapshots) are in the top-level
-[README](../README.md#rules). What is planned for the VM in [vm-roadmap.md](vm-roadmap.md), for the patches in [patch-roadmap.md](patch-roadmap.md), for desktop applications in [gui-roadmap.md](gui-roadmap.md).
+[README](../README.md#rules). Plans for the VM are in [vm-roadmap.md](vm-roadmap.md), for the
+patches in [patch-roadmap.md](patch-roadmap.md), and for desktop applications in
+[gui-roadmap.md](gui-roadmap.md).

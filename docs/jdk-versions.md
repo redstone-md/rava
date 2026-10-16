@@ -1,8 +1,8 @@
 # Java releases
 
-rava runs the Java class library of a given release (its own, shipped beside it by
-`dist/make.sh`, or a JDK's for a development build). Supporting a release means honoring that
-library's contract with the VM; the VM itself does not change between releases.
+rava runs the Java class library of a given release: its own copy, shipped beside it by
+`dist/make.sh`, or a JDK's for a development build. Supporting a release means honoring that
+library's contract with the VM. The VM itself does not change between releases.
 
 | Release | Status |
 |---|---|
@@ -13,17 +13,17 @@ library's contract with the VM; the VM itself does not change between releases.
 
 ## Layers
 
-1. **Core** (`interp/`, `jit/`, `gc/`, `heap.rs`, `classfile.rs`): bytecode, class files, the
-   object model and the collector. Class files up to the newest supported release parse here;
-   nothing in the core asks which release is running.
-2. **Library protocol** (`jdk.rs`): every difference between releases in what the VM and the
-   class library expect of each other, decided once from the library that was found
-   (`release`'s `JAVA_VERSION`). Code elsewhere asks `crate::jdk::library()` rather than
+1. Core (`interp/`, `jit/`, `gc/`, `heap.rs`, `classfile.rs`): bytecode, class files, the
+   object model and the collector. Class files up to the newest supported release parse here.
+   Nothing in the core asks which release is running.
+2. Library protocol (`jdk.rs`): every difference between releases in what the VM and the
+   class library expect of each other. It is decided once, from the library that was found
+   (`release`'s `JAVA_VERSION`). Code elsewhere asks `crate::jdk::library()` instead of
    probing classes: `class_frame_info()` for the stack-walking protocol, `optional_field()`
-   for fields a release added that the VM fills in.
-3. **Natives** (`natives/`): registered by class, name and descriptor, so a method that a
-   release re-signed has one entry per signature, each noting the release it belongs to.
-4. **Launcher** (`launcher/`): the `java` command line, and the launcher protocol of
+   for fields that a release added and the VM fills in.
+3. Natives (`natives/`): registered by class, name and descriptor. A method whose signature a
+   release changed has one entry per signature, each noting the release it belongs to.
+4. Launcher (`launcher/`): the `java` command line and the launcher protocol of
    `sun.launcher.LauncherHelper`.
 
 ## Differences handled
@@ -40,6 +40,6 @@ library's contract with the VM; the VM itself does not change between releases.
 
 ## Adding a release
 
-Run `tests/semantics/run.sh` with `JAVA_HOME` set to that release's JDK (the reference output
-comes from its `java`); each `UnsatisfiedLinkError` names a native to register, and each
-protocol change gets a predicate in `jdk.rs` and a row above.
+Run `tests/semantics/run.sh` with `JAVA_HOME` set to that release's JDK. The reference output
+comes from its `java`. Each `UnsatisfiedLinkError` names a native to register. Each protocol
+change gets a predicate in `jdk.rs` and a row in the table above.

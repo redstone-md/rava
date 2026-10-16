@@ -2,8 +2,8 @@
 
 ## Why
 
-The baseline JIT (`jit/`) keeps the operand stack in memory and every call pays a full frame.
-Measured against HotSpot restricted to C1 (`-XX:TieredStopAtLevel=1`):
+The baseline JIT (`jit/`) keeps the operand stack in memory, and every call pays for a full
+frame. Against HotSpot restricted to C1 (`-XX:TieredStopAtLevel=1`):
 
 | | HotSpot (C2) | HotSpot C1 only | rava baseline |
 |---|---:|---:|---:|
@@ -12,32 +12,32 @@ Measured against HotSpot restricted to C1 (`-XX:TieredStopAtLevel=1`):
 | `McLike` inside `main` | ~470 ms | 418 ms | ~700 ms |
 
 A C1-class compiler is enough for parity. Every mechanism below is a generic JVM technique
-(HotSpot has each of them); nothing is keyed to a workload.
+that HotSpot also has. None of it is keyed to a workload.
 
 ## Shape
 
-- **Trigger.** Baseline code counts invocations and taken back-edges. When a method gets hot in
-  baseline code, it is recompiled by tier 2.
-- **Frame.** Tier-2 frames keep the unified layout (`locals | header | operand stack` on the
-  value stack, `r13` as the base, `r12` as the thread). Values live in registers. The memory
-  slots are written only when the interpreter must take over. Stack walking, GC and exceptions
-  therefore see the same frames as today.
-- **IR** (`opt/ir.rs`): basic blocks of SSA values, with block parameters for phis. Values are
-  typed (int, long, float, double, reference). The IR is built by abstract interpretation of
-  the bytecode (`opt/build.rs`). Every instruction that can leave compiled code carries a
-  *frame state*: bci, locals and stack as values, and the scope chain for inlined code.
-- **Deoptimization** (`opt/deopt.rs`). A failed guard (null, bounds, class not initialized,
+- Baseline code counts invocations and taken back-edges. A method that gets hot in baseline
+  code is recompiled by tier 2.
+- Tier-2 frames keep the unified layout (`locals | header | operand stack` on the value stack,
+  `r13` as the base, `r12` as the thread). Values live in registers, and the memory slots are
+  written only when the interpreter has to take over. Stack walking, GC and exceptions therefore
+  see the same frames they see in baseline code.
+- The IR (`opt/ir.rs`) is basic blocks of SSA values, with block parameters for phis. Values
+  are typed (int, long, float, double, reference). The IR is built by abstract interpretation
+  of the bytecode (`opt/build.rs`). Each instruction that can leave compiled code carries a
+  *frame state*: the bci, the locals and stack as values, and the scope chain for inlined code.
+- Deoptimization (`opt/deopt.rs`). A failed guard (null, bounds, class not initialized,
   unresolved constant, type-profile miss) calls the deopt stub with that frame state. The stub
-  stores the values into the frame's slots, then the interpreter resumes the method at that bci
-  and runs it to completion. Its back-edges can OSR into baseline code again. Inlined scopes are
-  resumed innermost first: each returns into its caller's resumed state. A trap that keeps
+  stores the values into the frame's slots. The interpreter then resumes the method at that bci
+  and runs it to completion; its back-edges can OSR into baseline code again. Inlined scopes are
+  resumed innermost first, each returning into its caller's resumed state. A trap that keeps
   firing invalidates the tier-2 code.
-- **Optimizations** (C1-like): constant folding, local and global value numbering, null-check elimination,
-  inlining of statically bound and class-hierarchy-bound targets, and method-handle constants
-  followed into their `LambdaForm`s. Intrinsics come from `jit/intrinsics.rs`.
-- **Register allocation**: linear scan over SSA live ranges. Values live across calls use
-  callee-saved registers or spill slots on the native stack. Oops in native frames are found by
-  the collector's conservative scan.
+- Optimizations are C1-like: constant folding, local and global value numbering, null-check
+  elimination, inlining of statically bound and class-hierarchy-bound targets, and method-handle
+  constants followed into their `LambdaForm`s. Intrinsics come from `jit/intrinsics.rs`.
+- Register allocation is a linear scan over SSA live ranges. Values live across calls go to
+  callee-saved registers or to spill slots on the native stack. The collector's conservative
+  scan finds oops in native frames.
 
 ## Implementation (`crates/rava/src/jit/opt/`)
 
@@ -61,67 +61,70 @@ A C1-class compiler is enough for parity. Every mechanism below is a generic JVM
 
 Rules that keep it correct:
 
-- **Frames**: compiled code keeps the baseline layout; a call stores its arguments where the
-  interpreter would, except those passed in registers (below). Inlined bodies write no frame headers: before a call from one, the physical
-  header's bytecode-index slot gets a pointer to a static `InlinedSite` (the inlined frames and
-  their bytecode indexes, HotSpot's debug info at a return address), which stack walks expand.
-- **Register arguments** (`jit/abi.rs`, HotSpot's compiled calling convention in small): a
-  direct call from optimized code passes the first four integer and reference arguments in
-  rdi, r8, r9, r10 and the first four float and double ones in xmm2-xmm5; the rest go to the
-  callee's frame slots as before. It calls the callee's register trampoline, which reaches the
-  register entry of the callee's current optimized code, or an adapter that stores the
-  registers into the frame and enters whatever code the method has (interpreter, baseline,
-  code without a register entry). Optimized code's ordinary entry loads the register
-  arguments from the frame and falls into its register entry (aligned to 16 bytes). The
-  prologue stores register arguments into their frame slots where deoptimization or a spill
+- Frames. Compiled code keeps the baseline layout. A call stores its arguments where the
+  interpreter would, except the ones passed in registers (next item). Inlined bodies write no
+  frame headers. Before a call from an inlined body, the bytecode-index slot of the physical
+  header gets a pointer to a static `InlinedSite`, which lists the inlined frames and their
+  bytecode indexes (HotSpot keeps the same debug info at a return address). Stack walks expand it.
+- Register arguments (`jit/abi.rs`, a small version of HotSpot's compiled calling convention).
+  A direct call from optimized code passes the first four integer and reference arguments in
+  rdi, r8, r9, r10 and the first four float and double ones in xmm2-xmm5. The rest go to the
+  callee's frame slots as before. The call goes to the callee's register trampoline. That
+  reaches the register entry of the callee's current optimized code, or an adapter that stores
+  the registers into the frame and enters whatever code the method has (interpreter, baseline,
+  code without a register entry). The ordinary entry of optimized code loads the register
+  arguments from the frame and falls into its register entry, which is aligned to 16 bytes. The
+  prologue stores register arguments into their frame slots wherever deoptimization or a spill
   reads them, so frames stay what stack walks, the collector and deoptimization expect.
-  Vtable and interface calls pass registers too: once they find the target, they call its
-  `Method::reg_call` (where its register trampoline points), which a shared stub makes on
-  first use while keeping the argument registers. The register allocator prefers the argument
+  Vtable and interface calls pass registers too. Once they find the target, they call its
+  `Method::reg_call` (where its register trampoline points); a shared stub creates it on first
+  use and keeps the argument registers intact. The register allocator prefers the argument
   register for a parameter and for an argument that dies at the call (`opt/hints.rs`). Calls
   through method handles, profiling sites, OSR versions and synchronized methods use the frame
   protocol.
-- **Fast exits** (`opt/codegen/fastexit.rs`, shrink-wrapping in small): when the entry block
-  ends in a test whose one side only computes simple integer values (or reads fields of the
-  receiver) and returns, that test and side run at the register entry before the prologue, on
-  the arguments in their registers and scratch registers only. A recursion's base case or a
-  cached value's return pays no pushes, stack check, frame header or entry poll; otherwise the
-  code falls into the prologue with the entry registers untouched.
-- **Lazy anchor** (HotSpot's last Java frame): optimized code publishes `Thread::top` (its
+- Fast exits (`opt/codegen/fastexit.rs`, a small form of shrink-wrapping). Suppose the entry
+  block ends in a test, and one side of it only computes simple integer values (or reads fields
+  of the receiver) and returns. Then that test and that side run at the register entry, before
+  the prologue, using only the argument registers and scratch registers. A recursion's base
+  case or the return of a cached value pays no pushes, stack check, frame header or entry poll.
+  Otherwise the code falls into the prologue with the entry registers untouched.
+- Lazy anchor (HotSpot's last Java frame). Optimized code publishes `Thread::top` (its
   innermost header) only before calls out, and `Thread::sp` only before runtime calls, polls and
-  deoptimization; it restores `top` on return. `sp` only ever rises while it runs (baseline code
-  and the interpreter need it at or above their frame's end when a call returns), the adapters
-  into the interpreter and natives raise it past the arguments, and Rust callers restore it.
-  The prologue writes METHOD, BCI and CALLER only (no SAVED_SP; deoptimization writes one for
-  code that takes the frame over).
-- **Deoptimization** finishes the method in the interpreter (`interp::resume`); an exception in a
-  callee deoptimizes with it pending, so no exception handler is ever compiled. Frequent deopts
-  recompile the method (constants resolved since), then fall back to baseline tier-2 code.
-  At the threshold the code is retired to baseline at once (HotSpot's not-entrant), so calls stop
-  deoptimizing while the recompilation waits in the queue.
-- **Speculation and trap history** (`jit/profile.rs`): every deopt records its (method, bci);
-  recompilations do not speculate there again. Speculations: a complete receiver profile
-  deoptimizes on an unseen class; a branch direction first-tier code never took (64+ runs)
-  deoptimizes (first-tier `branch()` counts both directions); a block from which every path
-  throws deoptimizes on entry (`analysis::throw_paths`), so exception construction is not
-  compiled or inlined.
-- **Early resolution**: constant-pool entries of classes the loader already has (and their
-  fields and methods) are resolved at compile time (`Klass::peek_resolved`, as HotSpot's ciEnv).
-- **Baseline code stays** (`Method::baseline`): exception dispatch and loop entry (OSR) of frames
-  still running baseline code, and interpreted loops after a deoptimization, use it.
-- **OSR into optimized code** (`osr.rs`, HotSpot's OSR compilations): optimized code has no
-  block entries, so a hot first-tier loop asks for a version of its method built from the
-  loop's header. Only what the header reaches is built; loops around it become ordinary
-  cycles. Its deoptimizations count against that version (retired after 8, rebuilt up to 4
-  times); synchronized methods are not entered this way.
-- **Class hierarchy analysis**: `Method::mark_overridden` runs while an overriding class is
-  linked, before any instance of it exists; code that inlined the method without a receiver
-  check tests that flag and deoptimizes once it is set, then recompiles with a vtable guard.
-- **Frameless leaves**: code without loops, calls, allocation, throwing checks, monitors or
-  deopts writes no frame header and skips the stack check and entry poll (nothing can walk or
-  stop it while it runs).
-- **GC**: values live in registers and native spill slots, which the conservative stack scan
-  covers; the collector never moves objects.
+  deoptimization. It restores `top` on return. While it runs, `sp` only rises: baseline code and
+  the interpreter need it at or above their frame's end when a call returns. The adapters into
+  the interpreter and natives raise it past the arguments, and Rust callers restore it. The
+  prologue writes METHOD, BCI and CALLER only. It writes no SAVED_SP; deoptimization writes one
+  for code that takes the frame over.
+- Deoptimization finishes the method in the interpreter (`interp::resume`). An exception in a
+  callee deoptimizes with the exception pending, so no exception handler is ever compiled.
+  Frequent deopts recompile the method (with constants resolved since then), and after that the
+  method falls back to baseline tier-2 code. At the threshold the code is retired to baseline at
+  once (HotSpot's not-entrant), so calls stop deoptimizing while the recompilation waits in the
+  queue.
+- Speculation and trap history (`jit/profile.rs`). Every deopt records its (method, bci), and
+  recompilations do not speculate there again. The speculations are: a complete receiver
+  profile deoptimizes on an unseen class; a branch direction first-tier code never took (64+
+  runs) deoptimizes (first-tier `branch()` counts both directions); a block from which every
+  path throws deoptimizes on entry (`analysis::throw_paths`), so exception construction is
+  neither compiled nor inlined.
+- Early resolution. Constant-pool entries for classes the loader already has, and for their
+  fields and methods, are resolved at compile time (`Klass::peek_resolved`, like HotSpot's
+  ciEnv).
+- Baseline code stays (`Method::baseline`). Exception dispatch and loop entry (OSR) of frames
+  still running baseline code use it, and so do interpreted loops after a deoptimization.
+- OSR into optimized code (`osr.rs`, HotSpot's OSR compilations). Optimized code has no block
+  entries, so a hot first-tier loop asks for a version of its method built from the loop's
+  header. Only what the header reaches is built; loops around it become ordinary cycles. Its
+  deoptimizations count against that version, which is retired after 8 and rebuilt up to 4
+  times. Synchronized methods are not entered this way.
+- Class hierarchy analysis. `Method::mark_overridden` runs while an overriding class is being
+  linked, before any instance of it exists. Code that inlined the method without a receiver
+  check tests that flag, deoptimizes once it is set, and then recompiles with a vtable guard.
+- Frameless leaves. Code without loops, calls, allocation, throwing checks, monitors or deopts
+  writes no frame header and skips the stack check and the entry poll. Nothing can walk or stop
+  it while it runs.
+- GC. Values live in registers and native spill slots, and the conservative stack scan covers
+  both. The collector never moves objects.
 
 Debugging: `RAVA_OPT=0` (baseline tier 2 only), `RAVA_OPT=all` (compile everything
 with this tier), `RAVA_OPT_LOG`, `RAVA_OPT_IR=<method>` (IR and allocation), `RAVA_OPT_SPLIT=0`, `RAVA_INLINE_LOG`,
@@ -129,7 +132,9 @@ with this tier), `RAVA_OPT_LOG`, `RAVA_OPT_IR=<method>` (IR and allocation), `RA
 
 ## Next
 
-1. SSE registers for float and double values (noise code moves them through GPRs today).
-2. Value numbering of pure instructions and field loads along dominating paths.
-3. Background compilation (compiles run on the thread that got hot today).
-4. On-stack replacement from interpreted loops straight into optimized code.
+1. More allocatable registers. The allocator has nine general registers, plus rcx and rdx for
+   values that avoid the instructions writing them; rax and r11 are code generation's scratch.
+   C2 allocates about thirteen, and loops with many live values (formatting, regex matching)
+   spill where C2 does not. Freeing r11 means code generation stops taking it for granted.
+2. Live-range splitting around calls, so a value used in a loop with a rare call keeps a
+   caller-saved register on the hot path.

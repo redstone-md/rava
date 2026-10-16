@@ -1,16 +1,17 @@
 # Patch roadmap
 
-The official patches for NeoForge 1.21.1, area by area. Each patch is measured with a
-`bench/scenarios/` load (`bench/tick_sprint.py -c`) on All The Mods 10, before and after. Rules:
+The official patches for NeoForge 1.21.1, area by area. Each patch is measured before and
+after with a `bench/scenarios/` load (`bench/tick_sprint.py -c`) on All The Mods 10. Rules:
 
-- **Vanilla results by default.** A patch computes what vanilla computes, faster. Where it
-  can check itself against vanilla, it has a verify mode (`-Drava.<patch>.verify=true`).
-- **Gameplay changes are opt-in.** Anything that changes results (update order, skipped
-  ticks, merged entities) stays off unless the server owner turns it on.
-- **Threads only where the work is independent.** World ticking is ordered: block updates,
-  entity moves and redstone see each other's effects within a tick. Moving them to other
-  threads changes results, or needs locks that cost more than they save (see
-  `parallel-levels`). Threads pay off for work that already runs off the tick (world
+- Results match vanilla by default. A patch computes what vanilla computes, only faster.
+  Where it can check itself against vanilla, it has a verify mode
+  (`-Drava.<patch>.verify=true`).
+- Gameplay changes are opt-in. Anything that changes results (update order, skipped ticks,
+  merged entities) stays off unless the server owner turns it on.
+- Threads only where the work is independent. World ticking is ordered: within a tick, block
+  updates, entity moves and redstone see each other's effects. Moving them to other threads
+  either changes results or needs locks that cost more than they save (see
+  `parallel-levels`). Threads pay off for work that already runs outside the tick (world
   generation, lighting, saving) and for read-only computations whose results are applied in
   order.
 
@@ -24,12 +25,12 @@ Baselines on All The Mods 10 (first sprint after setup; ms per tick, lower is be
 | `redstone` | 1200 | 31.2 | 23.4 |
 | `pistons` | 1200 | 13.6 | 10.8 |
 
-Under these loads rava itself is about 30 % slower than HotSpot, in optimized code (nearly all
-samples are `[opt]`), unlike the idle tick where it leads: a VM task of its own, apart from the
-patches.
+Under these loads rava itself is about 30 % slower than HotSpot, and the time is in optimized
+code (nearly all samples are `[opt]`). This is unlike the idle tick, where rava is ahead. It is
+VM work, separate from the patches.
 
-Patches so far (each measured alone against rava without patches; all verify against vanilla
-or give vanilla's results by construction):
+Patches so far, each measured alone against rava without patches. All of them verify against
+vanilla or give vanilla's results by construction.
 
 | patch | what it does | effect |
 |---|---|---|
@@ -60,5 +61,5 @@ All of them together, one round each (ms per tick, first sprint after setup):
 | entities | `mobs`, `tnt` | entity section lookups, movement collisions | cached collision shapes, fewer list copies | no |
 | world generation | (to add: chunk generation rate) | noise and density functions, structure placement | vanilla already generates on worker threads; widen its parallelism and cut per-chunk overhead (what C2ME does, without its mod conflicts) | yes |
 
-"Entity Culling" is a client mod (it skips rendering hidden entities); its server-side
+"Entity Culling" is a client mod that skips rendering hidden entities. Its server-side
 counterpart, ticking far-away entities less often, changes gameplay and would be opt-in.
