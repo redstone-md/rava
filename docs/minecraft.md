@@ -50,12 +50,17 @@ it does not use, the way HotSpot ignores options for other collectors.
 
 ### Graphics
 
-The client draws through the system's OpenGL driver, as it does with HotSpot. On Linux, where
-a Vulkan driver is installed, rava can ask Mesa to run OpenGL on Vulkan (Zink):
+The client draws through the system's OpenGL driver, as it does with HotSpot. Where a Vulkan
+driver is installed, rava can ask Mesa to run OpenGL on Vulkan (Zink):
 
 ```sh
 rava -Drava.opengl=vulkan ...      # or RAVA_OPENGL=vulkan in the environment
 ```
+
+In Prism Launcher, put `-Drava.opengl=vulkan` in the instance's JVM arguments. On Linux this
+uses the system's Mesa. Windows has no Mesa, so the Windows archive carries one in `lib/mesa`
+(from [mesa-dist-win](https://github.com/pal1000/mesa-dist-win)); `RAVA_MESA=<dir>` points
+rava at another copy. The game's F3 screen then names the renderer as `zink Vulkan ...`.
 
 ## When something goes wrong
 

@@ -1,0 +1,13 @@
+Mesa for Windows
+
+The Windows distribution carries Mesa's OpenGL driver in lib/mesa (opengl32.dll and
+libgallium_wgl.dll), which rava loads only for -Drava.opengl=vulkan: OpenGL then runs on the
+installed Vulkan driver through Mesa's Zink.
+
+The files come unchanged from the mesa-dist-win build of Mesa 26.2.4 (MSVC, x64):
+  https://github.com/pal1000/mesa-dist-win/releases/tag/26.2.4
+Mesa's source: https://gitlab.freedesktop.org/mesa/mesa/-/tree/mesa-26.2.4
+
+Most of Mesa is under the MIT license; individual files carry their own SPDX identifiers, and
+the license texts Mesa uses are here (MIT, Apache-2.0, BSL-1.0, SGI-B-2.0). libgallium_wgl.dll
+links LLVM, which is under the Apache License 2.0 with LLVM Exceptions (LLVM).

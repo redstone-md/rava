@@ -192,7 +192,7 @@ so the output, error messages and exit codes match java's. JVM TI agents (`-java
 |---|---|
 | Servers | Paper, Fabric, NeoForge: `rava -jar paper.jar --nogui` in place of `java`. All The Mods 10 starts and ticks. |
 | Client | Minecraft 1.20.5 – 1.21.x, vanilla, Fabric and NeoForge, from Prism Launcher or any launcher that lets you pick the Java executable. |
-| Graphics | OpenGL through the system driver; `-Drava.opengl=vulkan` renders through Mesa's Zink on Linux. |
+| Graphics | OpenGL through the system driver; `-Drava.opengl=vulkan` renders through Mesa's Zink on Linux and Windows. |
 
 In Prism Launcher, set *Settings → Java → Java path* to `bin/rava` from the unpacked archive
 (`bin\rava.exe` on Windows). The bundled class library is Java 21's, so versions that require

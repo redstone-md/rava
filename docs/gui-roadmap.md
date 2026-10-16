@@ -67,5 +67,11 @@ unchanged.
      DRI3 and lavapipe is a CPU device, so that setup also needs
      `LIBGL_KOPPER_DRI2=1 LIBGL_ALWAYS_SOFTWARE=1`; a real display and GPU need neither. The
      default stays the system driver until there are GPU measurements.
+   - Windows: there is no system Mesa, so the Windows archive carries mesa-dist-win's
+     `opengl32.dll` and `libgallium_wgl.dll` in `lib/mesa` (`dist/make.sh` fetches a pinned
+     release and checks its digest; licenses in `legal/mesa`). With the option rava sets
+     `GALLIUM_DRIVER=zink` and loads that `opengl32.dll` by full path before the program
+     starts, so GLFW's and LWJGL's later `LoadLibrary("opengl32.dll")` get Mesa's module. An
+     LWJGL test reports `zink Vulkan 1.4 (NVIDIA GeForce RTX 5070)`, OpenGL 4.6.
 5. **Java 8** (1.12.2 with Forge's LaunchWrapper): the Java 8 class library's contract with the
    VM (no modules, its own natives and `Unsafe`). This comes after the modern client works.
