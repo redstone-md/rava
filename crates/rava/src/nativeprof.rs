@@ -63,7 +63,9 @@ pub fn allocated(p: usize, size: usize) {
         // top of the profile.
         let start = if c.get() == 0 { (p.wrapping_mul(0x9E37_79B9_7F4A_7C15) >> 32) % interval + 1 } else { 0 };
         let left = c.get() + start as isize - size as isize;
-        c.set(if left <= 0 { left + interval as isize } else { left });
+        // After a sample the countdown starts over: carrying a large block's overshoot sampled
+        // the next small ones too, each weighted as a whole interval.
+        c.set(if left <= 0 { interval as isize } else { left });
         left
     });
     if left > 0 {
