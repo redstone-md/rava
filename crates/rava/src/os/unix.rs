@@ -91,7 +91,8 @@ pub fn huge_pages(p: usize, len: usize) {
     let _ = (p, len);
 }
 
-/// Returns the range's memory to the system; it reads as zeros afterwards.
+/// Returns the range's memory to the system; `commit` makes it usable again (here it stays
+/// usable), reading as zeros.
 pub fn discard(p: usize, len: usize) -> bool {
     #[cfg(target_os = "linux")]
     // SAFETY: private anonymous memory of the caller's, which DONTNEED leaves zero-filled.

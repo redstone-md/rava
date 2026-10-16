@@ -123,10 +123,13 @@ pub fn release(p: usize, _len: usize) {
 
 pub fn huge_pages(_p: usize, _len: usize) {}
 
-/// Returns the range's memory to the system; it reads as zeros afterwards.
+/// Returns the range's memory to the system, commit charge included: it must be `commit`ted
+/// again before use, and reads as zeros then. (Committed again at once, a discarded range kept
+/// its charge: an All the Mods 10 client's empty heap pages and freed large blocks held
+/// gigabytes of commit that nothing used.)
 pub fn discard(p: usize, len: usize) -> bool {
-    // SAFETY: decommitting and recommitting the caller's pages zero-fills them.
-    unsafe { VirtualFree(p as *mut _, len, MEM_DECOMMIT) != 0 && !VirtualAlloc(p as *const _, len, MEM_COMMIT, PAGE_READWRITE).is_null() }
+    // SAFETY: decommits the caller's pages, which nothing reads until they are committed again.
+    unsafe { VirtualFree(p as *mut _, len, MEM_DECOMMIT) != 0 }
 }
 
 pub fn populate(_p: usize, _len: usize) -> bool {

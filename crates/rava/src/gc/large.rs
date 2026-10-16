@@ -44,6 +44,8 @@ impl LargeArea {
             if f.size > size {
                 self.free.insert(a + size, Free { size: f.size - size, dirty: f.dirty });
             }
+            // Parts of a free block may have been discarded (`trim`): committed again first.
+            crate::os::commit(a, size);
             if f.dirty {
                 self.dirty_bytes -= size;
                 // SAFETY: a free block of the area, no longer read by anything.

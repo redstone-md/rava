@@ -296,7 +296,12 @@ impl Space {
         // A recycled page keeps its memory committed (cheaper to clear than to fault in again).
         let addr = match self.empty.pop() {
             Some(a) => a,
-            None if !self.released.is_empty() => self.released.pop().unwrap(),
+            None if !self.released.is_empty() => {
+                let a = self.released.pop().unwrap();
+                // Discarded: committed again before use.
+                crate::os::commit(a, PAGE_SIZE);
+                a
+            }
             None if self.fresh + PAGE_SIZE <= self.end => {
                 crate::os::commit(self.fresh, PAGE_SIZE);
                 self.fresh += PAGE_SIZE;
