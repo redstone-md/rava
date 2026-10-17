@@ -572,7 +572,7 @@ pub extern "sysv64" fn request_reprofile(m: *const Method, site: *const Method, 
     if let Some(site) = unsafe { site.as_ref() } {
         super::profile::mark_hot_site(site, bci as usize);
     }
-    if m.reprofiles.fetch_add(1, Ordering::Relaxed) < MAX_REPROFILES {
+    if m.jit().reprofiles.fetch_add(1, Ordering::Relaxed) < MAX_REPROFILES {
         super::queue::submit(super::queue::Job::Reprofile(m));
     }
 }

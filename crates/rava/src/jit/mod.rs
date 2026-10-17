@@ -220,9 +220,9 @@ fn leaf_native(m: &'static Method) -> Option<crate::natives::NativeFn> {
     if !leaf {
         return None;
     }
-    Some(match m.native.get() {
+    Some(match m.jit().native.get() {
         Some(f) => *f,
-        None => *m.native.get_or_init(|| crate::vm::vm().natives.lookup(m).expect("a registered leaf native")),
+        None => *m.jit().native.get_or_init(|| crate::vm::vm().natives.lookup(m).expect("a registered leaf native")),
     })
 }
 
@@ -339,7 +339,7 @@ pub(crate) fn note_unresolved_deferral(m: &'static Method) {
     if cm.unresolved_deferrals.fetch_add(1, Ordering::Relaxed) + 1 != RECOMPILE_AFTER {
         return;
     }
-    if m.recompiles.fetch_add(1, Ordering::Relaxed) < MAX_RECOMPILES {
+    if m.jit().recompiles.fetch_add(1, Ordering::Relaxed) < MAX_RECOMPILES {
         // Only over the code that asked: optimized code installed meanwhile (the recompilation
         // of a method whose optimized code was retired) stays. Fresh baseline code tiers up
         // again.

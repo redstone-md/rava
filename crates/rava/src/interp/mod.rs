@@ -80,12 +80,12 @@ fn sync_target(t: &mut Thread, m: &'static Method, locals: *mut u64) -> JResult<
 
 pub(crate) fn call_native(t: &mut Thread, m: &'static Method, locals: *mut u64) -> JResult<u64> {
     // The VM's own body, else native code a loaded library binds to it (JNI).
-    let bound = m.jni_entry.load(std::sync::atomic::Ordering::Acquire);
-    let f = match m.native.get() {
+    let bound = m.jit_if().map_or(0, |j| j.jni_entry.load(std::sync::atomic::Ordering::Acquire));
+    let f = match m.jit().native.get() {
         Some(f) => Ok(*f),
         None if bound != 0 => Err(bound),
         None => match vm().natives.lookup(m) {
-            Some(f) => Ok(*m.native.get_or_init(|| f)),
+            Some(f) => Ok(*m.jit().native.get_or_init(|| f)),
             None => match crate::jni::entry(m) {
                 Some(addr) => Err(addr),
                 None => {

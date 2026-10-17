@@ -19,11 +19,8 @@ pub struct Method {
     /// for an interface's method, -2 - its slot in an itable block of the interface (what
     /// generated code dispatching a `Method*` known only at run time reads).
     pub(crate) vtable_index: AtomicI32,
-    pub(crate) native: OnceLock<NativeFn>,
     /// Whether this native runs without an interpreter frame of its own (`jit::leaf_native`).
     pub(crate) leaf_native: OnceLock<bool>,
-    /// The native code JNI bound this native method to (`jni::entry`), 0 until bound.
-    pub(crate) jni_entry: AtomicUsize,
     /// Invocation and loop back-edge counters feeding tier-up and on-stack replacement
     /// (generic JVM adaptivity). Racy increments are acceptable: they only time the tier-up.
     pub invocations: AtomicU32,
@@ -31,6 +28,35 @@ pub struct Method {
     /// Machine-code entry with the compiled-code ABI (`jit::EntryFn`): compiled code, or an
     /// adapter into the interpreter / native. Generated code calls through this field.
     pub(crate) entry: AtomicUsize,
+    /// Where a register-convention call to this method goes now (the target of
+    /// `reg_trampoline`), for calls that find the method at run time (vtable dispatch); 0
+    /// until the trampoline is made.
+    pub(crate) reg_call: AtomicUsize,
+    /// What only methods that run natively, get compiled or are named by method handles need
+    /// (`MethodJit`), made on first need: most of a large program's methods never do, and
+    /// these fields made up half of every method.
+    jit: std::sync::atomic::AtomicPtr<MethodJit>,
+    /// Set once compilation was attempted and refused, so it is not retried.
+    pub(crate) not_compilable: std::sync::atomic::AtomicBool,
+    hidden: OnceLock<bool>,
+    /// Set once tier-2 compilation was requested.
+    pub(crate) tiered: std::sync::atomic::AtomicBool,
+    /// The first compilation has been requested (`jit/queue.rs`).
+    pub(crate) queued: std::sync::atomic::AtomicBool,
+    /// The VM supplies the body (`NativeRegistry::add_stub`).
+    stub: bool,
+    /// Some loaded class overrides this method (class hierarchy analysis): compiled code that
+    /// inlined it without a receiver check tests this byte (in low memory, `crate::low`) and
+    /// deoptimizes once it is set.
+    overridden: &'static std::sync::atomic::AtomicBool,
+}
+
+/// The parts of a method only some methods need (`Method::jit`).
+#[derive(Default)]
+pub(crate) struct MethodJit {
+    pub(crate) native: OnceLock<NativeFn>,
+    /// The native code JNI bound this native method to (`jni::entry`), 0 until bound.
+    pub(crate) jni_entry: AtomicUsize,
     /// A `jmp rel32` to `entry` for direct calls from compiled code (`code_cache::direct_entry`),
     /// repointed whenever `entry` changes; 0 until a call site wants one.
     pub(crate) trampoline: AtomicUsize,
@@ -41,10 +67,6 @@ pub struct Method {
     /// The adapter from the register convention to `entry` (`code_cache::reg_adapter`), made
     /// once on first need; 0 until then.
     pub(crate) reg_adapter: AtomicUsize,
-    /// Where a register-convention call to this method goes now (the target of
-    /// `reg_trampoline`), for calls that find the method at run time (vtable dispatch); 0
-    /// until the trampoline is made.
-    pub(crate) reg_call: AtomicUsize,
     /// The `ResolvedMethodName` naming this method, made once and kept for good (HotSpot's
     /// `ResolvedMethodTable` interns them likewise); 0 until a `MemberName` resolves to it.
     pub(crate) resolved_name: AtomicUsize,
@@ -61,22 +83,35 @@ pub struct Method {
     pub(crate) deopt_recompiles: AtomicU32,
     /// Recompilations for call sites that turned hot after compilation (`jit::runtime`).
     pub(crate) reprofiles: AtomicU32,
-    /// Set once compilation was attempted and refused, so it is not retried.
-    pub(crate) not_compilable: std::sync::atomic::AtomicBool,
-    hidden: OnceLock<bool>,
-    /// Set once tier-2 compilation was requested.
-    pub(crate) tiered: std::sync::atomic::AtomicBool,
-    /// The first compilation has been requested (`jit/queue.rs`).
-    pub(crate) queued: std::sync::atomic::AtomicBool,
-    /// The VM supplies the body (`NativeRegistry::add_stub`).
-    stub: bool,
-    /// Some loaded class overrides this method (class hierarchy analysis): compiled code that
-    /// inlined it without a receiver check tests this byte (in low memory, `crate::low`) and
-    /// deoptimizes once it is set.
-    overridden: &'static std::sync::atomic::AtomicBool,
 }
 
 impl Method {
+    /// The method's `MethodJit`, made now if it has none yet.
+    pub(crate) fn jit(&self) -> &'static MethodJit {
+        if let Some(j) = self.jit_if() {
+            return j;
+        }
+        let made = Box::into_raw(Box::<MethodJit>::default());
+        match self.jit.compare_exchange(std::ptr::null_mut(), made, Ordering::AcqRel, Ordering::Acquire) {
+            // SAFETY: published once and never freed.
+            Ok(_) => unsafe { &*made },
+            Err(other) => {
+                // SAFETY: ours, never published; the other is published and never freed.
+                unsafe {
+                    drop(Box::from_raw(made));
+                    &*other
+                }
+            }
+        }
+    }
+
+    /// The method's `MethodJit` if it has one.
+    #[inline]
+    pub(crate) fn jit_if(&self) -> Option<&'static MethodJit> {
+        // SAFETY: published once and never freed.
+        unsafe { self.jit.load(Ordering::Acquire).as_ref() }
+    }
+
     /// A method; with `stub`, one whose body the VM supplies (it runs as a native).
     pub(crate) fn new(holder: &'static Klass, name: Symbol, desc: Symbol, access: u16, code: Option<&'static CodeInfo>, stub: bool) -> Method {
         let native = access & crate::klass::ACC_NATIVE != 0 || stub;
@@ -88,25 +123,14 @@ impl Method {
             sig: MethodSig::parse(desc),
             code,
             vtable_index: AtomicI32::new(-1),
-            native: OnceLock::new(),
             leaf_native: OnceLock::new(),
-            jni_entry: AtomicUsize::new(0),
             invocations: AtomicU32::new(0),
             backedges: AtomicU32::new(0),
             entry: AtomicUsize::new(if native { crate::jit::native_entry() } else { crate::jit::interpreter_entry() }),
-            trampoline: AtomicUsize::new(0),
-            reg_trampoline: AtomicUsize::new(0),
-            reg_adapter: AtomicUsize::new(0),
             reg_call: AtomicUsize::new(0),
-            resolved_name: AtomicUsize::new(0),
+            jit: std::sync::atomic::AtomicPtr::new(std::ptr::null_mut()),
             stub,
             overridden: crate::low::leak(std::sync::atomic::AtomicBool::new(false)),
-            compiled: std::sync::atomic::AtomicPtr::new(std::ptr::null_mut()),
-            baseline: std::sync::atomic::AtomicPtr::new(std::ptr::null_mut()),
-            osr: std::sync::atomic::AtomicPtr::new(std::ptr::null_mut()),
-            recompiles: AtomicU32::new(0),
-            deopt_recompiles: AtomicU32::new(0),
-            reprofiles: AtomicU32::new(0),
             not_compilable: std::sync::atomic::AtomicBool::new(false),
             hidden: OnceLock::new(),
             tiered: std::sync::atomic::AtomicBool::new(false),
@@ -172,30 +196,31 @@ impl Method {
 
     pub(crate) fn compiled(&self) -> Option<&'static crate::jit::CompiledMethod> {
         // SAFETY: published compiled methods are leaked and never freed.
-        unsafe { self.compiled.load(Ordering::Acquire).as_ref() }
+        unsafe { self.jit_if()?.compiled.load(Ordering::Acquire).as_ref() }
     }
 
     /// The latest baseline code: block entries for exception handlers and on-stack replacement,
     /// and what optimized code is retired to (`retire`).
     pub(crate) fn baseline(&self) -> Option<&'static crate::jit::CompiledMethod> {
         // SAFETY: published compiled methods are leaked and never freed.
-        unsafe { self.baseline.load(Ordering::Acquire).as_ref() }
+        unsafe { self.jit_if()?.baseline.load(Ordering::Acquire).as_ref() }
     }
 
     /// The newest on-stack-replacement version.
     pub(crate) fn osr_head(&self) -> Option<&'static crate::jit::OsrCode> {
         // SAFETY: published versions are leaked and never freed.
-        unsafe { self.osr.load(Ordering::Acquire).as_ref() }
+        unsafe { self.jit_if()?.osr.load(Ordering::Acquire).as_ref() }
     }
 
     /// Publishes `c` as the newest on-stack-replacement version.
     pub(crate) fn push_osr(&self, c: crate::jit::OsrCode) -> &'static crate::jit::OsrCode {
         let c = Box::leak(Box::new(c));
+        let osr = &self.jit().osr;
         loop {
-            let head = self.osr.load(Ordering::Acquire);
+            let head = osr.load(Ordering::Acquire);
             // SAFETY: as in `osr_head`.
             c.set_next(unsafe { head.as_ref() });
-            if self.osr.compare_exchange(head, c, Ordering::AcqRel, Ordering::Acquire).is_ok() {
+            if osr.compare_exchange(head, c, Ordering::AcqRel, Ordering::Acquire).is_ok() {
                 return c;
             }
         }
@@ -204,10 +229,11 @@ impl Method {
     /// Publishes new machine code for this method.
     pub(crate) fn install(&self, cm: crate::jit::CompiledMethod) -> &'static crate::jit::CompiledMethod {
         let cm: &'static crate::jit::CompiledMethod = Box::leak(Box::new(cm));
+        let jit = self.jit();
         if !cm.optimized {
-            self.baseline.store(cm as *const _ as *mut _, Ordering::Release);
+            jit.baseline.store(cm as *const _ as *mut _, Ordering::Release);
         }
-        self.compiled.store(cm as *const _ as *mut _, Ordering::Release);
+        jit.compiled.store(cm as *const _ as *mut _, Ordering::Release);
         self.entry.store(cm.entry, Ordering::Release);
         crate::jit::code_cache::repoint(self);
         cm
@@ -217,11 +243,12 @@ impl Method {
     pub(crate) fn replace(&self, current: &'static crate::jit::CompiledMethod, cm: crate::jit::CompiledMethod) -> bool {
         let cm: &'static crate::jit::CompiledMethod = Box::leak(Box::new(cm));
         let old = current as *const _ as *mut _;
-        if self.compiled.compare_exchange(old, cm as *const _ as *mut _, Ordering::AcqRel, Ordering::Acquire).is_err() {
+        let jit = self.jit();
+        if jit.compiled.compare_exchange(old, cm as *const _ as *mut _, Ordering::AcqRel, Ordering::Acquire).is_err() {
             return false;
         }
         if !cm.optimized {
-            self.baseline.store(cm as *const _ as *mut _, Ordering::Release);
+            jit.baseline.store(cm as *const _ as *mut _, Ordering::Release);
         }
         let _ = self.entry.compare_exchange(current.entry, cm.entry, Ordering::AcqRel, Ordering::Acquire);
         crate::jit::code_cache::repoint(self);
@@ -234,7 +261,7 @@ impl Method {
     pub(crate) fn retire(&self, current: &'static crate::jit::CompiledMethod) {
         let Some(b) = self.baseline() else { return };
         let old = current as *const _ as *mut _;
-        if self.compiled.compare_exchange(old, b as *const _ as *mut _, Ordering::AcqRel, Ordering::Acquire).is_ok() {
+        if self.jit().compiled.compare_exchange(old, b as *const _ as *mut _, Ordering::AcqRel, Ordering::Acquire).is_ok() {
             let _ = self.entry.compare_exchange(current.entry, b.entry, Ordering::AcqRel, Ordering::Acquire);
             crate::jit::code_cache::repoint(self);
         }

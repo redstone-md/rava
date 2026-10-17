@@ -263,7 +263,7 @@ pub(super) fn build_osr(m: &'static Method, bci: usize, types: &[Option<Ty>]) ->
 impl Builder {
     fn new(sc: Scope) -> Builder {
         let m = sc.m;
-        let speculate = m.deopt_recompiles.load(std::sync::atomic::Ordering::Relaxed) < super::SPECULATIVE_RECOMPILES;
+        let speculate = m.jit_if().map_or(0, |j| j.deopt_recompiles.load(std::sync::atomic::Ordering::Relaxed)) < super::SPECULATIVE_RECOMPILES;
         Builder { g: Graph::default(), extent: sc.frame_end(), sc, cur: 0, spent: 0, chain: vec![(m, None)], shallow: 0, seq: 0, speculate, trapped: Default::default(), facts: Default::default(), stable: HashMap::new(), numbered: HashMap::new(), loads: HashMap::new(), exact: Vec::new(), declared: HashMap::new(), boxes: HashMap::new(), complete_phis: Default::default(), field_holders: HashMap::new(), store_holder: None, unprofiled_call: false, cold_call: false, fallback_call: false, bounds: Vec::new(), exits: HashMap::new() }
     }
 

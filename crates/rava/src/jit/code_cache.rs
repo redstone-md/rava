@@ -94,14 +94,14 @@ pub fn direct_entry(m: &'static crate::method::Method) -> Option<usize> {
         return None;
     }
     let _g = TRAMPOLINES.lock().unwrap();
-    let t = m.trampoline.load(Acquire);
+    let t = m.jit().trampoline.load(Acquire);
     if t != 0 {
         return Some(t);
     }
     // A 3-byte nop puts the displacement at offset 4: aligned, so a repoint writes it whole.
     let code = super::asm::Code { bytes: vec![0x0F, 0x1F, 0x00, 0xE9, 0, 0, 0, 0], relocs: vec![(4, m.entry.load(Acquire))] };
     let t = install(&code);
-    m.trampoline.store(t, Release);
+    m.jit().trampoline.store(t, Release);
     Some(t)
 }
 
@@ -111,11 +111,12 @@ pub fn repoint(m: &crate::method::Method) {
     // Always under the lock, even with no trampoline yet: one being made meanwhile read the
     // entry before it changed, and is published before this runs and aims it again.
     let _g = TRAMPOLINES.lock().unwrap();
-    let t = m.trampoline.load(Acquire);
+    let Some(jit) = m.jit_if() else { return };
+    let t = jit.trampoline.load(Acquire);
     if t != 0 {
         aim(t, m.entry.load(Acquire));
     }
-    let t = m.reg_trampoline.load(Acquire);
+    let t = jit.reg_trampoline.load(Acquire);
     if t != 0 {
         let target = reg_target(m);
         aim(t, target);
@@ -139,14 +140,14 @@ pub fn reg_entry(m: &'static crate::method::Method) -> Option<usize> {
         return None;
     }
     let _g = TRAMPOLINES.lock().unwrap();
-    let t = m.reg_trampoline.load(Acquire);
+    let t = m.jit().reg_trampoline.load(Acquire);
     if t != 0 {
         return Some(t);
     }
     let target = reg_target(m);
     let code = super::asm::Code { bytes: vec![0x0F, 0x1F, 0x00, 0xE9, 0, 0, 0, 0], relocs: vec![(4, target)] };
     let t = install(&code);
-    m.reg_trampoline.store(t, Release);
+    m.jit().reg_trampoline.store(t, Release);
     m.reg_call.store(target, Release);
     Some(t)
 }
@@ -169,7 +170,7 @@ fn reg_adapter(m: &crate::method::Method) -> usize {
     use super::abi::ArgReg;
     use super::asm::{mem, X, R};
     use std::sync::atomic::Ordering::{Acquire, Release};
-    let made = m.reg_adapter.load(Acquire);
+    let made = m.jit().reg_adapter.load(Acquire);
     if made != 0 {
         return made;
     }
@@ -185,7 +186,7 @@ fn reg_adapter(m: &crate::method::Method) -> usize {
     a.load(true, R::Rax, mem(R::Rdx, std::mem::offset_of!(crate::method::Method, entry) as i32));
     a.jmp_r(R::Rax);
     let at = install(&a.finish());
-    m.reg_adapter.store(at, Release);
+    m.jit().reg_adapter.store(at, Release);
     at
 }
 
