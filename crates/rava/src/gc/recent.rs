@@ -45,3 +45,7 @@ pub(super) fn take(classes: usize, young: bool) -> (Vec<usize>, usize) {
     (noted, CLASSES_SEEN.swap(classes, Ordering::Relaxed))
 }
 
+/// Every object compiled code holds as a constant (`why.rs`).
+pub(super) fn embedded() -> Vec<usize> {
+    EMBEDDED.lock().unwrap().iter().flatten().copied().collect()
+}

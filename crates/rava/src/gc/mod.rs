@@ -24,6 +24,7 @@ pub mod safepoint;
 mod space;
 mod statics;
 mod sweep;
+mod why;
 
 use crate::thread::Thread;
 use space::{class_of, Space, CLASSES, CLASS_SIZES, LARGE_THRESHOLD};
@@ -287,7 +288,9 @@ impl Heap {
             if full && std::env::var_os("RAVA_GC_HISTO").is_some() {
                 histo::report(&space);
             }
-
+            if let (true, Ok(class)) = (full, std::env::var("RAVA_GC_WHY")) {
+                why::report(&mut space, &class);
+            }
             if !full && std::env::var_os("RAVA_GC_VERIFY").is_some() {
                 verify_young(&mut space);
             }

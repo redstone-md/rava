@@ -156,7 +156,7 @@ impl Shared<'_> {
 
 /// Calls `f` with each non-null reference field or element of the live object `o`.
 #[inline]
-fn refs(o: Oop, mut f: impl FnMut(usize)) {
+pub(super) fn refs(o: Oop, mut f: impl FnMut(usize)) {
     ref_slots(o, |slot| {
         // SAFETY: a reference field or element of a live object.
         let r = unsafe { obj::load_ref_at(slot) } as usize;
