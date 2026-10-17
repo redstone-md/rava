@@ -13,15 +13,15 @@ use std::sync::atomic::Ordering;
 
 /// Invocations and taken back-edges of tier-1 code before tier 2 (cf. HotSpot's
 /// `Tier4InvocationThreshold` / `Tier4BackEdgeThreshold`); `RAVA_TIER2_THRESHOLD` sets the
-/// invocation count (back-edges scale with it). Lower than HotSpot's 5000: the compiler threads
-/// run on cores the application leaves idle (`queue.rs`), so compiling earlier mostly costs
-/// nothing (All The Mods 10: 1500 started 2-4 s sooner than 5000, 600 was slower again; with
-/// the compiler a third cheaper, 1000 ran the first sprint 13 % faster than 1500 over three
-/// rounds, 700 lost the warm one).
+/// invocation count (back-edges scale with it). Half HotSpot's 5000: code compiled later is
+/// compiled from fuller profiles, and with today's compiler that pays (All The Mods 10, 250 cows
+/// and 100 villagers: 1000 33.65 ms/tick, 2500 32.4, 5000 32.5 over four and two runs; start
+/// no slower, CPU -10%; a Paper start 7.6 -> 7.2 s, CPU 36 -> 28 s). Earlier, with a slower
+/// compiler, 1000 had run the first sprint 13% faster than 1500.
 fn thresholds() -> (i32, i32) {
     static T: std::sync::OnceLock<(i32, i32)> = std::sync::OnceLock::new();
     *T.get_or_init(|| {
-        let n = std::env::var("RAVA_TIER2_THRESHOLD").ok().and_then(|v| v.parse::<i32>().ok()).unwrap_or(1000).max(1);
+        let n = std::env::var("RAVA_TIER2_THRESHOLD").ok().and_then(|v| v.parse::<i32>().ok()).unwrap_or(2500).max(1);
         (n, n * 8)
     })
 }
