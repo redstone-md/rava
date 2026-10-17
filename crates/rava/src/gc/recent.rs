@@ -15,14 +15,15 @@ static NOTED: Mutex<Vec<usize>> = Mutex::new(Vec::new());
 /// Classes defined (in `all_classes` order) when the last collection ran.
 static CLASSES_SEEN: AtomicUsize = AtomicUsize::new(0);
 
-/// Objects compiled code holds as constants (and interned VM objects): roots of every
-/// collection, so they never move.
+/// Objects compiled code holds as constants (and interned VM objects): roots of every full
+/// collection, so they never move. A young collection marks only those embedded since the last
+/// collection (also noted): the others are old already, and an old root is never young again.
 static EMBEDDED: Mutex<Option<std::collections::HashSet<usize>>> = Mutex::new(None);
 
 /// Records `o` as a constant of compiled code (kept in place for good).
 pub(crate) fn embed(o: Oop) {
-    if !o.is_null() {
-        EMBEDDED.lock().unwrap().get_or_insert_with(Default::default).insert(o as usize);
+    if !o.is_null() && EMBEDDED.lock().unwrap().get_or_insert_with(Default::default).insert(o as usize) {
+        note(o);
     }
 }
 
@@ -33,10 +34,14 @@ pub(crate) fn note(o: Oop) {
     }
 }
 
-/// What a collection must still scan: the noted and embedded objects and the number of classes whose
-/// write-once roots are already old. Starts the next period with `classes` defined.
-pub(super) fn take(classes: usize) -> (Vec<usize>, usize) {
+/// What a collection must still scan: the noted objects (and, for a full one, every embedded
+/// object) and the number of classes whose write-once roots are already old. Starts the next
+/// period with `classes` defined.
+pub(super) fn take(classes: usize, young: bool) -> (Vec<usize>, usize) {
     let mut noted = std::mem::take(&mut *NOTED.lock().unwrap());
-    noted.extend(EMBEDDED.lock().unwrap().iter().flatten());
+    if !young {
+        noted.extend(EMBEDDED.lock().unwrap().iter().flatten());
+    }
     (noted, CLASSES_SEEN.swap(classes, Ordering::Relaxed))
 }
+

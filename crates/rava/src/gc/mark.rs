@@ -199,8 +199,9 @@ enum Task {
     /// The listed static slots `[from, to)` whose value changed since the last collection (a
     /// young collection: the other roots of those classes are old; `statics.rs`).
     Statics(usize, usize),
-    /// Objects stored into write-once VM roots since the last collection (`recent.rs`).
-    Noted,
+    /// Objects `[from, to)` of those stored into write-once VM roots since the last collection
+    /// (`recent.rs`).
+    Noted(usize, usize),
     /// The VM's other roots (with `true`, those of a young collection).
     Other(bool),
     /// Dirty cards of `[from, to)` in the page area (a young collection).
@@ -294,9 +295,10 @@ impl Shared<'_> {
                     }
                 }
             }
-            Task::Noted => {
-                self.pin(roots.noted);
-                roots.noted.iter().for_each(|&r| self.precise(r, out));
+            Task::Noted(from, to) => {
+                let noted = &roots.noted[from..to];
+                self.pin(noted);
+                noted.iter().for_each(|&r| self.precise(r, out));
             }
             Task::Other(young) => {
                 let mut refs = Vec::new();
@@ -384,9 +386,9 @@ impl Shared<'_> {
 }
 
 /// The root tasks of a collection: (young) the card table in chunks, which come first, then
-/// the noted and embedded roots, threads, classes in chunks and other roots. A young collection
-/// scans only the statics of the first `old` classes.
-fn tasks(space: &Space, classes: usize, old: usize, young: bool, statics: usize) -> Vec<Task> {
+/// the noted and embedded roots in chunks, threads, classes in chunks and other roots. A young
+/// collection scans only the statics of the first `old` classes.
+fn tasks(space: &Space, classes: usize, old: usize, young: bool, statics: usize, noted: usize) -> Vec<Task> {
     const CLASS_CHUNK: usize = 512;
     const SLOT_CHUNK: usize = 1 << 14;
     let old = if young { old.min(classes) } else { 0 };
@@ -401,7 +403,7 @@ fn tasks(space: &Space, classes: usize, old: usize, young: bool, statics: usize)
             tasks.push(Task::LargeCards(area.base, area.fresh));
         }
     }
-    tasks.push(Task::Noted);
+    tasks.extend((0..noted).step_by(SLOT_CHUNK).map(|c| Task::Noted(c, (c + SLOT_CHUNK).min(noted))));
     tasks.extend(safepoint::all_threads().into_iter().map(Task::Thread));
     if young {
         tasks.extend((0..statics).step_by(SLOT_CHUNK).map(|c| Task::Statics(c, (c + SLOT_CHUNK).min(statics))));
@@ -449,11 +451,11 @@ pub(super) fn mark(space: &mut Space, young: bool) -> usize {
         by_roots: AtomicUsize::new(0),
     };
     let classes = crate::vm::vm().all_classes();
-    let (noted, old) = super::recent::take(classes.len());
+    let (noted, old) = super::recent::take(classes.len(), young);
     let old = if young { old.min(classes.len()) } else { 0 };
     let statics = if young { super::statics::listed(&classes, old) } else { Default::default() };
     let roots = Roots { classes: &classes, noted: &noted, statics, second_chance: &second_chance };
-    let tasks = tasks(shared.space, classes.len(), old, young, roots.statics.0.len());
+    let tasks = tasks(shared.space, classes.len(), old, young, roots.statics.0.len(), noted.len());
     let changed = Mutex::new(Vec::new());
     // The card tasks run first, and nothing is marked until all are done: a mark set meanwhile
     // would make a young object look old, to be scanned again as a card root.
