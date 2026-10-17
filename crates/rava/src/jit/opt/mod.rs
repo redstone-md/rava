@@ -15,6 +15,7 @@ mod build_ops;
 mod canon;
 pub(crate) mod cha;
 mod codegen;
+mod codegen_cmp;
 mod codegen_copy;
 mod codegen_intr;
 mod codegen_obj;

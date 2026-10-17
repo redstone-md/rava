@@ -294,23 +294,6 @@ impl Gen<'_> {
         self.put(v, R::Rax);
     }
 
-    /// `ucomis a, y`, with `y` from memory when it is a constant, spilled or a parameter.
-    pub(super) fn fcmp_val(&mut self, double: bool, a: X, y: V) {
-        let m = match self.loc[y as usize] {
-            Loc::Const(c) => Some(self.const_mem(c)),
-            Loc::Stack(s) => Some(super::moves::spill(s)),
-            Loc::Frame(s) => Some(self.slot(s)),
-            _ => None,
-        };
-        match m {
-            Some(m) => self.a.fcmp_m(double, a, m),
-            None => {
-                let b = self.xreg(y, X(1));
-                self.a.fcmp(double, a, b);
-            }
-        }
-    }
-
     fn float_bin(&mut self, v: V, double: bool, op: BinOp, x: V, y: V) {
         if op == BinOp::Rem {
             let helper = if double { runtime::drem as *const () as usize } else { runtime::frem as *const () as usize };
@@ -454,63 +437,5 @@ impl Gen<'_> {
             self.a.movsxd(r, r);
         }
         self.put(v, r);
-    }
-
-    /// `a cmp b ? t : f`: compare, then the false value into rax and a conditional move of the
-    /// true one (moves and loads leave the flags alone).
-    #[allow(clippy::too_many_arguments)]
-    fn select(&mut self, v: V, cmp: Cmp, cty: Ty, a: V, b: V, t: V, f: V) {
-        let ra = self.reg(a, R::Rax);
-        self.alu_val(cty != Ty::I, Alu::Cmp, ra, b);
-        // Straight into the result's register (moves keep the flags): the false value, then the
-        // true one where the condition holds; when that register already holds the true value,
-        // the false one where it fails.
-        let (c, out) = (super::codegen::cond(cmp), self.out(v));
-        if self.loc[t as usize] == Loc::Reg(out) {
-            let rf = self.reg(f, R::R11);
-            if rf != out {
-                self.a.cmov(true, super::codegen::invert(c), out, rf);
-            }
-        } else {
-            self.load(out, f);
-            let rt = self.reg(t, R::R11);
-            self.a.cmov(true, c, out, rt);
-        }
-        self.put(v, out);
-    }
-
-    /// lcmp / fcmpl / fcmpg / dcmpl / dcmpg: -1, 0 or 1.
-    fn compare(&mut self, v: V, op: u8, x: V, y: V) {
-        // Through rax and r11 (`scratch.rs`).
-        if op == 0x94 {
-            let rx = self.reg(x, R::Rax);
-            self.alu_val(true, Alu::Cmp, rx, y);
-            self.a.setcc(Cond::G, R::Rax);
-            self.a.setcc(Cond::L, R::R11);
-        } else {
-            let double = op >= 0x97;
-            let nan = if op == 0x95 || op == 0x97 { -1 } else { 1 };
-            let a = self.xreg(x, X(0));
-            let (ordered, done) = (self.a.new_label(), self.a.new_label());
-            self.fcmp_val(double, a, y);
-            self.a.jcc(Cond::Np, ordered);
-            self.a.mov_ri(R::Rax, nan);
-            self.a.jmp(done);
-            self.a.bind(ordered);
-            self.a.setcc(Cond::A, R::Rax);
-            self.a.setcc(Cond::B, R::R11);
-            self.finish_compare();
-            self.a.bind(done);
-            return self.put(v, R::Rax);
-        }
-        self.finish_compare();
-        self.put(v, R::Rax);
-    }
-
-    /// rax := (al) - (r11b) as 32-bit values.
-    fn finish_compare(&mut self) {
-        self.a.movzx8(R::Rax, R::Rax);
-        self.a.movzx8(R::R11, R::R11);
-        self.a.alu_rr(false, Alu::Sub, R::Rax, R::R11);
     }
 }

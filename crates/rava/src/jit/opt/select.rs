@@ -9,6 +9,11 @@
 //! long or reference (an SSE value has no conditional move here). Converted shapes fold into
 //! their branch block and the pass repeats, so nested conditionals (`a > 0 ? a * a : b > 0 ?
 //! b * b : 0`) convert from the inside out.
+//!
+//! The branch may compare floats or doubles by order (`<`, `<=`, `>`, `>=`): such a `Select`
+//! takes its false value for NaN, so a branch sending NaN to its true side selects on the
+//! negated condition with the values swapped. Minecraft's `Mth.floor`, `int i = (int) v; return
+//! v < i ? i - 1 : i`, mispredicted on coordinates of either sign: 5.3 ns against C2's 0.8.
 
 use super::ir::*;
 
@@ -95,7 +100,12 @@ struct Shape {
 }
 
 fn shape(g: &Graph, b: B) -> Option<Shape> {
-    let Term::If { cmp, ty: ty @ (Ty::I | Ty::J | Ty::A), a, b: y, then, other, .. } = g.blocks[b as usize].term else { return None };
+    let Term::If { cmp, ty, a, b: y, then, other, unordered } = g.blocks[b as usize].term else { return None };
+    let float = match (ty, cmp) {
+        (Ty::I | Ty::J | Ty::A, _) => false,
+        (Ty::F | Ty::D, Cmp::Lt | Cmp::Le | Cmp::Gt | Cmp::Ge) => true,
+        _ => return None,
+    };
     if then == other {
         return None;
     }
@@ -122,6 +132,8 @@ fn shape(g: &Graph, b: B) -> Option<Shape> {
     if super::regalloc::phis(g, merge).any(|p| differs(p) && !matches!(g.ty(p), Ty::I | Ty::J | Ty::A)) {
         return None;
     }
+    // A float select reads NaN as false: NaN sent to the true side is the negated order's false.
+    let (cmp, on_true, on_false) = if float && unordered { (super::rce::negate(cmp), on_false, on_true) } else { (cmp, on_true, on_false) };
     Some(Shape { cmp, ty, a: g.resolve(a), b: g.resolve(y), arms, merge, on_true, on_false })
 }
 
