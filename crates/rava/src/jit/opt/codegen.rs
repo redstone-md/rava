@@ -17,6 +17,8 @@ mod divconst;
 mod fastexit;
 mod params;
 mod stubs;
+mod switch;
+use switch::{dense, JUMP_TABLE_CASES, LINEAR_CASES};
 
 /// The monitor a synchronized method holds while it runs.
 #[derive(Clone, Copy)]
@@ -927,12 +929,22 @@ impl Gen<'_> {
             Term::Switch { key, cases, default } => {
                 self.load(R::Rax, key);
                 let mut targets = HashMap::new();
-                for (k, t) in cases {
-                    let l = *targets.entry(t).or_insert_with(|| self.edge_target(b, t));
-                    self.a.alu_ri(false, Alu::Cmp, R::Rax, k);
-                    self.a.jcc(Cond::E, l);
+                let mut labeled: Vec<(i32, Label)> = cases.iter().map(|&(k, t)| (k, *targets.entry(t).or_insert_with(|| self.edge_target(b, t)))).collect();
+                labeled.sort_by_key(|c| c.0);
+                if labeled.len() >= JUMP_TABLE_CASES && dense(&labeled) {
+                    let otherwise = self.edge_target(b, default);
+                    self.jump_table(&labeled, otherwise);
+                } else if labeled.len() > LINEAR_CASES {
+                    let otherwise = self.edge_target(b, default);
+                    self.switch_search(&labeled, otherwise);
+                    self.a.jmp(otherwise);
+                } else {
+                    for &(k, l) in &labeled {
+                        self.a.alu_ri(false, Alu::Cmp, R::Rax, k);
+                        self.a.jcc(Cond::E, l);
+                    }
+                    self.edge(b, default, next == Some(default));
                 }
-                self.edge(b, default, next == Some(default));
             }
             Term::Return(v) => {
                 if let Some(v) = v {

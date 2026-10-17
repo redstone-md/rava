@@ -100,6 +100,9 @@ pub struct Asm {
     /// register holds is then left out, or becomes a register move (`load`).
     held: Vec<(R, R, i32, bool)>,
     held_at: u32,
+    /// Jump-table entries: (position, target, table start), each the 32-bit distance from the
+    /// table's start to the target, written once branch relaxation has placed both.
+    tables: Vec<(u32, Label, Label)>,
 }
 
 /// Finished machine code and the call displacements its installation resolves.
@@ -149,6 +152,12 @@ impl Asm {
         }
         self.bound.push(l.0);
         self.labels[l.0 as usize] = Some(at);
+    }
+
+    /// A jump-table entry here: `target`'s distance from `base`, the table's start (bound).
+    pub fn table_entry(&mut self, base: Label, target: Label) {
+        self.tables.push((self.pos(), target, base));
+        self.d32(0);
     }
 
     pub fn label_pos(&self, l: Label) -> Option<u32> {
@@ -226,6 +235,11 @@ impl Asm {
         for (at, l) in std::mem::take(&mut self.fixups) {
             let target = self.labels[l.0 as usize].expect("unbound label") as i64;
             let rel = (target - (at as i64 + 4)) as i32;
+            self.buf[at as usize..at as usize + 4].copy_from_slice(&rel.to_le_bytes());
+        }
+        for (at, target, base) in std::mem::take(&mut self.tables) {
+            let pos = |l: Label| self.labels[l.0 as usize].expect("unbound label") as i64;
+            let rel = (pos(target) - pos(base)) as i32;
             self.buf[at as usize..at as usize + 4].copy_from_slice(&rel.to_le_bytes());
         }
     }

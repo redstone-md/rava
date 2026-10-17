@@ -88,6 +88,9 @@ impl Asm {
         for p in self.labels.iter_mut().flatten() {
             *p = new_pos(*p);
         }
+        for t in &mut self.tables {
+            t.0 = new_pos(t.0);
+        }
         for r in &mut self.relocs {
             r.0 = new_pos(r.0);
         }
