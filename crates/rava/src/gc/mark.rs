@@ -414,7 +414,7 @@ fn tasks(space: &Space, classes: usize, old: usize, young: bool, statics: usize,
 }
 
 /// Marking threads: the collecting thread and helpers, one per core in all.
-fn workers() -> usize {
+pub(super) fn workers() -> usize {
     static N: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
     *N.get_or_init(|| {
         let cores = crate::processors();

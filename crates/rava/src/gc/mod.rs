@@ -23,6 +23,7 @@ pub(crate) mod recent;
 pub mod safepoint;
 mod space;
 mod statics;
+mod sweep;
 
 use crate::thread::Thread;
 use space::{class_of, Space, CLASSES, CLASS_SIZES, LARGE_THRESHOLD};
@@ -286,6 +287,7 @@ impl Heap {
             if full && std::env::var_os("RAVA_GC_HISTO").is_some() {
                 histo::report(&space);
             }
+
             if !full && std::env::var_os("RAVA_GC_VERIFY").is_some() {
                 verify_young(&mut space);
             }
@@ -296,7 +298,7 @@ impl Heap {
             }
             let before_sweep = std::time::Instant::now();
             safepoint::set_step(safepoint::STEP_SWEEP);
-            let live = sweep(&mut space);
+            let live = sweep::sweep(&mut space, mark::workers());
             if full {
                 space.live_after_full = live;
             }
@@ -400,55 +402,6 @@ fn verify_young(space: &mut Space) {
     if missed > 0 {
         eprintln!("[gc-verify] {missed} reachable objects missed");
     }
-}
-
-/// Free large-object memory kept resident after a collection, for the next large arrays.
-const LARGE_FREE_KEEP: usize = 32 << 20;
-
-/// Frees unmarked objects by bitmap alone: the marks become the pages' allocation bitmaps (dead
-/// cells are left untouched until handed out again). Pages without survivors are released
-/// whole. Returns live bytes.
-fn sweep(space: &mut Space) -> usize {
-    let mut live = 0;
-    for list in space.partial.iter_mut().chain(space.old_partial.iter_mut()) {
-        list.clear();
-    }
-    space.partial_free = 0;
-    for index in 0..space.pages.len() {
-        let page = space.page_addr(index);
-        let Some(meta) = space.pages[index].as_mut() else { continue };
-        let live_cells: usize = meta.marks.iter().map(|w| w.count_ones() as usize).sum();
-        if live_cells == 0 {
-            // Without metadata no reference resolves into the page; it is zeroed when reused.
-            space.pages[index] = None;
-            space.empty.push(page);
-            continue;
-        }
-        // The marks stay: survivors are old from now on.
-        meta.alloc.copy_from_slice(&meta.marks);
-        meta.cursor = 0;
-        live += live_cells * meta.cell_size as usize;
-        // Allocation reuses pages up to nine tenths full (holes too short for a run are passed
-        // over, `MIN_RUN`). Reusing only pages at most half full left the free cells of fuller
-        // ones idle while fresh pages were faulted in: 0.1 GiB more peak RSS at the same speed.
-        let class = meta.class as usize;
-        if meta.old {
-            if live_cells < meta.cells() {
-                space.old_partial[class].push(index);
-            }
-        } else if live_cells * 10 <= meta.cells() * 9 {
-            space.partial[class].push(index);
-            space.partial_free += (meta.cells() - live_cells) * meta.cell_size as usize;
-        }
-    }
-    let dead: Vec<usize> = space.large.iter().filter(|(_, l)| !l.marked).map(|(&a, _)| a).collect();
-    for a in dead {
-        let l = space.large.remove(&a).unwrap();
-        space.large_bytes -= l.size;
-        space.large_area.free(a, l.size);
-    }
-    space.large_area.trim(LARGE_FREE_KEEP);
-    live + space.large_bytes
 }
 
 /// The process's minor page faults so far (for `RAVA_GC_LOG`).
