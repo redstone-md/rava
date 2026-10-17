@@ -157,8 +157,29 @@ impl Facts {
 }
 
 pub fn eliminate(g: &mut Graph) {
+    fold_self_compares(g);
     let phis = nonnull_phis(g);
     walk(g, false, phis);
+}
+
+/// Folds the branches comparing a value with itself, which value numbering leaves when two
+/// loads of one field become one (`ArrayList.forEach`'s `modCount == expectedModCount` once
+/// no store between them is left): equal, so `==`, `<=` and `>=` hold. Not for float and
+/// double values, which NaN keeps unequal to themselves.
+fn fold_self_compares(g: &mut Graph) {
+    let mut folded = false;
+    for b in 0..g.blocks.len() {
+        let Term::If { cmp, ty, a, b: y, then, other, .. } = g.blocks[b].term else { continue };
+        if matches!(ty, Ty::F | Ty::D) || g.resolve(a) != g.resolve(y) || then == other {
+            continue;
+        }
+        let (keep, gone) = if matches!(cmp, Cmp::Eq | Cmp::Le | Cmp::Ge) { (then, other) } else { (other, then) };
+        fold_branch(g, b as B, keep, gone);
+        folded = true;
+    }
+    if folded {
+        remove_unreachable(g);
+    }
 }
 
 /// Marks the casts, instance tests and identity hashes whose object is proved non-null where
