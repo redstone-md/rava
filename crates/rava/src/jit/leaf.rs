@@ -112,8 +112,31 @@ extern "sysv64" fn latin1_equals(a: Oop, b: Oop) -> i64 {
     // SAFETY: two live byte arrays (null-checked by the caller).
     unsafe {
         let n = obj::array_length(a);
-        (n == obj::array_length(b) && bytes(a, 1, 0, n) == bytes(b, 1, 0, n)) as i64
+        if n != obj::array_length(b) {
+            return 0;
+        }
+        (std::ptr::eq(a, b) || same_bytes(bytes(a, 1, 0, n), bytes(b, 1, 0, n))) as i64
     }
+}
+
+/// Whether `x` and `y` (of one length) hold the same bytes, a word at a time: strings are
+/// mostly short, and the C library's `memcmp` cost them a call and its dispatch on the size.
+#[inline]
+fn same_bytes(x: &[u8], y: &[u8]) -> bool {
+    let n = x.len();
+    let word = |s: &[u8], i: usize| u64::from_le_bytes(s[i..i + 8].try_into().unwrap());
+    let mut i = 0;
+    while i + 8 <= n {
+        if word(x, i) != word(y, i) {
+            return false;
+        }
+        i += 8;
+    }
+    if n >= 8 {
+        // The last word again, overlapping: the tail without a byte loop.
+        return word(x, n - 8) == word(y, n - 8);
+    }
+    x[i..] == y[i..]
 }
 
 /// The index of the first element (of `1 << log2` bytes) at which the `length` elements at
