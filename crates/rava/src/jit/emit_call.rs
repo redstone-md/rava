@@ -143,7 +143,7 @@ impl Emitter {
     pub(super) fn invoke(&mut self, pc: usize, depth: u16, op: u8) {
         let d = depth as i32;
         let index = u16::from_be_bytes([self.code[pc + 1], self.code[pc + 2]]);
-        let Some(Resolved::Method(m)) = self.m.holder.resolved[index as usize].get() else {
+        let Some(Resolved::Method(m)) = self.m.holder.slot(index as usize).get() else {
             return self.defer_unresolved(pc, depth);
         };
         if m.is_signature_polymorphic() {

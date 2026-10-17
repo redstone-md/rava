@@ -340,12 +340,12 @@ pub(super) fn ldc(t: &mut Thread, f: &mut Frame, index: u16) -> JResult<()> {
         Cp::Long(v) => f.push_l(v),
         Cp::Double(v) => f.push_d(v),
         Cp::String(s) => {
-            if let Some(Resolved::String(o)) = k.resolved[index as usize].get() {
+            if let Some(Resolved::String(o)) = k.slot(index as usize).get() {
                 f.push(o as u64);
                 return Ok(());
             }
             let o = rt::intern_literal(t, cf.utf8_bytes(s).unwrap_or(&[]))?;
-            let _ = k.resolved[index as usize].set(Resolved::String(o as usize));
+            let _ = k.slot(index as usize).set(Resolved::String(o as usize));
             f.push_ref(o);
         }
         Cp::Class(_) => {

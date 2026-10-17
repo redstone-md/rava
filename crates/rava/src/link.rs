@@ -126,14 +126,14 @@ pub type LinkResult<T> = Result<T, LinkError>;
 impl Klass {
     /// Class constant `index` of this class's pool, resolved and cached.
     pub fn resolve_class(&'static self, t: &mut Thread, index: u16) -> LinkResult<&'static Klass> {
-        if let Some(Resolved::Class(k)) = self.resolved[index as usize].get() {
+        if let Some(Resolved::Class(k)) = self.slot(index as usize).get() {
             return Ok(k);
         }
         let cf = self.cf.as_ref().unwrap();
         let name = cf.class_name(index).ok_or_else(|| bad_pool(self, index))?;
         // A class's references to its own name denote itself (hidden classes are not findable).
         let k = if name == cf.name { self } else { vm().load_class(t, self.loader(), name)? };
-        let _ = self.resolved[index as usize].set(Resolved::Class(k));
+        let _ = self.slot(index as usize).set(Resolved::Class(k));
         Ok(k)
     }
 
@@ -153,7 +153,7 @@ impl Klass {
 
     /// Field reference `index`, resolved to its storage.
     pub fn resolve_field(&'static self, t: &mut Thread, index: u16) -> LinkResult<Resolved> {
-        if let Some(r) = self.resolved[index as usize].get() {
+        if let Some(r) = self.slot(index as usize).get() {
             return Ok(r);
         }
         let cf = self.cf.as_ref().unwrap();
@@ -170,13 +170,13 @@ impl Klass {
         } else {
             Resolved::InstanceField { offset: f.offset, ty: f.ty, volatile: f.access & ACC_VOLATILE != 0 }
         };
-        Ok(self.resolved[index as usize].get_or_init(|| r))
+        Ok(self.slot(index as usize).get_or_init(|| r))
     }
 
     /// Method or interface-method reference `index`, resolved to the declared target
     /// (JVMS 5.4.3.3 / 5.4.3.4). Dispatch happens at the call site.
     pub fn resolve_method(&'static self, t: &mut Thread, index: u16) -> LinkResult<&'static Method> {
-        if let Some(Resolved::Method(m)) = self.resolved[index as usize].get() {
+        if let Some(Resolved::Method(m)) = self.slot(index as usize).get() {
             return Ok(m);
         }
         let cf = self.cf.as_ref().unwrap();
@@ -189,7 +189,7 @@ impl Klass {
         let m = lookup_method(owner, name, desc).ok_or_else(|| {
             LinkError::Error("java/lang/NoSuchMethodError", format!("'{desc} {}.{name}'", owner.name))
         })?;
-        let _ = self.resolved[index as usize].set(Resolved::Method(m));
+        let _ = self.slot(index as usize).set(Resolved::Method(m));
         Ok(m)
     }
 }
@@ -200,7 +200,7 @@ impl Klass {
     /// resolve ahead of execution this way (as HotSpot's ciEnv does, and JVMS 5.4 allows); what
     /// is found is cached as execution would have cached it.
     pub fn peek_resolved(&'static self, index: u16) -> Option<Resolved> {
-        if let Some(r) = self.resolved[index as usize].get() {
+        if let Some(r) = self.slot(index as usize).get() {
             return Some(r);
         }
         let cf = self.cf.as_ref()?;
@@ -229,7 +229,7 @@ impl Klass {
             }
             _ => return None,
         };
-        Some(self.resolved[index as usize].get_or_init(|| r))
+        Some(self.slot(index as usize).get_or_init(|| r))
     }
 }
 

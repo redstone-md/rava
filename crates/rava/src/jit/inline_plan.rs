@@ -176,7 +176,7 @@ pub(super) fn refusal(target: &'static Method, chain: &Chain, tier: u8, spent: u
 /// The statically bound target of the call at `pc`, excluding method-handle invokers.
 pub(super) fn bound_target(caller: &'static Method, code: &[u8], pc: usize) -> Option<&'static Method> {
     let index = u16::from_be_bytes([code[pc + 1], code[pc + 2]]);
-    let Some(Resolved::Method(m)) = caller.holder.resolved[index as usize].get() else { return None };
+    let Some(Resolved::Method(m)) = caller.holder.slot(index as usize).get() else { return None };
     if m.is_signature_polymorphic() {
         return None;
     }
@@ -262,8 +262,8 @@ fn is_leaf(m: &'static Method) -> bool {
     if info.max_locals as usize + info.max_stack as usize > MAX_LEAF_SLOTS || m.has_annotation("Ljdk/internal/vm/annotation/DontInline;") {
         return false;
     }
-    let (code, resolved) = (info.code, &m.holder.resolved);
-    let is = |pc: usize, f: fn(Resolved) -> bool| resolved[u16::from_be_bytes([code[pc + 1], code[pc + 2]]) as usize].get().is_some_and(f);
+    let (code, holder) = (info.code, m.holder);
+    let is = |pc: usize, f: fn(Resolved) -> bool| holder.slot(u16::from_be_bytes([code[pc + 1], code[pc + 2]]) as usize).get().is_some_and(f);
     let mut pc = 0;
     while pc < code.len() {
         let ok = match code[pc] {
@@ -289,8 +289,8 @@ fn ldc_is_constant(m: &Method, code: &[u8], pc: usize) -> bool {
     let Some(cf) = m.holder.cf.as_ref() else { return false };
     match cf.pool.at(index as usize) {
         Cp::Int(_) | Cp::Float(_) | Cp::Long(_) | Cp::Double(_) => true,
-        Cp::String(_) => matches!(m.holder.resolved[index as usize].get(), Some(Resolved::String(_))),
-        Cp::Dynamic { nat, .. } => super::analysis::dynamic_is_reference(cf, nat) && matches!(m.holder.resolved[index as usize].get(), Some(Resolved::Constant(_))),
+        Cp::String(_) => matches!(m.holder.slot(index as usize).get(), Some(Resolved::String(_))),
+        Cp::Dynamic { nat, .. } => super::analysis::dynamic_is_reference(cf, nat) && matches!(m.holder.slot(index as usize).get(), Some(Resolved::Constant(_))),
         _ => false,
     }
 }

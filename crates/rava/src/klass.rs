@@ -140,7 +140,8 @@ pub struct Klass {
     pub statics: &'static [AtomicU64],
     /// In low memory (`crate::low`): code stores and passes methods as 32-bit immediates.
     pub(crate) methods: OnceLock<&'static [Method]>,
-    pub(crate) vtable: OnceLock<Box<[&'static Method]>>,
+    /// Entries of the vtable, which lives in the room after the class (`set_vtable`).
+    vtable_len: OnceLock<u32>,
     /// Entries of room after the class for its vtable (`leak`, `VTABLE_OFFSET`).
     vtable_cap: u32,
     pub init: InitLock,
@@ -205,7 +206,7 @@ impl Klass {
                 }
             }
         }
-        let pool_len = p.cf.as_ref().map_or(0, |cf| cf.pool.len());
+        let pool_slots = p.cf.as_ref().map_or(0, |cf| cf.pool.slots());
         let (depth, primary) = match p.super_klass {
             Some(sup) => {
                 let mut primary = sup.primary;
@@ -230,12 +231,12 @@ impl Klass {
             ref_offsets: p.ref_offsets.into_boxed_slice(),
             statics: crate::low::leak_slice((0..p.static_slots).map(|_| AtomicU64::new(0)).collect()),
             methods: OnceLock::new(),
-            vtable: OnceLock::new(),
+            vtable_len: OnceLock::new(),
             vtable_cap: 0,
             init: InitLock::new(if p.initialized { InitState::Initialized } else { InitState::Linked }),
             mirror: AtomicPtr::new(std::ptr::null_mut()),
             loader: AtomicPtr::new(std::ptr::null_mut()),
-            resolved: (0..pool_len).map(|_| Default::default()).collect(),
+            resolved: (0..pool_slots).map(|_| Default::default()).collect(),
             array_klass: OnceLock::new(),
             itable: OnceLock::new(),
             itable_raw: AtomicPtr::new(std::ptr::null_mut()),
@@ -262,16 +263,28 @@ impl Klass {
     }
 
     pub(crate) fn set_vtable(&'static self, vt: Box<[&'static Method]>) {
-        let vt = self.vtable.get_or_init(|| vt);
-        assert!(vt.len() <= self.vtable_cap as usize, "vtable of {} past its room", self.name);
         let at = (self as *const Klass as usize + VTABLE_OFFSET) as *mut &'static Method;
-        // SAFETY: the room `leak` left after the class, written once before any instance exists.
-        unsafe { std::ptr::copy_nonoverlapping(vt.as_ptr(), at, vt.len()) };
+        self.vtable_len.get_or_init(|| {
+            assert!(vt.len() <= self.vtable_cap as usize, "vtable of {} past its room", self.name);
+            // SAFETY: the room `leak` left after the class, written once before any instance exists.
+            unsafe { std::ptr::copy_nonoverlapping(vt.as_ptr(), at, vt.len()) };
+            vt.len() as u32
+        });
         self.vtable_ptr.store(at, Ordering::Release);
     }
 
+    /// The resolution cache of constant-pool entry `index` (`cpool::Pool::slot_of`): every
+    /// entry but a `Utf8`, `Long` or `Double` has one.
+    #[inline]
+    pub(crate) fn slot(&self, index: usize) -> &crate::link::ResolvedSlot {
+        let slot = self.cf.as_ref().and_then(|cf| cf.pool.slot_of(index));
+        &self.resolved[slot.unwrap_or_else(|| panic!("constant {index} of {} has no resolution slot", self.name))]
+    }
+
     pub fn vtable(&'static self) -> &'static [&'static Method] {
-        self.vtable.get().map_or(&[], |v| v)
+        let Some(&len) = self.vtable_len.get() else { return &[] };
+        // SAFETY: the room after the class holds `len` entries, written once (`set_vtable`).
+        unsafe { std::slice::from_raw_parts((self as *const Klass as usize + VTABLE_OFFSET) as *const &'static Method, len as usize) }
     }
 
     pub fn is_interface(&self) -> bool {

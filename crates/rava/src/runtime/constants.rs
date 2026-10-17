@@ -50,7 +50,7 @@ pub fn method_type(t: &mut Thread, k: &'static Klass, desc: &str) -> JResult<Oop
 
 /// Constant `index` of `k`'s pool as an object; primitives come back boxed.
 pub fn resolve_constant(t: &mut Thread, k: &'static Klass, index: u16) -> JResult<Oop> {
-    if let Some(Resolved::Constant(o)) = k.resolved[index as usize].get() {
+    if let Some(Resolved::Constant(o)) = k.slot(index as usize).get() {
         return Ok(o as Oop);
     }
     let cf = k.cf.as_ref().unwrap();
@@ -73,7 +73,7 @@ pub fn resolve_constant(t: &mut Thread, k: &'static Klass, index: u16) -> JResul
         _ => return Err(bad(t)),
     };
     // Every thread resolving the same entry must see the same object (JVMS 5.4.3).
-    let r = k.resolved[index as usize].get_or_init(|| Resolved::Constant(o as usize));
+    let r = k.slot(index as usize).get_or_init(|| Resolved::Constant(o as usize));
     let Resolved::Constant(winner) = r else { unreachable!() };
     if winner == o as usize {
         crate::gc::recent::note(o);

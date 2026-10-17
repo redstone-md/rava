@@ -110,7 +110,7 @@ impl Emitter {
 
     fn field_reg(&mut self, pc: usize, depth: u16, op: u8) -> bool {
         let index = self.cp_index(pc);
-        let resolved = self.m.holder.resolved[index as usize].get();
+        let resolved = self.m.holder.slot(index as usize).get();
         // Constant fields fold (fold.rs).
         match (op, resolved, self.vs.last().map(|s| s.loc)) {
             (0xb4, Some(Resolved::InstanceField { ty, .. }), Some(Loc::Imm(o))) if o != 0 => {

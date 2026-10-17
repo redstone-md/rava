@@ -199,7 +199,7 @@ fn note_receiver(f: &Frame, base: *mut u64) {
     }
     let pc = f.bci as usize;
     let index = u16::from_be_bytes([code.code[pc + 1], code.code[pc + 2]]) as usize;
-    let Some(crate::link::Resolved::Method(m)) = f.method.holder.resolved[index].get() else { return };
+    let Some(crate::link::Resolved::Method(m)) = f.method.holder.slot(index).get() else { return };
     // A signature-polymorphic call's arguments follow the site's descriptor, not `m`'s.
     if m.is_signature_polymorphic() {
         return;

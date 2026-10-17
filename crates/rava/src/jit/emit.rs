@@ -131,7 +131,7 @@ impl Emitter {
             crate::classfile::Cp::Float(v) => self.const64(d, v.to_bits() as i64),
             crate::classfile::Cp::Long(v) => self.const64(d, v),
             crate::classfile::Cp::Double(v) => self.const64(d, v.to_bits() as i64),
-            _ => match self.m.holder.resolved[index as usize].get() {
+            _ => match self.m.holder.slot(index as usize).get() {
                 Some(Resolved::String(o)) | Some(Resolved::Constant(o)) if matches!(
                     self.cf.pool.at(index as usize),
                     crate::classfile::Cp::String(_) | crate::classfile::Cp::MethodType(_) | crate::classfile::Cp::MethodHandle { .. }

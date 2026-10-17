@@ -72,7 +72,7 @@ impl Emitter {
     /// `checkcast` / `instanceof` on a constant object, decided now.
     fn fold_type_check(&mut self, pc: usize, op: u8) -> bool {
         let Some(Loc::Imm(o)) = self.vs.last().map(|s| s.loc) else { return false };
-        let Some(Resolved::Class(k)) = self.m.holder.resolved[self.cp_index(pc) as usize].get() else { return false };
+        let Some(Resolved::Class(k)) = self.m.holder.slot(self.cp_index(pc) as usize).get() else { return false };
         let is = o != 0 && super::fold::class_of(o as usize).is_subtype_of(k);
         match op {
             0xc0 if o == 0 || is => {}
@@ -100,11 +100,11 @@ impl Emitter {
             Cp::Float(v) => (v.to_bits() as i64, false),
             Cp::Long(v) => (v, true),
             Cp::Double(v) => (v.to_bits() as i64, true),
-            Cp::String(_) | Cp::MethodType(_) | Cp::MethodHandle { .. } => match self.m.holder.resolved[index as usize].get() {
+            Cp::String(_) | Cp::MethodType(_) | Cp::MethodHandle { .. } => match self.m.holder.slot(index as usize).get() {
                 Some(Resolved::String(o)) | Some(Resolved::Constant(o)) => (o as i64, false),
                 _ => return false,
             },
-            Cp::Dynamic { nat, .. } if super::analysis::dynamic_is_reference(self.cf, nat) => match self.m.holder.resolved[index as usize].get() {
+            Cp::Dynamic { nat, .. } if super::analysis::dynamic_is_reference(self.cf, nat) => match self.m.holder.slot(index as usize).get() {
                 Some(Resolved::Constant(o)) => (o as i64, false),
                 _ => return false,
             },

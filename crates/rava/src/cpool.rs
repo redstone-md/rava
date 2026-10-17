@@ -14,9 +14,13 @@ const SHIFT: u32 = 56;
 const PAYLOAD: u64 = (1 << SHIFT) - 1;
 /// The second slot of a `Long`/`Double`: the low 32 bits (reads as `Empty`).
 const LOW: u64 = 0xff;
+/// Where an entry's resolution slot is numbered (`Pool::slot_of`).
+const SLOT_SHIFT: u32 = 32;
 
 pub struct Pool {
     words: Box<[u64]>,
+    /// Entries with a resolution slot (`slot_of`).
+    slots: u16,
     /// `Utf8` constants whose bytes differ from their symbol's text, by index: `(index, at,
     /// len)` of the bytes in the class file's buffer.
     raw: Box<[(u16, u32, u16)]>,
@@ -70,7 +74,30 @@ impl Pool {
             };
             words.push(w);
         }
-        Pool { words: words.into_boxed_slice(), raw: raw.into_boxed_slice() }
+        // Every entry but a `Utf8` (more than half of a pool, never resolved) or a `Long`/
+        // `Double` gets the next resolution slot, numbered (plus one) in the bits above its
+        // operands, which take 32 at most.
+        let mut slots = 0u16;
+        for w in words.iter_mut() {
+            if !matches!(*w >> SHIFT, 0 | 1 | 5 | 6 | LOW) {
+                slots += 1;
+                *w |= (slots as u64) << SLOT_SHIFT;
+            }
+        }
+        Pool { words: words.into_boxed_slice(), slots, raw: raw.into_boxed_slice() }
+    }
+
+    /// Resolution slots: entries a class's `Klass::slot` caches the resolution of.
+    pub fn slots(&self) -> usize {
+        self.slots as usize
+    }
+
+    /// The resolution slot of entry `i` (`slots`), if it has one.
+    #[inline]
+    pub fn slot_of(&self, i: usize) -> Option<usize> {
+        let w = *self.words.get(i)?;
+        let s = (w >> SLOT_SHIFT) as u16;
+        (s != 0 && !matches!(w >> SHIFT, 0 | 1 | 5 | 6 | LOW)).then(|| s as usize - 1)
     }
 
     pub fn len(&self) -> usize {
@@ -84,7 +111,8 @@ impl Pool {
 
     pub fn get(&self, i: usize) -> Option<Cp> {
         let w = *self.words.get(i)?;
-        let p = w & PAYLOAD;
+        // A slot's number is not part of the entry (a `Utf8`'s symbol uses those bits).
+        let p = if matches!(w >> SHIFT, 0 | 1 | 5 | 6 | LOW) { w & PAYLOAD } else { w & PAYLOAD & !(0xffff << SLOT_SHIFT) };
         let (hi, lo) = ((p >> 16) as u16, p as u16);
         let joined = || (p << 32) | (self.words[i + 1] & 0xffff_ffff);
         Some(match w >> SHIFT {
