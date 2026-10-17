@@ -48,10 +48,10 @@ pub(super) type Chain = [(&'static Method, Option<i64>)];
 /// budget of inlined bytecode (C2's `DesiredMethodLimit`).
 const HOT_INLINE_SIZE: usize = 325;
 const HOT_INVOCATIONS: u32 = 2000;
-/// Twice C2's `DesiredMethodLimit`: C2 counts only bytecode it actually inlines after pruning
-/// cold paths and dead code, while this budget counts every inlined body whole (measured on the
-/// server start: 8000 41.9 s, 16000 40.6 s; larger budgets gain nothing clear).
-const TIER2_BUDGET: usize = 16000;
+/// C2's `DesiredMethodLimit`. Twice that had started a server 3% sooner once, but no longer
+/// does, and its larger bodies took memory: All the Mods 10 at 8000 ran ticks as fast (33.3 vs
+/// 33.4 ms), with 100 MiB less memory and 7% less CPU.
+const TIER2_BUDGET: usize = 8000;
 /// Bodies this small (a getter of a field of a field) inline past the budget: their code is
 /// smaller than the call's, and a large method full of them (a renderer's frame method) paid a
 /// call for each once its budget was spent.
@@ -66,12 +66,11 @@ fn max_recursive() -> usize {
 
 /// A callee whose optimized code is larger than this is called rather than inlined again
 /// (HotSpot's `InlineSmallCode`, 2500 bytes of C2 code): its own compilation already inlined
-/// what it calls. Optimized code here takes more bytes per bytecode than C2's, so the same
-/// methods measure larger: 3500 beat C2's 2500 on the server start (-1.7%, every round of an
-/// A/B; `Heightmap.update`, 3052 bytes, is inlined into chunk block writes again as C2 does).
-/// Earlier, 1200, 4000, 7500 and 15000 had all lost to 2500: larger inlined bodies (30-70 KiB
-/// methods) cost more in code size than the calls they save.
-const INLINE_SMALL_CODE: usize = 3500;
+/// what it calls. 3500 once started a server 1.7% sooner, but with the tier-2 budget at C2's
+/// 8000 it gains nothing; 1200, 4000, 7500 and 15000 had all lost to 2500: larger inlined
+/// bodies (30-70 KiB methods) cost more in code size than the calls they save. All the Mods
+/// 10's hot tick code was 2.5x C2's for the same samples (90% in 1183 vs 472 KiB).
+const INLINE_SMALL_CODE: usize = 2500;
 const TIER1_BUDGET: usize = 2000;
 /// Call-site frequencies (executions per entry of the compiled method, `opt/freq.rs`) for the
 /// optimizing tier, as C2's: at least `InlineFrequencyRatio` inlines up to `FreqInlineSize`,
