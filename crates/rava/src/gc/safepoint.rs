@@ -292,6 +292,7 @@ pub fn native_call<R>(t: &Thread, f: impl FnOnce() -> R) -> R {
 /// stack pointer, so it must not be the only holder of a reference it needs afterwards.
 pub fn blocking<R>(t: &Thread, f: impl FnOnce() -> R) -> R {
     let Some(rec) = t.gc_record else { return f() };
+    crate::interp::note_blocking(t);
     with_spilled_registers(|rsp| {
         rec.rsp.store(rsp, SeqCst);
         rec.state.store(NATIVE, SeqCst);

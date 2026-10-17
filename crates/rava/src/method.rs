@@ -83,6 +83,8 @@ pub(crate) struct MethodJit {
     pub(crate) deopt_recompiles: AtomicU32,
     /// Recompilations for call sites that turned hot after compilation (`jit::runtime`).
     pub(crate) reprofiles: AtomicU32,
+    /// This native has blocked the thread (`interp::note_blocking`).
+    pub(crate) blocks: std::sync::atomic::AtomicBool,
 }
 
 impl Method {

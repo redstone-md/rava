@@ -78,7 +78,43 @@ fn sync_target(t: &mut Thread, m: &'static Method, locals: *mut u64) -> JResult<
     Ok(o)
 }
 
+#[inline(always)]
 pub(crate) fn call_native(t: &mut Thread, m: &'static Method, locals: *mut u64) -> JResult<u64> {
+    if m.jit_if().is_some_and(|j| j.blocks.load(std::sync::atomic::Ordering::Relaxed)) {
+        clear_stack();
+    }
+    call_native_framed(t, m, locals)
+}
+
+/// Zeroes the stack below the caller's frame before a native that may block runs there. The
+/// collector scans a blocked thread's native stack conservatively, and the frames that native
+/// pushes keep, in slots they never write, whatever deeper calls left there: a parked fork-join
+/// worker of All the Mods 10 kept the task it had finished, and through it 12.9 million objects
+/// of datapack loading (0.6 GiB), alive for good. (Boehm's collector clears its stack likewise.)
+#[inline(never)]
+fn clear_stack() {
+    let mut words = [0usize; 1024];
+    std::hint::black_box(&mut words);
+}
+
+/// Notes that the native `t` runs has blocked (`safepoint::blocking`): its later calls first clear
+/// the stack its frames will occupy (`clear_stack`).
+pub(crate) fn note_blocking(t: &Thread) {
+    let hdr = t.top;
+    // SAFETY: the innermost frame's header, written by `push_frame`.
+    if hdr.is_null() || unsafe { *hdr.add(header::BCI) } != NATIVE_BCI {
+        return;
+    }
+    // SAFETY: as above; a native's frame names its method.
+    let m = unsafe { &*(*hdr.add(header::METHOD) as *const Method) };
+    if let Some(j) = m.jit_if() {
+        j.blocks.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+/// Runs the native `m` in a frame of its own, with its arguments at `locals`.
+#[inline(never)]
+fn call_native_framed(t: &mut Thread, m: &'static Method, locals: *mut u64) -> JResult<u64> {
     // The VM's own body, else native code a loaded library binds to it (JNI).
     let bound = m.jit_if().map_or(0, |j| j.jni_entry.load(std::sync::atomic::Ordering::Acquire));
     let f = match m.jit().native.get() {
