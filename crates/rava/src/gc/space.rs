@@ -183,6 +183,8 @@ pub struct Space {
     /// they have survived (sorted, disjoint ranges): they count as young again in the next one,
     /// until they have survived `mark::TENURE` (`mark.rs`).
     pub aging: Vec<(usize, usize, u8)>,
+    /// Young collections a promotion stays young again for (`mark::tenure_after`).
+    pub tenure: u8,
 }
 
 /// The smallest heap reservation `Space::new` falls back to.
@@ -235,6 +237,7 @@ impl Space {
             live_after_gc: 0,
             live_after_full: 0,
             aging: Vec::new(),
+            tenure: super::mark::TENURE,
         }
     }
 

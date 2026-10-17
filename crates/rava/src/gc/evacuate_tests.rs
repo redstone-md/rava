@@ -47,7 +47,7 @@ fn evacuation_exhaustion_retires_promotion_run_once() {
         empty: Vec::new(), released: Vec::new(), partial_free: 0,
         partial: std::array::from_fn(|_| Vec::new()), old_partial,
         large: Default::default(), large_bytes: 0, large_area: LargeArea::new(end, end),
-        allocated_since_gc: 0, live_after_gc: 0, live_after_full: 0, aging: Vec::new(),
+        allocated_since_gc: 0, live_after_gc: 0, live_after_full: 0, aging: Vec::new(), tenure: super::super::mark::TENURE,
     };
     let klass = crate::klass::leak(Klass::new(KlassParts {
         name: Symbol::intern("EvacuationExhaustion"), kind: KlassKind::Instance, access: 0,

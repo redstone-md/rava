@@ -496,12 +496,13 @@ pub(super) fn mark(space: &mut Space, young: bool) -> usize {
         stats.lock().unwrap().push((roots_ms, started.elapsed().as_secs_f64() * 1e3, found_n, scanned));
     };
     super::pool::run(workers - 1, &worker);
-    if young && !second_chance.is_empty() && std::env::var_os("RAVA_GC_LOG").is_some() {
-        let (given, kept) = chance_bytes(shared.space, &second_chance);
+    let chances = (young && !second_chance.is_empty()).then(|| chance_bytes(shared.space, &second_chance));
+    if let (Some((given, kept)), true) = (chances, std::env::var_os("RAVA_GC_LOG").is_some()) {
         eprintln!(
-            "[gc-age] {} KiB of recent promotions young again, {} KiB still in use; marked from stacks {}, from other roots {}",
+            "[gc-age] {} KiB of recent promotions young again, {} KiB still in use (tenure {}); marked from stacks {}, from other roots {}",
             given >> 10,
             kept >> 10,
+            shared.space.tenure,
             shared.by_stacks.load(Ordering::Relaxed),
             shared.by_roots.load(Ordering::Relaxed)
         );
@@ -520,10 +521,32 @@ pub(super) fn mark(space: &mut Space, young: bool) -> usize {
         promoted.sort_unstable();
         let mut pinned = shared.pinned.into_inner().unwrap();
         pinned.sort_unstable();
+        if let Some((given, kept)) = chances {
+            space.tenure = tenure_after(space.tenure, given, kept);
+        }
         space.aging = age(space, &aging, &promoted, &pinned);
     }
     marked
 }
+
+/// The tenuring threshold after a young collection in which `kept` of the `given` bytes young
+/// again survived (HotSpot adapts its own to what survives too): when nearly all of them do,
+/// as a program builds its long-lived data, retracing them collection after collection only
+/// costs (All the Mods 10's start traced 4-16 million such objects per young collection), so
+/// they get one more chance only; once many die again, the full threshold returns.
+fn tenure_after(tenure: u8, given: usize, kept: usize) -> u8 {
+    if given == 0 {
+        return tenure;
+    }
+    match kept * 100 / given {
+        90.. => SHORT_TENURE,
+        0..75 => TENURE,
+        _ => tenure,
+    }
+}
+
+/// The threshold while nearly every recent promotion survives (`tenure_after`).
+const SHORT_TENURE: u8 = 2;
 
 /// Young collections an object survives before it is old for good (HotSpot's tenuring
 /// threshold). Promoted after its first, it counts as young again in the next ones: All the
@@ -537,7 +560,7 @@ pub(super) const TENURE: u8 = 8;
 fn age(space: &Space, aging: &[(usize, usize, u8)], promoted: &[(usize, usize)], pinned: &[usize]) -> Vec<(usize, usize, u8)> {
     let mut out: Vec<(usize, usize, u8)> = promoted.iter().map(|&(s, e)| (s, e, 1)).collect();
     for &(start, end, years) in aging {
-        if years + 1 >= TENURE {
+        if years + 1 >= space.tenure {
             continue;
         }
         let Some(index) = space.page_index(start) else { continue };
@@ -573,7 +596,7 @@ pub(super) fn in_ranges(ranges: &[(usize, usize)], value: usize) -> bool {
     i > 0 && value < ranges[i - 1].1
 }
 
-/// Bytes of the cells in `ranges`, and of those marked now.
+/// Bytes of the cells in `ranges`, and of those marked now (a mark word at a time).
 fn chance_bytes(space: &Space, ranges: &[(usize, usize)]) -> (usize, usize) {
     let (mut given, mut kept) = (0, 0);
     for &(start, end) in ranges {
@@ -581,12 +604,15 @@ fn chance_bytes(space: &Space, ranges: &[(usize, usize)]) -> (usize, usize) {
         let page = space.page_addr(index);
         let Some(meta) = space.pages[index].as_ref() else { continue };
         let cell = meta.cell_size as usize;
-        for c in meta.cell_of(start - page)..meta.cell_of(end - page) {
-            given += cell;
+        let (first, last) = (meta.cell_of(start - page), meta.cell_of(end - page));
+        given += (last - first) * cell;
+        let mut c = first;
+        while c < last {
+            let n = (last - c).min(64 - c % 64);
+            let mask = (u64::MAX >> (64 - n)) << (c % 64);
             // SAFETY: mark words, read after the markers are done.
-            if unsafe { *meta.marks.as_ptr().add(c / 64) } & (1u64 << (c % 64)) != 0 {
-                kept += cell;
-            }
+            kept += (unsafe { *meta.marks.as_ptr().add(c / 64) } & mask).count_ones() as usize * cell;
+            c += n;
         }
     }
     (given, kept)
