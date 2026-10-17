@@ -1,6 +1,8 @@
 //! `sun.management.ThreadImpl`, the natives behind `ThreadMXBean`: thread lists, `ThreadInfo`
 //! with stacks (profilers sample with it), and the switches for statistics this VM does not
 //! keep (per-thread CPU time and allocation, contention times), which report as unsupported.
+//! Which monitors and synchronizers a thread holds is not tracked: dumps asking for them list
+//! none.
 //!
 //! Stacks of other threads are copied with the world stopped, as the thread dump takes them
 //! (`crate::dump`); the Java objects are made once it runs again.

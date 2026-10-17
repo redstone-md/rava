@@ -29,7 +29,18 @@ fn register_vm(r: &mut NativeRegistry) {
     }
     started();
     r.add(M, "getVersion0", "()Ljava/lang/String;", |t, _| ret_ref(rt::new_string(t, "4.0")?));
-    r.add(M, "initOptionalSupportFields", "()V", |_, _| ret_void());
+    // Thread dumps may ask for locked monitors and synchronizers (`dumpAllThreads(true, true)`,
+    // as Minecraft's `/perf` report does): they are taken, holding none (`thread_mx.rs`), where
+    // reporting the support missing made such a dump throw. Other optional measurements stay
+    // unsupported.
+    r.add(M, "initOptionalSupportFields", "()V", |_, _| {
+        let k = crate::loader::boot_class!("sun/management/VMManagementImpl").expect("VMManagementImpl");
+        for name in ["objectMonitorUsageSupport", "synchronizerUsageSupport"] {
+            let f = k.declared_field(crate::symbol::Symbol::intern(name), crate::symbol::Symbol::intern("Z")).expect("VMManagementImpl support field");
+            k.statics[f.offset as usize].store(1, std::sync::atomic::Ordering::Release);
+        }
+        ret_void()
+    });
     for name in ["isThreadContentionMonitoringEnabled", "isThreadCpuTimeEnabled", "isThreadAllocatedMemoryEnabled", "getVerboseClass", "getVerboseGC"] {
         r.add(M, name, "()Z", |_, _| ret_bool(false));
     }

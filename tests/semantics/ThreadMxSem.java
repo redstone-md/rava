@@ -1,5 +1,5 @@
 // ThreadMXBean as profilers use it: ThreadInfo of threads sleeping, waiting, parked and blocked
-// on a monitor (state, lock, the innermost frames), and dumpAllThreads.
+// on a monitor (state, lock, the innermost frames), and dumpAllThreads, also with locked monitors.
 import java.lang.management.*; import java.util.*; import java.util.concurrent.locks.LockSupport;
 public class ThreadMxSem {
   static final Object LOCK = new Object(), HELD = new Object();
@@ -24,6 +24,10 @@ public class ThreadMxSem {
       ThreadInfo[] all = mx.dumpAllThreads(false, false);
       System.out.println("dump has ours " + Arrays.stream(all).map(ThreadInfo::getThreadName).filter(n -> List.of("sleeper", "waiter", "parker", "blocked", "main").contains(n)).sorted().toList());
       System.out.println("ids " + (mx.getAllThreadIds().length >= 5) + " missing " + (mx.getThreadInfo(Long.MAX_VALUE) == null));
+      // A dump with locked monitors and synchronizers (Minecraft's /perf report takes one).
+      System.out.println("monitor usage " + mx.isObjectMonitorUsageSupported() + " synchronizer usage " + mx.isSynchronizerUsageSupported());
+      ThreadInfo[] locked = mx.dumpAllThreads(true, true);
+      System.out.println("locked dump has ours " + Arrays.stream(locked).map(ThreadInfo::getThreadName).filter(n -> List.of("sleeper", "waiter", "parker", "blocked", "main").contains(n)).sorted().toList());
     }
   }
 }
