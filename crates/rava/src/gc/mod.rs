@@ -242,10 +242,18 @@ impl Heap {
     /// (or fills the heap), or when generations are off (`RAVA_GC_GEN=0`). Waiting for it to
     /// double let dead old objects pile up to twice the live data: All the Mods 10 held an
     /// 8.4 GiB heap for 3.8 GiB of live objects, its full collection costing 0.37 s.
+    ///
+    /// One is due as well once promotion has settled (`QUIET` young collections in a row each
+    /// promoted under 1/512 of the live data) after the old generation grew by an eighth: what
+    /// a program's start promoted and dropped is collected then, not when growth resumes. A
+    /// full collection timed by growth alone can land at the peak of the start's transient
+    /// data: All the Mods 10 kept 3.4 GiB live for 2.4 GiB in use, and a lower growth
+    /// threshold (1.25) moved that collection, not the waste.
     fn full_due(&self, s: &Space) -> bool {
         static GENERATIONAL: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
         let generational = *GENERATIONAL.get_or_init(|| std::env::var("RAVA_GC_GEN").map_or(true, |v| v != "0"));
-        !generational || s.live_after_gc > (s.live_after_full + s.live_after_full / 2).max(self.min_trigger) || s.live_after_gc + self.min_trigger > self.max_heap
+        let grown = |by: usize| s.live_after_gc > (s.live_after_full + s.live_after_full / by).max(self.min_trigger);
+        !generational || grown(2) || (s.quiet >= QUIET && grown(8)) || s.live_after_gc + self.min_trigger > self.max_heap
     }
 
     pub fn max_bytes(&self) -> usize {
@@ -305,6 +313,8 @@ impl Heap {
             if full {
                 space.live_after_full = live;
             }
+            let promoted = live.saturating_sub(space.live_after_gc);
+            space.quiet = if !full && promoted < live / 512 { space.quiet + 1 } else { 0 };
             phases[1] = (before_sweep - before_mark).as_secs_f64() * 1e3;
             phases[2] = before_sweep.elapsed().as_secs_f64() * 1e3;
             space.live_after_gc = live;
@@ -363,6 +373,10 @@ impl Heap {
         self.space.lock().unwrap().find_object(addr) == Some(addr)
     }
 }
+
+/// Young collections in a row promoting little after which a grown old generation is collected
+/// whole (`Heap::full_due`).
+const QUIET: u32 = 8;
 
 fn clear_marks(space: &mut Space) {
     for m in space.pages.iter_mut().flatten() {
