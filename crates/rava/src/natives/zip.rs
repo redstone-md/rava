@@ -28,9 +28,18 @@ fn pack(r: &StreamResult, finished: bool, flag: bool) -> u64 {
     r.bytes_consumed as u64 | (r.bytes_written as u64) << 31 | (finished as u64) << 62 | (flag as u64) << 63
 }
 
+/// An `Inflater`'s stream. Its state (~43 KiB, most of it the 32 KiB window) exists only
+/// while a stream runs: `reset` drops it. `ZipFile` keeps a reset inflater per open jar for
+/// reuse, and a program with hundreds of jars held that many idle states.
+struct Inflate {
+    state: Option<Box<InflateState>>,
+    format: DataFormat,
+}
+
 fn inflate(t: &mut Thread, addr: u64, input: &[u8], output: &mut [u8]) -> JResult<u64> {
-    // SAFETY: `addr` is a live InflateState from `init`.
-    let state = unsafe { &mut *(addr as *mut InflateState) };
+    // SAFETY: `addr` is a live Inflate from `init`.
+    let inf = unsafe { &mut *(addr as *mut Inflate) };
+    let state = inf.state.get_or_insert_with(|| InflateState::new_boxed(inf.format));
     let r = miniz_oxide::inflate::stream::inflate(state, input, output, MZFlush::None);
     match r.status {
         Ok(MZStatus::StreamEnd) => Ok(pack(&r, true, false)),
@@ -71,17 +80,16 @@ pub(super) fn register(r: &mut NativeRegistry) {
     }
     r.add(INF, "init", "(Z)J", |_, a| {
         let format = if a[0] != 0 { DataFormat::Raw } else { DataFormat::Zlib };
-        ret_long(Box::into_raw(InflateState::new_boxed(format)) as i64)
+        ret_long(Box::into_raw(Box::new(Inflate { state: None, format })) as i64)
     });
     r.add(INF, "reset", "(J)V", |_, a| {
-        // SAFETY: a live InflateState.
-        let s = unsafe { &mut *(a[0] as *mut InflateState) };
-        s.reset_as(miniz_oxide::inflate::stream::MinReset);
+        // SAFETY: a live Inflate; the next stream makes a fresh state.
+        unsafe { (*(a[0] as *mut Inflate)).state = None };
         ret_void()
     });
     r.add(INF, "end", "(J)V", |_, a| {
         // SAFETY: ends ownership of the box created by `init`.
-        drop(unsafe { Box::from_raw(a[0] as *mut InflateState) });
+        drop(unsafe { Box::from_raw(a[0] as *mut Inflate) });
         ret_void()
     });
     r.add(INF, "getAdler", "(J)I", |_, _| ret_int(1));
