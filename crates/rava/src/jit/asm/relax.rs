@@ -20,6 +20,7 @@ impl Asm {
     /// Re-encodes branches whose target is within reach as 2-byte short branches (to a fixed
     /// point: shortening one only brings others closer), moving labels and other fixups along.
     pub(super) fn relax(&mut self) {
+        self.thread_jumps();
         // (start, fixup index, short) of each branch still in the code, in code order.
         let mut br: Vec<(u32, usize, bool)> = std::mem::take(&mut self.branches).into_iter().map(|(at, fx)| (at, fx, false)).collect();
         br.sort_by_key(|b| b.0);
@@ -108,6 +109,26 @@ impl Asm {
             self.aligned_tail = Some(at + pad);
         }
         self.buf = out;
+    }
+
+    /// Points each branch whose target is an unconditional jump at that jump's target instead
+    /// (following a chain a few steps; a jump left with no branch to it stays as dead code).
+    fn thread_jumps(&mut self) {
+        let jumps: std::collections::HashMap<u32, Label> =
+            self.branches.iter().filter(|&&(at, _)| self.buf[at as usize] == 0xE9).map(|&(at, fx)| (at, self.fixups[fx].1)).collect();
+        for i in 0..self.branches.len() {
+            let (at, fx) = self.branches[i];
+            let mut target = self.fixups[fx].1;
+            for _ in 0..8 {
+                let Some(&next) = self.labels[target.0 as usize].and_then(|p| jumps.get(&p)) else { break };
+                // A jump to itself, or back to this branch, ends the chain.
+                if next == target || self.labels[next.0 as usize] == Some(at) {
+                    break;
+                }
+                target = next;
+            }
+            self.fixups[fx].1 = target;
+        }
     }
 
     pub(super) fn branch_peephole(&mut self, l: Label) {
