@@ -310,7 +310,7 @@ fn compile_timed(m: &'static Method, osr: Option<u32>) -> Option<CompiledMethod>
     // attributed to the innermost method as HotSpot's profilers do.
     let by_leaf = env_once!("RAVA_PERF_MAP").is_some_and(|v| v == "inline");
     let (code, main, faults, trace, reg_entry) = codegen::generate(&g, &al, m, extent, monitor, osr, dumped || by_leaf);
-    let entry = code_cache::install(&code);
+    let entry = code_cache::install_in(&code, code_cache::Zone::Optimized);
     if !faults.is_empty() {
         super::fault::register(faults.into_iter().map(|(at, to)| (entry + at, entry + to)));
     }

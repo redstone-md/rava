@@ -2,14 +2,49 @@
 //! allocated. Code is never freed (methods of boot and application classes never unload).
 //! The region is placed within reach of rava's own text where possible, so compiled code calls
 //! runtime helpers with 5-byte relative calls (`Asm::call_abs`).
+//!
+//! The region is split in zones, as HotSpot's segmented code cache: optimized code and the
+//! trampolines its calls go through each fill their own part, so the hot code of a workload
+//! lies on a few pages instead of spread among the baseline code of every method run once.
 
 use std::sync::Mutex;
 
 const RESERVE: usize = 1 << 30;
 
+/// Where code goes in the region.
+#[derive(Clone, Copy)]
+pub enum Zone {
+    /// Baseline code, stubs and adapters: the first part.
+    Baseline,
+    /// Optimized code.
+    Optimized,
+    /// Trampolines (`direct_entry`, `reg_entry`): the last part.
+    Trampolines,
+}
+
+impl Zone {
+    /// The zone's start, as an offset into the region.
+    const fn start(self) -> usize {
+        match self {
+            Zone::Baseline => 0,
+            Zone::Optimized => RESERVE / 2,
+            Zone::Trampolines => RESERVE - RESERVE / 16,
+        }
+    }
+
+    const fn end(self) -> usize {
+        match self {
+            Zone::Baseline => Zone::Optimized.start(),
+            Zone::Optimized => Zone::Trampolines.start(),
+            Zone::Trampolines => RESERVE,
+        }
+    }
+}
+
 struct Region {
     base: usize,
-    top: usize,
+    /// Each zone's next free address.
+    tops: [usize; 3],
     /// Every address of the region reaches rava's text with a 32-bit displacement.
     near: bool,
 }
@@ -39,7 +74,8 @@ fn region() -> &'static Mutex<Region> {
         // committed only as code is written (one huge page at a time).
         crate::os::huge_pages(p, RESERVE);
         BASE.store(p, std::sync::atomic::Ordering::Release);
-        Mutex::new(Region { base: p, top: p, near: reaches(p, text) })
+        let tops = [Zone::Baseline, Zone::Optimized, Zone::Trampolines].map(|z| p + z.start());
+        Mutex::new(Region { base: p, tops, near: reaches(p, text) })
     })
 }
 
@@ -55,7 +91,7 @@ pub fn contains(pc: usize) -> bool {
 /// Bytes of compiled code so far (`memlog`).
 pub fn used_bytes() -> usize {
     let r = region().lock().unwrap();
-    r.top - r.base
+    [Zone::Baseline, Zone::Optimized, Zone::Trampolines].iter().map(|&z| r.tops[z as usize] - (r.base + z.start())).sum()
 }
 
 /// Whether code may call rava's functions with 32-bit displacements.
@@ -63,12 +99,19 @@ pub fn near() -> bool {
     region().lock().unwrap().near
 }
 
-/// Copies `code` into executable memory, resolving its calls to absolute addresses, and
-/// returns its address.
+/// Copies `code` into the baseline zone (`install_in`).
 pub fn install(code: &super::asm::Code) -> usize {
+    install_in(code, Zone::Baseline)
+}
+
+/// Copies `code` into executable memory in `zone`, resolving its calls to absolute addresses,
+/// and returns its address.
+pub fn install_in(code: &super::asm::Code, zone: Zone) -> usize {
     let mut r = region().lock().unwrap();
-    let at = (r.top + 15) & !15;
-    assert!(at + code.len() <= r.base + RESERVE, "code cache exhausted");
+    // Trampolines need their displacement aligned only (eight to a cache line).
+    let align = if matches!(zone, Zone::Trampolines) { 8 } else { 16 };
+    let at = (r.tops[zone as usize] + align - 1) & !(align - 1);
+    assert!(at + code.len() <= r.base + zone.end(), "code cache exhausted");
     // SAFETY: `at..at+len` is inside the reserved writable region and not yet handed out.
     unsafe { std::ptr::copy_nonoverlapping(code.as_ptr(), at as *mut u8, code.len()) };
     for &(pos, target) in &code.relocs {
@@ -76,7 +119,7 @@ pub fn install(code: &super::asm::Code) -> usize {
         // SAFETY: a displacement inside the code just copied.
         unsafe { std::ptr::write_unaligned((at + pos as usize) as *mut i32, rel) };
     }
-    r.top = at + code.len();
+    r.tops[zone as usize] = at + code.len();
     at
 }
 
@@ -100,7 +143,7 @@ pub fn direct_entry(m: &'static crate::method::Method) -> Option<usize> {
     }
     // A 3-byte nop puts the displacement at offset 4: aligned, so a repoint writes it whole.
     let code = super::asm::Code { bytes: vec![0x0F, 0x1F, 0x00, 0xE9, 0, 0, 0, 0], relocs: vec![(4, m.entry.load(Acquire))] };
-    let t = install(&code);
+    let t = install_in(&code, Zone::Trampolines);
     m.jit().trampoline.store(t, Release);
     Some(t)
 }
@@ -146,7 +189,7 @@ pub fn reg_entry(m: &'static crate::method::Method) -> Option<usize> {
     }
     let target = reg_target(m);
     let code = super::asm::Code { bytes: vec![0x0F, 0x1F, 0x00, 0xE9, 0, 0, 0, 0], relocs: vec![(4, target)] };
-    let t = install(&code);
+    let t = install_in(&code, Zone::Trampolines);
     m.jit().reg_trampoline.store(t, Release);
     m.reg_call.store(target, Release);
     Some(t)
