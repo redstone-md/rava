@@ -37,7 +37,7 @@ fn evacuation_exhaustion_retires_promotion_run_once() {
         class: class as u8, cell_size: CELL as u32,
         recip: ((1u64 << 40) + CELL as u64 - 1) / CELL as u64,
         alloc: vec![alloc].into_boxed_slice(), marks: vec![0].into_boxed_slice(),
-        cursor: 0, owned: false, old,
+        cursor: 0, owned: false, old, live: Default::default(), sparse: false, holes: Vec::new(),
     });
     let mut old_partial: [Vec<usize>; CLASSES] = std::array::from_fn(|_| Vec::new());
     old_partial[class].push(2);
@@ -45,9 +45,9 @@ fn evacuation_exhaustion_retires_promotion_run_once() {
         base, end, reserved: 3 * PAGE_SIZE, fresh: end,
         pages: vec![meta(0xff, false), meta(0x0f, false), meta(0, true)],
         empty: Vec::new(), released: Vec::new(), partial_free: 0,
-        partial: std::array::from_fn(|_| Vec::new()), old_partial,
+        partial: std::array::from_fn(|_| Vec::new()), old_partial, mixed_partial: Vec::new(),
         large: Default::default(), large_bytes: 0, large_area: LargeArea::new(end, end),
-        allocated_since_gc: 0, live_after_gc: 0, live_after_full: 0, aging: Vec::new(), tenure: super::super::mark::TENURE, quiet: 0,
+        allocated_since_gc: 0, live_after_gc: 0, live_after_full: 0, aging: Vec::new(), tenure: super::super::aging::TENURE, quiet: 0,
     };
     let klass = crate::klass::leak(Klass::new(KlassParts {
         name: Symbol::intern("EvacuationExhaustion"), kind: KlassKind::Instance, access: 0,

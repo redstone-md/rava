@@ -96,6 +96,22 @@ impl Shared<'_> {
             loop {
                 while len < PREFETCH {
                     let Some(o) = stack.pop() else { break };
+                    // A reference slot to follow (`scan`): its object is copied now, after
+                    // the objects it reaches were, so a graph is copied depth first.
+                    if o & SLOT != 0 {
+                        // What it queued (a fresh copy, in cache) is scanned at once, before the
+                        // ring's objects: those would put their own copies between it and its
+                        // children.
+                        let queued = stack.len();
+                        self.update(o & !SLOT, &mut stack, runs);
+                        if stack.len() > queued {
+                            let n = stack.pop().unwrap();
+                            scanned += 1;
+                            self.scan(n as Oop, &mut stack, runs);
+                        }
+                        self.share(&mut stack);
+                        continue;
+                    }
                     // SAFETY: a prefetch never faults.
                     unsafe { std::arch::x86_64::_mm_prefetch::<{ std::arch::x86_64::_MM_HINT_T0 }>(o as *const i8) };
                     ring[(head + len) % PREFETCH] = o;
@@ -108,10 +124,7 @@ impl Shared<'_> {
                 (head, len) = ((head + 1) % PREFETCH, len - 1);
                 scanned += 1;
                 self.scan(o as Oop, &mut stack, runs);
-                // Share surplus while others may be waiting for work.
-                if stack.len() >= 2 * PACKET && self.pooled.load(Ordering::Relaxed) == 0 && self.idle.load(Ordering::Relaxed) > 0 {
-                    self.give(stack.split_off(stack.len() - PACKET));
-                }
+                self.share(&mut stack);
             }
             if let Some(p) = self.take() {
                 stack = p;
@@ -142,9 +155,33 @@ impl Shared<'_> {
         }
     }
 
+    /// Shares surplus while others may be waiting for work.
+    #[inline]
+    fn share(&self, stack: &mut Vec<usize>) {
+        if stack.len() >= 2 * PACKET && self.pooled.load(Ordering::Relaxed) == 0 && self.idle.load(Ordering::Relaxed) > 0 {
+            self.give(stack.split_off(stack.len() - PACKET));
+        }
+    }
+
     fn scan(&self, o: Oop, stack: &mut Vec<usize>, runs: &mut super::evacuate::Runs) {
         if self.evacuate {
-            return ref_slots(o, |slot| self.update(slot, stack, runs));
+            // Evacuating, the slots of objects still to be copied go on the stack and are
+            // followed as they come off it (G1's order): an object's children are then copied
+            // next to it, depth first. Following them here copied all of an array's elements,
+            // then all of their children, and so on, breadth first, which put an object and
+            // what it references far apart. Other slots are followed at once.
+            return ref_slots(o, |slot| {
+                // SAFETY: a reference field or element of a live object.
+                let t = unsafe { obj::load_ref_at(slot) } as usize;
+                if t == 0 {
+                } else if self.movable(t) {
+                    // SAFETY: a prefetch never faults.
+                    unsafe { std::arch::x86_64::_mm_prefetch::<{ std::arch::x86_64::_MM_HINT_T0 }>(t as *const i8) };
+                    stack.push(slot | SLOT);
+                } else {
+                    self.update(slot, stack, runs);
+                }
+            });
         }
         refs(o, |r| {
             if self.mark_start(r) {
@@ -153,6 +190,9 @@ impl Shared<'_> {
         });
     }
 }
+
+/// Tags a reference slot on a marker's stack, among objects (slots are 4-byte aligned at least).
+const SLOT: usize = 1;
 
 /// Calls `f` with each non-null reference field or element of the live object `o`.
 #[inline]
@@ -361,6 +401,12 @@ impl Shared<'_> {
             };
             let size = meta.cell_size as usize;
             super::cards::drain(page, page + PAGE_SIZE, &mut |card| {
+                // In a mixed page an object starting before the card may reach into it.
+                if meta.is_mixed() {
+                    if let Some(start) = super::mixed::spanning(meta, page, card) {
+                        self.scan_old(start, card, &mut last, out);
+                    }
+                }
                 let first = meta.cell_of(card - page);
                 let end = (meta.cell_of(card + CARD_SIZE - 1 - page) + 1).min(meta.cells());
                 if first >= end {
@@ -524,72 +570,11 @@ pub(super) fn mark(space: &mut Space, young: bool) -> usize {
         let mut pinned = shared.pinned.into_inner().unwrap();
         pinned.sort_unstable();
         if let Some((given, kept)) = chances {
-            space.tenure = tenure_after(space.tenure, given, kept);
+            space.tenure = super::aging::tenure_after(space.tenure, given, kept);
         }
-        space.aging = age(space, &aging, &promoted, &pinned);
+        space.aging = super::aging::age(space, &aging, &promoted, &pinned);
     }
     marked
-}
-
-/// The tenuring threshold after a young collection in which `kept` of the `given` bytes young
-/// again survived (HotSpot adapts its own to what survives too): when nearly all of them do,
-/// as a program builds its long-lived data, retracing them collection after collection only
-/// costs (All the Mods 10's start traced 4-16 million such objects per young collection), so
-/// they get one more chance only; once many die again, the full threshold returns.
-fn tenure_after(tenure: u8, given: usize, kept: usize) -> u8 {
-    if given == 0 {
-        return tenure;
-    }
-    match kept * 100 / given {
-        90.. => SHORT_TENURE,
-        0..75 => TENURE,
-        _ => tenure,
-    }
-}
-
-/// The threshold while nearly every recent promotion survives (`tenure_after`).
-const SHORT_TENURE: u8 = 2;
-
-/// Young collections an object survives before it is old for good (HotSpot's tenuring
-/// threshold). Promoted after its first, it counts as young again in the next ones: All the
-/// Mods 10 still used 3-6 MiB of each young collection's 4-8 MiB of promotions one collection
-/// later, objects that died seconds on and, old already, filled the old generation.
-pub(super) const TENURE: u8 = 8;
-
-/// The aging cells after a young collection: the survivors among `aging`, one collection older
-/// (until `TENURE`), and the cells this one promoted into (`promoted`, sorted). Survivors a
-/// once-only root holds (`pinned`, sorted) are old for good.
-fn age(space: &Space, aging: &[(usize, usize, u8)], promoted: &[(usize, usize)], pinned: &[usize]) -> Vec<(usize, usize, u8)> {
-    let mut out: Vec<(usize, usize, u8)> = promoted.iter().map(|&(s, e)| (s, e, 1)).collect();
-    for &(start, end, years) in aging {
-        if years + 1 >= space.tenure {
-            continue;
-        }
-        let Some(index) = space.page_index(start) else { continue };
-        let page = space.page_addr(index);
-        let Some(meta) = space.pages[index].as_ref() else { continue };
-        let size = meta.cell_size as usize;
-        let mut run: Option<usize> = None;
-        for cell in meta.cell_of(start - page)..meta.cell_of(end - page) {
-            let at = page + cell * size;
-            // Survivors, less the cells a copy of this collection took (those are age 1) and
-            // those pinned.
-            let live = meta.marks[cell / 64] & (1u64 << (cell % 64)) != 0 && !in_ranges(promoted, at) && pinned.binary_search(&at).is_err();
-            match (live, run) {
-                (true, None) => run = Some(at),
-                (false, Some(s)) => {
-                    out.push((s, at, years + 1));
-                    run = None;
-                }
-                _ => {}
-            }
-        }
-        if let Some(s) = run {
-            out.push((s, end, years + 1));
-        }
-    }
-    out.sort_unstable();
-    out
 }
 
 /// Whether `value` lies in one of the sorted, disjoint `ranges`.
@@ -605,6 +590,11 @@ fn chance_bytes(space: &Space, ranges: &[(usize, usize)]) -> (usize, usize) {
         let Some(index) = space.page_index(start) else { continue };
         let page = space.page_addr(index);
         let Some(meta) = space.pages[index].as_ref() else { continue };
+        if meta.is_mixed() {
+            given += end - start;
+            super::mixed::each(&meta.marks, page, start, end, |_, size| kept += size);
+            continue;
+        }
         let cell = meta.cell_size as usize;
         let (first, last) = (meta.cell_of(start - page), meta.cell_of(end - page));
         given += (last - first) * cell;

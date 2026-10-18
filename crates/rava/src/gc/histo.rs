@@ -32,12 +32,15 @@ pub fn report(space: &Space) {
     for (index, meta) in space.pages.iter().enumerate() {
         let Some(meta) = meta else { continue };
         let page = space.page_addr(index);
-        let cell = meta.cell_size as usize;
-        for c in 0..PAGE_SIZE / cell {
-            if meta.marks[c / 64] & (1 << (c % 64)) == 0 {
-                continue;
-            }
-            let o = (page + c * cell) as Oop;
+        let mut objects = Vec::new();
+        if meta.is_mixed() {
+            super::mixed::each(&meta.marks, page, page, page + PAGE_SIZE, |at, size| objects.push((at, size)));
+        } else {
+            let cell = meta.cell_size as usize;
+            objects.extend((0..PAGE_SIZE / cell).filter(|c| meta.marks[c / 64] & (1 << (c % 64)) != 0).map(|c| (page + c * cell, cell)));
+        }
+        for (at, cell) in objects {
+            let o = at as Oop;
             // SAFETY: a marked cell holds a live object.
             let k = unsafe { obj::klass(o) };
             let (bytes, compact, h12, h8) = match k.kind {

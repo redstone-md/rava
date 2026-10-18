@@ -16,7 +16,9 @@ pub mod cards;
 mod evacuate;
 mod histo;
 mod large;
+mod aging;
 mod mark;
+mod mixed;
 mod pool;
 mod prefault;
 pub(crate) mod recent;
@@ -288,6 +290,7 @@ impl Heap {
                 m.owned = false;
             }
             if full {
+                space.select_sparse();
                 clear_marks(&mut space);
             }
             let before_mark = std::time::Instant::now();

@@ -13,9 +13,9 @@
 //! locking never uses); a marker copying it holds it at `BUSY` meanwhile, and others wait.
 
 use super::mark::Shared;
+use super::mixed;
 use super::space::{class_of, CLASSES, CLASS_SIZES};
 use crate::heap::{obj, Oop};
-use crate::klass::KlassKind;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 const FORWARDED: u64 = 3;
@@ -28,26 +28,16 @@ pub(super) fn enabled() -> bool {
     *ON.get_or_init(|| std::env::var("RAVA_GC_MOVE").map_or(true, |v| v != "0") && std::env::var_os("RAVA_GC_VERIFY").is_none())
 }
 
-/// A marker's runs of old cells, per size class: `(start, next, end)`. The copies in
-/// `start..next` are marked when the run is done (`Shared::finish_run`): one atomic update per
-/// mark word rather than per copy, which markers sharing a page fought over.
-pub(super) struct Runs([(usize, usize, usize); CLASSES]);
+/// A marker's runs of old cells, per size class, and its run of a mixed page (`mixed.rs`, last):
+/// `(start, next, end)`. The copies in a class's `start..next` are marked when the run is done
+/// (`Shared::finish_run`): one atomic update per mark word rather than per copy, which markers
+/// sharing a page fought over. A mixed run is the marker's own page tail; its copies are marked
+/// one by one.
+pub(super) struct Runs([(usize, usize, usize); CLASSES + 1]);
 
 impl Default for Runs {
     fn default() -> Self {
-        Runs([(0, 0, 0); CLASSES])
-    }
-}
-
-/// Bytes of the live object `o`.
-fn size_of(o: Oop) -> usize {
-    // SAFETY: a live object's class and, for an array, its length.
-    unsafe {
-        let k = obj::klass(o);
-        match k.kind {
-            KlassKind::Instance => k.instance_size() as usize,
-            _ => crate::heap::array_bytes(k.elem_size(), obj::array_length(o)),
-        }
+        Runs([(0, 0, 0); CLASSES + 1])
     }
 }
 
@@ -85,6 +75,21 @@ impl Shared<'_> {
         }
     }
 
+    /// Whether `update` may copy the object at `t`: unmarked in a page whose objects move.
+    #[inline]
+    pub(super) fn movable(&self, t: usize) -> bool {
+        let space = self.space;
+        let Some(index) = space.page_index(t) else { return false };
+        let Some(meta) = space.pages[index].as_ref() else { return false };
+        if meta.old && !meta.sparse {
+            return false;
+        }
+        let cell = meta.cell_of(t - space.page_addr(index));
+        // SAFETY: the mark words are only accessed atomically during marking.
+        let word = unsafe { &*(meta.marks.as_ptr().add(cell / 64) as *const AtomicU64) };
+        word.load(Ordering::Relaxed) & (1 << (cell % 64)) == 0
+    }
+
     /// Where the object at `t` is after this collection: itself if old, kept in place (large,
     /// locked, or marked from a root) or out of old cells; else a copy in an old page.
     fn forward(&self, t: usize, stack: &mut Vec<usize>, runs: &mut Runs) -> usize {
@@ -103,8 +108,9 @@ impl Shared<'_> {
         if word.load(Ordering::Relaxed) & (1 << (cell % 64)) != 0 {
             return t;
         }
-        // Objects in old pages stay (only a full collection reaches unmarked ones there).
-        if meta.old {
+        // Objects in old pages stay (only a full collection reaches unmarked ones there), but
+        // for those of the mixed pages a full collection empties (`Space::select_sparse`).
+        if meta.old && !meta.sparse {
             return keep(stack);
         }
         // SAFETY: a live young object.
@@ -133,7 +139,10 @@ impl Shared<'_> {
 
     /// Copies the object at `t` (mark word `m`) into an old cell, marked; None without one.
     fn copy(&self, t: usize, m: u64, runs: &mut Runs) -> Option<usize> {
-        let size = size_of(t as Oop);
+        let size = mixed::object_bytes(t);
+        if size <= mixed::MAX && mixed::enabled() {
+            return self.copy_mixed(t, m, size, runs);
+        }
         let class = class_of(size);
         let cell = CLASS_SIZES[class] as usize;
         let run = &mut runs.0[class];
@@ -158,14 +167,55 @@ impl Shared<'_> {
         Some(n)
     }
 
-    /// Marks the copies of a run, `start..next` (cells of one page).
-    pub(super) fn finish_run(&self, (start, next, _): (usize, usize, usize)) {
-        if next == start {
+    /// `copy` into the marker's mixed run, in trace order.
+    fn copy_mixed(&self, t: usize, m: u64, size: usize, runs: &mut Runs) -> Option<usize> {
+        let need = size.next_multiple_of(mixed::GRANULE);
+        let run = &mut runs.0[mixed::MIXED];
+        if run.1 + need > run.2 {
+            self.finish_run(std::mem::take(run));
+            let promote = self.promote.lock().unwrap();
+            let space: *mut super::space::Space = *promote;
+            // SAFETY: as in `copy`; the page tail handed out is this marker's alone.
+            let (_, start, end) = unsafe { (*space).mixed_run(need) }?;
+            drop(promote);
+            *run = (start, start, end);
+        }
+        let n = run.1;
+        run.1 += need;
+        // SAFETY: as in `copy`, into the marker's own free granules.
+        unsafe {
+            std::ptr::copy_nonoverlapping(t as *const u8, n as *mut u8, size);
+            obj::mark(n as Oop).store(m, Ordering::Relaxed);
+        }
+        let space = self.space;
+        let index = space.page_index(n).expect("mixed run in the page area");
+        mixed::mark_copy(space.pages[index].as_ref().expect("mixed page"), space.page_addr(index), n, need);
+        Some(n)
+    }
+
+    /// Marks the copies of a run, `start..next` (cells of one page); a mixed run's copies are
+    /// marked already, and the rest of its page tail goes back.
+    pub(super) fn finish_run(&self, (start, next, end): (usize, usize, usize)) {
+        if end == 0 {
             return;
         }
         let space = self.space;
         let index = space.page_index(start).expect("old run in the page area");
         let meta = space.pages[index].as_ref().expect("old page");
+        if meta.is_mixed() {
+            let promote = self.promote.lock().unwrap();
+            let space: *mut super::space::Space = *promote;
+            // SAFETY: the tail is this marker's until given back, under the lock.
+            unsafe { (*space).return_tail(next, end) };
+            drop(promote);
+            if next > start {
+                self.promoted.lock().unwrap().push((start, next));
+            }
+            return;
+        }
+        if next == start {
+            return;
+        }
         let page = space.page_addr(index);
         let (first, end) = (meta.cell_of(start - page), meta.cell_of(next - page));
         let mut c = first;

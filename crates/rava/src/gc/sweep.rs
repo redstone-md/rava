@@ -23,6 +23,7 @@ struct Swept {
     empty: Vec<usize>,
     partial: Vec<(u8, usize)>,
     old_partial: Vec<(u8, usize)>,
+    mixed_partial: Vec<usize>,
 }
 
 /// The page table, for sweeping threads that each take disjoint pages.
@@ -47,6 +48,7 @@ pub(super) fn sweep(space: &mut Space, workers: usize) -> usize {
     for list in space.partial.iter_mut().chain(space.old_partial.iter_mut()) {
         list.clear();
     }
+    space.mixed_partial.clear();
     let used = ((space.fresh - space.base) >> PAGE_SHIFT).min(space.pages.len());
     let chunks = used.div_ceil(CHUNK);
     let results: Vec<Mutex<Swept>> = (0..chunks).map(|_| Mutex::default()).collect();
@@ -73,6 +75,7 @@ pub(super) fn sweep(space: &mut Space, workers: usize) -> usize {
         space.empty.extend(r.empty);
         r.partial.into_iter().for_each(|(class, index)| space.partial[class as usize].push(index));
         r.old_partial.into_iter().for_each(|(class, index)| space.old_partial[class as usize].push(index));
+        space.mixed_partial.extend(r.mixed_partial);
     }
     let dead: Vec<usize> = space.large.iter().filter(|(_, l)| !l.marked).map(|(&a, _)| a).collect();
     for a in dead {
@@ -96,6 +99,15 @@ fn sweep_page(slot: &mut Option<PageMeta>, index: usize, page: usize, out: &mut 
     }
     // The marks stay: survivors are old from now on.
     meta.alloc.copy_from_slice(&meta.marks);
+    if meta.is_mixed() {
+        meta.sparse = false;
+        // Only the tail is free; the rest comes back when the whole page dies.
+        out.live += super::mixed::live_bytes(meta, live_cells);
+        if meta.cursor < meta.cells() || !meta.holes.is_empty() {
+            out.mixed_partial.push(index);
+        }
+        return;
+    }
     meta.cursor = 0;
     out.live += live_cells * meta.cell_size as usize;
     // Allocation reuses pages up to nine tenths full (holes too short for a run are passed

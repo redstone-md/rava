@@ -60,6 +60,12 @@ pub struct PageMeta {
     /// Holds objects a young collection moved out of allocation pages (`mark.rs`): only
     /// collections allocate here, so allocation pages hold young objects and few old ones.
     pub old: bool,
+    /// Objects and bytes copied into a mixed page (`mixed::live_bytes`).
+    pub live: std::sync::atomic::AtomicUsize,
+    /// A mixed page this full collection empties: its objects move like young ones.
+    pub sparse: bool,
+    /// Free ranges of a mixed page below its tail, in granules (`mixed::add_holes`).
+    pub holes: Vec<(u32, u32)>,
 }
 
 impl PageMeta {
@@ -170,6 +176,8 @@ pub struct Space {
     pub partial: [Vec<usize>; CLASSES],
     /// Old pages with free cells, per class, for objects collections move.
     pub old_partial: [Vec<usize>; CLASSES],
+    /// Mixed pages with a free tail (`mixed.rs`).
+    pub mixed_partial: Vec<usize>,
     pub large: BTreeMap<usize, Large>,
     /// Bytes of the objects in `large` (kept with it, for `Heap::used_bytes`).
     pub large_bytes: usize,
@@ -181,9 +189,9 @@ pub struct Space {
     pub live_after_full: usize,
     /// Cells whose objects young collections promoted lately, with how many young collections
     /// they have survived (sorted, disjoint ranges): they count as young again in the next one,
-    /// until they have survived `mark::TENURE` (`mark.rs`).
+    /// until they have survived `aging::TENURE` (`aging.rs`).
     pub aging: Vec<(usize, usize, u8)>,
-    /// Young collections a promotion stays young again for (`mark::tenure_after`).
+    /// Young collections a promotion stays young again for (`aging::tenure_after`).
     pub tenure: u8,
     /// Young collections in a row since the last one that promoted much (`Heap::full_due`).
     pub quiet: u32,
@@ -232,6 +240,7 @@ impl Space {
             partial_free: 0,
             partial: std::array::from_fn(|_| Vec::new()),
             old_partial: std::array::from_fn(|_| Vec::new()),
+            mixed_partial: Vec::new(),
             large: BTreeMap::new(),
             large_bytes: 0,
             large_area: LargeArea::new(pages_end, base + reserve),
@@ -239,7 +248,7 @@ impl Space {
             live_after_gc: 0,
             live_after_full: 0,
             aging: Vec::new(),
-            tenure: super::mark::TENURE,
+            tenure: super::aging::TENURE,
             quiet: 0,
         }
     }
@@ -302,8 +311,8 @@ impl Space {
 
     /// An empty or fresh page of size class `class`, owned by the caller from now on (an old
     /// page, for `old_run`, if `old`).
-    fn take_page(&mut self, class: usize, old: bool) -> Option<usize> {
-        let cell = CLASS_SIZES[class] as usize;
+    pub(super) fn take_page(&mut self, class: usize, old: bool) -> Option<usize> {
+        let cell = if class == super::mixed::MIXED { super::mixed::GRANULE } else { CLASS_SIZES[class] as usize };
         // A recycled page keeps its memory committed (cheaper to clear than to fault in again).
         let addr = match self.empty.pop() {
             Some(a) => a,
@@ -332,6 +341,9 @@ impl Space {
             cursor: 0,
             owned: !old,
             old,
+            live: Default::default(),
+            sparse: false,
+            holes: Vec::new(),
         });
         Some(index)
     }
@@ -374,6 +386,9 @@ impl Space {
         if let Some(index) = self.page_index(addr) {
             let meta = self.pages[index].as_ref()?;
             let page = self.page_addr(index);
+            if meta.is_mixed() {
+                return super::mixed::find_object(meta, page, addr);
+            }
             let cell = meta.cell_of(addr - page);
             if cell >= meta.cells() {
                 return None;
@@ -407,6 +422,9 @@ mod tests {
             cursor: 0,
             owned: true,
             old: false,
+            live: Default::default(),
+            sparse: false,
+            holes: Vec::new(),
         };
         assert_eq!(meta.next_free_run(), Some((2, 5)));
         assert_eq!(meta.next_free_run(), Some((6, 64)));
@@ -427,6 +445,9 @@ mod tests {
                 cursor: 0,
                 owned: false,
                 old: false,
+                live: Default::default(),
+                sparse: false,
+                holes: Vec::new(),
             };
             for offset in (0..PAGE_SIZE).step_by(8) {
                 assert_eq!(meta.cell_of(offset), offset / size as usize, "size {size} offset {offset}");
