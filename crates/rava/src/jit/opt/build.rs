@@ -784,7 +784,7 @@ impl Builder {
             return None;
         }
         let cold = if taken == 0 { target } else { next };
-        self.speculates(self.sc.m, cold).then_some(taken == 0)
+        (self.speculates(self.sc.m, cold) && !exits_loop(self.sc.code, pc, cold)).then_some(taken == 0)
     }
 
     /// Ends the block by leaving compiled code at the current instruction.
@@ -792,6 +792,23 @@ impl Builder {
         let s = self.state();
         self.g.blocks[self.cur as usize].term = Term::Deopt(s);
     }
+}
+
+/// Whether going from the branch at `pc` to `to` leaves a loop around the branch: a backward
+/// jump at or after `pc` to at or before it, with `to` past that jump. Such an exit is never
+/// pruned however rarely profiled: a loop that ran into on-stack-replaced code left it there,
+/// where no profile counts it, and pruned, every later run of the loop would deoptimize at its
+/// end until the method is left in baseline code.
+fn exits_loop(code: &[u8], pc: usize, to: usize) -> bool {
+    let mut at = pc;
+    while at < code.len() && at < to {
+        let len = insn_len(code, at);
+        if crate::jit::analysis::successors(code, at, len).iter().any(|&t| t <= pc) && to > at && at + len <= to {
+            return true;
+        }
+        at += len;
+    }
+    false
 }
 
 /// Whether the edge from the branch at `pc` to `s` is a pruned direction.

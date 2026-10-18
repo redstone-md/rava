@@ -16,6 +16,9 @@ const MIN_PROFILE: u32 = 16;
 const MAX_CYCLIC: f32 = 0.95;
 /// Bound on the cyclic probability exits are scaled by (a loop measured to never exit).
 const MAX_EXIT_CYCLIC: f32 = 0.9999;
+/// The least probability a profiled branch direction gets (`out_edges`): with it a loop that
+/// never exited by its profile still hands its entry flow on (`MAX_EXIT_CYCLIC`).
+const MIN_PROB: f32 = 1e-4;
 
 struct Blocks {
     starts: Vec<usize>,
@@ -163,8 +166,13 @@ fn out_edges(m: &'static Method, code: &[u8], pc: usize, len: usize) -> Vec<(usi
     let succ = successors(code, pc, len);
     match code[pc] {
         0x99..=0xa6 | 0xc6 | 0xc7 => {
+            // Never quite 0 or 1: a direction the profile never saw may still be taken where
+            // the profile does not count, the exit of a loop that ran in on-stack-replaced code
+            // above all (the baseline code that profiles it never left the loop), and a loop
+            // with no exit at all would leave everything after it at frequency 0, its calls
+            // refused as cold.
             let taken = match crate::jit::profile::branch_counts(m, pc) {
-                Some((t, f)) if t + f >= MIN_PROFILE => t as f32 / (t + f) as f32,
+                Some((t, f)) if t + f >= MIN_PROFILE => (t as f32 / (t + f) as f32).clamp(MIN_PROB, 1.0 - MIN_PROB),
                 _ => 0.5,
             };
             vec![(succ[1], taken), (succ[0], 1.0 - taken)]
