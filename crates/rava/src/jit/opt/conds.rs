@@ -242,6 +242,31 @@ fn nonnull_phis(g: &Graph) -> std::collections::HashSet<V> {
     }
 }
 
+/// Whether what holds at the end of a merge's predecessor decides the merge's branch, for each
+/// asked edge: `(pred, merge)` to the branch's comparison with the operands as that
+/// predecessor brings them (a phi's input, a field of the object it brings).
+pub(super) fn edge_decisions(g: &Graph, asks: &std::collections::HashMap<(B, B), (Cmp, Ty, V, V)>) -> std::collections::HashMap<(B, B), bool> {
+    let mut out = std::collections::HashMap::new();
+    walk_with(g, &mut Facts(Vec::new(), nonnull_phis(g)), &mut |facts, g, p| {
+        let Term::Goto(m) = g.blocks[p as usize].term else { return };
+        let Some(&(cmp, ty, a, y)) = asks.get(&(p, m)) else { return };
+        let (a, y) = (g.resolve(a), g.resolve(y));
+        let null_test = (ty == Ty::A && matches!(cmp, Cmp::Eq | Cmp::Ne))
+            .then(|| match (g.constant(a), g.constant(y)) {
+                (None, Some(0)) => Some(a),
+                (Some(0), None) => Some(y),
+                _ => None,
+            })
+            .flatten()
+            .filter(|&x| facts.nonnull(g, x))
+            .map(|_| cmp == Cmp::Ne);
+        if let Some(r) = null_test.or_else(|| facts.decide(cmp, ty, key(g, a), key(g, y))) {
+            out.insert((p, m), r);
+        }
+    });
+    out
+}
+
 /// The dominator-tree walk alone: `end` sees each block's facts at its end.
 fn walk_with(g: &Graph, facts: &mut Facts, end: &mut dyn FnMut(&Facts, &Graph, B)) {
     let super::dom::Dom { rpo, idom, .. } = super::dom::Dom::new(g);

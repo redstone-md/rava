@@ -36,14 +36,14 @@ fn copy(g: &mut Graph, b: B, v: V) -> V {
 /// A read of a value: in block `b` by instruction or terminator, or on the edge from `b` into
 /// phi `phi` (the read happens at the end of `b`).
 #[derive(Clone, Copy)]
-enum Use {
+pub(super) enum Use {
     Inst(B, V),
     Term(B),
     Edge(B, V),
 }
 
 impl Use {
-    fn block(self) -> B {
+    pub(super) fn block(self) -> B {
         match self {
             Use::Inst(b, _) | Use::Term(b) | Use::Edge(b, _) => b,
         }
@@ -51,7 +51,7 @@ impl Use {
 }
 
 /// The real (non-state) reads of every value, aliases resolved.
-fn uses(g: &Graph) -> Vec<Vec<Use>> {
+pub(super) fn uses(g: &Graph) -> Vec<Vec<Use>> {
     let mut out = vec![Vec::new(); g.values.len()];
     for (b, blk) in g.blocks.iter().enumerate() {
         if matches!(blk.term, Term::None) {
@@ -140,7 +140,7 @@ fn split_loop(g: &mut Graph, dom: &Dom, index: &[usize], l: &Loop) {
 }
 
 /// Makes the reads `at` of `v` read `c` instead (`def`: each value's block).
-fn rename(g: &mut Graph, def: &[B], at: &[Use], v: V, c: V) {
+pub(super) fn rename(g: &mut Graph, def: &[B], at: &[Use], v: V, c: V) {
     let alias = std::mem::take(&mut g.alias);
     let is_v = |x: V| {
         let mut x = x;
@@ -168,7 +168,7 @@ fn rename(g: &mut Graph, def: &[B], at: &[Use], v: V, c: V) {
 
 /// Makes the states of the instructions and deoptimizing terminators of `blocks` read `c`
 /// where they read `v` (callers' states included), sharing rewritten states like the originals.
-fn rename_states(g: &mut Graph, blocks: &[B], v: V, c: V) {
+pub(super) fn rename_states(g: &mut Graph, blocks: &[B], v: V, c: V) {
     use std::collections::HashMap;
     use std::rc::Rc;
     fn remap(g: &Graph, s: &Rc<State>, v: V, c: V, done: &mut HashMap<*const State, Rc<State>>) -> Rc<State> {
@@ -203,6 +203,11 @@ fn rename_states(g: &mut Graph, blocks: &[B], v: V, c: V) {
         if let Term::Deopt(s) = &g.blocks[b as usize].term {
             let r = remap(g, &s.clone(), v, c, &mut done);
             g.blocks[b as usize].term = Term::Deopt(r);
+        }
+        // The entry state of a loop headed here, which hoisted checks deoptimize to (`rce.rs`).
+        if let Some(s) = g.loop_entry.get(&b).cloned() {
+            let r = remap(g, &s, v, c, &mut done);
+            g.loop_entry.insert(b, r);
         }
     }
 }

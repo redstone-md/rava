@@ -102,6 +102,27 @@ pub(super) fn instance_field(m: &'static Method, index: u16, o: usize) -> Option
     (final_trusted || (v != 0 && is_stable(holder, f))).then(|| embedded(v, f.ty))
 }
 
+/// The field at `offset` of the constant object `o`, if it is final and either trusted as a
+/// constant (`instance_field`) or declared by a class of `java/util` itself (`Optional.EMPTY`'s
+/// value): no other loader can define classes there, and the module opens the package to
+/// nobody, so only `Unsafe` could change such a field once constructed.
+pub(super) fn final_field_at(o: usize, offset: u32) -> Option<i64> {
+    let _heap = crate::gc::safepoint::heap_access();
+    if o == 0 {
+        return None;
+    }
+    let k = class_of(o);
+    let (holder, f) = std::iter::successors(Some(k), |c| c.super_klass).find_map(|c| c.fields.iter().find(|f| !f.is_static() && f.offset == offset).map(|f| (c, f)))?;
+    let n = holder.name.as_str();
+    let util = n.strip_prefix("java/util/").is_some_and(|rest| !rest.contains('/'));
+    if f.access & ACC_FINAL == 0 || !(util || trusts_instance_finals(holder)) {
+        return None;
+    }
+    // SAFETY: `o` is a live instance whose class (or a superclass) declares the field there.
+    let v = unsafe { read_slot(o + offset as usize, f.ty, true) };
+    Some(embedded(v, f.ty))
+}
+
 /// `getstatic index`, if the field is constant.
 pub(super) fn static_field(m: &'static Method, index: u16) -> Option<i64> {
     let _heap = crate::gc::safepoint::heap_access();

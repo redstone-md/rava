@@ -54,6 +54,7 @@ mod scratch;
 mod select;
 mod split;
 mod thread;
+mod fact_thread;
 mod typecheck;
 mod unroll;
 
@@ -212,6 +213,27 @@ fn compile_timed(m: &'static Method, osr: Option<u32>) -> Option<CompiledMethod>
     verify(&g, m, "typecheck::eliminate");
     conds::eliminate(&mut g);
     verify(&g, m, "conds::eliminate");
+    // Only where there are allocations to free from merges.
+    if env_once!("RAVA_NO_FACT_THREAD").is_none() && g.values.iter().any(|v| matches!(v.inst, ir::Inst::New(..))) {
+        // Before scalar replacement, so the objects these merges no longer merge can be. Each
+        // round can open the next: a merge split leaves the merge of the inlined test's boolean
+        // (`isPresent`), whose threading lets the object's next merge split. Rounds stop once
+        // one changes no edge.
+        let edges = |g: &ir::Graph| g.blocks.iter().enumerate().map(|(b, blk)| blk.term.successors().iter().map(|&s| (b + 1) * (s as usize + 7)).sum::<usize>()).sum::<usize>();
+        g.merge_chains();
+        let mut last = usize::MAX;
+        for _ in 0..4 {
+            if edges(&g) == last {
+                break;
+            }
+            last = edges(&g);
+            fact_thread::thread(&mut g);
+            phis::fold_trivial(&mut g);
+            thread::thread(&mut g);
+            g.merge_chains();
+        }
+        verify(&g, m, "fact_thread::thread");
+    }
     fields::forward(&mut g);
     verify(&g, m, "fields::forward");
     escape::eliminate(&mut g);
@@ -276,7 +298,8 @@ fn compile_timed(m: &'static Method, osr: Option<u32>) -> Option<CompiledMethod>
     verify(&g, m, "g.merge_chains");
     let dump = env_once!("RAVA_OPT_IR").is_some_and(|f| m.to_string().contains(f.to_str().unwrap_or("")));
     if dump {
-        eprintln!("[opt-ir] {m}\n{}", g.dump());
+        eprintln!("[opt-ir] {m}
+{}", g.dump());
     }
     conds::mark_nonnull_inputs(&mut g);
     verify(&g, m, "conds::mark_nonnull_inputs");
@@ -337,7 +360,9 @@ fn compile_timed(m: &'static Method, osr: Option<u32>) -> Option<CompiledMethod>
         let _ = std::fs::write(&file, unsafe { std::slice::from_raw_parts(entry as *const u8, code.len()) });
         // Where each value's code starts, for attributing samples to bytecode.
         let lines: Vec<String> = trace.iter().map(|(at, d)| format!("{at:x} {d}")).collect();
-        let _ = std::fs::write(crate::jit::code_cache::dump_path(&format!("rava-opt-{entry:x}.map")), lines.join("\n") + "\n");
+        let _ = std::fs::write(crate::jit::code_cache::dump_path(&format!("rava-opt-{entry:x}.map")), lines.join("
+") + "
+");
         eprintln!("[opt-dump] {m} -> {file}");
     }
     Some(CompiledMethod { entry, reg_entry: reg_entry.map_or(0, |r| entry + r), unresolved_deferrals: Default::default(), size: main, blocks: Vec::new(), frame_slots: extent as usize, tier: 2, optimized: true, deopts: Default::default() })
