@@ -895,7 +895,16 @@ impl Gen<'_> {
                     self.a.load(false, R::Rcx, mem(rx, 0));
                     let kk = self.class_operand(k);
                     self.cmp_class(None, kk);
+                    // A class that is not final may also be the object's ancestor at k's depth
+                    // (the display lists ancestors only).
+                    let lyes = self.a.new_label();
+                    if k.access & crate::klass::ACC_FINAL == 0 {
+                        let d = crate::jit::emit_obj::primary_depth(k).expect("a class");
+                        self.a.jcc(Cond::E, lyes);
+                        self.cmp_class(Some(mem(R::Rcx, std::mem::offset_of!(crate::klass::Klass, primary) as i32 + 8 * d as i32)), kk);
+                    }
                     self.a.jcc(Cond::Ne, lno);
+                    self.a.bind(lyes);
                     return self.edge(b, yes, next == Some(yes));
                 }
                 let class_word = [a, y].into_iter().map(|v| self.g.resolve(v)).find(|v| self.fused.contains(v)).and_then(|v| match *self.g.inst(v) {
@@ -1192,7 +1201,7 @@ fn fused_type_tests(g: &Graph) -> std::collections::HashSet<V> {
         };
         let Inst::InstanceOf(_, k) = *g.inst(v) else { continue };
         let leaf = matches!(k.kind, crate::klass::KlassKind::Instance) && k.access & crate::klass::ACC_FINAL != 0;
-        if leaf && last == Some(&v) && reads[v as usize] == 1 {
+        if (leaf || crate::jit::emit_obj::primary_depth(k).is_some()) && last == Some(&v) && reads[v as usize] == 1 {
             fused.insert(v);
         }
     }

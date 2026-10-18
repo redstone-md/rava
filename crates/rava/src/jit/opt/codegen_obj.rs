@@ -182,6 +182,31 @@ impl Gen<'_> {
                 }
             }
             Inst::InstanceOf(..) if self.fused.contains(&v) => {}
+            Inst::InstanceOf(x, k) if crate::jit::emit_obj::primary_depth(k).is_some() => {
+                // A class: the object's class is k, or (k not final) has k among its
+                // ancestors at k's depth (the display lists ancestors only).
+                let (done, null) = (self.a.new_label(), self.a.new_label());
+                let rx = self.reg(x, R::Rax);
+                if !self.g.nonnull_input.contains(&v) {
+                    self.a.test_rr(true, rx, rx);
+                    self.a.jcc(Cond::E, null);
+                }
+                self.a.load(false, R::Rcx, mem(rx, 0));
+                let kk = self.class_operand(k);
+                self.a.mov_ri(R::Rax, 1);
+                self.cmp_class(None, kk);
+                if k.access & crate::klass::ACC_FINAL == 0 {
+                    self.a.jcc(Cond::E, done);
+                    let d = crate::jit::emit_obj::primary_depth(k).unwrap();
+                    self.cmp_class(Some(mem(R::Rcx, std::mem::offset_of!(Klass, primary) as i32 + 8 * d as i32)), kk);
+                }
+                self.a.setcc(Cond::E, R::Rax);
+                self.a.jmp(done);
+                self.a.bind(null);
+                self.a.alu_rr(false, Alu::Xor, R::Rax, R::Rax);
+                self.a.bind(done);
+                self.put(v, R::Rax);
+            }
             Inst::InstanceOf(x, k) => {
                 let (done, null) = (self.a.new_label(), self.a.new_label());
                 let nonnull = self.g.nonnull_input.contains(&v);
