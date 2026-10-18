@@ -483,9 +483,19 @@ fn scan(g: &Graph, iv: &mut Intervals, full: &Intervals, loops: &LoopMap, hints:
             active.push(v);
             continue;
         }
-        // The register the calling convention brings or takes the value in (`hints.rs`).
+        // A register free here that a phi this value flows into, or (for a phi) one of its
+        // inputs, holds before or after it: the move on that edge goes (a loop's join phi
+        // takes the loop phi's register once that one is dead).
+        let related = match &g.values[v].inst {
+            Inst::Phi(ins) => ins.iter().map(|&i| g.resolve(i)).filter(|&i| i as usize != v).collect(),
+            _ => Vec::new(),
+        };
+        // Across a call only a callee-saved one, as the candidates prefer.
+        let keeps = |c: Loc| !crossing || matches!(c, Loc::Reg(r) if CALLEE_SAVED.contains(&r));
+        let free = phi_users[v].iter().chain(&related).map(|&x| loc[x as usize]).find(|&c| matches!(c, Loc::Reg(_) | Loc::Xmm(_)) && keeps(c) && allowed(c) && !taken(c, &active, &loc));
+        // The register the calling convention brings or takes the value in (`hints.rs`) first.
         let abi = hints[v].filter(|&c| !crossing && allowed(c) && !taken(c, &active, &loc));
-        if let Some(c) = abi.or_else(|| cands.iter().copied().find(|&c| !taken(c, &active, &loc))) {
+        if let Some(c) = abi.or(free).or_else(|| cands.iter().copied().find(|&c| !taken(c, &active, &loc))) {
             loc[v] = c;
             active.push(v);
             continue;
