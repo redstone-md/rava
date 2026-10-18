@@ -139,6 +139,11 @@ pub fn each(bits: &[u64], page: usize, from: usize, to: usize, mut f: impl FnMut
 /// Holes shorter than this are left alone (a run costs a marker a trip to the lock).
 const MIN_HOLE: usize = 256;
 
+/// Live share (percent) up to which a full collection empties a mixed page (G1's
+/// G1MixedGCLiveThresholdPercent is 85): half left the dead space of fuller pages unused, 0.5 GiB
+/// on All the Mods 10.
+const SPARSE_PERCENT: usize = 75;
+
 /// Notes the free ranges `holes` of mixed page `meta` (at `page`), each the space of objects
 /// that died since the last collection, for later copies.
 pub fn add_holes(meta: &mut PageMeta, page: usize, holes: &[(usize, usize)]) {
@@ -172,7 +177,7 @@ impl Space {
         Some((p, page, page + PAGE_SIZE))
     }
 
-    /// Before a full collection: mixed pages at most half live (by the last count) are emptied
+    /// Before a full collection: mixed pages at most SPARSE_PERCENT live (by the last count) are emptied
     /// by it, their objects moving into other pages as young ones do (what a root holds stays),
     /// so the space their dead objects left comes back; G1 picks its old regions the same way.
     pub fn select_sparse(&mut self) {
@@ -181,7 +186,7 @@ impl Space {
         }
         for meta in self.pages.iter_mut().flatten().filter(|m| m.is_mixed()) {
             let marked = meta.marks.iter().map(|w| w.count_ones() as usize).sum();
-            meta.sparse = live_bytes(meta, marked) <= PAGE_SIZE / 2;
+            meta.sparse = live_bytes(meta, marked) <= PAGE_SIZE * SPARSE_PERCENT / 100;
             if meta.sparse {
                 meta.holes = Vec::new();
             }
