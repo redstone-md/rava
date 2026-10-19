@@ -39,8 +39,8 @@ Self-contained · two-tier JIT to x86-64 · generational GC · the <code>java</c
 rava runs Java programs the way `java` does, with the same command line, output, exceptions
 and exit codes. It ships its own copy of the Java class library and implements every native
 method itself, so you do not need to install anything else. The main benchmark is a cold start
-of a Paper 1.21 Minecraft server. rava brings it up in about 1.2× HotSpot's time, with no
-snapshot, no archive and nothing tuned for the server. Once running, a modded server ticks
+of a Paper 1.21 Minecraft server. rava brings it up in about half of HotSpot's time on a desktop
+i5-14400F, with no snapshot, no archive and nothing tuned for the server. Once running, a modded server ticks
 faster than on HotSpot: All The Mods 10 runs its tick sprints about 10% faster on rava, with a
 quarter less CPU. It also runs the Minecraft client, vanilla and modded, from the usual
 launchers.
@@ -242,27 +242,22 @@ compilers, the collector and the object model are shared.
   <img src="https://gfx.redstone.md/strip?label=NUMBERS&note=against%20HotSpot%20on%20the%20same%20host&theme=dark" width="100%">
 </picture>
 
-Both run on the same 4-vCPU Xeon @ 2.1 GHz with JDK 21, in alternating rounds:
+Both run on the same desktop i5-14400F (32 GB, Windows 11) with JDK 21, pinned to the
+performance cores, in alternating rounds:
 
 | | rava | HotSpot | |
 |---|---:|---:|:---|
-| Paper 1.21.1, cold start to `Done` | **34.4 s** | 28.5 s | 1.2× |
-| Hello world | **92 ms** | 54 ms | 72 ms without HotSpot's class-data archive |
-| JNI call, `static int add(int, int)` | **10–13 ns** | 12–15 ns | at parity |
-| All The Mods 10 server, resident memory | **7.3 GB** | 8.2 GB | after two tick sprints |
+| Paper 1.21.1, cold start to `Done` | **8.5 s** | 16.5 s | 0.51×, median of 3 pairs |
+| Hello world | **59 ms** | 99 ms | 124 ms without HotSpot's class-data archive |
+| All The Mods 10 server tick | **26.2 ms** | 29.0 ms | 0.90×, rava ahead in every round |
+| All The Mods 10, CPU per round | **223–248 s** | 301–314 s | |
+| All The Mods 10, private memory | **6.2 GB** | 6.6–6.8 GB | after the tick sprints |
 
 HotSpot's hello world reads a class-data archive. rava never does: every launch starts from
-class files. Most of the server gap is world generation.
-
-On a desktop i5-14400F (JDK 21, both pinned to the P-cores), an All The Mods 10 server with a
-fixed mob scenario, one fresh world per round, three rounds of three 2000-tick sprints:
-
-| | rava | HotSpot | |
-|---|---:|---:|:---|
-| All The Mods 10 server tick | **26.2 ms** | 29.0 ms | 0.90×, rava ahead in every round |
-| CPU per round | **223–248 s** | 301–314 s | |
-
-Details and the other format are in [docs/performance-roadmap.md](docs/performance-roadmap.md).
+class files. JNI calls cost the same as on HotSpot (10–13 ns against 12–15 ns for
+`static int add(int, int)`, measured on a 4-vCPU Xeon). The tick rounds are a fresh world
+with a fixed mob scenario, three rounds of three 2000-tick sprints; details and another format
+are in [docs/performance-roadmap.md](docs/performance-roadmap.md).
 
 <br>
 
