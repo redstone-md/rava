@@ -28,6 +28,8 @@ mod imp {
     struct Sampled {
         id: u32,
         handle: HANDLE,
+        /// The `Thread` (its frame headers, for RAVA_SAMPLE_STACK).
+        thread: usize,
         cycles: u64,
         used: u64,
     }
@@ -44,7 +46,7 @@ mod imp {
     #[repr(C, align(16))]
     struct Ctx(CONTEXT);
 
-    pub fn attach_current() {
+    pub fn attach_current(thread: usize) {
         if !ON.load(Relaxed) {
             return;
         }
@@ -53,7 +55,7 @@ mod imp {
             let id = GetCurrentThreadId();
             let handle = OpenThread(THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT | THREAD_QUERY_LIMITED_INFORMATION, 0, id);
             if !handle.is_null() {
-                THREADS.lock().unwrap().push(Sampled { id, handle, cycles: 0, used: 0 });
+                THREADS.lock().unwrap().push(Sampled { id, handle, thread, cycles: 0, used: 0 });
             }
         }
     }
@@ -112,6 +114,11 @@ mod imp {
             let mut last_calls = 0;
             let mut ctx: Box<Ctx> = Box::new(unsafe { std::mem::zeroed() });
             let mut pcs: Vec<(u32, usize, usize, usize)> = Vec::with_capacity(512);
+            // RAVA_SAMPLE_STACK: also count each sample's Java stack from the frame headers,
+            // inlined frames at call sites included (`<file>.stacks.w<secs>`, folded).
+            let stacks = std::env::var_os("RAVA_SAMPLE_STACK").is_some();
+            let mut stacked = Stacks::default();
+            let mut words: Vec<usize> = Vec::new();
             loop {
                 std::thread::sleep(std::time::Duration::from_millis(1));
                 pcs.clear();
@@ -158,9 +165,17 @@ mod imp {
                                 let words = committed_above(sp).min(4096) / 8;
                                 origin = (1..words).map(|i| *(sp as *const usize).add(i)).find(|&a| crate::jit::code_cache::contains(a)).unwrap_or(0);
                             }
+                            if ok && stacks && s.thread != 0 {
+                                words.clear();
+                                words.push(pc);
+                                walk_headers(s.thread, &mut words);
+                            }
                             ResumeThread(s.handle);
                             if ok {
                                 pcs.push((s.id, pc, caller, origin));
+                                if stacks {
+                                    stacked.add(s.id, &words);
+                                }
                             }
                         }
                     }
@@ -178,6 +193,11 @@ mod imp {
                         used.insert(s.id, s.used);
                     }
                     let _ = std::fs::write(&path, report(&counts, &names, &used));
+                    if stacks {
+                        // Each ten seconds' stacks on their own (all of a run's would not fit).
+                        let _ = std::fs::write(format!("{}.stacks.w{}", path.to_string_lossy(), started.elapsed().as_secs()), stacked.report(&names));
+                        stacked.refresh();
+                    }
                     if windowed {
                         let _ = std::fs::write(format!("{}.w{}", path.to_string_lossy(), started.elapsed().as_secs()), report(&window, &names, &used));
                         window.clear();
@@ -210,6 +230,140 @@ mod imp {
                 }
             }
         });
+    }
+
+    /// Stack counts of the last ten seconds: per thread and folded stack (Java frames from the
+    /// headers, inlined ones at call sites included; the pc's compiled method named by the code
+    /// cache as of the last report, `?` for code compiled since).
+    #[derive(Default)]
+    struct Stacks {
+        code: std::collections::BTreeMap<usize, (usize, String)>,
+        window: HashMap<(u32, String), u64>,
+        seen: Vec<String>,
+        /// Each loaded class's methods: (address, count), sorted.
+        methods: Vec<(usize, usize)>,
+    }
+
+    // `InlinedSite` is read as the (pointer, length) of its frames, each a (method, bci) pair.
+    const _: () = assert!(std::mem::size_of::<crate::thread::InlinedSite>() == 16 && std::mem::size_of::<(&crate::method::Method, i32)>() == 16);
+
+    /// Copies words at `at` without faulting on unmapped memory.
+    fn copy(at: usize, out: &mut [usize]) -> bool {
+        use windows_sys::Win32::System::Diagnostics::Debug::ReadProcessMemory;
+        use windows_sys::Win32::System::Threading::GetCurrentProcess;
+        let mut got = 0usize;
+        // SAFETY: the system checks the source range; the destination is `out`.
+        unsafe { ReadProcessMemory(GetCurrentProcess(), at as *const _, out.as_mut_ptr() as *mut _, out.len() * 8, &mut got) != 0 && got == out.len() * 8 }
+    }
+
+    impl Stacks {
+        /// `words`: the pc, then `walk_headers`' pairs.
+        fn add(&mut self, thread: u32, words: &[usize]) {
+            use crate::thread::header;
+            self.seen.clear();
+            let pc = words[0];
+            let leaf = match self.code.range(..=pc).next_back() {
+                Some((&start, (size, name))) if pc < start + size => name.clone(),
+                _ => "?".into(),
+            };
+            self.seen.push(leaf);
+            let push = |seen: &mut Vec<String>, m: &crate::method::Method| seen.push(format!("{m}"));
+            // `top` stays at the last header published: callees that returned since (the pc's
+            // method called them) are dead. Their chain leads back to the pc's own frame.
+            let key = self.seen[0].split(' ').next().unwrap_or("").to_string();
+            let pairs = &words[1..];
+            let live = pairs.chunks_exact(2).take(8).position(|p| self.is_method(p[0]) && format!("{}", unsafe { &*(p[0] as *const crate::method::Method) }) == key);
+            // The pc's own frame is not in a call: its BCI slot names the last call it made.
+            for (i, pair) in pairs[2 * live.unwrap_or(0)..].chunks_exact(2).enumerate() {
+                let (m, bci) = (pair[0], pair[1] as u64);
+                if m == 0 || m % 8 != 0 {
+                    continue;
+                }
+                // A header past `top`'s live frames holds stale words: only methods of loaded
+                // classes are read, and site pointers through fault-safe reads.
+                if !self.is_method(m) {
+                    continue;
+                }
+                // SAFETY: checked to be a method; the site's words are copied, not dereferenced.
+                unsafe {
+                    let mut inlined = false;
+                    if !(i == 0 && live.is_some()) && (header::SITE_MIN..header::SITE_END).contains(&bci) && bci % 8 == 0 {
+                        let mut fat = [0usize; 2];
+                        if copy(bci as usize, &mut fat) && fat[1] > 0 && fat[1] < 256 {
+                            let mut frames = vec![0usize; 2 * fat[1]];
+                            if copy(fat[0], &mut frames) && frames.chunks_exact(2).all(|f| self.is_method(f[0])) {
+                                for f in frames.chunks_exact(2) {
+                                    push(&mut self.seen, &*(f[0] as *const crate::method::Method));
+                                }
+                                inlined = true;
+                            }
+                        }
+                    }
+                    // The pc's own frame is the leaf already.
+                    if !inlined && !(i == 0 && live.is_some()) {
+                        push(&mut self.seen, &*(m as *const crate::method::Method));
+                    }
+                }
+            }
+            // Folded, outermost first (a flame graph's input).
+            let mut folded = String::new();
+            for (i, name) in self.seen.iter().rev().enumerate() {
+                if i > 0 {
+                    folded.push(';');
+                }
+                folded += name;
+            }
+            *self.window.entry((thread, folded)).or_default() += 1;
+        }
+
+        fn refresh(&mut self) {
+            self.code = crate::jit::code_cache::names();
+            self.methods = crate::vm::vm().all_classes.lock().unwrap().iter().map(|k| k.methods()).filter(|m| !m.is_empty()).map(|m| (m.as_ptr() as usize, m.len())).collect();
+            self.methods.sort_unstable();
+            self.window.clear();
+        }
+
+        /// Whether `m` is a method of a class loaded by the last report.
+        fn is_method(&self, m: usize) -> bool {
+            let size = std::mem::size_of::<crate::method::Method>();
+            let i = self.methods.partition_point(|&(start, _)| start <= m);
+            i > 0 && {
+                let (start, n) = self.methods[i - 1];
+                m < start + n * size && (m - start) % size == 0
+            }
+        }
+
+        fn report(&self, names: &HashMap<u32, String>) -> String {
+            let mut rows: Vec<_> = self.window.iter().collect();
+            rows.sort_by(|a, b| b.1.cmp(a.1));
+            let mut out = String::new();
+            for ((id, name), n) in rows.into_iter() {
+                out += &format!("{n}\t{}\t{name}\n", names.get(id).map_or("?", |s| s.as_str()));
+            }
+            out
+        }
+    }
+
+    /// Appends, for each frame header from `thread`'s `top` outwards, its method and BCI slot
+    /// (a pair of words). Called while the thread is suspended; a header whose caller link
+    /// does not lead outwards (the value stack grows up) ends the walk.
+    unsafe fn walk_headers(thread: usize, out: &mut Vec<usize>) {
+        use crate::thread::{header, offsets};
+        let stack = (*(thread as *const crate::thread::Thread)).value_stack();
+        let mut h = *((thread + offsets::TOP as usize) as *const usize);
+        for _ in 0..4096 {
+            if h % 8 != 0 || !stack.contains(&h) || !stack.contains(&(h + 8 * header::SLOTS)) {
+                return;
+            }
+            let p = h as *const usize;
+            out.push(*p.add(header::METHOD));
+            out.push(*p.add(header::BCI));
+            let c = *p.add(header::CALLER);
+            if c >= h || h - c > 64 << 20 {
+                return;
+            }
+            h = c;
+        }
     }
 
     /// The address range of a loaded module.
@@ -331,7 +485,7 @@ mod imp {
 
 #[cfg(not(windows))]
 mod imp {
-    pub fn attach_current() {}
+    pub fn attach_current(_: usize) {}
     pub fn detach_current() {}
     pub fn start() {}
 }

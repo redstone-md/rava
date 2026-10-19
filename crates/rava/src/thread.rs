@@ -132,6 +132,12 @@ unsafe impl Send for ValueStack {}
 unsafe impl Sync for ValueStack {}
 
 impl Thread {
+    /// The value stack's address range (`sampler`).
+    pub(crate) fn value_stack(&self) -> std::ops::Range<usize> {
+        let base = self.stack.as_ptr() as usize;
+        base..base + self.stack.len() * 8
+    }
+
     pub fn new() -> Thread {
         let stack = ValueStack::new();
         let sp = stack.as_ptr() as *mut u64;
