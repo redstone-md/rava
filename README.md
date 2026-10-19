@@ -40,8 +40,10 @@ rava runs Java programs the way `java` does, with the same command line, output,
 and exit codes. It ships its own copy of the Java class library and implements every native
 method itself, so you do not need to install anything else. The main benchmark is a cold start
 of a Paper 1.21 Minecraft server. rava brings it up in about 1.2× HotSpot's time, with no
-snapshot, no archive and nothing tuned for the server. It also runs the Minecraft client,
-vanilla and modded, from the usual launchers.
+snapshot, no archive and nothing tuned for the server. Once running, a modded server ticks
+faster than on HotSpot: All The Mods 10 runs its tick sprints about 10% faster on rava, with a
+quarter less CPU. It also runs the Minecraft client, vanilla and modded, from the usual
+launchers.
 
 > [!WARNING]
 > **Alpha.** rava runs real servers and games, but expect crashes and differences from HotSpot.
@@ -251,6 +253,16 @@ Both run on the same 4-vCPU Xeon @ 2.1 GHz with JDK 21, in alternating rounds:
 
 HotSpot's hello world reads a class-data archive. rava never does: every launch starts from
 class files. Most of the server gap is world generation.
+
+On a desktop i5-14400F (JDK 21, both pinned to the P-cores), an All The Mods 10 server with a
+fixed mob scenario, one fresh world per round, three rounds of three 2000-tick sprints:
+
+| | rava | HotSpot | |
+|---|---:|---:|:---|
+| All The Mods 10 server tick | **26.2 ms** | 29.0 ms | 0.90×, rava ahead in every round |
+| CPU per round | **223–248 s** | 301–314 s | |
+
+Details and the other format are in [docs/performance-roadmap.md](docs/performance-roadmap.md).
 
 <br>
 

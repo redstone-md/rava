@@ -125,10 +125,35 @@ Rules that keep it correct:
   it while it runs.
 - GC. Values live in registers and native spill slots, and the conservative stack scan covers
   both. The collector never moves objects.
+- Saves around calls follow block liveness (`liveness::live_after_calls`). A linear-scan
+  interval also covers blocks laid out between a definition and a use on another path. A
+  value dead after a call is therefore not saved; one read only by the call's own state is
+  restored only on the way to its deoptimization.
+- Interface type checks (`instanceof`, `checkcast`) compare the class's last hit, then probe
+  the class's interface set (`Klass::iface_set`): an open-addressed table at most half full,
+  probed from a hash of the interface that is a constant in the code. A miss ends at an empty
+  slot after one or two probes. HotSpot 21 scans its secondary supers linearly, and so did
+  this tier, so every "no" answer read all of a class's interfaces (dozens for modded entity
+  classes).
+- Exact receiver types. Behind a class guard, the inlined body's receiver has exactly that
+  class, so its own calls on `this` dispatch statically (C2's type-based devirtualization).
+  This matters most where a profile is shared and polluted: the profile of an interface's
+  default method holds every implementation that ran it, world generation included.
+- `StringLatin1.equals` is compared inline: lengths, then eight bytes at a time, the last
+  word again overlapping, and a short array's single word with the bytes past its end
+  shifted out.
 
 Debugging: `RAVA_OPT=0` (baseline tier 2 only), `RAVA_OPT=all` (compile everything
 with this tier), `RAVA_OPT_LOG`, `RAVA_OPT_IR=<method>` (IR and allocation), `RAVA_OPT_SPLIT=0`, `RAVA_INLINE_LOG`,
 `RAVA_DEOPT_LOG`, `RAVA_JIT_DUMP=<method>`, `RAVA_JIT_STATS`.
+
+Profiling (Windows, `sampler.rs`): `RAVA_SAMPLE=<file>` samples every Java thread's pc each
+millisecond. `RAVA_SAMPLE_WINDOW=1` also writes each ten seconds on its own (`<file>.w<secs>`).
+`RAVA_SAMPLE_DETAIL=<name part>` counts compiled methods per instruction offset and records
+the instruction's bytes; `/` matches every method. Grouping those rows by instruction shape
+across methods finds a pattern repeated everywhere (the interface scan above was one).
+`RAVA_SAMPLE_STACK=1` writes folded stacks from the frame headers, inlined frames included
+(`<file>.stacks.w<secs>`), for inclusive comparison with a JFR recording.
 
 ## Next
 
