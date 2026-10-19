@@ -129,8 +129,8 @@ about 2009 on (SSE4.2) will do, and rava uses newer instruction sets when the pr
 <td>
 
 ```sh
-tar xzf rava-0.0.1-alpha-linux-x86_64.tar.gz
-export PATH="$PWD/rava-0.0.1-alpha-linux-x86_64/bin:$PATH"
+tar xzf rava-0.0.2-alpha-linux-x86_64.tar.gz
+export PATH="$PWD/rava-0.0.2-alpha-linux-x86_64/bin:$PATH"
 rava -version
 ```
 
@@ -138,8 +138,8 @@ rava -version
 <td>
 
 ```powershell
-Expand-Archive rava-0.0.1-alpha-windows-x86_64.zip .
-$env:Path = "$PWD\rava-0.0.1-alpha-windows-x86_64\bin;$env:Path"
+Expand-Archive rava-0.0.2-alpha-windows-x86_64.zip .
+$env:Path = "$PWD\rava-0.0.2-alpha-windows-x86_64\bin;$env:Path"
 rava -version
 ```
 

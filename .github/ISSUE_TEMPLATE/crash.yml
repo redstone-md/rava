@@ -17,7 +17,7 @@ body:
     id: version
     attributes:
       label: rava version
-      placeholder: 0.0.1-alpha
+      placeholder: 0.0.2-alpha
     validations:
       required: true
   - type: dropdown

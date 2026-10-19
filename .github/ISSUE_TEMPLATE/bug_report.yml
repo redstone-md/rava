@@ -18,7 +18,7 @@ body:
     attributes:
       label: rava version
       description: The first lines of `rava -version`.
-      placeholder: rava (build 0.0.1-alpha, mixed mode)
+      placeholder: rava (build 0.0.2-alpha, mixed mode)
     validations:
       required: true
   - type: dropdown
