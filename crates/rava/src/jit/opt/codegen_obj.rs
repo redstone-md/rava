@@ -466,23 +466,27 @@ impl Gen<'_> {
             self.a.jmp(after);
         } else {
             if k.is_interface() {
-                // An interface: one of the class's interfaces, all of which (inherited ones
-                // included) its flattened itable lists; the runtime only for a class whose
-                // itable is not built yet.
-                let (scan, no, slow) = (self.a.new_label(), self.a.new_label(), self.a.new_label());
+                // An interface: probed in the class's interface set (inherited ones included),
+                // a miss ending at an empty slot; the runtime only for a class whose set is not
+                // built yet.
+                let (probe, found, no, slow) = (self.a.new_label(), self.a.new_label(), self.a.new_label(), self.a.new_label());
                 let hit = std::mem::offset_of!(Klass, super_hit) as i32;
                 self.cmp_class(Some(mem(R::Rcx, hit)), kk);
                 self.a.jcc(Cond::E, done);
-                self.a.load(true, R::R11, mem(R::Rcx, std::mem::offset_of!(Klass, itable_raw) as i32));
+                self.a.load(true, R::R11, mem(R::Rcx, std::mem::offset_of!(Klass, iface_set) as i32));
                 self.a.test_rr(true, R::R11, R::R11);
                 self.a.jcc(Cond::E, slow);
-                self.a.load(true, R::Rax, mem(R::R11, 0));
-                self.a.bind(scan);
-                self.a.alu_ri(true, Alu::Add, R::R11, 16);
-                self.a.alu_ri(true, Alu::Sub, R::Rax, 1);
-                self.a.jcc(Cond::L, no);
-                self.cmp_class(Some(mem(R::R11, -8)), kk);
-                self.a.jcc(Cond::Ne, scan);
+                self.a.mov_ri(R::Rax, crate::klass::iface_hash(k) as i64);
+                self.a.bind(probe);
+                self.a.alu_rm(true, Alu::And, R::Rax, mem(R::R11, 0));
+                let slot = crate::jit::asm::mem_idx(R::R11, R::Rax, 8, 8);
+                self.cmp_class(Some(slot), kk);
+                self.a.jcc(Cond::E, found);
+                self.a.alu_mi(true, Alu::Cmp, slot, 0);
+                self.a.jcc(Cond::E, no);
+                self.a.alu_ri(true, Alu::Add, R::Rax, 1);
+                self.a.jmp(probe);
+                self.a.bind(found);
                 match kk {
                     Some(imm) => self.a.store_imm(mem(R::Rcx, hit), imm),
                     None => self.a.store(true, mem(R::Rcx, hit), R::Rdx),

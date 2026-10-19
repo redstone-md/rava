@@ -287,6 +287,11 @@ pub extern "sysv64" fn note_receiver(k: *const Klass, cell: *const IcCell) {
 
 /// A one-entry type-check cache: the last class that passed `subtype` against `target`.
 pub extern "sysv64" fn subtype_cached(k: *const Klass, target: *const Klass, cell: *const std::sync::atomic::AtomicUsize) -> u64 {
+    // The class's interface set, for the inline check of the next test against an interface.
+    // SAFETY: immortal class metadata.
+    if unsafe { &*target }.is_interface() {
+        crate::klass::iface_set_of(unsafe { &*k });
+    }
     let ok = subtype(k, target);
     if ok == 1 {
         // SAFETY: a leaked per-site cell.

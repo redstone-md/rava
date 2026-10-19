@@ -123,6 +123,11 @@ pub struct Klass {
     /// one did): a cast to it compares this word, one load from the class instead of the two
     /// `itable_hit` needs.
     pub(crate) super_hit: AtomicPtr<Klass>,
+    /// Every interface this class implements as an open-addressed hash set for type checks:
+    /// `[mask, slots...]`, a slot an interface's address or 0, the probe starting at
+    /// `iface_hash(i) & mask` (half full at most, so a miss ends at an empty slot soon; HotSpot 21
+    /// scans its secondary supers). Null until first built (`iface_set_of`).
+    pub(crate) iface_set: AtomicPtr<u64>,
     pub(crate) mirror: AtomicPtr<crate::heap::ObjHeader>,
     pub name: Symbol,
     pub kind: KlassKind,
@@ -242,6 +247,7 @@ impl Klass {
             itable_raw: AtomicPtr::new(std::ptr::null_mut()),
             itable_hit: AtomicPtr::new(NO_ITABLE_HIT[1..].as_ptr() as *mut usize),
             super_hit: AtomicPtr::new(std::ptr::null_mut()),
+            iface_set: AtomicPtr::new(std::ptr::null_mut()),
             hidden: p.hidden,
             nest_host: OnceLock::new(),
             vtable_ptr: AtomicPtr::new(std::ptr::null_mut()),
@@ -354,6 +360,37 @@ impl Klass {
             _ if target.is_interface() => self.all_interfaces.iter().any(|i| std::ptr::eq(*i, target)),
             _ => self.supers().any(|k| std::ptr::eq(k, target)),
         }
+    }
+}
+
+/// Where the probe for interface `i` starts in an `iface_set` (an index before masking, below
+/// 2^31 so generated code takes it as an immediate).
+pub fn iface_hash(i: &Klass) -> u64 {
+    let a = i as *const Klass as u64 >> 3;
+    (a.wrapping_mul(0x9E37_79B9_7F4A_7C15) >> 33) & 0x7FFF_FFFF
+}
+
+/// `k.iface_set`, built on first use (in the low arena, read by generated code).
+pub fn iface_set_of(k: &'static Klass) -> *const u64 {
+    use std::sync::atomic::Ordering;
+    let set = k.iface_set.load(Ordering::Acquire);
+    if !set.is_null() {
+        return set;
+    }
+    let slots = (2 * k.all_interfaces.len()).max(1).next_power_of_two();
+    let mut table = vec![0u64; slots + 1];
+    table[0] = slots as u64 - 1;
+    for &i in k.all_interfaces.iter() {
+        let mut at = iface_hash(i) as usize & (slots - 1);
+        while table[1 + at] != 0 {
+            at = (at + 1) & (slots - 1);
+        }
+        table[1 + at] = i as *const Klass as u64;
+    }
+    let built = crate::low::leak_slice(table).as_ptr() as *mut u64;
+    match k.iface_set.compare_exchange(std::ptr::null_mut(), built, Ordering::AcqRel, Ordering::Acquire) {
+        Ok(_) => built,
+        Err(other) => other,
     }
 }
 
