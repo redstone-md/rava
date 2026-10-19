@@ -443,7 +443,12 @@ mod imp {
         let detail = std::env::var("RAVA_SAMPLE_DETAIL").ok();
         let mut label_of = |pc: usize| match code.range(..=pc).next_back() {
             Some((&start, (size, name))) if pc < start + size => match &detail {
-                Some(d) if name.contains(d.as_str()) => format!("{name} @{start:#x}+{:#x}", pc - start),
+                // With the instruction's bytes (to classify instructions without a dump).
+                Some(d) if name.contains(d.as_str()) => {
+                    let mut w = [0usize; 2];
+                    let bytes = if copy(pc, &mut w) { w.iter().flat_map(|x| x.to_le_bytes()).map(|b| format!("{b:02x}")).collect::<String>() } else { String::new() };
+                    format!("{name} @{start:#x}+{:#x} #{bytes}", pc - start)
+                }
                 _ => name.clone(),
             },
             _ => match crate::os::module(pc, &mut buf) {
@@ -476,7 +481,7 @@ mod imp {
         for (thread, c) in cpu.into_iter().take(40) {
             out += &format!("cpu\t{:.2}\t{thread}\n", c as f64 / 1e9);
         }
-        for ((thread, label), n) in rows.into_iter().take(3000) {
+        for ((thread, label), n) in rows.into_iter().take(if detail.is_some() { 1 << 20 } else { 3000 }) {
             out += &format!("{n}\t{thread}\t{label}\n");
         }
         out
