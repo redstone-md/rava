@@ -76,10 +76,11 @@ fn background() -> bool {
 fn queue() -> &'static Queue {
     static Q: OnceLock<Queue> = OnceLock::new();
     Q.get_or_init(|| {
-        // A compiler thread per core (up to 8), at the application's priority as HotSpot's are:
-        // at a lower one (`RAVA_COMPILER_NICE`) they starved while world generation kept every
-        // core busy, and its hottest methods ran first-tier code for 10-30 s longer (a Paper
-        // start took 19-52 s instead of 17-20 s).
+        // A compiler thread per core (up to 8), raised as HotSpot's are on Windows
+        // (`os::vm_thread_priority`): at a lower priority (`RAVA_COMPILER_NICE`) they starved while
+        // world generation kept every core busy, and its hottest methods ran first-tier code for
+        // 10-30 s longer (a Paper start took 19-52 s instead of 17-20 s); at the application's,
+        // other programs keeping every core busy held a Paper start to 400-500 s.
         let workers = std::env::var("RAVA_COMPILER_THREADS").ok().and_then(|v| v.parse().ok()).unwrap_or_else(|| crate::processors().clamp(2, 8));
         let nice = std::env::var("RAVA_COMPILER_NICE").ok().and_then(|v| v.parse().ok()).unwrap_or(0);
         for i in 0..workers {
@@ -87,6 +88,8 @@ fn queue() -> &'static Queue {
                 if nice != 0 {
                     // SAFETY: plain syscalls on the calling thread.
                     crate::os::lower_priority(nice);
+                } else {
+                    crate::os::vm_thread_priority();
                 }
                 work()
             }).expect("spawn a compiler thread");

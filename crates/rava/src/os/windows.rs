@@ -308,6 +308,16 @@ pub fn current_stack() -> (usize, usize) {
     (low, high - low)
 }
 
+/// Raises the calling VM thread (compiler, collector helper) to the highest normal priority, as
+/// HotSpot runs its compiler and GC threads on Windows (`CompilerThreadPriority`,
+/// `GCThreadPriority`): at the application's priority they starved while every core ran other
+/// work, and Java threads then waited on compilations and collections that barely ran.
+pub fn vm_thread_priority() {
+    use windows_sys::Win32::System::Threading::THREAD_PRIORITY_HIGHEST;
+    // SAFETY: changes the calling thread's own priority.
+    unsafe { SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST) };
+}
+
 pub fn lower_priority(_nice: i32) {
     // SAFETY: changes the calling thread's own priority.
     unsafe { SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL) };

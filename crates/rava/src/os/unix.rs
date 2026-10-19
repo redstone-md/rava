@@ -289,6 +289,10 @@ pub fn current_stack() -> (usize, usize) {
 }
 
 /// Runs the calling thread at a lower priority (a nice value above 0).
+/// VM threads keep the default priority on Unix, as HotSpot's do there (raising one needs
+/// privileges).
+pub fn vm_thread_priority() {}
+
 pub fn lower_priority(nice: i32) {
     #[cfg(target_os = "linux")]
     // SAFETY: changes the calling thread's own priority.

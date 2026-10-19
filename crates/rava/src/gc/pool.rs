@@ -63,6 +63,8 @@ pub(super) fn run(helpers: usize, job: &(dyn Fn() + Sync)) {
 }
 
 fn helper(index: usize) {
+    // Every Java thread waits for a collection: its helpers run ahead of other work.
+    crate::os::vm_thread_priority();
     let p = pool();
     let mut seen = 0;
     let mut s = p.state.lock().unwrap();
