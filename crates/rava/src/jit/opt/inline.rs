@@ -438,19 +438,25 @@ impl Builder {
                     }
                 }
             }
+            // Inputs that agree; else what a guard established for the phi itself (below).
             Inst::Phi(inputs) if depth > 0 && self.complete_phis.contains(&r) => {
-                let mut k: Option<&'static Klass> = None;
-                for &x in inputs {
-                    if or_null && self.g.ty(r) == Ty::A && self.g.constant_value(x) == Some(0) {
-                        continue;
+                let agreed = (|| {
+                    let mut k: Option<&'static Klass> = None;
+                    for &x in inputs {
+                        if or_null && self.g.ty(r) == Ty::A && self.g.constant_value(x) == Some(0) {
+                            continue;
+                        }
+                        let c = self.exact_class_within(x, depth - 1, or_null)?;
+                        if k.is_some_and(|k| !std::ptr::eq(k, c)) {
+                            return None;
+                        }
+                        k = Some(c);
                     }
-                    let c = self.exact_class_within(x, depth - 1, or_null)?;
-                    if k.is_some_and(|k| !std::ptr::eq(k, c)) {
-                        return None;
-                    }
-                    k = Some(c);
+                    k
+                })();
+                if agreed.is_some() {
+                    return agreed;
                 }
-                return k;
             }
             _ => {}
         }
@@ -460,7 +466,7 @@ impl Builder {
         if let Some(o) = self.g.constant(r).filter(|&o| o != 0 && self.g.ty(r) == Ty::A) {
             return Some(crate::jit::fold::class_of(o as usize));
         }
-        self.exact.iter().rev().find(|&&(x, _)| x == v).map(|&(_, k)| k).or_else(|| self.facts.exact(v))
+        self.exact.iter().rev().find(|&&(x, _)| self.g.resolve(x) == r).map(|&(_, k)| k).or_else(|| self.facts.exact(v))
     }
 
     /// The receiver's class word: 32 bits at offset 0, zero-extended (classes live in low memory).
