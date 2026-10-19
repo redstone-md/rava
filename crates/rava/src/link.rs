@@ -350,6 +350,20 @@ pub(crate) fn itable_of(k: &'static Klass) -> &'static [crate::klass::Itable] {
             raw.extend([*iface, headed[1..].as_ptr() as usize]);
         }
         let raw = crate::low::leak_slice(raw);
+        // The blocks by interface, for dispatch at a megamorphic site (`Klass::itable_set`).
+        let slots = (2 * itable.len()).max(1).next_power_of_two();
+        let mut set = vec![0u64; 1 + 2 * slots];
+        set[0] = 2 * (slots as u64 - 1);
+        for pair in raw[1..].chunks(2) {
+            // SAFETY: an interface of this class (immortal).
+            let mut at = crate::klass::iface_hash(unsafe { &*(pair[0] as *const crate::klass::Klass) }) as usize & (slots - 1);
+            while set[1 + 2 * at] != 0 {
+                at = (at + 1) & (slots - 1);
+            }
+            set[1 + 2 * at] = pair[0] as u64;
+            set[2 + 2 * at] = pair[1] as u64;
+        }
+        k.itable_set.store(crate::low::leak_slice(set).as_ptr() as *mut u64, std::sync::atomic::Ordering::Release);
         k.itable_raw.store(raw.as_ptr() as *mut usize, std::sync::atomic::Ordering::Release);
     }
     itable

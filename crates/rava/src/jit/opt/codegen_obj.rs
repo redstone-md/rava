@@ -946,17 +946,23 @@ impl Gen<'_> {
             self.a.load(true, R::Rax, mem(k, hit));
             self.a.alu_rm(true, Alu::Cmp, R::Rsi, mem(R::Rax, -8));
             self.a.jcc(Cond::E, block);
-            self.a.load(true, R::Rax, mem(k, offset_of!(Klass, itable_raw) as i32));
+            // Else the class's blocks by interface (`Klass::itable_set`), probed from the
+            // interface's hash (doubled: two words a slot); an empty slot means no block.
+            self.a.load(true, R::Rax, mem(k, offset_of!(Klass, itable_set) as i32));
             self.a.test_rr(true, R::Rax, R::Rax);
             self.a.jcc(Cond::E, learn);
-            self.a.load(true, R::R11, mem(R::Rax, 0));
+            self.a.mov_ri(R::R11, 2 * crate::klass::iface_hash(m.holder) as i64);
             self.a.bind(scan);
-            self.a.alu_ri(true, Alu::Add, R::Rax, 16);
-            self.a.alu_ri(true, Alu::Sub, R::R11, 1);
-            self.a.jcc(Cond::L, learn);
-            self.a.alu_rm(true, Alu::Cmp, R::Rsi, mem(R::Rax, -8));
-            self.a.jcc(Cond::Ne, scan);
-            self.a.load(true, R::Rax, mem(R::Rax, 0));
+            self.a.alu_rm(true, Alu::And, R::R11, mem(R::Rax, 0));
+            self.a.alu_rm(true, Alu::Cmp, R::Rsi, mem_idx(R::Rax, R::R11, 8, 8));
+            let probed = self.a.new_label();
+            self.a.jcc(Cond::E, probed);
+            self.a.alu_mi(true, Alu::Cmp, mem_idx(R::Rax, R::R11, 8, 8), 0);
+            self.a.jcc(Cond::E, learn);
+            self.a.alu_ri(true, Alu::Add, R::R11, 2);
+            self.a.jmp(scan);
+            self.a.bind(probed);
+            self.a.load(true, R::Rax, mem_idx(R::Rax, R::R11, 8, 16));
             self.a.store(true, mem(k, hit), R::Rax);
             self.a.bind(block);
             self.a.load(true, R::Rax, mem(R::Rax, 8 * m.index() as i32));

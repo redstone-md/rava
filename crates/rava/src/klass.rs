@@ -128,6 +128,10 @@ pub struct Klass {
     /// `iface_hash(i) & mask` (half full at most, so a miss ends at an empty slot soon; HotSpot 21
     /// scans its secondary supers). Null until first built (`iface_set_of`).
     pub(crate) iface_set: AtomicPtr<u64>,
+    /// The itable's blocks by interface for dispatch, as `iface_set` but with two words a slot:
+    /// `[2 * mask, (interface, block)...]`, the probe at `2 * (iface_hash(i) & mask)`. Null until
+    /// the itable is built (`link::itable_of`).
+    pub(crate) itable_set: AtomicPtr<u64>,
     pub(crate) mirror: AtomicPtr<crate::heap::ObjHeader>,
     pub name: Symbol,
     pub kind: KlassKind,
@@ -248,6 +252,7 @@ impl Klass {
             itable_hit: AtomicPtr::new(NO_ITABLE_HIT[1..].as_ptr() as *mut usize),
             super_hit: AtomicPtr::new(std::ptr::null_mut()),
             iface_set: AtomicPtr::new(std::ptr::null_mut()),
+            itable_set: AtomicPtr::new(std::ptr::null_mut()),
             hidden: p.hidden,
             nest_host: OnceLock::new(),
             vtable_ptr: AtomicPtr::new(std::ptr::null_mut()),
