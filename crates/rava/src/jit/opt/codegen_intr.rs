@@ -208,6 +208,7 @@ impl Gen<'_> {
                 self.a.bind(done);
                 self.put(v, R::Rax);
             }
+            Intrinsic::Leaf(crate::jit::leaf::Leaf::Latin1Equals) => self.latin1_equals(v, args),
             Intrinsic::Leaf(l) => {
                 self.call_preserving_vals(l.address(), args);
                 let r = self.out(v);
@@ -381,6 +382,60 @@ impl Gen<'_> {
                 self.a.alu_rr(true, Alu::And, R::Rax, R::R11);
             }
         }
+        self.put(v, R::Rax);
+    }
+
+    /// `StringLatin1.equals` inline (HotSpot's `arrays_equals`): the lengths, then eight bytes
+    /// at a time, the last eight again overlapping; a shorter array's word is read whole (its
+    /// cell holds at least eight bytes past the header) and the bytes past its end shifted out.
+    /// Through rax, r11, rcx and rdx (a leaf's scratch, `scratch.rs`).
+    fn latin1_equals(&mut self, v: V, args: &[V]) {
+        use crate::jit::asm::Shift;
+        let base = crate::heap::ARRAY_BASE_OFFSET as i32;
+        let (yes, no, done, short, words) = (self.a.new_label(), self.a.new_label(), self.a.new_label(), self.a.new_label(), self.a.new_label());
+        self.load(R::Rcx, args[0]);
+        self.load(R::Rdx, args[1]);
+        self.a.alu_rr(true, Alu::Cmp, R::Rcx, R::Rdx);
+        self.a.jcc(Cond::E, yes);
+        self.a.load(false, R::Rax, mem(R::Rcx, crate::heap::ARRAY_LENGTH_OFFSET as i32));
+        self.a.alu_rm(false, Alu::Cmp, R::Rax, mem(R::Rdx, crate::heap::ARRAY_LENGTH_OFFSET as i32));
+        self.a.jcc(Cond::Ne, no);
+        self.a.alu_ri(false, Alu::Cmp, R::Rax, 8);
+        self.a.jcc(Cond::B, short);
+        self.a.bind(words);
+        self.a.load(true, R::R11, mem(R::Rcx, base));
+        self.a.alu_rm(true, Alu::Cmp, R::R11, mem(R::Rdx, base));
+        self.a.jcc(Cond::Ne, no);
+        self.a.alu_ri(true, Alu::Add, R::Rcx, 8);
+        self.a.alu_ri(true, Alu::Add, R::Rdx, 8);
+        self.a.alu_ri(false, Alu::Sub, R::Rax, 8);
+        self.a.alu_ri(false, Alu::Cmp, R::Rax, 8);
+        self.a.jcc(Cond::Ae, words);
+        self.a.test_rr(false, R::Rax, R::Rax);
+        self.a.jcc(Cond::E, yes);
+        self.a.load(true, R::R11, mem_idx(R::Rcx, R::Rax, 1, base - 8));
+        self.a.alu_rm(true, Alu::Cmp, R::R11, mem_idx(R::Rdx, R::Rax, 1, base - 8));
+        self.a.jcc(Cond::Ne, no);
+        self.a.jmp(yes);
+        self.a.bind(short);
+        self.a.test_rr(false, R::Rax, R::Rax);
+        self.a.jcc(Cond::E, yes);
+        self.a.load(true, R::R11, mem(R::Rcx, base));
+        self.a.alu_rm(true, Alu::Xor, R::R11, mem(R::Rdx, base));
+        // cl := 64 - 8 * length (8..56): the bytes past the end leave on the left.
+        self.a.mov_rr(false, R::Rcx, R::Rax);
+        self.a.shift_ri(false, Shift::Shl, R::Rcx, 3);
+        self.a.neg(false, R::Rcx);
+        self.a.alu_ri(false, Alu::Add, R::Rcx, 64);
+        self.a.shift_cl(true, Shift::Shl, R::R11);
+        self.a.test_rr(true, R::R11, R::R11);
+        self.a.jcc(Cond::Ne, no);
+        self.a.bind(yes);
+        self.a.mov_ri(R::Rax, 1);
+        self.a.jmp(done);
+        self.a.bind(no);
+        self.a.alu_rr(false, Alu::Xor, R::Rax, R::Rax);
+        self.a.bind(done);
         self.put(v, R::Rax);
     }
 }
