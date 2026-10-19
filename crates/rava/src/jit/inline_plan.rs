@@ -183,6 +183,9 @@ pub(super) fn bound_target(caller: &'static Method, code: &[u8], pc: usize) -> O
         0xb8 if m.is_static() => Some(m),
         0xb7 if !m.is_static() => Some(crate::interp::special_target(caller.holder, m)),
         0xb6 if !m.is_static() && (m.is_private() || m.access & ACC_FINAL != 0 || m.holder.access & ACC_FINAL != 0) => Some(m),
+        // A private interface method (javac calls them with invokeinterface): the resolved
+        // method is the one selected (JVMS invokeinterface).
+        0xb9 if !m.is_static() && m.is_private() => Some(m),
         _ => None,
     }
 }
