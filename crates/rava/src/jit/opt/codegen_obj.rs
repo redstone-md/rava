@@ -760,7 +760,8 @@ impl Gen<'_> {
             }
             self.restore_around(v);
             self.a.alu_mi(true, Alu::Cmp, mem(R::R12, offsets::PENDING), 0);
-            self.a.jcc(Cond::Ne, deopt);
+            let thrown = self.restoring(v, deopt);
+            self.a.jcc(Cond::Ne, thrown);
             if matches!(self.g.ty(v), Ty::F | Ty::D) {
                 self.xput(v, crate::jit::asm::X(0));
             } else {
@@ -796,7 +797,8 @@ impl Gen<'_> {
         }
         self.restore_around(v);
         self.a.alu_mi(true, Alu::Cmp, mem(R::R12, offsets::PENDING), 0);
-        self.a.jcc(Cond::Ne, deopt);
+        let thrown = self.restoring(v, deopt);
+        self.a.jcc(Cond::Ne, thrown);
         if matches!(self.g.ty(v), Ty::F | Ty::D) {
             self.xput(v, crate::jit::asm::X(0));
         } else {

@@ -23,25 +23,28 @@ impl Gen<'_> {
         crate::jit::asm::rip(l)
     }
 
-    /// Saves the registers call `v` clobbers that hold values live across it.
+    /// Saves the registers call `v` clobbers that hold values live across it, or read by its
+    /// state.
     pub fn save_around(&mut self, v: V) {
-        for &(l, slot) in self.saves.get(&v).into_iter().flatten() {
+        for &(l, slot) in self.saves.get(&v).into_iter().flatten().chain(self.state_saves.get(&v).into_iter().flatten()) {
             if matches!(slot, Loc::Stack(k) if k >= self.save_base) {
                 moves::mov(&mut self.a, slot, l);
             }
         }
     }
 
-    /// Restores what `save_around(v)` saved.
+    /// Restores what `save_around(v)` saved for the code after the call (not what only its
+    /// state reads).
     pub fn restore_around(&mut self, v: V) {
         for &(l, slot) in self.saves.get(&v).into_iter().flatten() {
             moves::mov(&mut self.a, l, slot);
         }
     }
 
-    /// A label that restores call `v`'s saved registers, then goes to `target`.
+    /// A label that restores all call `v`'s saved registers, then goes to `target` (a
+    /// deoptimization at the call).
     pub fn restoring(&mut self, v: V, target: Label) -> Label {
-        if self.saves.get(&v).is_none_or(|s| s.is_empty()) {
+        if self.saves.get(&v).is_none_or(|s| s.is_empty()) && self.state_saves.get(&v).is_none_or(|s| s.is_empty()) {
             return target;
         }
         let l = self.a.new_label();
@@ -68,7 +71,9 @@ impl Gen<'_> {
         }
         for (l, v, target) in std::mem::take(&mut self.restore_stubs) {
             self.a.bind(l);
-            self.restore_around(v);
+            for &(r, slot) in self.saves.get(&v).into_iter().flatten().chain(self.state_saves.get(&v).into_iter().flatten()) {
+                moves::mov(&mut self.a, r, slot);
+            }
             self.a.jmp(target);
         }
         while let Some((l, from, to)) = self.edge_stubs.pop() {

@@ -108,6 +108,8 @@ pub(super) struct Gen<'a> {
     /// Registers kept around each call (`Allocation::saves`) and their slots; slots from
     /// `save_base` are written before the call, home slots already hold the value.
     saves: &'a HashMap<V, Vec<(Loc, Loc)>>,
+    /// Kept around each call for its deoptimization only (`Allocation::state_saves`).
+    state_saves: &'a HashMap<V, Vec<(Loc, Loc)>>,
     save_base: i32,
     /// Stubs restoring a call's saved registers before a deoptimization: (entry, call, target).
     restore_stubs: Vec<(Label, V, Label)>,
@@ -331,6 +333,7 @@ pub(super) fn generate(g: &Graph, al: &Allocation, m: &'static Method, frame_slo
         ret: m.sig.ret,
         reg_params: Vec::new(),
         saves: &al.saves,
+        state_saves: &al.state_saves,
         save_base: al.save_base,
         restore_stubs: Vec::new(),
         consts: HashMap::new(),

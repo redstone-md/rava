@@ -52,6 +52,8 @@ pub struct Allocation {
     /// For each call, the caller-saved and SSE registers holding values live across it, with
     /// the slot each is kept in meanwhile: its home slot, else one of `save_base..`.
     pub saves: std::collections::HashMap<V, Vec<(Loc, Loc)>>,
+    /// Kept around each call for its own deoptimization only: restored on that path alone.
+    pub state_saves: std::collections::HashMap<V, Vec<(Loc, Loc)>>,
     pub save_base: i32,
     /// The caller-saved and SSE registers (as masks by register number) holding values live at
     /// each instruction and at the end of each block: what a runtime call from the
@@ -217,25 +219,36 @@ pub fn allocate(g: &Graph, m: &crate::method::Method) -> Allocation {
     let mut iv = intervals(g, &order, &pos, &range, &loops.depth, &mut reads, false);
     let hints = super::hints::abi_hints(g, m, &pos, &iv.end);
     let (mut loc, spill_slots, home, state_regs) = scan(g, &mut iv, &full, &loops, &hints);
-    // Registers a call clobbers that hold values live across it.
+    // Registers a call clobbers that hold values live across it: restored after it if a later
+    // instruction reads them, else only on the way to its deoptimization if its state does,
+    // else not kept at all (the interval spans a path the call is not on).
+    let live_in = super::liveness::liveness(g, &order, &mut reads, true);
+    let after = super::liveness::live_after_calls(g, &order, &mut reads, &live_in);
     let mut saves = std::collections::HashMap::new();
+    let mut state_saves = std::collections::HashMap::new();
     let mut most = 0;
     for &(p, call) in &iv.call_values {
+        let own: Vec<V> = g.inst(call).state().map_or(Vec::new(), |s| reads.of(g, s).to_vec());
         // A value with a home slot is already there: it is only restored from it.
         let mut next = 0;
-        let live: Vec<(Loc, Loc)> = (0..n)
-            .filter(|&v| iv.used[v] && iv.start[v] < p && iv.end[v] > p)
-            .filter(|&v| matches!(loc[v], Loc::Xmm(_)) || matches!(loc[v], Loc::Reg(r) if CALLER_SAVED.contains(&r)))
-            .map(|v| {
-                let slot = home[v].unwrap_or_else(|| {
-                    next += 1;
-                    Loc::Stack(spill_slots + next - 1)
-                });
-                (loc[v], slot)
-            })
-            .collect();
+        let (mut live, mut for_state): (Vec<(Loc, Loc)>, Vec<(Loc, Loc)>) = (Vec::new(), Vec::new());
+        for v in (0..n).filter(|&v| iv.used[v] && iv.start[v] < p && iv.end[v] > p) {
+            if !(matches!(loc[v], Loc::Xmm(_)) || matches!(loc[v], Loc::Reg(r) if CALLER_SAVED.contains(&r))) {
+                continue;
+            }
+            let later = after.get(&call).is_none_or(|a| a.contains(v as V));
+            if !later && !own.contains(&(v as V)) {
+                continue;
+            }
+            let slot = home[v].unwrap_or_else(|| {
+                next += 1;
+                Loc::Stack(spill_slots + next - 1)
+            });
+            if later { live.push((loc[v], slot)) } else { for_state.push((loc[v], slot)) }
+        }
         most = most.max(next);
         saves.insert(call, live);
+        state_saves.insert(call, for_state);
     }
     let (live_at, live_at_end) = live_registers(g, &order, &pos, &range, &iv, &loc);
     for v in 0..g.values.len() as V {
@@ -246,7 +259,7 @@ pub fn allocate(g: &Graph, m: &crate::method::Method) -> Allocation {
         home[v as usize] = home[g.resolve(v) as usize];
     }
     let state_regs = (0..g.values.len()).map(|v| state_regs[g.resolve(v as V) as usize]).collect();
-    Allocation { loc, order, spill_slots: spill_slots + most, saves, save_base: spill_slots, home, live_at, live_at_end, state_regs }
+    Allocation { loc, order, spill_slots: spill_slots + most, saves, state_saves, save_base: spill_slots, home, live_at, live_at_end, state_regs }
 }
 
 /// Keeps in its register a value that only deoptimization states read after its last real use,

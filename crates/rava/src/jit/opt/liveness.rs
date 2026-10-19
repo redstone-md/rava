@@ -29,6 +29,9 @@ impl Set {
             *a = (*a & !k) | g;
         }
     }
+    pub fn contains(&self, v: V) -> bool {
+        self.0[v as usize / 64] & (1 << (v % 64)) != 0
+    }
     pub fn iter(&self) -> impl Iterator<Item = V> + '_ {
         self.0.iter().enumerate().filter(|(_, &w)| w != 0).flat_map(|(i, &w)| {
             let mut w = w;
@@ -132,4 +135,45 @@ pub fn liveness(g: &Graph, order: &[B], reads: &mut StateReads, states: bool) ->
             return live_in;
         }
     }
+}
+
+/// For each call, the values live once it returns without an exception (the reads of its own
+/// state, which only its deoptimization takes, aside), from `liveness` with states counted.
+/// A linear-scan interval also spans blocks laid out between a definition and a use on
+/// another path: such a value is dead after the call.
+pub fn live_after_calls(g: &Graph, order: &[B], reads: &mut StateReads, live_in: &[Set]) -> HashMap<V, Set> {
+    let n = g.values.len();
+    let mut after = HashMap::new();
+    for &b in order {
+        let blk = &g.blocks[b as usize];
+        if !blk.insts.iter().any(|&v| matches!(g.inst(v), Inst::Call(..))) {
+            continue;
+        }
+        let mut live = Set::new(n);
+        for s in blk.term.successors() {
+            live.union(&live_in[s as usize]);
+            for ph in super::regalloc::phis(g, s) {
+                live.insert(super::regalloc::phi_input(g, ph, b, s));
+            }
+        }
+        blk.term.inputs().into_iter().for_each(|x| live.insert(g.resolve(x)));
+        if let Term::Deopt(s) = &blk.term {
+            reads.of(g, s).iter().for_each(|&x| live.insert(x));
+        }
+        for &v in blk.insts.iter().rev() {
+            let inst = g.inst(v);
+            if matches!(inst, Inst::Phi(_)) || g.resolve(v) != v {
+                continue;
+            }
+            if matches!(inst, Inst::Call(..)) {
+                after.insert(v, live.clone());
+            }
+            live.0[v as usize / 64] &= !(1 << (v % 64));
+            inst.inputs().into_iter().for_each(|x| live.insert(g.resolve(x)));
+            if let Some(s) = inst.state() {
+                reads.of(g, s).iter().for_each(|&x| live.insert(x));
+            }
+        }
+    }
+    after
 }
