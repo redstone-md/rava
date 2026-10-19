@@ -280,6 +280,21 @@ pub fn system_cpu_ticks() -> Option<(u64, u64)> {
     Some((total - ft(idle), total))
 }
 
+/// Processors this process may run on: its affinity mask (`start /affinity`, a job object),
+/// as HotSpot's `os::active_processor_count` counts them. `available_parallelism` counts every
+/// processor of the group.
+pub fn process_processors() -> usize {
+    use windows_sys::Win32::System::Threading::{GetCurrentProcess, GetProcessAffinityMask};
+    let (mut process, mut system) = (0usize, 0usize);
+    // SAFETY: a query of this process into locals.
+    let ok = unsafe { GetProcessAffinityMask(GetCurrentProcess(), &mut process, &mut system) } != 0;
+    let all = std::thread::available_parallelism().map_or(1, |n| n.get());
+    match process.count_ones() as usize {
+        n if ok && n > 0 => n.min(all),
+        _ => all,
+    }
+}
+
 pub fn cpu_counts() -> (i32, i32) {
     let n = std::thread::available_parallelism().map_or(1, |n| n.get()) as i32;
     (n, n)

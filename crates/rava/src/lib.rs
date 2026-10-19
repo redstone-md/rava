@@ -42,7 +42,7 @@ static ACTIVE_PROCESSORS: AtomicUsize = AtomicUsize::new(0);
 /// `-XX:ActiveProcessorCount=n`, else the CPUs this process may run on.
 pub fn processors() -> usize {
     match ACTIVE_PROCESSORS.load(Relaxed) {
-        0 => std::thread::available_parallelism().map_or(1, |n| n.get()),
+        0 => crate::os::process_processors(),
         n => n,
     }
 }

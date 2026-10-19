@@ -256,6 +256,11 @@ pub fn system_cpu_ticks() -> Option<(u64, u64)> {
     None
 }
 
+/// Processors this process may run on (`available_parallelism` follows its affinity mask).
+pub fn process_processors() -> usize {
+    std::thread::available_parallelism().map_or(1, |n| n.get())
+}
+
 pub fn cpu_counts() -> (i32, i32) {
     // SAFETY: plain sysconf queries.
     unsafe { (libc::sysconf(libc::_SC_NPROCESSORS_CONF) as i32, libc::sysconf(libc::_SC_NPROCESSORS_ONLN) as i32) }
