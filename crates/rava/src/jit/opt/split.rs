@@ -28,6 +28,19 @@ pub fn split(g: &mut Graph) {
     }
 }
 
+/// Turns copies of constants back into the constants (a copy made before its source folded to one):
+/// the allocator never allocates a constant, while a copy competes for a register like any
+/// value and, spilled, is reloaded at every use (a loop's compare against a sentinel).
+pub fn constant_copies(g: &mut Graph) {
+    for v in 0..g.values.len() {
+        if let Inst::Copy(x) = g.values[v].inst {
+            if let Inst::Const(c) = *g.inst(g.resolve(x)) {
+                g.values[v].inst = Inst::Const(c);
+            }
+        }
+    }
+}
+
 /// Adds `Copy(v)` to block `b` (at its end), a value of its own.
 fn copy(g: &mut Graph, b: B, v: V) -> V {
     g.add(b, Inst::Copy(v), g.ty(v))

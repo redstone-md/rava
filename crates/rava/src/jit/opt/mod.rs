@@ -303,6 +303,7 @@ fn compile_timed(m: &'static Method, osr: Option<u32>) -> Option<CompiledMethod>
     }
     conds::mark_nonnull_inputs(&mut g);
     verify(&g, m, "conds::mark_nonnull_inputs");
+    split::constant_copies(&mut g);
     let mut al = regalloc::allocate(&g, m);
     if env_once!("RAVA_OPT_RELOAD").map_or(true, |v| v != "0") {
         let mut copies = reload::split(&mut g, &al.loc);
