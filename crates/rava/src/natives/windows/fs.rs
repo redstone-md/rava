@@ -10,7 +10,7 @@ use crate::runtime::{self as rt, vm_field};
 use crate::thread::{JResult, Thread};
 use windows_sys::Win32::Foundation::{CloseHandle, GetLastError, ERROR_ACCESS_DENIED, ERROR_FILE_EXISTS, FILETIME, INVALID_HANDLE_VALUE};
 use windows_sys::Win32::Storage::FileSystem::{
-    CreateDirectoryW, CreateFileW, DeleteFileW, FindClose, FindFirstFileW, FindNextFileW, GetDiskFreeSpaceExW, GetFileAttributesExW, GetFileAttributesW, GetFullPathNameW,
+    CreateDirectoryW, CreateFileW, DeleteFileW, FindClose, FindFirstFileW, FindNextFileW, GetDiskFreeSpaceExW, GetFileAttributesExW, GetFileAttributesW, GetFinalPathNameByHandleW, GetFullPathNameW,
     GetLogicalDrives, GetVolumeInformationW, GetVolumePathNameW, MoveFileExW, RemoveDirectoryW, SetFileAttributesW, SetFileTime, CREATE_NEW, FILE_ATTRIBUTE_DIRECTORY,
     FILE_ATTRIBUTE_HIDDEN, FILE_ATTRIBUTE_NORMAL, FILE_ATTRIBUTE_READONLY, FILE_FLAG_BACKUP_SEMANTICS, FILE_GENERIC_READ, FILE_GENERIC_WRITE, FILE_SHARE_DELETE,
     FILE_SHARE_READ, FILE_SHARE_WRITE, FILE_WRITE_ATTRIBUTES, GetFileExInfoStandard, INVALID_FILE_ATTRIBUTES, OPEN_EXISTING, WIN32_FILE_ATTRIBUTE_DATA, WIN32_FIND_DATAW,
@@ -94,6 +94,28 @@ fn canonicalize(p: &str) -> Option<String> {
     Some(out)
 }
 
+/// The path the file system resolves `p` to, links followed (`GetFinalPathNameByHandleW` on a
+/// handle to it), without the `\\?\` prefix; None when it cannot be opened.
+fn final_path(p: &str) -> Option<String> {
+    let w = wide(p);
+    // SAFETY: a handle opened for querying only (directories too), closed after.
+    let out = unsafe {
+        let h = CreateFileW(w.as_ptr(), 0, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, std::ptr::null(), OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, std::ptr::null_mut());
+        if h == INVALID_HANDLE_VALUE {
+            return None;
+        }
+        let mut buf = vec![0u16; 32768];
+        let n = GetFinalPathNameByHandleW(h, buf.as_mut_ptr(), buf.len() as u32, 0) as usize;
+        CloseHandle(h);
+        (n > 0 && n < buf.len()).then(|| String::from_utf16_lossy(&buf[..n]))
+    }?;
+    Some(match (out.strip_prefix("\\\\?\\UNC\\"), out.strip_prefix("\\\\?\\")) {
+        (Some(unc), _) => format!("\\\\{unc}"),
+        (None, Some(local)) => local.to_string(),
+        _ => out,
+    })
+}
+
 fn list(t: &mut Thread, p: &str) -> JResult<u64> {
     match attributes(p) {
         Some(d) if d.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY != 0 => {}
@@ -138,6 +160,22 @@ fn set_modified(p: &str, ms: i64) -> bool {
     }
 }
 
+/// Deletes a file or an empty directory; a read-only file only when `read_only_too` (its
+/// attribute cleared first, as the JDK does).
+fn delete(p: &str, read_only_too: bool) -> bool {
+    let w = wide(p);
+    let a = attributes(p).map(|d| d.dwFileAttributes);
+    if a.is_some_and(|a| a & FILE_ATTRIBUTE_DIRECTORY != 0) {
+        // SAFETY: removes a NUL-terminated path.
+        return unsafe { RemoveDirectoryW(w.as_ptr()) } != 0;
+    }
+    if read_only_too && a.is_some_and(|a| a & FILE_ATTRIBUTE_READONLY != 0) {
+        set_read_only(p, false);
+    }
+    // SAFETY: as above.
+    unsafe { DeleteFileW(w.as_ptr()) != 0 }
+}
+
 fn set_read_only(p: &str, on: bool) -> bool {
     let w = wide(p);
     // SAFETY: attribute calls on a NUL-terminated path.
@@ -177,6 +215,14 @@ pub(super) fn register(r: &mut NativeRegistry) {
         let p = rt::java_string_to_rust(a[1] as Oop);
         match canonicalize(&p) {
             Some(c) => ret_ref(rt::new_string(t, &c)?),
+            None => Err(io_error(t, "Bad pathname")),
+        }
+    });
+    // Since 25.0.x: `canonicalize` follows links through this, keeping its own path on failure.
+    r.add(FS, "getFinalPath0", "(Ljava/lang/String;)Ljava/lang/String;", |t, a| {
+        let p = rt::java_string_to_rust(a[1] as Oop);
+        match final_path(&p) {
+            Some(f) => ret_ref(rt::new_string(t, &f)?),
             None => Err(io_error(t, "Bad pathname")),
         }
     });
@@ -221,13 +267,9 @@ pub(super) fn register(r: &mut NativeRegistry) {
         unsafe { CloseHandle(h) };
         ret_bool(true)
     });
-    r.add(FS, "delete0", "(Ljava/io/File;)Z", |_, a| {
-        let p = path(a[1] as Oop);
-        let w = wide(&p);
-        let dir = attributes(&p).is_some_and(|d| d.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY != 0);
-        // SAFETY: removes a NUL-terminated path.
-        ret_bool(unsafe { if dir { RemoveDirectoryW(w.as_ptr()) } else { DeleteFileW(w.as_ptr()) } } != 0)
-    });
+    r.add(FS, "delete0", "(Ljava/io/File;)Z", |_, a| ret_bool(delete(&path(a[1] as Oop), false)));
+    // Since 25.0.x, with `jdk.io.File.allowDeleteReadOnlyFiles`.
+    r.add(FS, "delete0", "(Ljava/io/File;Z)Z", |_, a| ret_bool(delete(&path(a[1] as Oop), a[2] != 0)));
     r.add(FS, "list0", "(Ljava/io/File;)[Ljava/lang/String;", |t, a| list(t, &path(a[1] as Oop)));
     r.add(FS, "createDirectory0", "(Ljava/io/File;)Z", |_, a| {
         let w = wide(&path(a[1] as Oop));

@@ -164,6 +164,9 @@ fn files(r: &mut NativeRegistry) {
         }
         ret_int(0)
     });
+    // Since 25: bytes readable without blocking, as FileInputStream.available0 (a file past its
+    // position, a pipe's buffered bytes).
+    r.add(FD, "available0", "(Ljava/io/FileDescriptor;)I", |_, a| ret_int(super::io::available(handle_of(a[0]))));
     r.add(FD, "size0", "(Ljava/io/FileDescriptor;)J", |t, a| {
         let mut s = 0i64;
         // SAFETY: an open handle.

@@ -36,7 +36,9 @@ library's contract with the VM. The VM itself does not change between releases.
 | stack walking | `StackFrameInfo.memberName` initialized by the VM; batches by end index | `ClassFrameInfo.classOrMemberName` + `flags`, `expandStackFrameInfo`; batches by frame count (`natives/stackwalk.rs`) |
 | native libraries | `NativeLibraries.load` returns true | also expects `NativeLibraryImpl.handle` set (an opaque non-zero one; the VM supplies the natives) |
 | `FileKey.init` | instance, sets `st_dev`/`st_ino` | static, fills a `long[2]` |
-| natives added | | `CDS.getCDSConfigStatus`, `PhantomReference.clear0`, `Thread.sleepNanos0`, `UnixFileDispatcherImpl.available0` |
+| natives added | | `CDS.getCDSConfigStatus`, `PhantomReference.clear0`, `Thread.sleepNanos0`, `UnixFileDispatcherImpl.available0`, Windows `FileDispatcherImpl.available0`; 25.0.3: `WinNTFileSystem.getFinalPath0` |
+| `WinNTFileSystem.delete0` | `(File)` | `(File, boolean)`: whether a read-only file may be deleted (25.0.3) |
+| thread identifiers | the primordial thread takes 1 | `PRIMORDIAL_TID` 3; either way the shared counter starts past it |
 
 ## Adding a release
 

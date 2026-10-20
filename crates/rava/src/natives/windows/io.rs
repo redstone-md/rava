@@ -114,7 +114,7 @@ fn size(h: HANDLE) -> Option<i64> {
 }
 
 /// Bytes readable without blocking: the rest of a file, or what a pipe holds.
-fn available(h: HANDLE) -> i32 {
+pub(super) fn available(h: HANDLE) -> i32 {
     // SAFETY: queries on an open handle.
     unsafe {
         match GetFileType(h) {
