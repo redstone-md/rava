@@ -115,45 +115,67 @@ pub fn eliminate(g: &mut Graph) {
 /// The loop-entry state with the header's phis replaced by their values on entry: what the
 /// interpreter needs to run the loop from its header. The state was taken while building; None
 /// when a value it names is no longer computed anywhere (an allocation escape analysis
-/// removed, whose other states it rewrote) or is such an allocation itself.
-pub(super) fn entry_state_at(g: &Graph, s: &Rc<State>, h: usize, entry: usize) -> Option<Rc<State>> {
+/// removed, whose other states it rewrote) or is such an allocation itself. A replaced object
+/// whose fields are header phis (a scalar-replaced iterator's cursor) is described afresh with
+/// the fields' entry values, as escape analysis describes it per state (`escape.rs`).
+pub(super) fn entry_state_at(g: &mut Graph, s: &Rc<State>, h: usize, entry: usize) -> Option<Rc<State>> {
     let mut defined = vec![false; g.values.len()];
     for blk in &g.blocks {
         for &v in &blk.insts {
             defined[v as usize] = true;
         }
     }
-    let header_phi = |x: V| matches!(g.inst(x), Inst::Phi(_)) && g.blocks[h].insts.contains(&x);
-    // A defined value, or an object escape analysis replaced whose fields are defined values
-    // other than the header's phis (those would need a marker of their own).
-    let live = |x: V| match g.virtuals.get(&x) {
+    let header_phi = |g: &Graph, x: V| matches!(g.inst(x), Inst::Phi(_)) && g.blocks[h].insts.contains(&x);
+    let at_entry = |g: &Graph, x: V| match g.inst(x) {
+        Inst::Phi(inputs) if header_phi(g, x) => g.resolve(inputs[entry]),
+        _ => x,
+    };
+    let computed = |g: &Graph, f: V| defined.get(f as usize).copied().unwrap_or(false) || matches!(g.inst(f), Inst::Const(_));
+    // A defined value, or a replaced object whose fields are (strictly: no header phi, for the
+    // callers' states, which stay as they are).
+    let live = |g: &Graph, x: V, strict: bool| match g.virtuals.get(&x) {
         Some(o) => o.fields.iter().all(|&(_, _, f)| {
             let f = g.resolve(f);
-            !header_phi(f) && (defined.get(f as usize).copied().unwrap_or(false) || matches!(g.inst(f), Inst::Const(_)))
+            if header_phi(g, f) { !strict && computed(g, at_entry(g, f)) } else { computed(g, f) }
         }),
         None => defined.get(x as usize).copied().unwrap_or(false),
     };
-    let map = |x: &Option<V>| -> Option<Option<V>> {
-        let Some(x) = *x else { return Some(None) };
-        let x = g.resolve(x);
-        let x = match g.inst(x) {
-            Inst::Phi(inputs) if header_phi(x) => g.resolve(inputs[entry]),
-            _ => x,
-        };
-        live(x).then_some(Some(x))
-    };
     let mut caller = s.caller.clone();
     while let Some(c) = caller {
-        if !c.locals.iter().chain(c.stack.iter()).flatten().all(|&x| live(g.resolve(x))) {
+        if !c.locals.iter().chain(c.stack.iter()).flatten().all(|&x| live(g, g.resolve(x), true)) {
             return None;
         }
         caller = c.caller.clone();
     }
-    let locals = s.locals.iter().map(map).collect::<Option<Vec<_>>>()?;
-    let stack = s.stack.iter().map(map).collect::<Option<Vec<_>>>()?;
+    let mut fresh: std::collections::HashMap<V, V> = std::collections::HashMap::new();
+    let mut map = |g: &mut Graph, x: &Option<V>| -> Option<Option<V>> {
+        let Some(x) = *x else { return Some(None) };
+        let x = at_entry(g, g.resolve(x));
+        if !live(g, x, false) {
+            return None;
+        }
+        let Some(o) = g.virtuals.get(&x) else { return Some(Some(x)) };
+        if !o.fields.iter().any(|&(_, _, f)| header_phi(g, g.resolve(f))) {
+            return Some(Some(x));
+        }
+        if let Some(&w) = fresh.get(&x) {
+            return Some(Some(w));
+        }
+        let (klass, fields) = (o.klass, o.fields.iter().map(|&(off, bt, f)| (off, bt, at_entry(g, g.resolve(f)))).collect());
+        g.values.push(Value { inst: Inst::Const(0), ty: Ty::A });
+        let w = g.values.len() as V - 1;
+        if !g.alias.is_empty() {
+            let n = g.alias.len() as V;
+            g.alias.extend(n..=w);
+        }
+        g.virtuals.insert(w, Virtual { klass, fields });
+        fresh.insert(x, w);
+        Some(Some(w))
+    };
+    let locals = s.locals.iter().map(|x| map(g, x)).collect::<Option<Vec<_>>>()?;
+    let stack = s.stack.iter().map(|x| map(g, x)).collect::<Option<Vec<_>>>()?;
     Some(Rc::new(State { method: s.method, bci: s.bci, locals, stack, caller: s.caller.clone(), frame: s.frame }))
 }
-
 pub(super) fn negate(c: Cmp) -> Cmp {
     match c {
         Cmp::Eq => Cmp::Ne,
