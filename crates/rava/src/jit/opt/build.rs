@@ -78,6 +78,8 @@ pub(super) struct Scope {
     /// Estimated executions of each instruction per entry of this scope (`freq.rs`), and of
     /// this scope per entry of the compiled method.
     freq: Vec<f32>,
+    /// Branch probabilities `freq` was estimated with instead of the profile's (`know_branch`).
+    known: HashMap<usize, f32>,
     pub weight: f32,
     /// Locals the interpreter may still read at each instruction (`locals.rs`).
     live: super::locals::LiveLocals,
@@ -87,7 +89,7 @@ impl Scope {
     pub fn new(m: &'static Method, caller: Option<Rc<State>>, frame: i32) -> Option<Scope> {
         let info = m.code?;
         let an = analyze(m)?;
-        let freq = super::freq::frequencies(m, info.code, |pc| an.depth[pc].is_some());
+        let freq = super::freq::frequencies(m, info.code, |pc| an.depth[pc].is_some(), &|_| None);
         Some(Scope {
             m,
             cf: m.holder.cf.as_ref()?,
@@ -117,9 +119,18 @@ impl Scope {
             lock: None,
             returns: Vec::new(),
             freq,
+            known: HashMap::new(),
             weight: 1.0,
             live: super::locals::LiveLocals::compute(info),
         })
+    }
+
+    /// Estimates this scope's frequencies again with the branch at `pc` jumping with
+    /// probability `taken` (known better here than by the method's own profile).
+    pub fn know_branch(&mut self, pc: usize, taken: f32) {
+        self.known.insert(pc, taken);
+        let (an, known) = (&self.an, &self.known);
+        self.freq = super::freq::frequencies(self.m, self.code, |p| an.depth[p].is_some(), &|p| known.get(&p).copied());
     }
 
     /// Estimated executions of the instruction at `pc` per entry of the compiled method.

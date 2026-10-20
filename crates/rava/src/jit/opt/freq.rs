@@ -28,8 +28,9 @@ struct Blocks {
 }
 
 /// Frequency of each instruction (0 where unreachable), relative to the method's entry.
-pub fn frequencies(m: &'static Method, code: &[u8], live: impl Fn(usize) -> bool) -> Vec<f32> {
-    let bl = blocks(m, code, &live);
+/// `taken`: the probability a conditional branch jumps, where the caller knows it better than`n/// the method's own profile (a lambda form's branch on one handle's `profileBoolean` counts).
+pub fn frequencies(m: &'static Method, code: &[u8], live: impl Fn(usize) -> bool, taken: &dyn Fn(usize) -> Option<f32>) -> Vec<f32> {
+    let bl = blocks(m, code, &live, taken);
     let n = bl.starts.len();
     if n == 0 {
         return vec![0.0; code.len()];
@@ -117,7 +118,7 @@ fn prob(bl: &Blocks, from: usize, to: usize) -> f32 {
     bl.succ[from].iter().filter(|&&(s, _)| s == to).map(|&(_, p)| p).sum()
 }
 
-fn blocks(m: &'static Method, code: &[u8], live: &impl Fn(usize) -> bool) -> Blocks {
+fn blocks(m: &'static Method, code: &[u8], live: &impl Fn(usize) -> bool, taken: &dyn Fn(usize) -> Option<f32>) -> Blocks {
     let n = code.len();
     let mut leader = vec![false; n + 1];
     leader[0] = true;
@@ -139,7 +140,7 @@ fn blocks(m: &'static Method, code: &[u8], live: &impl Fn(usize) -> bool) -> Blo
             let len = insn_len(code, pc);
             let next = pc + len;
             if is_branch(code[pc]) || next >= n || leader[next] {
-                succ.push(out_edges(m, code, pc, len).into_iter().filter_map(|(t, p)| index(t).map(|b| (b, p))).collect::<Vec<_>>());
+                succ.push(out_edges(m, code, pc, len, taken).into_iter().filter_map(|(t, p)| index(t).map(|b| (b, p))).collect::<Vec<_>>());
                 break;
             }
             pc = next;
@@ -162,7 +163,7 @@ fn is_branch(op: u8) -> bool {
 
 /// The instruction at `pc` ending a block hands control to these targets with these
 /// probabilities.
-fn out_edges(m: &'static Method, code: &[u8], pc: usize, len: usize) -> Vec<(usize, f32)> {
+fn out_edges(m: &'static Method, code: &[u8], pc: usize, len: usize, known: &dyn Fn(usize) -> Option<f32>) -> Vec<(usize, f32)> {
     let succ = successors(code, pc, len);
     match code[pc] {
         0x99..=0xa6 | 0xc6 | 0xc7 => {
@@ -171,8 +172,9 @@ fn out_edges(m: &'static Method, code: &[u8], pc: usize, len: usize) -> Vec<(usi
             // above all (the baseline code that profiles it never left the loop), and a loop
             // with no exit at all would leave everything after it at frequency 0, its calls
             // refused as cold.
-            let taken = match crate::jit::profile::branch_counts(m, pc) {
-                Some((t, f)) if t + f >= MIN_PROFILE => (t as f32 / (t + f) as f32).clamp(MIN_PROB, 1.0 - MIN_PROB),
+            let taken = match (known(pc), crate::jit::profile::branch_counts(m, pc)) {
+                (Some(p), _) => p.clamp(MIN_PROB, 1.0 - MIN_PROB),
+                (None, Some((t, f))) if t + f >= MIN_PROFILE => (t as f32 / (t + f) as f32).clamp(MIN_PROB, 1.0 - MIN_PROB),
                 _ => 0.5,
             };
             vec![(succ[1], taken), (succ[0], 1.0 - taken)]

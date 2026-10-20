@@ -255,7 +255,7 @@ impl Builder {
         if op != 0xb8 {
             self.null_check(args[0], pre.clone());
         }
-        if self.allocate_instance(m, &args, &pre, &s) || self.new_array_reflective(m, &args, &pre) || self.clone_array(pc, m, &args, &pre) || self.fold_class_query(m, &args) || self.floor_pow2(m, &args) || self.caller_class(m) || self.mh_hints(m, &args) {
+        if self.allocate_instance(m, &args, &pre, &s) || self.new_array_reflective(m, &args, &pre) || self.clone_array(pc, m, &args, &pre) || self.fold_class_query(m, &args) || self.floor_pow2(m, &args) || self.caller_class(m) || self.mh_hints(pc, m, &args) {
             return Some(true);
         }
         if let (0xb6 | 0xb8, Some(k)) = (op, crate::jit::intrinsics::bound_intrinsic(m)) {
@@ -303,12 +303,15 @@ impl Builder {
     /// the outcome without counting (two read-modify-writes of a shared array per inlined
     /// `guardWithTest`, such as every record `equals`); `isCompileConstant` is whether its
     /// argument is a constant of this compilation.
-    fn mh_hints(&mut self, m: &'static Method, args: &[V]) -> bool {
+    fn mh_hints(&mut self, pc: usize, m: &'static Method, args: &[V]) -> bool {
         if m.holder.name != "java/lang/invoke/MethodHandleImpl" {
             return false;
         }
         let v = match (m.name.as_str(), m.desc.as_str()) {
-            ("profileBoolean", "(Z[I)Z") => args[0],
+            ("profileBoolean", "(Z[I)Z") => {
+                self.branch_on_counts(pc, args[1]);
+                args[0]
+            }
             ("isCompileConstant", "(Ljava/lang/Object;)Z") => {
                 let c = self.g.constant(self.g.resolve(args[0])).is_some();
                 self.konst(Ty::I, c as i64)
@@ -317,6 +320,38 @@ impl Builder {
         };
         self.push(v);
         true
+    }
+
+    /// The branch on the outcome `profileBoolean` at `pc` returns (a `guardWithTest` form's)
+    /// takes the probability its counts (`counts`, constant: the handle's own `int[2]`) record,
+    /// as C2 reads them: the form's own profile mixes every handle sharing it, and a nest of
+    /// guards (a record's `equals`, one per component) halved the frequency at each level.
+    fn branch_on_counts(&mut self, pc: usize, counts: V) {
+        let Some(a) = self.folded_constant(counts).filter(|&a| a != 0) else { return };
+        // SAFETY: the constant argument of `profileBoolean`, a live int[].
+        let c = unsafe { crate::heap::obj::array_slice::<i32>(a as crate::heap::Oop) };
+        let [f, t] = c[..] else { return };
+        let total = f as f32 + t as f32;
+        if total < 16.0 {
+            return;
+        }
+        // The outcome may pass through a local before its test.
+        let code = self.sc.code;
+        let mut at = pc + 3;
+        while at < code.len() && matches!(code[at], 0x15 | 0x1a..=0x1d | 0x36 | 0x3b..=0x3e) {
+            at += crate::jit::analysis::insn_len(code, at);
+        }
+        let p = t as f32 / total;
+        // `ifeq` / `ifne`, possibly on the outcome masked to its low bit (`iconst_1; iand`, as
+        // the forms' generator emits a boolean test).
+        if code.get(at..at + 2) == Some(&[0x04, 0x7e]) {
+            at += 2;
+        }
+        match code.get(at) {
+            Some(0x99) => self.sc.know_branch(at, 1.0 - p),
+            Some(0x9a) => self.sc.know_branch(at, p),
+            _ => {}
+        }
     }
 
     /// `Reflection.getCallerClass()` in a body inlined into its caller's caller (C2's intrinsic):
