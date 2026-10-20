@@ -209,6 +209,7 @@ impl Gen<'_> {
                 self.put(v, R::Rax);
             }
             Intrinsic::Leaf(crate::jit::leaf::Leaf::Latin1Equals) => self.latin1_equals(v, args),
+            Intrinsic::Leaf(l @ crate::jit::leaf::Leaf::Sum(kind)) => self.sum_range(v, l, kind, args),
             Intrinsic::Leaf(l) => {
                 self.call_preserving_vals(l.address(), args);
                 let r = self.out(v);
@@ -271,6 +272,43 @@ impl Gen<'_> {
         self.a.alu_rr(true, Alu::Cmp, R::Rax, R::R11);
         self.a.jcc(Cond::B, small);
         self.a.bind(done);
+    }
+
+    /// `init + a[from..to]` (`reduce.rs`): a range under sixteen elements adds an element at a
+    /// time in place, a longer one calls the vectorized sum.
+    fn sum_range(&mut self, v: V, l: crate::jit::leaf::Leaf, kind: crate::jit::leaf::SumKind, args: &[V]) {
+        use crate::jit::leaf::SumKind;
+        let size = if kind == SumKind::LongLong { 8 } else { 4 };
+        let (call, step, done) = (self.a.new_label(), self.a.new_label(), self.a.new_label());
+        let rf = self.reg(args[1], R::Rcx);
+        self.a.movsxd(R::Rcx, rf);
+        let rt = self.reg(args[2], R::Rdx);
+        self.a.movsxd(R::Rdx, rt);
+        self.a.alu_rr(true, Alu::Sub, R::Rdx, R::Rcx);
+        self.a.alu_ri(true, Alu::Cmp, R::Rdx, 16);
+        self.a.jcc(Cond::Ge, call);
+        let ra = self.reg(args[0], R::R11);
+        self.a.lea(R::R11, mem_idx(ra, R::Rcx, size, crate::heap::ARRAY_BASE_OFFSET as i32));
+        self.load(R::Rax, args[3]);
+        self.a.test_rr(true, R::Rdx, R::Rdx);
+        self.a.jcc(Cond::Le, done);
+        self.a.bind(step);
+        match kind {
+            SumKind::IntInt => self.a.alu_rm(false, Alu::Add, R::Rax, mem(R::R11, 0)),
+            SumKind::LongLong => self.a.alu_rm(true, Alu::Add, R::Rax, mem(R::R11, 0)),
+            SumKind::IntLong => {
+                self.a.load_sx(4, R::Rcx, mem(R::R11, 0));
+                self.a.alu_rr(true, Alu::Add, R::Rax, R::Rcx);
+            }
+        }
+        self.a.alu_ri(true, Alu::Add, R::R11, size as i32);
+        self.a.alu_ri(true, Alu::Sub, R::Rdx, 1);
+        self.a.jcc(Cond::Ne, step);
+        self.a.jmp(done);
+        self.a.bind(call);
+        self.call_preserving_vals(l.address(), args);
+        self.a.bind(done);
+        self.put(v, R::Rax);
     }
 
     fn unsafe_operand(&mut self, base: V, off: V, folded: &[V], rb: R, ro: R) -> crate::jit::asm::M {

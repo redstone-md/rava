@@ -42,6 +42,7 @@ mod licm;
 mod loadnum;
 mod loopfwd;
 mod rce;
+mod reduce;
 mod liveness;
 mod locals;
 mod moves;
@@ -274,6 +275,10 @@ fn compile_timed(m: &'static Method, osr: Option<u32>) -> Option<CompiledMethod>
     if env_once!("RAVA_NO_FILL").is_none() {
         fill::convert(&mut g);
         verify(&g, m, "fill::convert");
+    }
+    if env_once!("RAVA_NO_REDUCE").is_none() {
+        reduce::convert(&mut g);
+        verify(&g, m, "reduce::convert");
     }
     unroll::unroll(&mut g);
     verify(&g, m, "unroll::unroll");

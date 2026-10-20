@@ -32,6 +32,17 @@ pub(crate) enum Leaf {
     /// `Arrays.fill(x[], x)` for a primitive array of elements of `1 << n` bytes (the only
     /// routine that writes: HotSpot recognizes the loop and calls its fill stub).
     Fill(u8),
+    /// The elements of a counted loop's range added to an accumulator (`opt/reduce.rs`, HotSpot's
+    /// vectorized reductions).
+    Sum(SumKind),
+}
+
+/// The element and accumulator types of a `Leaf::Sum`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SumKind {
+    IntInt,
+    IntLong,
+    LongLong,
 }
 
 impl Leaf {
@@ -51,6 +62,9 @@ impl Leaf {
             Leaf::Fill(1) => fill_leaf::<u16> as *const () as usize,
             Leaf::Fill(2) => fill_leaf::<u32> as *const () as usize,
             Leaf::Fill(_) => fill_leaf::<u64> as *const () as usize,
+            Leaf::Sum(SumKind::IntInt) => sum_int_int as *const () as usize,
+            Leaf::Sum(SumKind::IntLong) => sum_int_long as *const () as usize,
+            Leaf::Sum(SumKind::LongLong) => sum_long_long as *const () as usize,
         }
     }
 
@@ -83,7 +97,7 @@ impl Leaf {
         match self {
             Leaf::Latin1Equals => &[0, 1],
             Leaf::Mismatch | Leaf::IsArray | Leaf::IsPrimitive | Leaf::IsInterface | Leaf::RefersTo => &[],
-            Leaf::HashCode | Leaf::CountPositives | Leaf::Fill(_) => &[0],
+            Leaf::HashCode | Leaf::CountPositives | Leaf::Fill(_) | Leaf::Sum(_) => &[0],
             Leaf::IsAssignableFrom => &[1],
         }
     }
@@ -369,3 +383,45 @@ extern "sysv64" fn refers_to(r: Oop, o: Oop) -> i64 {
     // SAFETY: a live Reference (the receiver, null-checked by the invoke).
     (unsafe { obj::read_ref(r, crate::natives::misc::referent_offset()) } == o) as i64
 }
+
+/// The elements of `a` from `from` to `to` (clamped to the array) as `T`s.
+///
+/// # Safety
+/// `a` is a live, non-null array of `T`s.
+unsafe fn elements<'a, T>(a: Oop, from: i32, to: i32) -> &'a [T] {
+    let size = std::mem::size_of::<T>();
+    let b = bytes(a, size, from, to.saturating_sub(from));
+    // Element data starts 16 bytes into the array, aligned for every primitive.
+    std::slice::from_raw_parts(b.as_ptr() as *const T, b.len() / size)
+}
+
+/// `init` plus the elements, wrapping; written once and compiled again with AVX2 so the
+/// compiler's vectorized loop uses the wider lanes where the processor has them.
+macro_rules! sum_leaf {
+    ($name:ident, $wide:ident, $elem:ty, $acc:ty) => {
+        #[inline(always)]
+        fn $wide(s: &[$elem], init: $acc) -> $acc {
+            s.iter().fold(init, |a, &x| a.wrapping_add(x as $acc))
+        }
+
+        extern "sysv64" fn $name(a: Oop, from: i32, to: i32, init: i64) -> i64 {
+            #[cfg(target_arch = "x86_64")]
+            #[target_feature(enable = "avx2")]
+            unsafe fn avx2(s: &[$elem], init: $acc) -> $acc {
+                $wide(s, init)
+            }
+            // SAFETY: a live array of the loop's element type (null-checked by the caller).
+            let s = unsafe { elements::<$elem>(a, from, to) };
+            #[cfg(target_arch = "x86_64")]
+            if s.len() >= 16 && std::arch::is_x86_feature_detected!("avx2") {
+                // SAFETY: the processor has AVX2.
+                return unsafe { avx2(s, init as $acc) } as i64;
+            }
+            $wide(s, init as $acc) as i64
+        }
+    };
+}
+
+sum_leaf!(sum_int_int, fold_int_int, i32, i32);
+sum_leaf!(sum_int_long, fold_int_long, i32, i64);
+sum_leaf!(sum_long_long, fold_long_long, i64, i64);
