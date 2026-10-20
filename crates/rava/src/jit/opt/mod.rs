@@ -243,6 +243,10 @@ fn compile_timed(m: &'static Method, osr: Option<u32>) -> Option<CompiledMethod>
     verify(&g, m, "select::convert");
     algebra::simplify(&mut g);
     verify(&g, m, "algebra::simplify");
+    // Threading and folded switches left tests of a class right above its casts (a pattern
+    // switch's case reached from its label's test).
+    typecheck::eliminate(&mut g);
+    verify(&g, m, "typecheck::eliminate");
     loadnum::number(&mut g);
     verify(&g, m, "loadnum::number");
     // Class words and fields now one value: the branches on them a dominating one decided.
