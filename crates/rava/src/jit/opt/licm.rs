@@ -55,6 +55,10 @@ pub fn hoist(g: &mut Graph) {
         let mut stored: Vec<(u32, Option<&'static crate::klass::Klass>)> = Vec::new();
         // Statics stored in the loop, and whether it initializes a class (which may store any).
         let (mut stored_statics, mut inits): (HashSet<usize>, bool) = (HashSet::new(), false);
+        // Element types of the arrays stored in the loop.
+        let mut stored_elems: HashSet<crate::types::BasicType> = HashSet::new();
+        // Array and index pairs whose bounds check is predicated in the preheader.
+        let mut checked: HashSet<(V, V)> = HashSet::new();
         for b in (0..n).filter(|&b| l.body[b]) {
             for &v in &g.blocks[b].insts {
                 match g.inst(v) {
@@ -70,6 +74,9 @@ pub fn hoist(g: &mut Graph) {
                     Inst::StoreField(_, off, ..) => {
                         stored.push((*off, g.field_holders.get(&v).copied()));
                     }
+                    Inst::StoreIndexed(_, _, bt, _) => {
+                        stored_elems.insert(*bt);
+                    }
                     _ => {}
                 }
             }
@@ -83,6 +90,9 @@ pub fn hoist(g: &mut Graph) {
         // loads through the loaded object follow (`this.a.b.c`).
         loop {
             predicate_null_checks(g, l, pre, &block_of, &mut known);
+            if !barrier {
+                predicate_bounds_checks(g, l, pre, &block_of, &known, &mut checked);
+            }
             super::guards::branches(g, l, pre, &block_of, &known);
             // What those added (guards, class words reloaded for them) is in the preheader.
             block_of.resize(g.values.len(), usize::MAX);
@@ -109,6 +119,10 @@ pub fn hoist(g: &mut Graph) {
                             // loop can change it, and a class word is never null.
                             Inst::LoadField(o, ..) if class_word(g, *o) => true,
                             Inst::ArrayLength(o) => known_nonnull(g, known, *o) && !typed.contains(&g.resolve(*o)),
+                            // An element of an array the loop stores no element of that type to,
+                            // its bounds check predicated in the preheader (`a[i]` in a loop over
+                            // `k`, a matrix row).
+                            Inst::LoadIndexed(a, i, bt) => !barrier && !stored_elems.contains(bt) && checked.contains(&(g.resolve(*a), g.resolve(*i))),
                             Inst::LoadStatic(addr, _) => !barrier && !inits && !stored_statics.contains(addr) && !g.ordered.contains(&v),
                             // A final field keeps its value across calls too (JLS 17.5.3 lets a
                             // compiler cache it): a string's bytes and coder in a loop over its
@@ -283,5 +297,38 @@ fn predicate_null_checks(g: &mut Graph, l: &super::dom::Loop, pre: B, block_of: 
             g.add(pre, Inst::Guard(Cmp::Ne, Ty::A, x, null, ps.clone()), Ty::I);
         }
         g.blocks[b].insts.retain(|&i| i != v);
+    }
+}
+
+/// Predicates a bounds check in the loop of an index and an array both defined outside it
+/// (`a[i][k]` in a loop over `k` checks `i` against `a`'s length every iteration), the array
+/// known non-null in the preheader: one check there, which deoptimizes to the loop's entry state
+/// (where the interpreter runs the loop with its checks), as `predicate_null_checks` does. The
+/// element's load can then leave the loop too (`checked`).
+fn predicate_bounds_checks(g: &mut Graph, l: &super::dom::Loop, pre: B, block_of: &[usize], known: &HashSet<V>, checked: &mut HashSet<(V, V)>) {
+    let h = l.header as usize;
+    let Some(entry_state) = g.loop_entry.get(&l.header).cloned() else { return };
+    let invariant = |x: V| block_of.get(x as usize).map_or(true, |&b| b == usize::MAX || !l.body[b]);
+    let mut checks = Vec::new();
+    for b in (0..g.blocks.len()).filter(|&b| l.body[b]) {
+        for &v in &g.blocks[b].insts {
+            if let Inst::BoundsCheck(a, i, _) = *g.inst(v) {
+                let (a, i) = (g.resolve(a), g.resolve(i));
+                if g.resolve(v) == v && invariant(a) && invariant(i) && known_nonnull(g, known, a) {
+                    checks.push((b, v, a, i));
+                }
+            }
+        }
+    }
+    if checks.is_empty() {
+        return;
+    }
+    let entry = g.blocks[h].preds.iter().position(|&p| p == pre).expect("the preheader enters the header");
+    let Some(ps) = super::rce::entry_state_at(g, &entry_state, h, entry) else { return };
+    for (b, v, a, i) in checks {
+        if checked.insert((a, i)) {
+            g.add(pre, Inst::BoundsCheck(a, i, ps.clone()), Ty::I);
+        }
+        g.blocks[b].insts.retain(|&x| x != v);
     }
 }
