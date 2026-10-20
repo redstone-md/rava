@@ -154,7 +154,7 @@ pub(super) fn refusal(target: &'static Method, chain: &Chain, tier: u8, spent: u
         return "cold call site";
     }
     let Some(info) = target.code else { return "no bytecode" };
-    if chain.len() > max_depth(target, tier >= 3) {
+    if depth(target, chain) > max_depth(target, tier >= 3) {
         return "too deep";
     }
     if recursive(target, None, chain, if tier >= 3 { max_recursive() } else { 0 }) {
@@ -194,21 +194,35 @@ pub(super) fn bound_target(caller: &'static Method, code: &[u8], pc: usize) -> O
 /// optimizing tier, none otherwise), except for a lambda-form body applied to a different
 /// constant method handle (HotSpot bounds lambda-form recursion by receiver identity the same way).
 fn recursive(t: &'static Method, first: Option<i64>, chain: &Chain, allowed: usize) -> bool {
-    // Spun forms, and the pregenerated ones of the `*$Holder` classes (`DelegatingMethodHandle`'s
-    // `delegate`, `DirectMethodHandle`'s `invokeStatic`...), all `@LambdaForm.Compiled`.
-    let lambda_form = t.holder.is_hidden() && t.holder.name.as_str().starts_with("java/lang/invoke/LambdaForm$")
-        || t.has_annotation("Ljava/lang/invoke/LambdaForm$Compiled;");
+    let lambda_form = is_lambda_form(t);
     chain.iter().filter(|(c, f)| std::ptr::eq(*c, t) && !(lambda_form && first.is_some() && *f != first)).count() > allowed
+}
+
+/// A lambda form's body: spun forms, and the pregenerated ones of the `*$Holder` classes
+/// (`DelegatingMethodHandle`'s `delegate`, `DirectMethodHandle`'s `invokeStatic`...), all
+/// `@LambdaForm.Compiled`.
+fn is_lambda_form(t: &'static Method) -> bool {
+    t.holder.is_hidden() && t.holder.name.as_str().starts_with("java/lang/invoke/LambdaForm$") || t.has_annotation("Ljava/lang/invoke/LambdaForm$Compiled;")
+}
+
+/// The inlining depth `t` would have below `chain`. As C2 counts it, a lambda form and what a
+/// lambda form calls add no level: a method-handle chain (a record's `equals`, a nest of
+/// combinators) spends no depth on its plumbing, which would otherwise end the inlining of the
+/// methods it reaches.
+fn depth(t: &'static Method, chain: &Chain) -> usize {
+    let counted = |caller: &'static Method, callee: &'static Method| !is_lambda_form(caller) && !is_lambda_form(callee);
+    let inner = chain.windows(2).filter(|w| counted(w[0].0, w[1].0)).count();
+    inner + chain.last().map_or(0, |&(c, _)| usize::from(counted(c, t)))
 }
 
 /// `opt`: for the optimizing tier, whose exceptions leave compiled code by deoptimizing into
 /// the interpreter, so inlined bodies may have exception handlers.
 fn framed_ok(t: &'static Method, first: Option<i64>, chain: &Chain, hot: bool, opt: bool) -> bool {
     let Some(info) = t.code else { return false };
-    let depth = max_depth(t, opt);
+    let max = max_depth(t, opt);
     // The optimizing tier inlines synchronized methods with their monitor (`opt::inline`).
     let monitor_ok = !t.is_synchronized() || opt && !(t.is_static() && t.holder.mirror().is_null());
-    if chain.len() > depth || recursive(t, first, chain, if opt { max_recursive() } else { 0 }) || !monitor_ok || (!opt && !info.handlers.is_empty()) {
+    if depth(t, chain) > max || recursive(t, first, chain, if opt { max_recursive() } else { 0 }) || !monitor_ok || (!opt && !info.handlers.is_empty()) {
         return false;
     }
     if t.has_annotation("Ljdk/internal/vm/annotation/DontInline;") {
