@@ -368,7 +368,10 @@ impl Builder {
                 }
                 return None;
             }
-            Guard::Klass(k) => (self.klass_of(receiver?), k as *const Klass as i64),
+            Guard::Klass(k) => {
+                self.g.klass_consts.insert(k as *const Klass as i64, k);
+                (self.klass_of(receiver?), k as *const Klass as i64)
+            }
             Guard::Subclass(c, i) => {
                 // Two tests failing to one block: the class's ancestor at c's depth, then its
                 // vtable entry.

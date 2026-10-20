@@ -13,6 +13,7 @@ mod build_mh;
 mod build_obj;
 mod build_ops;
 mod canon;
+mod castdispatch;
 mod coarsen;
 pub(crate) mod cha;
 mod codegen;
@@ -249,6 +250,10 @@ fn compile_timed(m: &'static Method, osr: Option<u32>) -> Option<CompiledMethod>
     // switch's case reached from its label's test).
     typecheck::eliminate(&mut g);
     verify(&g, m, "typecheck::eliminate");
+    if env_once!("RAVA_NO_CASTDISPATCH").is_none() {
+        castdispatch::sink(&mut g);
+        verify(&g, m, "castdispatch::sink");
+    }
     loadnum::number(&mut g);
     verify(&g, m, "loadnum::number");
     // Class words and fields now one value: the branches on them a dominating one decided.
@@ -263,6 +268,7 @@ fn compile_timed(m: &'static Method, osr: Option<u32>) -> Option<CompiledMethod>
     verify(&g, m, "licm::hoist");
     loopfwd::forward(&mut g);
     verify(&g, m, "loopfwd::forward");
+
     rce::eliminate(&mut g);
     verify(&g, m, "rce::eliminate");
     guards::hoist(&mut g);

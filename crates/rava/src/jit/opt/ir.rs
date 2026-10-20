@@ -336,6 +336,9 @@ pub struct Graph {
     /// The declared type of a field a load reads (a class the value is an instance of, or null),
     /// as C2 types loads by the field's declared type (`typecheck.rs`).
     pub declared_types: std::collections::HashMap<V, &'static crate::klass::Klass>,
+    /// The classes inlining guards compare class words with, by the constant's value
+    /// (`castdispatch.rs`).
+    pub klass_consts: std::collections::HashMap<i64, &'static crate::klass::Klass>,
     /// The class declaring the field of a field load or store made from bytecode (`loadnum.rs`).
     pub field_holders: std::collections::HashMap<V, &'static crate::klass::Klass>,
     /// The receiver of an instance method, never null.
