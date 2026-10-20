@@ -13,6 +13,7 @@ mod build_mh;
 mod build_obj;
 mod build_ops;
 mod canon;
+mod coarsen;
 pub(crate) mod cha;
 mod codegen;
 mod codegen_cmp;
@@ -286,6 +287,8 @@ fn compile_timed(m: &'static Method, osr: Option<u32>) -> Option<CompiledMethod>
         unroll::unroll_partially(&mut g);
         verify(&g, m, "unroll::unroll_partially");
     }
+    coarsen::coarsen(&mut g);
+    verify(&g, m, "coarsen::coarsen");
     algebra::simplify_late(&mut g);
     verify(&g, m, "algebra::simplify_late");
     loadnum::number(&mut g);

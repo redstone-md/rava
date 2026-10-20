@@ -210,7 +210,8 @@ fn partial_candidate(g: &Graph, l: &super::dom::Loop) -> Option<(B, B, B)> {
     if insts.is_empty() || insts.len() > MAX_PARTIAL_INSTS {
         return None;
     }
-    let simple = insts.iter().all(|&v| !matches!(g.inst(v), Inst::Call(..) | Inst::Monitor(..) | Inst::New(..) | Inst::NewArray(..) | Inst::NewMulti(..) | Inst::Phi(_)));
+    // A monitor region may repeat: its copies merge into one region (`coarsen.rs`).
+    let simple = insts.iter().all(|&v| !matches!(g.inst(v), Inst::Call(..) | Inst::New(..) | Inst::NewArray(..) | Inst::NewMulti(..) | Inst::Phi(_)));
     simple.then_some((h, body, pre))
 }
 
