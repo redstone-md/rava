@@ -318,6 +318,7 @@ fn walk(g: &mut Graph, mark_only: bool, phis: std::collections::HashSet<V>) {
         }
     }
     let mut facts = Facts(Vec::new(), phis);
+    let ivs = super::ivs::nonneg(g);
     let (mut drop, mut folds, mut marked) = (Vec::new(), Vec::new(), Vec::new());
     let mut walk = vec![(0usize, false)];
     let mut marks = Vec::new();
@@ -364,7 +365,8 @@ fn walk(g: &mut Graph, mark_only: bool, phis: std::collections::HashSet<V>) {
                 }
                 Inst::BoundsCheck(arr, idx, _) => {
                     let (k, len) = (key(g, idx), Key::Len(g.resolve(arr)));
-                    if facts.decide(Cmp::Ge, Ty::I, k, Key::Const(0)) == Some(true) && facts.decide(Cmp::Lt, Ty::I, k, len) == Some(true) {
+                    let nonneg = ivs.contains(&g.resolve(idx)) || facts.decide(Cmp::Ge, Ty::I, k, Key::Const(0)) == Some(true);
+                    if nonneg && facts.decide(Cmp::Lt, Ty::I, k, len) == Some(true) {
                         drop.push(v);
                     } else {
                         facts.0.push(fact(Cmp::Ge, Ty::I, k, Key::Const(0)));

@@ -31,6 +31,7 @@ mod fields;
 mod flags;
 mod freq;
 mod inline;
+mod ivs;
 mod ir;
 mod conds;
 mod consts;
@@ -303,8 +304,7 @@ fn compile_timed(m: &'static Method, osr: Option<u32>) -> Option<CompiledMethod>
     loadnum::number(&mut g);
     verify(&g, m, "loadnum::number (late)");
     deadstore::eliminate(&mut g);
-    verify(&g, m, "deadstore::eliminate");
-    gvn::number(&mut g);
+    verify(&g, m, "deadstore::eliminate");    gvn::number(&mut g);
     verify(&g, m, "gvn::number");
     guards::dedupe(&mut g);
     verify(&g, m, "guards::dedupe");
