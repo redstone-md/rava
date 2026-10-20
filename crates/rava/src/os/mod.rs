@@ -7,6 +7,8 @@
 //! Memory from `reserve_uncommitted` (the heap) must also be `commit`ted before use: Windows
 //! counts committed memory against a system-wide limit, so the heap commits as it grows.
 
+pub mod priority;
+
 #[cfg(unix)]
 mod unix;
 #[cfg(unix)]

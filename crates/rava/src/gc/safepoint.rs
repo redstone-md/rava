@@ -6,6 +6,7 @@
 //! `[rsp, stack_top)` conservatively. Transitions use sequentially consistent operations
 //! (Dekker-style with `REQUESTED`).
 
+use crate::os::priority;
 use crate::thread::Thread;
 use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU8, AtomicUsize, Ordering::SeqCst};
 use std::sync::{Condvar, Mutex};
@@ -350,9 +351,18 @@ fn stopped<R>(me: Option<&'static Record>, guard: std::sync::MutexGuard<'_, ()>,
     }
     arm(true);
     let me = me.map(|r| r as *const Record);
+    // Every Java thread waits on this one and on the stragglers until the world resumes
+    // (`os::priority`).
+    let mut raised: Vec<priority::Raised> = priority::raise(0).into_iter().collect();
+    let mut stragglers_raised = false;
     set_step(1);
     let (started, mut warn_at) = (std::time::Instant::now(), 10u64);
     while all_threads().into_iter().any(|r| Some(r as *const Record) != me && r.state.load(SeqCst) == RUNNING) {
+        if !stragglers_raised && started.elapsed() >= std::time::Duration::from_millis(1) {
+            stragglers_raised = true;
+            let running = all_threads().into_iter().filter(|r| Some(*r as *const Record) != me && r.state.load(SeqCst) == RUNNING);
+            raised.extend(running.filter_map(|r| priority::raise(r.os_thread)));
+        }
         if deadline.is_some_and(|d| std::time::Instant::now() > d) {
             break;
         }
@@ -374,6 +384,7 @@ fn stopped<R>(me: Option<&'static Record>, guard: std::sync::MutexGuard<'_, ()>,
         f(rsp)
     });
     set_step(0);
+    raised.into_iter().for_each(priority::restore);
     let mut epoch = reg.epoch.lock().unwrap();
     *epoch += 1;
     arm(false);
