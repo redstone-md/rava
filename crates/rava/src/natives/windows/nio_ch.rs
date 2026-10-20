@@ -262,6 +262,20 @@ fn files(r: &mut NativeRegistry) {
     });
     r.add(FD, "setDirect0", "(Ljava/io/FileDescriptor;Ljava/nio/CharBuffer;)I", |_, _| ret_int(-1));
     r.add("sun/nio/ch/FileKey", "initIDs", "()V", |_, _| ret_void());
+    // Since 25: static, filling volume serial number, index high and index low.
+    r.add("sun/nio/ch/FileKey", "init", "(Ljava/io/FileDescriptor;[I)V", |t, a| {
+        // SAFETY: an open handle; the info is copied into the int[3].
+        let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
+        if unsafe { GetFileInformationByHandle(handle_of(a[0]), &mut info) } == 0 {
+            return Err(io_error(t, "GetFileInformationByHandle failed"));
+        }
+        // SAFETY: the caller's int[3].
+        let out = unsafe { obj::array_slice::<i32>(a[1] as Oop) };
+        for (slot, v) in out.iter_mut().zip([info.dwVolumeSerialNumber, info.nFileIndexHigh, info.nFileIndexLow]) {
+            *slot = v as i32;
+        }
+        ret_void()
+    });
     r.add("sun/nio/ch/FileKey", "init", "(Ljava/io/FileDescriptor;)V", |t, a| {
         // SAFETY: an open handle; the info is copied into the key.
         let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
