@@ -305,7 +305,13 @@ impl Builder {
             }
             // The receiver classes first-tier code saw, else the declared method for receivers
             // still dispatching to it.
-            let seen = profiled();
+            let mut seen = profiled();
+            // `Object.hashCode` of a receiver not overriding it, whatever its class (C2's
+            // virtual hashCode intrinsic): the identity hash behind a test of the vtable entry,
+            // after the profiled classes, instead of a call into the native method.
+            if matches!(crate::jit::intrinsics::intrinsic(m), Some(crate::jit::intrinsics::Intrinsic::IdentityHash)) &&!seen.iter().any(|(_, g)| matches!(g, Guard::Vtable(_))) {
+                seen.push((m, Guard::Vtable(m.vtable_index())));
+            }
             if !seen.is_empty() {
                 return seen;
             }
