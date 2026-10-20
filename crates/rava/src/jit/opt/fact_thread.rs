@@ -254,6 +254,26 @@ fn operand_at(g: &mut Graph, m: B, i: usize, v: V) -> Option<V> {
     }
 }
 
+/// `x` and every phi it reaches through phis.
+fn merged_into(g: &Graph, x: V) -> std::collections::HashSet<V> {
+    let mut set = std::collections::HashSet::from([x]);
+    loop {
+        let before = set.len();
+        for blk in g.blocks.iter().filter(|b| !matches!(b.term, Term::None)) {
+            for &v in &blk.insts {
+                if let Inst::Phi(ins) = g.inst(v) {
+                    if g.resolve(v) == v && !set.contains(&v) && ins.iter().any(|&y| set.contains(&g.resolve(y))) {
+                        set.insert(v);
+                    }
+                }
+            }
+        }
+        if set.len() == before {
+            return set;
+        }
+    }
+}
+
 /// Field `off` of `x` where `x` is: the value one store of a fresh object put there (or zero
 /// with none), as a value; a constant (Err) for a class word of a fresh or constant object or a
 /// constant object's final field.
@@ -263,15 +283,20 @@ fn field_of(g: &Graph, x: V, off: u32, bt: crate::types::BasicType) -> Option<Re
         Inst::New(k, _) if off == 0 && bt == BasicType::Int => Some(Err(crate::heap::klass_word(k) as i64)),
         Inst::New(..) => {
             let home = g.blocks.iter().position(|b| b.insts.contains(&x))?;
+            // The object and the merges it flows into (an inlined method's returns, a loop
+            // carrying it): a store through one of them may write the object too.
+            let aliases = merged_into(g, x);
+            let is_alias = |y: V| aliases.contains(&g.resolve(y));
             // Only its own field accesses (and merges) see the object: nothing else can write it.
             let passed = g.blocks.iter().filter(|b| !matches!(b.term, Term::None)).any(|blk| {
-                blk.term.inputs().into_iter().any(|y| g.resolve(y) == x)
+                blk.term.inputs().into_iter().any(is_alias)
                     || blk.insts.iter().any(|&s| {
                         g.resolve(s) == s
                             && match *g.inst(s) {
                                 Inst::Phi(_) | Inst::LoadField(..) => false,
-                                Inst::StoreField(o, _, _, val) => g.resolve(o) != x && g.resolve(val) == x || g.resolve(val) == x,
-                                ref i => i.inputs().into_iter().any(|y| g.resolve(y) == x),
+                                // Storing through a merge of it into the field read.
+                                Inst::StoreField(o, f, _, val) => is_alias(val) || g.resolve(o) != x && is_alias(o) && f == off,
+                                ref i => i.inputs().into_iter().any(is_alias),
                             }
                     })
             });
