@@ -161,6 +161,21 @@ fn wrap(ty: Ty, k: i64) -> i64 {
 fn fold_constant_branches(g: &mut Graph) {
     let mut folded = false;
     for b in 0..g.blocks.len() {
+        // A switch on a constant (a pattern switch's restart index, once inlined) goes to its
+        // case.
+        if let Term::Switch { key, cases, default } = &g.blocks[b].term {
+            let Some(c) = g.constant(g.resolve(*key)) else { continue };
+            let keep = cases.iter().find(|&&(k, _)| k as i64 == c as i32 as i64).map_or(*default, |&(_, t)| t);
+            let mut gone = g.blocks[b].term.successors();
+            gone.sort_unstable();
+            gone.dedup();
+            gone.retain(|&t| t != keep);
+            for t in gone {
+                super::conds::fold_branch(g, b as B, keep, t);
+                folded = true;
+            }
+            continue;
+        }
         let Term::If { cmp, ty: ty @ (Ty::I | Ty::J | Ty::A), a, b: y, then, other, .. } = g.blocks[b].term else { continue };
         let (Some(x), Some(z)) = (g.constant(g.resolve(a)), g.constant(g.resolve(y))) else { continue };
         if then == other {
