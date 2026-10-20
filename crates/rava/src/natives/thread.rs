@@ -11,6 +11,7 @@ use crate::thread::{JResult, Thread};
 use std::sync::atomic::AtomicI64;
 
 vm_field!(eetop_offset, "java/lang/Thread", "eetop", "J");
+vm_field!(tid_offset, "java/lang/Thread", "tid", "J");
 vm_field!(holder_offset, "java/lang/Thread", "holder", "Ljava/lang/Thread$FieldHolder;");
 vm_field!(status_offset, "java/lang/Thread$FieldHolder", "threadStatus", "I");
 vm_field!(interrupted_offset, "java/lang/Thread", "interrupted", "Z");
@@ -170,8 +171,15 @@ pub(super) fn register(r: &mut NativeRegistry) {
         }
         ret_bool(sync::holds_lock(a[0] as Oop))
     });
-    r.add(T, "getNextThreadIdOffset", "()J", |_, _| {
-        static NEXT_TID: AtomicI64 = AtomicI64::new(1);
+    // The counter thread identifiers come from (`Thread.ThreadIdentifiers`), shared with the
+    // VM. It starts past the primordial thread's identifier, which `Thread`'s constructor sets
+    // without it (1 on 21, `PRIMORDIAL_TID` 3 on 25); the primordial thread is the one
+    // initializing the identifiers.
+    r.add(T, "getNextThreadIdOffset", "()J", |t, _| {
+        static NEXT_TID: AtomicI64 = AtomicI64::new(0);
+        // SAFETY: the calling thread's live java.lang.Thread.
+        let primordial = if t.java_thread.is_null() { 0 } else { unsafe { obj::read::<i64>(t.java_thread, tid_offset()) } };
+        let _ = NEXT_TID.compare_exchange(0, primordial.max(0) + 1, std::sync::atomic::Ordering::SeqCst, std::sync::atomic::Ordering::SeqCst);
         ret_long(&NEXT_TID as *const AtomicI64 as i64)
     });
     r.add(T, "start0", "()V", start0);
