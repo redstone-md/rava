@@ -40,6 +40,7 @@ mod initstores;
 mod hints;
 mod licm;
 mod loadnum;
+mod loopfwd;
 mod rce;
 mod liveness;
 mod locals;
@@ -254,6 +255,8 @@ fn compile_timed(m: &'static Method, osr: Option<u32>) -> Option<CompiledMethod>
     verify(&g, m, "backedges::split");
     licm::hoist(&mut g);
     verify(&g, m, "licm::hoist");
+    loopfwd::forward(&mut g);
+    verify(&g, m, "loopfwd::forward");
     rce::eliminate(&mut g);
     verify(&g, m, "rce::eliminate");
     guards::hoist(&mut g);
