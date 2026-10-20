@@ -96,6 +96,7 @@ fn expand(g: &mut Graph, h: B, body: B, pre: B, exit: B, trips: i64) {
             if g.ordered.contains(&v) {
                 g.ordered.insert(c);
             }
+            copy_receiver(g, v, c, &env);
             env.insert(v, c);
         }
         let advanced: Vec<(V, V)> = next.iter().map(|&(p, n)| (p, env.get(&n).copied().unwrap_or(n))).collect();
@@ -264,6 +265,7 @@ fn expand_partially(g: &mut Graph, h: B, body: B, pre: B) {
             if g.ordered.contains(&v) {
                 g.ordered.insert(c);
             }
+            copy_receiver(g, v, c, &cur);
             cur.insert(v, c);
         }
         let advanced: Vec<(V, V)> = phis.iter().map(|&(p, _, n)| (p, cur.get(&n).copied().unwrap_or(n))).collect();
@@ -293,5 +295,13 @@ fn expand_partially(g: &mut Graph, h: B, body: B, pre: B) {
         if let Inst::Phi(ins) = &mut g.values[p as usize].inst {
             ins[entry] = p4;
         }
+    }
+}
+
+/// A copied uniqueness check keeps its receiver, as of the copy (`flags.rs`).
+fn copy_receiver(g: &mut Graph, v: V, c: V, env: &HashMap<V, V>) {
+    if let Some(&r) = g.flag_receivers.get(&v) {
+        let r = g.resolve(r);
+        g.flag_receivers.insert(c, env.get(&r).copied().unwrap_or(r));
     }
 }

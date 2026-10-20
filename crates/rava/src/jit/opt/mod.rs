@@ -287,6 +287,9 @@ fn compile_timed(m: &'static Method, osr: Option<u32>) -> Option<CompiledMethod>
         unroll::unroll_partially(&mut g);
         verify(&g, m, "unroll::unroll_partially");
     }
+    // Unrolled copies repeat their uniqueness checks; a repeat breaks a coarsened region.
+    flags::merge(&mut g);
+    verify(&g, m, "flags::merge");
     coarsen::coarsen(&mut g);
     verify(&g, m, "coarsen::coarsen");
     algebra::simplify_late(&mut g);
