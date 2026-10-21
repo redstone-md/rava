@@ -407,7 +407,7 @@ pub(super) fn generate(g: &Graph, al: &Allocation, m: &'static Method, frame_slo
             gen.next = [insts.get(k + 1).copied(), insts.get(k + 2).copied()];
             if trace || scoped {
                 let at = gen.a.new_label();
-                gen.a.bind(at);
+                gen.a.mark(at);
                 traced.push((at, v));
             }
             let pending = gen.pending_null.is_some();
@@ -513,7 +513,7 @@ impl Gen<'_> {
     pub(super) fn fault_site(&mut self) {
         if let Some(fail) = self.pending_null.take() {
             let at = self.a.new_label();
-            self.a.bind(at);
+            self.a.mark(at);
             self.faults.push((at, fail));
         }
     }

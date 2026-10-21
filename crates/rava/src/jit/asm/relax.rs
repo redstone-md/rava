@@ -5,7 +5,7 @@
 use super::{Asm, Label};
 
 impl Asm {
-    /// Removes the last `size` bytes (a branch), moving labels bound at the end with them.
+    /// Removes the last `size` bytes (a branch), moving labels bound or marked at the end with them.
     fn drop_branch(&mut self, size: u32) {
         let end = self.pos();
         self.buf.truncate((end - size) as usize);
@@ -14,6 +14,12 @@ impl Asm {
                 self.labels[b as usize] = Some(end - size);
             }
             self.bound_at = end - size;
+        }
+        if self.marked_at == end {
+            for &m in &self.marked {
+                self.labels[m as usize] = Some(end - size);
+            }
+            self.marked_at = end - size;
         }
     }
 

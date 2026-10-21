@@ -352,8 +352,8 @@ fn compile_timed(m: &'static Method, osr: Option<u32>) -> Option<CompiledMethod>
         eprintln!("[opt-alloc] {}", locs.join(" "));
     }
     let dumped = env_once!("RAVA_JIT_DUMP").is_some_and(|f| m.to_string().contains(f.to_str().unwrap_or("")));
-    // `RAVA_JIT_DUMP_RAW`: the code alone, generated exactly as without a dump (the trace's
-    // labels would stop peepholes across them).
+    // `RAVA_JIT_DUMP_RAW`: the code alone, without the instruction trace (whose marks change no
+    // code, `Asm::mark`).
     let raw = env_once!("RAVA_JIT_DUMP_RAW").is_some_and(|f| m.to_string().contains(f.to_str().unwrap_or("")));
     // `RAVA_PERF_MAP=inline`: name the code of each inlined method after it, so samples are
     // attributed to the innermost method as HotSpot's profilers do.

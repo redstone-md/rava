@@ -80,6 +80,9 @@ pub struct Asm {
     /// The position labels were last bound at, and those labels.
     bound_at: u32,
     bound: Vec<u32>,
+    /// The position labels were last marked at (`mark`), and those labels.
+    marked_at: u32,
+    marked: Vec<u32>,
     /// Relative calls to absolute addresses: (displacement position, target), resolved when the
     /// code is installed (`code_cache::install`).
     relocs: Vec<(u32, usize)>,
@@ -151,6 +154,19 @@ impl Asm {
             self.bound_at = at;
         }
         self.bound.push(l.0);
+        self.labels[l.0 as usize] = Some(at);
+    }
+
+    /// Notes where `l` is without making it a join: no jump goes to it (a fault site, an
+    /// instruction's start for a table of positions), so registers known to hold slots and the
+    /// branch peepholes carry on across it.
+    pub fn mark(&mut self, l: Label) {
+        let at = self.pos();
+        if at != self.marked_at {
+            self.marked.clear();
+            self.marked_at = at;
+        }
+        self.marked.push(l.0);
         self.labels[l.0 as usize] = Some(at);
     }
 
