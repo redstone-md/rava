@@ -151,7 +151,7 @@ impl Heap {
     #[cold]
     fn refill(&self, t: &mut Thread, class: usize) -> Option<()> {
         let retired = t.alloc.classes[class];
-        t.alloc.pending += retired.bump - retired.start;
+        t.alloc.pending += retired.bump - retired.start;        crate::profile::allocated(t, retired.bump - retired.start);
         if t.alloc.pending >= 1 << 20 {
             self.flush_pending(t);
         }
@@ -204,6 +204,7 @@ impl Heap {
 
     #[cold]
     fn allocate_large(&self, t: &mut Thread, bytes: usize) -> Option<*mut u8> {
+        crate::profile::allocated(t, bytes);
         self.maybe_collect(t);
         if self.over_limit(&self.space.lock().unwrap(), bytes) {
             self.collect(t);

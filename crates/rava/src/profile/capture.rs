@@ -232,3 +232,25 @@ unsafe fn walk_headers(thread: usize, out: &mut Vec<(usize, u64, bool)>) {
         h = c;
     }
 }
+
+/// An allocation sample of the calling thread, unresolved: its thread id, the class noted
+/// (0 if none), the bytes, and its frame headers as `Raw::headers`.
+pub struct Allocation {
+    pub thread: u32,
+    pub class: usize,
+    pub bytes: u64,
+    pub headers: Vec<(usize, u64, bool)>,
+}
+
+/// Allocation samples taken since the recorder last looked.
+pub static ALLOCATIONS: Mutex<Vec<Allocation>> = Mutex::new(Vec::new());
+
+/// Takes an allocation sample of the calling thread `t`, walking its own headers.
+pub fn allocation(t: &crate::thread::Thread, class: usize, bytes: usize) {
+    let mut headers = Vec::with_capacity(32);
+    // SAFETY: the calling thread's own `Thread` and frames, which stay put while it walks them.
+    unsafe { walk_headers(t as *const _ as usize, &mut headers) };
+    // SAFETY: a plain query.
+    let thread = unsafe { GetCurrentThreadId() };
+    ALLOCATIONS.lock().unwrap().push(Allocation { thread, class, bytes: bytes as u64, headers });
+}

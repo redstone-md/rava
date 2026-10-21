@@ -90,6 +90,9 @@ pub enum Record {
     Sample { time: u64, thread: u32, state: State, cycles: u64, stack: u32 },
     /// A thread's total CPU cycles at `time`.
     ThreadCpu { time: u64, thread: u32, cycles: u64 },
+    /// An allocation sample: `bytes` the thread allocated (a run of cells it filled, or one
+    /// large object) attributed to an object of class `class` (an interned name) at `stack`.
+    Alloc { time: u64, thread: u32, class: u32, bytes: u64, stack: u32 },
     /// A kind this reader does not know.
     Unknown(u8),
 }
@@ -102,6 +105,7 @@ const CODE: u8 = 5;
 const STACK: u8 = 6;
 const SAMPLE: u8 = 7;
 const THREAD_CPU: u8 = 8;
+const ALLOC: u8 = 9;
 
 fn put(buf: &mut Vec<u8>, mut v: u64) {
     loop {
@@ -199,6 +203,12 @@ impl<W: Write> Writer<W> {
                     put(b, v);
                 }
                 THREAD_CPU
+            }
+            Record::Alloc { time, thread, class, bytes, stack } => {
+                for v in [*time, *thread as u64, *class as u64, *bytes, *stack as u64] {
+                    put(b, v);
+                }
+                ALLOC
             }
             Record::Unknown(_) => return Ok(()),
         };
@@ -329,6 +339,7 @@ impl<R: Read> Reader<R> {
             }
             SAMPLE => Record::Sample { time: c.num()?, thread: c.id()?, state: State::from(c.num()? as u8), cycles: c.num()?, stack: c.id()? },
             THREAD_CPU => Record::ThreadCpu { time: c.num()?, thread: c.id()?, cycles: c.num()? },
+            ALLOC => Record::Alloc { time: c.num()?, thread: c.id()?, class: c.id()?, bytes: c.num()?, stack: c.id()? },
             k => Record::Unknown(k),
         }))
     }
@@ -357,6 +368,7 @@ mod tests {
             },
             Record::Sample { time: 1_000_000, thread: 77, state: State::Syscall, cycles: 3_000_000, stack: 3 },
             Record::ThreadCpu { time: 2_000_000, thread: 77, cycles: u64::MAX >> 1 },
+            Record::Alloc { time: 2_000_001, thread: 77, class: 1, bytes: 32768, stack: 3 },
         ];
         let mut w = Writer::new(Vec::new()).unwrap();
         for r in &records {

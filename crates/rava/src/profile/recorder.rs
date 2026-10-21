@@ -155,6 +155,7 @@ impl Recorder {
             let n = capture::sample(config.wall, &mut raws);
             let time = started.elapsed().as_micros() as u64;
 
+            self.take_allocations(time);
             for raw in &raws[..n] {
                 let (state, frames) = self.resolve(raw);
 
@@ -313,26 +314,44 @@ impl Recorder {
                 State::Native
             }
         };
-        self.java_frames(raw, leaf, &mut frames);
+        self.java_frames(&raw.headers, leaf, &mut frames);
         (state, frames)
+    }
+
+    /// Writes the allocation samples taken since the last call.
+    fn take_allocations(&mut self, time: u64) {
+        let taken = std::mem::take(&mut *capture::ALLOCATIONS.lock().unwrap());
+        for a in taken {
+            let mut frames = Vec::with_capacity(a.headers.len());
+            self.java_frames(&a.headers, None, &mut frames);
+            let stack = self.stack(frames);
+            let class = if a.class == 0 {
+                self.string("?")
+            } else {
+                // SAFETY: the runtime noted an immortal class.
+                let k = unsafe { &*(a.class as *const crate::klass::Klass) };
+                self.string(&k.name.to_string())
+            };
+            let _ = self.out.write(&Record::Alloc { time, thread: a.thread, class, bytes: a.bytes, stack });
+        }
     }
 
     /// Appends the frames of the headers: a header up to a few past `top` holding the leaf's
     /// method is the leaf's own frame (`top` stays at the last header published, and callees
     /// that returned since are dead), so the walk starts after it; a call site's inlining record
     /// stands for the frames inlined at it.
-    fn java_frames(&mut self, raw: &Raw, leaf: Option<u32>, frames: &mut Vec<Frame>) {
+    fn java_frames(&mut self, headers: &[(usize, u64, bool)], leaf: Option<u32>, frames: &mut Vec<Frame>) {
         use crate::thread::header;
         let mut from = 0;
         if let Some(l) = leaf {
-            for (i, &(m, ..)) in raw.headers.iter().take(8).enumerate() {
+            for (i, &(m, ..)) in headers.iter().take(8).enumerate() {
                 if self.is_method(m) && self.method(m) == l {
                     from = i + 1;
                     break;
                 }
             }
         }
-        for &(m, bci, interpreted) in &raw.headers[from..] {
+        for &(m, bci, interpreted) in &headers[from..] {
             if m == 0 || !self.is_method(m) {
                 continue;
             }

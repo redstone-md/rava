@@ -11,6 +11,8 @@ mod recorder;
 use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
 
 static ON: AtomicBool = AtomicBool::new(false);
+/// Bytes per allocation sample, 0 when the recording takes none (`alloc` option).
+static ALLOC_STEP: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
 /// What `RAVA_RECORD` asks for.
 #[derive(Clone, Debug, PartialEq)]
@@ -20,16 +22,23 @@ pub struct Config {
     pub interval: u64,
     /// Samples blocked threads too (`mode=wall`), not only those that used the CPU.
     pub wall: bool,
+    /// Bytes a thread allocates per allocation sample (`alloc[=<KiB>]`), 0 for none.
+    pub alloc: usize,
 }
 
 impl Config {
-    /// Parses `path[,interval=<µs>][,mode=cpu|wall]`.
+    /// Parses `path[,interval=<µs>][,mode=cpu|wall][,alloc[=<KiB>]]`.
     pub fn parse(spec: &str) -> Result<Config, String> {
         let mut parts = spec.split(',');
         let path = parts.next().filter(|p| !p.is_empty()).ok_or("RAVA_RECORD needs a file path")?;
-        let mut c = Config { path: path.into(), interval: 1000, wall: false };
+        let mut c = Config { path: path.into(), interval: 1000, wall: false, alloc: 0 };
         for opt in parts {
+            if opt == "alloc" {
+                c.alloc = 1 << 20;
+                continue;
+            }
             match opt.split_once('=') {
+                Some(("alloc", v)) => c.alloc = v.parse::<usize>().ok().filter(|&k| k >= 16).ok_or_else(|| format!("RAVA_RECORD: alloc takes KiB, at least 16, not {v}"))? << 10,
                 Some(("interval", v)) => c.interval = v.parse().ok().filter(|&v: &u64| v >= 100).ok_or_else(|| format!("RAVA_RECORD: interval must be at least 100 µs, not {v}"))?,
                 Some(("mode", "cpu")) => c.wall = false,
                 Some(("mode", "wall")) => c.wall = true,
@@ -52,7 +61,9 @@ pub fn start() {
     };
     #[cfg(windows)]
     {
+        let step = config.alloc;
         if recorder::start(config) {
+            ALLOC_STEP.store(step, Relaxed);
             ON.store(true, Relaxed);
         }
     }
@@ -87,6 +98,45 @@ pub fn detach_current() {
         #[cfg(windows)]
         capture::detach_current();
     }
+}
+
+thread_local! {
+    /// The class the calling thread allocates an instance of (`allocating`).
+    static ALLOC_CLASS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// Bytes the calling thread allocated since its last allocation sample.
+    static ALLOC_BYTES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+
+
+/// Notes that the calling thread allocates an object of class `k` (the runtime's allocation
+/// entry points, which compiled code reaches when its bump run is exhausted).
+#[inline]
+pub fn allocating(k: &'static crate::klass::Klass) {
+    if ALLOC_STEP.load(Relaxed) != 0 {
+        ALLOC_CLASS.with(|c| c.set(k as *const _ as usize));
+    }
+}
+
+/// Thread `t` filled a run of `bytes` (or allocated one large object of that size) and is
+/// allocating an object of the class `allocating` noted: once a megabyte has gone so since the
+/// last (the `alloc` option's step), an allocation sample weighing those bytes, at this object's
+/// class and stack.
+pub fn allocated(t: &crate::thread::Thread, bytes: usize) {
+    let step = ALLOC_STEP.load(Relaxed);
+    if step == 0 || bytes == 0 {
+        return;
+    }
+    let total = ALLOC_BYTES.with(|b| b.get()) + bytes;
+    if total < step {
+        ALLOC_BYTES.with(|b| b.set(total));
+        return;
+    }
+    ALLOC_BYTES.with(|b| b.set(0));
+    let class = ALLOC_CLASS.with(|c| c.get());
+    #[cfg(windows)]
+    capture::allocation(t, class, total);
+    let _ = (t, class);
 }
 
 /// Whether a recording is being made (the compilers then keep what it needs).
@@ -138,8 +188,11 @@ mod tests {
 
     #[test]
     fn parses_the_specification() {
-        assert_eq!(Config::parse("a.rprof").unwrap(), Config { path: "a.rprof".into(), interval: 1000, wall: false });
-        assert_eq!(Config::parse("a.rprof,interval=500,mode=wall").unwrap(), Config { path: "a.rprof".into(), interval: 500, wall: true });
+        assert_eq!(Config::parse("a.rprof").unwrap(), Config { path: "a.rprof".into(), interval: 1000, wall: false, alloc: 0 });
+        assert_eq!(Config::parse("a.rprof,interval=500,mode=wall").unwrap(), Config { path: "a.rprof".into(), interval: 500, wall: true, alloc: 0 });
+        assert_eq!(Config::parse("a,alloc").unwrap().alloc, 1 << 20);
+        assert_eq!(Config::parse("a,alloc=256").unwrap().alloc, 256 << 10);
+        assert!(Config::parse("a,alloc=1").is_err());
         assert!(Config::parse("").is_err());
         assert!(Config::parse("a,interval=5").is_err());
         assert!(Config::parse("a,colour=red").is_err());
