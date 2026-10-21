@@ -5,6 +5,7 @@
 | [Minecraft](minecraft.md) | servers, the client and launchers |
 | [Troubleshooting](troubleshooting.md) | thread dumps, diagnostics, reporting problems |
 | [Optimizing tier](opt-tier.md) | the SSA compiler: inlining, speculation, deoptimization |
+| [Profiling](profiling.md) | recording a run (`RAVA_RECORD`) and analyzing it with `rava-prof`, against HotSpot too |
 | [Java releases](jdk-versions.md) | which class libraries run and how releases differ |
 | [Platforms](platforms-roadmap.md) | the Linux, macOS and Windows ports |
 | [Patches](patches.md) | program-specific changes, installed by the owner |
