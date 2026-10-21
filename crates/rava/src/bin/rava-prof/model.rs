@@ -17,6 +17,18 @@ pub struct Sample {
     pub weight: f64,
     /// An allocation sample's class (an interned name; 0 for a CPU sample).
     pub class: u32,
+    /// The compiled code the thread was at: its region (`Profile::regions`) and offset.
+    pub at: Option<(u32, u32)>,
+}
+
+/// Compiled code as installed: where, which method (an interned name), its tier, and its
+/// machine code when the recording has it (the `code` option).
+pub struct Region {
+    pub start: u64,
+    pub size: u64,
+    pub method: u32,
+    pub tier: Tier,
+    pub bytes: Option<Vec<u8>>,
 }
 
 pub struct Module {
@@ -35,6 +47,8 @@ pub struct Profile {
     pub allocs: Vec<Sample>,
     /// Bytes of code installed per tier.
     pub code: HashMap<Tier, (u64, u64)>,
+    /// Every installation of compiled code, in order.
+    pub regions: Vec<Region>,
     /// Each thread's CPU seconds over the whole recording.
     pub cpu: HashMap<u32, f64>,
     /// Seconds from the first to the last record with a time.
@@ -59,6 +73,8 @@ impl Profile {
         let mut cpu: HashMap<u32, Vec<(u64, u64)>> = HashMap::new();
         let mut raw_cycles: Vec<u64> = Vec::new();
         let mut last = 0u64;
+        // The code at each address now: start to (end, region).
+        let mut live: std::collections::BTreeMap<u64, (u64, u32)> = std::collections::BTreeMap::new();
         while let Some(rec) = r.next().map_err(|e| format!("{path}: {e}"))? {
             match rec {
                 Record::Meta { key, value } => {
@@ -75,17 +91,32 @@ impl Profile {
                     let path = p.strings.get(&path).cloned().unwrap_or_default();
                     p.modules.insert(id, Module { path });
                 }
-                Record::Code { size, tier, .. } => {
+                Record::Code { start, size, method, tier } => {
                     let e = p.code.entry(tier).or_default();
                     e.0 += 1;
                     e.1 += size;
+                    // Code installed over freed code replaces it.
+                    live.retain(|&s, &mut (end, _)| end <= start || s >= start + size);
+                    live.insert(start, (start + size, p.regions.len() as u32));
+                    p.regions.push(Region { start, size, method, tier, bytes: None });
+                }
+                Record::CodeBytes { start, bytes } => {
+                    if let Some(&(_, r)) = live.get(&start) {
+                        p.regions[r as usize].bytes = Some(bytes);
+                    }
+                }
+                Record::Pc { pc } => {
+                    let at = live.range(..=pc).next_back().filter(|(_, &(end, _))| pc < end).map(|(&s, &(_, r))| (r, (pc - s) as u32));
+                    if let Some(s) = p.samples.last_mut() {
+                        s.at = at;
+                    }
                 }
                 Record::Stack { id, frames } => {
                     p.stacks.insert(id, frames);
                 }
                 Record::Sample { time, thread, state, cycles, stack } => {
                     last = last.max(time);
-                    p.samples.push(Sample { time: time as f64 / 1e6, thread, state, stack, weight: 0.0, class: 0 });
+                    p.samples.push(Sample { time: time as f64 / 1e6, thread, state, stack, weight: 0.0, class: 0, at: None });
                     raw_cycles.push(cycles);
                 }
                 Record::ThreadCpu { time, thread, cycles } => {
@@ -94,7 +125,7 @@ impl Profile {
                 }
                 Record::Alloc { time, thread, class, bytes, stack } => {
                     last = last.max(time);
-                    p.allocs.push(Sample { time: time as f64 / 1e6, thread, state: State::Java, stack, weight: bytes as f64 / 1e6, class });
+                    p.allocs.push(Sample { time: time as f64 / 1e6, thread, state: State::Java, stack, weight: bytes as f64 / 1e6, class, at: None });
                 }
                 Record::Unknown(_) => {}
             }

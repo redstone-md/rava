@@ -19,6 +19,7 @@ RAVA_RECORD=run.rprof java -jar server.jar
 | `interval=<µs>` | `1000` | time between samples of each thread |
 | `alloc[=<KiB>]` | off | allocation samples, one per that many KiB a thread allocates (1024) |
 | `mode=cpu` / `mode=wall` | `cpu` | `cpu` samples a thread only when it used the CPU since its last sample; `wall` samples every thread, blocked ones included, with their state |
+| `code` | off | the machine code of every optimized method as it is installed, for `rava-prof annotate` |
 
 The recorder runs on its own thread. It suspends each Java thread briefly, reads its registers
 and walks its frame headers (inlined frames come from the call sites' inlining records), and
@@ -34,6 +35,8 @@ writes events to the file as it goes, so a crash or a kill loses at most the las
 | code | each compiled method's address range, method and tier, as it is installed |
 | module | each loaded native module's path and address range |
 | allocation | with `alloc`, once a thread has allocated the step since its last: the class of the object it allocates then, its stack, and the bytes it weighs |
+| pc | after a sample in compiled code: the instruction the thread was at |
+| code bytes | with `code`: an optimized method's machine code, after its code event |
 
 Planned next, in this order: compilations (duration, size, inlining decisions with their
 reasons), deoptimizations (method, bci, reason), garbage collections and safepoints (pause per
@@ -82,6 +85,7 @@ rava-prof <command> [options]
 | `diff <a> <b> [--inclusive]` | two recordings' frames side by side, sorted by the difference |
 | `folded <file>` | folded stacks (`thread;outermost;...;innermost ms`) for flame graph tools |
 | `import-jfr <in.json> <out> [--period <ms>]` | a HotSpot recording, `jfr print --json --events jdk.ExecutionSample` of it, as a recording |
+| `annotate <file> <method> [--dump <dir>]` | CPU by instruction in the compiled code of the methods whose name contains `<method>`: per installed code, its hottest offsets with their bytes (`code` recordings) and the source frame there (`Class.method@bci`); `--dump` writes each code's machine code (`.bin`) and its offsets with their seconds (`.txt`) for a disassembler |
 
 Options for the reports: `--thread <prefix>` keeps the samples of threads whose name starts
 with it, `--state java|vm|syscall|native` of one state, `--from <s>` / `--to <s>` of a time
@@ -100,6 +104,12 @@ sampling period (`--period`: 10 ms for JFR's `profile` settings, 20 ms for `defa
 to the method they were inlined into), which both VMs can tell, so `diff` compares the same
 thing even where they inline differently; `--leaf` gives it to the innermost frame instead.
 Inclusive time counts each frame once per sample.
+
+**Attribution in `cpu` mode.** A sample weighs the cycles its thread used since its previous
+sample, and takes the stack where the thread is when sampled. A thread that ran and then
+blocked (at a safepoint, say, while a collection runs) gets that time on the wait it is in:
+the system wait functions under a compiled frame mostly hold the work of the instructions
+before them.
 
 **Symbols.** Native frames in rava's own code are named from its PDB when one sits next to the
 executable that ran (a `release-diag` build has one); system libraries are named from their
@@ -128,6 +138,5 @@ its callers' inclusive time, and `import-jfr` warns about such samples. Record w
 - Recording is implemented for Windows; Linux needs a signal-based capture of the same data.
 - Next events: compilations (duration, size, inlining decisions and their reasons),
   deoptimizations (method, bci, reason), collections and safepoints (each thread's pause),
-  monitor contention and parking with stacks, allocation samples; then `annotate` (a compiled
-  method's instructions with their samples, its IR and bytecode), which replaces the old
-  `RAVA_SAMPLE` sampler.
+  monitor contention and parking with stacks; `annotate` with the disassembly and the IR of
+  each instruction, which then replaces the old `RAVA_SAMPLE` sampler.

@@ -48,7 +48,7 @@ pub fn start(config: Config) -> bool {
         }
     };
     let Ok(writer) = Writer::new(BufWriter::with_capacity(1 << 20, file)) else { return false };
-    let mut r = Recorder { out: writer, strings: HashMap::new(), methods: HashMap::new(), stacks: HashMap::new(), code: BTreeMap::new(), scopes: HashMap::new(), chains: Vec::new(), chain_ids: HashMap::new(), modules: Vec::new(), threads: HashMap::new(), loaded: Vec::new() };
+    let mut r = Recorder { out: writer, strings: HashMap::new(), methods: HashMap::new(), stacks: HashMap::new(), code: BTreeMap::new(), scopes: HashMap::new(), chains: Vec::new(), chain_ids: HashMap::new(), modules: Vec::new(), threads: HashMap::new(), loaded: Vec::new(), code_bytes: config.code };
     r.meta("vm", &format!("rava {}", env!("CARGO_PKG_VERSION")));
     r.meta("pid", &std::process::id().to_string());
     r.meta("command", &std::env::args().collect::<Vec<_>>().join(" "));
@@ -107,6 +107,8 @@ struct Recorder {
     /// Each loaded class's methods (address, count), sorted: header words are checked against
     /// it before being read as methods.
     loaded: Vec<(usize, usize)>,
+    /// Whether optimized code's bytes are recorded (the `code` option).
+    code_bytes: bool,
 }
 
 impl Recorder {
@@ -161,6 +163,10 @@ impl Recorder {
 
                 let stack = self.stack(frames);
                 let _ = self.out.write(&Record::Sample { time, thread: raw.thread, state, cycles: raw.cycles, stack });
+                // The instruction itself, for `rava-prof annotate`, when it is compiled code.
+                if self.code.range(..=raw.pc).next_back().is_some_and(|(_, &(end, ..))| raw.pc < end) {
+                    let _ = self.out.write(&Record::Pc { pc: raw.pc as u64 });
+                }
             }
             if let Some(rest) = interval.checked_sub(tick.elapsed()) {
                 std::thread::sleep(rest);
@@ -195,6 +201,11 @@ impl Recorder {
             self.scopes.retain(|&s, _| s < start || s >= start + size);
             self.code.insert(start, (start + size, m, tier));
             let _ = self.out.write(&Record::Code { start: start as u64, size: size as u64, method: m, tier });
+            if self.code_bytes && matches!(tier, Tier::Opt | Tier::Osr) {
+                // SAFETY: code just installed there, readable and not freed before it is replaced.
+                let bytes = unsafe { std::slice::from_raw_parts(start as *const u8, size) }.to_vec();
+                let _ = self.out.write(&Record::CodeBytes { start: start as u64, bytes });
+            }
         }
         let scoped = std::mem::take(&mut *SCOPED.lock().unwrap());
         for (start, scopes) in scoped {

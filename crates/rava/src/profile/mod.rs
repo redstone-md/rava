@@ -24,17 +24,23 @@ pub struct Config {
     pub wall: bool,
     /// Bytes a thread allocates per allocation sample (`alloc[=<KiB>]`), 0 for none.
     pub alloc: usize,
+    /// Records the machine code of optimized methods too (`code`), for `rava-prof annotate`.
+    pub code: bool,
 }
 
 impl Config {
-    /// Parses `path[,interval=<µs>][,mode=cpu|wall][,alloc[=<KiB>]]`.
+    /// Parses `path[,interval=<µs>][,mode=cpu|wall][,alloc[=<KiB>]][,code]`.
     pub fn parse(spec: &str) -> Result<Config, String> {
         let mut parts = spec.split(',');
         let path = parts.next().filter(|p| !p.is_empty()).ok_or("RAVA_RECORD needs a file path")?;
-        let mut c = Config { path: path.into(), interval: 1000, wall: false, alloc: 0 };
+        let mut c = Config { path: path.into(), interval: 1000, wall: false, alloc: 0, code: false };
         for opt in parts {
             if opt == "alloc" {
                 c.alloc = 1 << 20;
+                continue;
+            }
+            if opt == "code" {
+                c.code = true;
                 continue;
             }
             match opt.split_once('=') {
@@ -188,9 +194,10 @@ mod tests {
 
     #[test]
     fn parses_the_specification() {
-        assert_eq!(Config::parse("a.rprof").unwrap(), Config { path: "a.rprof".into(), interval: 1000, wall: false, alloc: 0 });
-        assert_eq!(Config::parse("a.rprof,interval=500,mode=wall").unwrap(), Config { path: "a.rprof".into(), interval: 500, wall: true, alloc: 0 });
+        assert_eq!(Config::parse("a.rprof").unwrap(), Config { path: "a.rprof".into(), interval: 1000, wall: false, alloc: 0, code: false });
+        assert_eq!(Config::parse("a.rprof,interval=500,mode=wall").unwrap(), Config { path: "a.rprof".into(), interval: 500, wall: true, alloc: 0, code: false });
         assert_eq!(Config::parse("a,alloc").unwrap().alloc, 1 << 20);
+        assert!(Config::parse("a,code").unwrap().code);
         assert_eq!(Config::parse("a,alloc=256").unwrap().alloc, 256 << 10);
         assert!(Config::parse("a,alloc=1").is_err());
         assert!(Config::parse("").is_err());

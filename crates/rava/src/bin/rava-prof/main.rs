@@ -1,5 +1,6 @@
 //! `rava-prof`: analyzes recordings made with `RAVA_RECORD` (`docs/profiling.md`).
 
+mod annotate;
 mod diff;
 mod jfr;
 mod json;
@@ -24,6 +25,9 @@ commands:
                                  [--callers]: the callers above it instead
   diff <a> <b> [--inclusive]     two recordings' frames side by side, by the difference
   folded <file>                  folded stacks (thread;outermost;...;innermost ms)
+  annotate <file> <method>       CPU by instruction in the compiled code of methods whose
+                                 name contains <method> [--dump <dir>]: their machine code
+                                 (recorded with RAVA_RECORD=...,code) and offsets as files
   import-jfr <in.json> <out>     HotSpot `jfr print --json --events
                                  jdk.ExecutionSample,jdk.ObjectAllocationSample`
                                  output as a recording [--period <ms>] (10)
@@ -60,10 +64,11 @@ struct Args {
     depth: usize,
     min: f64,
     period: f64,
+    dump: Option<String>,
 }
 
 fn parse(args: Vec<String>) -> Result<Args, String> {
-    let mut a = Args { positional: Vec::new(), view: View { physical: true, top: 40, merge_lambdas: true, ..Default::default() }, inclusive: false, callers: false, no_symbols: false, window: 10.0, depth: 8, min: 0.5, period: 10.0 };
+    let mut a = Args { positional: Vec::new(), view: View { physical: true, top: 40, merge_lambdas: true, ..Default::default() }, inclusive: false, callers: false, no_symbols: false, window: 10.0, depth: 8, min: 0.5, period: 10.0, dump: None };
     let mut it = args.into_iter();
     let num = |it: &mut std::vec::IntoIter<String>, flag: &str| -> Result<f64, String> { it.next().and_then(|v| v.parse().ok()).ok_or_else(|| format!("{flag} needs a number")) };
     while let Some(arg) = it.next() {
@@ -78,6 +83,7 @@ fn parse(args: Vec<String>) -> Result<Args, String> {
             "--depth" => a.depth = num(&mut it, "--depth")? as usize,
             "--min" => a.min = num(&mut it, "--min")?,
             "--period" => a.period = num(&mut it, "--period")?,
+            "--dump" => a.dump = Some(it.next().ok_or("--dump needs a directory")?),
             "--inclusive" => a.inclusive = true,
             "--callers" => a.callers = true,
             "--leaf" => a.view.physical = false,
@@ -106,6 +112,7 @@ fn run(args: Vec<String>) -> Result<(), String> {
         ["tree", f, root] => report::tree(&Profile::load(f)?, v, root, a.depth, a.min, a.callers, &mut sym),
         ["diff", x, y] => diff::diff(&Profile::load(x)?, &Profile::load(y)?, v, a.inclusive, &mut sym),
         ["folded", f] => report::folded(&Profile::load(f)?, v, &mut sym),
+        ["annotate", f, m] => annotate::annotate(&Profile::load(f)?, v, m, a.dump.as_deref(), &mut sym)?,
         ["import-jfr", input, output] => jfr::import(input, output, a.period)?,
         _ => return Err(USAGE.trim_end().to_string()),
     }
