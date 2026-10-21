@@ -53,6 +53,7 @@ mod nullcheck;
 pub(crate) mod osr;
 mod operands;
 mod phis;
+mod phi_share;
 mod regalloc;
 mod reload;
 mod scratch;

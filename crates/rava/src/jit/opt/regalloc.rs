@@ -13,6 +13,7 @@
 
 use super::ir::*;
 use super::liveness::{liveness, StateReads};
+use super::phi_share;
 use crate::jit::asm::R;
 
 /// SSE registers for float and double values (all caller-saved; xmm0 and xmm1 are scratch).
@@ -218,7 +219,7 @@ pub fn allocate(g: &Graph, m: &crate::method::Method) -> Allocation {
     let full = intervals(g, &order, &pos, &range, &loops.depth, &mut reads, true);
     let mut iv = intervals(g, &order, &pos, &range, &loops.depth, &mut reads, false);
     let hints = super::hints::abi_hints(g, m, &pos, &iv.end);
-    let (mut loc, spill_slots, home, state_regs) = scan(g, &mut iv, &full, &loops, &hints);
+    let (mut loc, spill_slots, home, state_regs) = scan(g, &mut iv, &full, &loops, &hints, &mut reads);
     // Registers a call clobbers that hold values live across it: restored after it if a later
     // instruction reads them, else only on the way to its deoptimization if its state does,
     // else not kept at all (the interval spans a path the call is not on).
@@ -421,7 +422,7 @@ fn few_regs() -> Option<usize> {
 /// may share its first operand's register when that operand dies at its definition.
 /// `iv` has the intervals of real uses, `full` those including state uses: a value only states
 /// read lives in a spill slot, one read beyond its real uses gets a home slot as well.
-fn scan(g: &Graph, iv: &mut Intervals, full: &Intervals, loops: &LoopMap, hints: &[Option<Loc>]) -> (Vec<Loc>, i32, Vec<Option<Loc>>, Vec<bool>) {
+fn scan(g: &Graph, iv: &mut Intervals, full: &Intervals, loops: &LoopMap, hints: &[Option<Loc>], reads: &mut StateReads) -> (Vec<Loc>, i32, Vec<Option<Loc>>, Vec<bool>) {
     let n = g.values.len();
     let mut loc = vec![Loc::None; n];
     let mut todo = Vec::new();
@@ -450,6 +451,7 @@ fn scan(g: &Graph, iv: &mut Intervals, full: &Intervals, loops: &LoopMap, hints:
             }
         }
     }
+    let block_of = phi_share::blocks_of(g);
     let mut active: Vec<usize> = Vec::new();
     for &v in &todo {
         active.retain(|&a| iv.end[a] >= iv.start[v]);
@@ -485,9 +487,26 @@ fn scan(g: &Graph, iv: &mut Intervals, full: &Intervals, loops: &LoopMap, hints:
             let c = loc[x as usize];
             (iv.end[x as usize] == iv.start[v] && allowed(c) && !active.iter().any(|&a| a != x as usize && loc[a] == c)).then_some((x as usize, c))
         };
-        let hint = phi_users[v]
-            .iter()
-            .find_map(|&p| reuse(p))
+        let hint = phi_users[v].iter().find_map(|&p| reuse(p));
+        // A phi still open but never read again before it takes this value (`phi_share.rs`):
+        // both keep the register. The phi may be an operand only where the result is computed
+        // into it.
+        let at = |x: V| operands.iter().position(|&o| o == x);
+        let share = phi_users[v].iter().copied().filter(|_| hint.is_none()).find(|&p| {
+            let c = loc[p as usize];
+            matches!(c, Loc::Reg(_) | Loc::Xmm(_))
+                && allowed(c)
+                && active.contains(&(p as usize))
+                && !active.iter().any(|&a| a != p as usize && loc[a] == c)
+                && at(p).is_none_or(|i| i == 0 || i == 1 && commutes)
+                && phi_share::dead_after(g, reads, &block_of, p, v as V)
+        });
+        if let Some(p) = share {
+            loc[v] = loc[p as usize];
+            active.push(v);
+            continue;
+        }
+        let hint = hint
             .or_else(|| operands.first().and_then(|&x| reuse(x)))
             .or_else(|| operands.get(1).filter(|_| commutes).and_then(|&y| reuse(y)));
         if let Some((x, c)) = hint {
@@ -528,7 +547,9 @@ fn scan(g: &Graph, iv: &mut Intervals, full: &Intervals, loops: &LoopMap, hints:
             let (ca, cb) = (cost(a), cost(b));
             ca.0.cmp(&cb.0).then(ca.1.cmp(&cb.1)).then(ca.2.total_cmp(&cb.2)).then(iv.end[b].cmp(&iv.end[a]))
         };
-        let victim = active.iter().copied().filter(|&a| allowed(loc[a])).min_by(|&a, &b| cheaper(a, b));
+        // Not one sharing its register with a phi (phi_share.rs): the other would keep it.
+        let alone = |a: usize| active.iter().filter(|&&b| loc[b] == loc[a]).count() == 1;
+        let victim = active.iter().copied().filter(|&a| allowed(loc[a]) && alone(a)).min_by(|&a, &b| cheaper(a, b));
         match victim {
             Some(a) if cheaper(a, v) == std::cmp::Ordering::Less => {
                 loc[v] = loc[a];
