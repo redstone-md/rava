@@ -949,21 +949,12 @@ impl Gen<'_> {
                     self.a.alu_mi(false, Alu::Cmp, at, k as i32);
                     cond(cmp)
                 } else if matches!(ty, Ty::F | Ty::D) {
-                    // A load folded into the branch (`codegen/fold.rs`) is the second operand.
-                    let (a, y, cmp) = if self.folded.contains(&self.g.resolve(a)) { (y, a, fold::swap(cmp)) } else { (a, y, cmp) };
                     // ucomis: unordered sets PF (and ZF, CF), ordered results read as unsigned.
                     let xa = self.xreg(a, X(0));
-                    if self.folded.contains(&self.g.resolve(y)) {
-                        let m = self.folded_mem(self.g.resolve(y));
-                        self.a.fcmp_m(ty == Ty::D, xa, m);
-                    } else {
-                        self.fcmp_val(ty == Ty::D, xa, y);
-                    }
+                    self.fcmp_val(ty == Ty::D, xa, y);
                     let nan = self.edge_target(b, if unordered { then } else { other });
                     self.a.jcc(Cond::P, nan);
                     unsigned(cmp)
-                } else if [a, y].iter().any(|&x| self.folded.contains(&self.g.resolve(x))) {
-                    self.folded_compare(ty != Ty::I, cmp, a, y)
                 } else {
                     let x = self.reg(a, R::Rax);
                     self.alu_val(ty != Ty::I, Alu::Cmp, x, y);
