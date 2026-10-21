@@ -163,6 +163,35 @@ impl Gen<'_> {
             return self.shift(v, w, op, x, y);
         }
         let r = self.out(v);
+        // A load folded into this instruction (`codegen/fold.rs`): its memory operand when its
+        // address stays clear of the result register, else read into r11 first.
+        let (x, y) = if self.is_folded(x) && op != BinOp::Sub { (y, x) } else { (x, y) };
+        if self.is_folded(y) {
+            let alu = match op {
+                BinOp::Add => Alu::Add,
+                BinOp::Sub => Alu::Sub,
+                BinOp::And => Alu::And,
+                BinOp::Or => Alu::Or,
+                _ => Alu::Xor,
+            };
+            if self.folded_apart(y, r) {
+                self.load(r, x);
+                let m = self.folded_mem(y);
+                match op {
+                    BinOp::Mul => self.a.imul_rm(w, r, m),
+                    _ => self.a.alu_rm(w, alu, r, m),
+                }
+            } else {
+                let m = self.folded_mem(y);
+                self.a.load(w, R::R11, m);
+                self.load(r, x);
+                match op {
+                    BinOp::Mul => self.a.imul_rr(w, r, R::R11),
+                    _ => self.a.alu_rr(w, alu, r, R::R11),
+                }
+            }
+            return self.put(v, r);
+        }
         // `31 * h`: the constant second, for the forms below.
         let (x, y) = if op == BinOp::Mul && self.g.constant(x).is_some() && self.g.constant(y).is_none() { (y, x) } else { (x, y) };
         if let (BinOp::Mul, Some(c)) = (op, self.g.constant(y).and_then(|c| i32::try_from(c).ok())) {
