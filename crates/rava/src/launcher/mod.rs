@@ -56,6 +56,7 @@ pub fn main() -> ExitCode {
         .join()
         .unwrap_or(ExitCode::from(70));
     crate::jit::code_cache::flush_perf_map();
+    crate::profile::finish();
     code
 }
 
@@ -96,6 +97,7 @@ fn run(mut line: CommandLine, java_home: PathBuf) -> ExitCode {
     crate::patch::discover();
     crate::memlog::start();
     crate::sampler::start();
+    crate::profile::start();
     // Crashes are reported from the start, also those before any optimized code exists.
     crate::jit::fault::install();
     let mut t = Thread::new();

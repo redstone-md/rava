@@ -83,6 +83,10 @@ static VM: OnceLock<Vm> = OnceLock::new();
 pub fn vm() -> &'static Vm {
     VM.get().expect("VM not created")
 }
+/// The process VM once it exists (for threads that may start before it, the profiler's).
+pub fn created() -> Option<&'static Vm> {
+    VM.get()
+}
 
 impl Vm {
     /// Creates the process VM (once). Later calls return the existing instance.

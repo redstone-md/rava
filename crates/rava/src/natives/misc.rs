@@ -97,6 +97,7 @@ pub(super) fn register(r: &mut NativeRegistry) {
             );
         }
         crate::jit::code_cache::flush_perf_map();
+        crate::profile::finish();
         std::process::exit(a[0] as i32)
     });
     r.add("java/lang/System", "setIn0", "(Ljava/io/InputStream;)V", |_, a| set_system_stream("in", "Ljava/io/InputStream;", a[0]));

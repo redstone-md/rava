@@ -153,6 +153,7 @@ pub fn attach(t: &mut Thread) {
     t.gc_record = Some(rec);
     registry().threads.lock().unwrap().push(rec);
     crate::sampler::attach_current(t as *mut Thread as usize);
+    crate::profile::attach_current(t as *mut Thread as usize);
     // Armed if a collection started before `arm` could see this thread.
     t.poll.store(REQUESTED.load(SeqCst) as u8, SeqCst);
     // A collection may be in progress: do not start running Java code under it.
@@ -162,6 +163,7 @@ pub fn attach(t: &mut Thread) {
 pub fn detach(t: &mut Thread) {
     ATTACHED.with(|a| a.set(false));
     crate::sampler::detach_current();
+    crate::profile::detach_current();
     if let Some(rec) = t.gc_record.take() {
         // Still in Java: no collection runs meanwhile to reset the cache itself.
         crate::vm::vm().heap.retire_cache(t);

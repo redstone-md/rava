@@ -25,6 +25,7 @@ pub mod natives;
 pub mod os;
 pub mod parker;
 pub(crate) mod patch;
+pub mod profile;
 pub mod runtime;
 pub mod sampler;
 pub mod symbol;

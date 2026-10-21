@@ -244,6 +244,7 @@ pub fn dump_path(name: &str) -> String {
 /// `perf` can name compiled methods.
 pub fn perf_map(address: usize, size: usize, name: &str) {
     use std::io::Write;
+    crate::profile::code_installed(address, size, name);
     static FILE: std::sync::OnceLock<Option<Mutex<std::fs::File>>> = std::sync::OnceLock::new();
     if KEEP_NAMES.load(std::sync::atomic::Ordering::Relaxed) {
         NAMES.lock().unwrap().insert(address, (size, name.to_string()));
