@@ -17,6 +17,7 @@ RAVA_RECORD=run.rprof java -jar server.jar
 | option | default | meaning |
 |---|---|---|
 | `interval=<µs>` | `1000` | time between samples of each thread |
+| `alloc[=<KiB>]` | off | allocation samples, one per that many KiB a thread allocates (1024) |
 | `mode=cpu` / `mode=wall` | `cpu` | `cpu` samples a thread only when it used the CPU since its last sample; `wall` samples every thread, blocked ones included, with their state |
 
 The recorder runs on its own thread. It suspends each Java thread briefly, reads its registers
@@ -32,10 +33,11 @@ writes events to the file as it goes, so a crash or a kill loses at most the las
 | thread CPU | each thread's total CPU cycles, once a second: exact CPU per thread and window, independent of sampling |
 | code | each compiled method's address range, method and tier, as it is installed |
 | module | each loaded native module's path and address range |
+| allocation | with `alloc`, once a thread has allocated the step since its last: the class of the object it allocates then, its stack, and the bytes it weighs |
 
 Planned next, in this order: compilations (duration, size, inlining decisions with their
 reasons), deoptimizations (method, bci, reason), garbage collections and safepoints (pause per
-thread), monitor contention and parking (with stacks), allocation samples.
+thread), monitor contention and parking (with stacks).
 
 ### Thread states
 
@@ -84,7 +86,8 @@ rava-prof <command> [options]
 Options for the reports: `--thread <prefix>` keeps the samples of threads whose name starts
 with it, `--state java|vm|syscall|native` of one state, `--from <s>` / `--to <s>` of a time
 window, `--within <frame>` (`top`, `diff`) of the stacks holding that frame; `--top <n>` limits the rows (40); `--tiers` labels Java frames with their tier;
-`--keep-lambdas` keeps the addresses in hidden classes' names (merged by default: each run
+`--alloc` reports allocation samples in megabytes instead of CPU (`--classes`: rows by the
+class allocated); `--keep-lambdas` keeps the addresses in hidden classes' names (merged by default: each run
 names its lambdas anew); `--no-symbols` leaves native frames as `module+offset`.
 
 **Seconds.** Times are CPU seconds. A thread's CPU between two of its once-a-second counts is
@@ -107,7 +110,7 @@ exports.
 ```
 RAVA_RECORD=rava.rprof rava -jar app.jar
 JAVA_TOOL_OPTIONS="-XX:StartFlightRecording=filename=hs.jfr,settings=profile -XX:FlightRecorderOptions=stackdepth=2048" java -jar app.jar
-jfr print --json --events jdk.ExecutionSample --stack-depth 512 hs.jfr > hs.json
+jfr print --json --events jdk.ExecutionSample,jdk.ObjectAllocationSample --stack-depth 2048 hs.jfr > hs.json
 rava-prof import-jfr hs.json hs.rprof
 rava-prof diff hs.rprof rava.rprof --thread "Worker"
 ```

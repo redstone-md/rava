@@ -24,7 +24,8 @@ commands:
                                  [--callers]: the callers above it instead
   diff <a> <b> [--inclusive]     two recordings' frames side by side, by the difference
   folded <file>                  folded stacks (thread;outermost;...;innermost ms)
-  import-jfr <in.json> <out>     HotSpot `jfr print --json --events jdk.ExecutionSample`
+  import-jfr <in.json> <out>     HotSpot `jfr print --json --events
+                                 jdk.ExecutionSample,jdk.ObjectAllocationSample`
                                  output as a recording [--period <ms>] (10)
 
 options:
@@ -35,6 +36,8 @@ options:
   --top <n>           rows (default 40)
   --leaf              self time to the innermost frame, inlined or not (default: the
                       innermost frame holding compiled code, comparable across VMs)
+  --alloc             (top, tree, diff, folded) allocation samples, in megabytes
+  --classes           with --alloc, rows by the class allocated
   --tiers             Java frames with their tier
   --keep-lambdas      keep lambda classes' addresses (merged by default)
   --no-symbols        native frames as module+offset
@@ -79,6 +82,8 @@ fn parse(args: Vec<String>) -> Result<Args, String> {
             "--callers" => a.callers = true,
             "--leaf" => a.view.physical = false,
             "--tiers" => a.view.tiers = true,
+            "--alloc" => a.view.alloc = true,
+            "--classes" => a.view.classes = true,
             "--keep-lambdas" => a.view.merge_lambdas = false,
             "--no-symbols" => a.no_symbols = true,
             "-h" | "--help" => return Err(USAGE.trim_end().to_string()),

@@ -19,7 +19,18 @@ pub struct View {
     pub merge_lambdas: bool,
     /// Only samples with a frame whose label contains this.
     pub within: Option<String>,
+    /// Allocation samples (megabytes) instead of CPU samples (seconds).
+    pub alloc: bool,
+    /// With `alloc`, self rows by the class allocated, which counts as the innermost frame.
+    pub classes: bool,
     pub top: usize,
+}
+
+impl View {
+    /// The unit of the rows' numbers.
+    pub fn unit(&self) -> &'static str {
+        if self.alloc { "MB" } else { "CPU s" }
+    }
 }
 
 /// Self and inclusive seconds per label, and the total.
@@ -43,14 +54,20 @@ pub fn label(p: &Profile, f: &Frame, v: &View, sym: &mut Symbols) -> String {
 pub fn totals(p: &Profile, v: &View, sym: &mut Symbols) -> Totals {
     let mut t = Totals { own: HashMap::new(), inclusive: HashMap::new(), total: 0.0 };
     // Labels per stack, computed once.
-    let mut labels: HashMap<u32, (String, Vec<String>)> = HashMap::new();
-    for s in p.samples.iter().filter(|s| p.keeps(&v.filter, s)) {
-        let (own, all) = labels.entry(s.stack).or_insert_with(|| {
+    let mut labels: HashMap<(u32, u32), (String, Vec<String>)> = HashMap::new();
+    let source = if v.alloc { &p.allocs } else { &p.samples };
+    for s in source.iter().filter(|s| p.keeps(&v.filter, s)) {
+        let key = (s.stack, if v.classes { s.class } else { 0 });
+        let (own, all) = labels.entry(key).or_insert_with(|| {
             let frames = p.stacks.get(&s.stack).map_or(&[][..], |f| f.as_slice());
             let leaf = if v.physical { frames.iter().position(|f| !matches!(f, Frame::Java { inlined: true, .. })).unwrap_or(0) } else { 0 };
-            let own = frames.get(leaf).map_or_else(|| "<no stack>".to_string(), |f| label(p, f, v, sym));
+            let class = (v.classes && s.class != 0).then(|| {
+                let name = p.strings.get(&s.class).map_or("?", |c| c.as_str());
+                format!("new {}", if v.merge_lambdas { merge_hidden(name) } else { name.to_string() })
+            });
+            let own = class.clone().unwrap_or_else(|| frames.get(leaf).map_or_else(|| "<no stack>".to_string(), |f| label(p, f, v, sym)));
             let mut seen = HashSet::new();
-            let all = frames.iter().map(|f| label(p, f, v, sym)).filter(|l| seen.insert(l.clone())).collect();
+            let all: Vec<String> = class.into_iter().chain(frames.iter().map(|f| label(p, f, v, sym))).filter(|l| seen.insert(l.clone())).collect();
             (own, all)
         });
         if v.within.as_ref().is_some_and(|w| !all.iter().any(|l| l.contains(w.as_str()))) {
@@ -154,8 +171,8 @@ pub fn top(p: &Profile, v: &View, inclusive: bool, sym: &mut Symbols) {
     let (map, other) = if inclusive { (&t.inclusive, &t.own) } else { (&t.own, &t.inclusive) };
     let mut rows: Vec<_> = map.iter().collect();
     rows.sort_by(|a, b| b.1.total_cmp(a.1));
-    println!("total {:.2} CPU s", t.total);
-    println!("{:>9} {:>6} {:>9}  {}", if inclusive { "incl s" } else { "self s" }, "%", if inclusive { "self s" } else { "incl s" }, "frame");
+    println!("total {:.2} {}", t.total, v.unit());
+    println!("{:>9} {:>6} {:>9}  {}", if inclusive { "incl" } else { "self" }, "%", if inclusive { "self" } else { "incl" }, "frame");
     for (k, &s) in rows.into_iter().take(v.top) {
         println!("{s:9.2} {:6.2} {:9.2}  {k}", pct(s, t.total), other.get(k).copied().unwrap_or(0.0));
     }
@@ -171,7 +188,8 @@ pub fn tree(p: &Profile, v: &View, root: &str, depth: usize, min: f64, callers: 
         kids: HashMap<String, Node>,
     }
     let mut top = Node::default();
-    for s in p.samples.iter().filter(|s| p.keeps(&v.filter, s)) {
+    let source = if v.alloc { &p.allocs } else { &p.samples };
+    for s in source.iter().filter(|s| p.keeps(&v.filter, s)) {
         let frames = p.stacks.get(&s.stack).map_or(&[][..], |f| f.as_slice());
         let labels: Vec<String> = frames.iter().map(|f| label(p, f, v, sym)).collect();
         let found = if callers { labels.iter().position(|l| l.contains(root)) } else { labels.iter().rposition(|l| l.contains(root)) };
@@ -184,7 +202,7 @@ pub fn tree(p: &Profile, v: &View, root: &str, depth: usize, min: f64, callers: 
             node.time += s.weight;
         }
     }
-    println!("{:.2} CPU s {} {root}", top.time, if callers { "calling into" } else { "under" });
+    println!("{:.2} {} {} {root}", top.time, v.unit(), if callers { "calling into" } else { "under" });
     // Time a node has beyond its children: its own (`<self>`), or, at the depth limit, what
     // lies deeper (`<deeper>`).
     fn print(n: &Node, total: f64, min: f64, indent: usize, depth: usize) {

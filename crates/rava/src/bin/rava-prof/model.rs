@@ -13,7 +13,10 @@ pub struct Sample {
     pub thread: u32,
     pub state: State,
     pub stack: u32,
+    /// CPU seconds, or for an allocation sample megabytes.
     pub weight: f64,
+    /// An allocation sample's class (an interned name; 0 for a CPU sample).
+    pub class: u32,
 }
 
 pub struct Module {
@@ -28,6 +31,8 @@ pub struct Profile {
     pub modules: HashMap<u32, Module>,
     pub stacks: HashMap<u32, Vec<Frame>>,
     pub samples: Vec<Sample>,
+    /// Allocation samples, weighing megabytes.
+    pub allocs: Vec<Sample>,
     /// Bytes of code installed per tier.
     pub code: HashMap<Tier, (u64, u64)>,
     /// Each thread's CPU seconds over the whole recording.
@@ -80,12 +85,16 @@ impl Profile {
                 }
                 Record::Sample { time, thread, state, cycles, stack } => {
                     last = last.max(time);
-                    p.samples.push(Sample { time: time as f64 / 1e6, thread, state, stack, weight: 0.0 });
+                    p.samples.push(Sample { time: time as f64 / 1e6, thread, state, stack, weight: 0.0, class: 0 });
                     raw_cycles.push(cycles);
                 }
                 Record::ThreadCpu { time, thread, cycles } => {
                     last = last.max(time);
                     cpu.entry(thread).or_default().push((time, cycles));
+                }
+                Record::Alloc { time, thread, class, bytes, stack } => {
+                    last = last.max(time);
+                    p.allocs.push(Sample { time: time as f64 / 1e6, thread, state: State::Java, stack, weight: bytes as f64 / 1e6, class });
                 }
                 Record::Unknown(_) => {}
             }

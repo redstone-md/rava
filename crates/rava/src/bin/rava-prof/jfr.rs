@@ -1,4 +1,5 @@
-//! `import-jfr`: a HotSpot recording, as `jfr print --json --events jdk.ExecutionSample` prints
+//! `import-jfr`: a HotSpot recording, as `jfr print --json --events jdk.ExecutionSample` (and
+//! `jdk.ObjectAllocationSample`, as allocation samples weighing their bytes) prints
 //! it, written as a rava recording so the same reports and `diff` read both. A HotSpot frame
 //! of type `Inlined` was inlined into the next frame out, as a rava inlined frame; `JIT
 //! compiled` code counts as `opt`. Each sample weighs the sampling period (`--period`, the
@@ -57,7 +58,13 @@ pub fn import(input: &str, output: &str, period_ms: f64) -> Result<(), String> {
                     }
                 };
                 let time = ((sample.time - t0).max(0.0) * 1e6) as u64;
-                w.write(&Record::Sample { time, thread: sample.thread, state: sample.state, cycles: 0, stack }).map_err(io)?;
+                match &sample.alloc {
+                    Some((class, bytes)) => {
+                        let class = intern(&mut w, class)?;
+                        w.write(&Record::Alloc { time, thread: sample.thread, class, bytes: *bytes, stack }).map_err(io)?;
+                    }
+                    None => w.write(&Record::Sample { time, thread: sample.thread, state: sample.state, cycles: 0, stack }).map_err(io)?,
+                }
                 n += 1;
                 truncated += sample.truncated as u64;
             }
@@ -81,6 +88,8 @@ pub fn import(input: &str, output: &str, period_ms: f64) -> Result<(), String> {
 struct Sample {
     /// JFR kept only the innermost frames (its `stackdepth`, 64 by default).
     truncated: bool,
+    /// For an allocation sample: the class allocated and the bytes the sample weighs.
+    alloc: Option<(String, u64)>,
     time: f64,
     thread: u32,
     thread_name: String,
@@ -89,13 +98,17 @@ struct Sample {
 }
 
 fn sample(ev: &Value) -> Option<Sample> {
-    let state = match ev.get("type")?.str()? {
-        "jdk.ExecutionSample" => State::Java,
-        "jdk.NativeMethodSample" => State::Native,
+    let v = ev.get("values")?;
+    let (state, alloc) = match ev.get("type")?.str()? {
+        "jdk.ExecutionSample" => (State::Java, None),
+        "jdk.NativeMethodSample" => (State::Native, None),
+        "jdk.ObjectAllocationSample" => {
+            let class = internal(v.get("objectClass").and_then(|c| c.get("name")).and_then(Value::str).unwrap_or("?"));
+            (State::Java, Some((class, v.get("weight").and_then(Value::num).unwrap_or(0.0) as u64)))
+        }
         _ => return None,
     };
-    let v = ev.get("values")?;
-    let th = v.get("sampledThread")?;
+    let th = v.get("sampledThread").or_else(|| v.get("eventThread"))?;
     let thread = th.get("osThreadId").and_then(Value::num).or_else(|| th.get("javaThreadId").and_then(Value::num))? as u32;
     let thread_name = th.get("javaName").and_then(Value::str).or_else(|| th.get("osName").and_then(Value::str)).unwrap_or("?").to_string();
     let time = v.get("startTime").and_then(Value::str).and_then(seconds)?;
@@ -113,9 +126,15 @@ fn sample(ev: &Value) -> Option<Sample> {
             "JIT compiled" => (Tier::Opt, false),
             _ => (Tier::Unknown, false),
         };
-        frames.push((format!("{holder}.{name}{desc}"), bci, tier, inlined));
+        frames.push((format!("{}.{name}{desc}", internal(holder)), bci, tier, inlined));
     }
-    Some(Sample { truncated, time, thread, thread_name, state, frames })
+    Some(Sample { truncated, alloc, time, thread, thread_name, state, frames })
+}
+
+/// A class name in internal form: JFR names hidden classes (lambdas) with dots
+/// (`a.B$$Lambda/0x...`), others with slashes.
+fn internal(name: &str) -> String {
+    if name.contains('/') && !name.contains("/0x") { name.to_string() } else { name.replace('.', "/") }
 }
 
 /// Seconds of an ISO 8601 time (`2026-10-21T01:49:18.123456789+03:00`) since the epoch, the
@@ -140,6 +159,12 @@ fn seconds(s: &str) -> Option<f64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn names_classes_internally() {
+        assert_eq!(internal("net.minecraft.A$$Lambda/0x0000000085f62b10"), "net/minecraft/A$$Lambda/0x0000000085f62b10");
+        assert_eq!(internal("java/util/HashMap"), "java/util/HashMap");
+    }
 
     #[test]
     fn reads_iso_times() {
