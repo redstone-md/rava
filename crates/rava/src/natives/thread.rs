@@ -285,9 +285,9 @@ fn start0(t: &mut Thread, a: &[u64]) -> JResult<u64> {
 }
 
 /// Names the current OS thread (as HotSpot does), for profilers and debuggers; Linux keeps
-/// the first 15 bytes.
+/// the first 15 bytes (it refuses a longer name), other systems the whole name.
 fn set_os_thread_name(name: &str) {
-    let mut end = name.len().min(15);
+    let mut end = if cfg!(target_os = "linux") { name.len().min(15) } else { name.len() };
     while !name.is_char_boundary(end) {
         end -= 1;
     }
