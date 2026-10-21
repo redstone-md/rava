@@ -15,8 +15,10 @@ struct State {
     epoch: u64,
     /// Helpers with an index below this run the current job.
     wanted: usize,
-    /// Helpers still running the current job.
+    /// Helpers inside the current job.
     running: usize,
+    /// The current job takes no more helpers: those woken after the caller finished it skip it.
+    closed: bool,
     spawned: usize,
 }
 
@@ -32,8 +34,10 @@ fn pool() -> &'static Pool {
     P.get_or_init(Pool::default)
 }
 
-/// Runs `job` on the calling thread and on `helpers` helper threads at once, returning when
-/// every copy has returned.
+/// Runs `job` on the calling thread and on up to `helpers` helper threads at once, returning
+/// when every copy has returned. A helper not yet awake when the caller's copy returns skips the
+/// job: jobs share their work dynamically and must not wait for every helper (waking the last of
+/// fifteen took up to 2 ms).
 pub(super) fn run(helpers: usize, job: &(dyn Fn() + Sync)) {
     if helpers == 0 {
         return job();
@@ -51,11 +55,13 @@ pub(super) fn run(helpers: usize, job: &(dyn Fn() + Sync)) {
         s.job = Some(unsafe { std::mem::transmute::<&(dyn Fn() + Sync), Job>(job) });
         s.epoch += 1;
         s.wanted = helpers;
-        s.running = helpers;
+        s.running = 0;
+        s.closed = false;
         p.go.notify_all();
     }
     job();
     let mut s = p.state.lock().unwrap();
+    s.closed = true;
     while s.running > 0 {
         s = p.done.wait(s).unwrap();
     }
@@ -75,10 +81,11 @@ fn helper(index: usize) {
             s = p.go.wait(s).unwrap();
         }
         seen = s.epoch;
-        if index >= s.wanted {
+        if index >= s.wanted || s.closed {
             continue;
         }
         let job = s.job.expect("a job for the epoch");
+        s.running += 1;
         drop(s);
         job();
         s = p.state.lock().unwrap();

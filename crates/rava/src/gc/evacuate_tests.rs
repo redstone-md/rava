@@ -71,7 +71,7 @@ fn evacuation_exhaustion_retires_promotion_run_once() {
         // SAFETY: one marker owns the fixture; production old_run changes only allocation state.
         space: unsafe { &*promote }, evacuate: true, promote: Mutex::new(promote),
         pool: Mutex::new(Vec::new()), pooled: AtomicUsize::new(0), idle: AtomicUsize::new(0),
-        workers: 1, marked: AtomicUsize::new(0), promoted: Mutex::new(Vec::new()),
+        joined: AtomicUsize::new(1), marked: AtomicUsize::new(0), promoted: Mutex::new(Vec::new()),
         young_again: &[], pinned: Mutex::new(Vec::new()),
         by_stacks: AtomicUsize::new(0), by_roots: AtomicUsize::new(0),
     };

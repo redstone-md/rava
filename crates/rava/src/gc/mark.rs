@@ -32,7 +32,8 @@ pub(super) struct Shared<'a> {
     pooled: AtomicUsize,
     /// Workers out of work.
     idle: AtomicUsize,
-    workers: usize,
+    /// Workers that have started: the trace is done when they are all idle.
+    joined: AtomicUsize,
     marked: AtomicUsize,
     /// The cells copies were made into (`finish_run`), for the next young collection's second
     /// chance.
@@ -141,7 +142,9 @@ impl Shared<'_> {
                     self.idle.fetch_sub(1, Ordering::AcqRel);
                     break;
                 }
-                if self.idle.load(Ordering::Acquire) == self.workers {
+                // Done once every worker that joined is idle; one joining later finds no work.
+                let joined = self.joined.load(Ordering::Acquire);
+                if self.idle.load(Ordering::Acquire) == joined {
                     self.marked.fetch_add(scanned, Ordering::Relaxed);
                     return scanned;
                 }
@@ -488,7 +491,7 @@ pub(super) fn mark(space: &mut Space, young: bool) -> usize {
         pool: Mutex::new(Vec::new()),
         pooled: AtomicUsize::new(0),
         idle: AtomicUsize::new(0),
-        workers,
+        joined: AtomicUsize::new(0),
         marked: AtomicUsize::new(0),
         promoted: Mutex::new(Vec::new()),
         young_again: &second_chance,
@@ -507,21 +510,32 @@ pub(super) fn mark(space: &mut Space, young: bool) -> usize {
     // would make a young object look old, to be scanned again as a card root.
     let cards = tasks.iter().take_while(|t| matches!(t, Task::Cards(..) | Task::LargeCards(..))).count();
     let (next_card, next) = (AtomicUsize::new(0), AtomicUsize::new(cards));
-    let barrier = std::sync::Barrier::new(workers);
+    // Completed card and root tasks: the phases wait for the tasks, not for every helper (one
+    // woken late would hold up the others; it finds no task left and joins the trace).
+    let (cards_done, roots_done) = (AtomicUsize::new(0), AtomicUsize::new(0));
+    let wait_for = |done: &AtomicUsize, n: usize| {
+        let mut spins = 0u32;
+        while done.load(Ordering::Acquire) < n {
+            spins += 1;
+            if spins < IDLE_SPINS { std::hint::spin_loop() } else { std::thread::yield_now() }
+        }
+    };
     // Per worker: root tasks ms, trace ms, objects found by roots, objects scanned (RAVA_GC_LOG).
     let started = std::time::Instant::now();
     let stats = Mutex::new(Vec::new());
     // Each worker takes root tasks until none is left, then traces from what it found.
     // Evacuating, every root is marked (kept in place) before anything moves.
     let worker = || {
+        shared.joined.fetch_add(1, Ordering::AcqRel);
         let mut found = Vec::with_capacity(4 * PACKET);
         let mut runs = super::evacuate::Runs::default();
         let (mut slots, mut statics, mut changes) = (Vec::new(), Vec::new(), Vec::new());
         if cards > 0 {
             while let Some(task) = tasks[..cards].get(next_card.fetch_add(1, Ordering::Relaxed)) {
                 shared.run(task, &roots, &mut slots, &mut statics, &mut changes);
+                cards_done.fetch_add(1, Ordering::AcqRel);
             }
-            barrier.wait();
+            wait_for(&cards_done, cards);
             if !shared.evacuate {
                 // SAFETY: reference slots of live old objects.
                 slots.drain(..).for_each(|s| shared.precise(unsafe { obj::load_ref_at(s) } as usize, &mut found));
@@ -531,11 +545,12 @@ pub(super) fn mark(space: &mut Space, young: bool) -> usize {
             let i = next.fetch_add(1, Ordering::Relaxed);
             let Some(task) = tasks.get(i) else { break };
             shared.run(task, &roots, &mut found, &mut statics, &mut changes);
+            roots_done.fetch_add(1, Ordering::AcqRel);
         }
         changed.lock().unwrap().extend(changes);
         let (roots_ms, found_n) = (started.elapsed().as_secs_f64() * 1e3, found.len());
         if shared.evacuate {
-            barrier.wait();
+            wait_for(&roots_done, tasks.len() - cards);
             slots.into_iter().for_each(|s| shared.update(s, &mut found, &mut runs));
             statics.into_iter().for_each(|s| shared.update_static(s, &mut found, &mut runs));
         }
