@@ -290,27 +290,34 @@ pub fn flush_perf_map() {
 }
 
 /// Makes `m`'s register trampoline and returns where a register-convention call to `m` goes
-/// (`Method::reg_call`): the slow path of a vtable call that finds it not made yet.
+/// (`Method::reg_call`): the first vtable or interface call that reaches `m`.
 extern "sysv64" fn make_reg_call(m: &'static crate::method::Method) -> usize {
-    reg_entry(m);
+    if reg_entry(m).is_none() {
+        // Out of reach of a trampoline: the target itself, looked up at every such call.
+        let _g = TRAMPOLINES.lock().unwrap();
+        return reg_target(m);
+    }
     m.reg_call.load(std::sync::atomic::Ordering::Acquire)
 }
 
-/// A stub that makes the register trampoline of the method in rdx and returns its
-/// `Method::reg_call` in rax, keeping every argument register (`jit::abi`) and rdx: called by
-/// a vtable call whose target has none yet, with the arguments already in place.
+/// What `Method::reg_call` starts as: a stub that makes the register trampoline of the method
+/// in rdx and goes on to its `Method::reg_call`, keeping every argument register
+/// (`jit::abi`), rdx and the frame base in rsi. A vtable or interface call thus calls through
+/// `reg_call` without testing it first.
 pub fn reg_call_stub() -> usize {
     use super::abi::{ARG_GPRS, ARG_XMMS};
     use super::asm::{mem, Alu, Asm, R, X};
     static STUB: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
     *STUB.get_or_init(|| {
         let mut a = Asm::default();
-        // Entered with rsp 8 below a 16-byte boundary: five pushes and 32 bytes realign it.
+        // Entered as a call, rsp 8 below a 16-byte boundary: six pushes, the SSE arguments and
+        // 8 bytes of padding realign it.
         a.push(R::Rdx);
+        a.push(R::Rsi);
         for r in ARG_GPRS {
             a.push(r);
         }
-        a.alu_ri(true, Alu::Sub, R::Rsp, 8 * ARG_XMMS.len() as i32);
+        a.alu_ri(true, Alu::Sub, R::Rsp, 8 * ARG_XMMS.len() as i32 + 8);
         for (i, &x) in ARG_XMMS.iter().enumerate() {
             a.fstore(true, mem(R::Rsp, 8 * i as i32), X(x));
         }
@@ -319,12 +326,13 @@ pub fn reg_call_stub() -> usize {
         for (i, &x) in ARG_XMMS.iter().enumerate() {
             a.fload(true, X(x), mem(R::Rsp, 8 * i as i32));
         }
-        a.alu_ri(true, Alu::Add, R::Rsp, 8 * ARG_XMMS.len() as i32);
+        a.alu_ri(true, Alu::Add, R::Rsp, 8 * ARG_XMMS.len() as i32 + 8);
         for r in ARG_GPRS.iter().rev() {
             a.pop(*r);
         }
+        a.pop(R::Rsi);
         a.pop(R::Rdx);
-        a.ret();
+        a.jmp_r(R::Rax);
         install(&a.finish())
     })
 }

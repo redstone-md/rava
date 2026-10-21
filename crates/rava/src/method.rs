@@ -129,7 +129,7 @@ impl Method {
             invocations: AtomicU32::new(0),
             backedges: AtomicU32::new(0),
             entry: AtomicUsize::new(if native { crate::jit::native_entry() } else { crate::jit::interpreter_entry() }),
-            reg_call: AtomicUsize::new(0),
+            reg_call: AtomicUsize::new(crate::jit::code_cache::reg_call_stub()),
             jit: std::sync::atomic::AtomicPtr::new(std::ptr::null_mut()),
             stub,
             overridden: crate::low::leak(std::sync::atomic::AtomicBool::new(false)),

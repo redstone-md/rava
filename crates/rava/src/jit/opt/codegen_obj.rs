@@ -656,18 +656,11 @@ impl Gen<'_> {
     }
 
     /// Calls the method in rdx (found for the receiver) in the register convention, with the
-    /// arguments in place: through its `Method::reg_call`, made by a stub the first time a site
-    /// finds it missing.
+    /// arguments in place: through its `Method::reg_call`, a stub that makes it until the first call
+    /// (`code_cache::reg_call_stub`).
     fn reg_call_found(&mut self, base: i32) {
-        self.a.load(true, R::R11, mem(R::Rdx, offset_of!(Method, reg_call) as i32));
-        self.a.test_rr(true, R::R11, R::R11);
-        let ready = self.a.new_label();
-        self.a.jcc(Cond::Ne, ready);
-        self.a.call_abs(crate::jit::code_cache::reg_call_stub());
-        self.a.mov_rr(true, R::R11, R::Rax);
-        self.a.bind(ready);
         self.a.lea(R::Rsi, self.slot(base));
-        self.a.call_r(R::R11);
+        self.a.call_m(mem(R::Rdx, offset_of!(Method, reg_call) as i32));
     }
 
     /// Saves the argument registers of the register convention (`jit::abi`) around a runtime
