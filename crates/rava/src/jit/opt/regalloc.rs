@@ -367,7 +367,12 @@ fn intervals(g: &Graph, order: &[B], pos: &[u32], range: &[(u32, u32)], depth: &
             for ph in phis(g, s) {
                 match phi_input(g, ph, b, s) {
                     x if x == ph => iv.read_at(x, to),
-                    x => iv.used_at(x, to),
+                    x => {
+                        iv.used_at(x, to);
+                        // The phi is written there too: a phi in a slot stores on every pass
+                        // of the edge (a loop's accumulator, once per iteration).
+                        iv.weight[ph as usize] += iv.block_weight;
+                    }
                 }
             }
         }
