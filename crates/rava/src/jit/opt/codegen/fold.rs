@@ -57,9 +57,14 @@ fn float_of(g: &Graph, u: V, bt: BasicType) -> bool {
 }
 
 impl Gen<'_> {
+    /// Whether `v` (an alias resolved) is a folded load.
+    pub(in super::super) fn is_folded(&self, v: V) -> bool {
+        self.folded.contains(&self.g.resolve(v))
+    }
+
     /// The address folded load `l` reads (its object and index loaded first, through rax and r11).
     pub(in super::super) fn folded_mem(&mut self, l: V) -> M {
-        match *self.g.inst(l) {
+        match *self.g.inst(self.g.resolve(l)) {
             Inst::LoadField(o, off, _) => self.field(o, off as i32),
             Inst::LoadIndexed(a, i, bt) => self.element(a, i, bt),
             _ => unreachable!("a folded load"),

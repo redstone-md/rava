@@ -308,8 +308,8 @@ impl Gen<'_> {
         };
         // A load folded into this instruction (`codegen/fold.rs`) is its memory operand, the
         // second (a commutative operation's first swaps).
-        let (x, y) = if self.folded.contains(&x) { (y, x) } else { (x, y) };
-        if self.folded.contains(&y) {
+        let (x, y) = if self.is_folded(x) { (y, x) } else { (x, y) };
+        if self.is_folded(y) {
             let r = self.xout(v);
             self.xload(r, x);
             let m = self.folded_mem(y);
@@ -393,7 +393,7 @@ impl Gen<'_> {
                 let r = self.xout(v);
                 // A spilled or parameter int converts straight from its slot, a folded load
                 // from its field or element.
-                if self.folded.contains(&x) {
+                if self.is_folded(x) {
                     let m = self.folded_mem(x);
                     self.a.cvt_i2f_m(to_double, from_long, r, m);
                     return self.xput(v, r);
