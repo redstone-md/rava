@@ -291,6 +291,9 @@ pub fn current_stack() -> (usize, usize) {
 /// Runs the calling thread at a lower priority (a nice value above 0).
 /// VM threads keep the default priority on Unix, as HotSpot's do there (raising one needs
 /// privileges).
+/// Windows' power throttling has no counterpart here.
+pub fn performance_qos() {}
+
 pub fn vm_thread_priority() {}
 
 pub fn lower_priority(nice: i32) {

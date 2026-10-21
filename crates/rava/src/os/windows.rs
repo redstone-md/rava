@@ -318,6 +318,21 @@ pub fn vm_thread_priority() {
     unsafe { SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST) };
 }
 
+/// Asks Windows to run the process at full speed: no EcoQoS (`RAVA_POWER_THROTTLING=1` leaves
+/// it to Windows). A process without a foreground window, as a server is, otherwise counts as
+/// background work once the machine is left alone, and its threads go to the efficiency cores
+/// at lower clocks: Paper's chunk generation then took 32-41 s instead of 16-22 s.
+pub fn performance_qos() {
+    use windows_sys::Win32::System::Threading::{ProcessPowerThrottling, SetProcessInformation, PROCESS_POWER_THROTTLING_CURRENT_VERSION, PROCESS_POWER_THROTTLING_EXECUTION_SPEED, PROCESS_POWER_THROTTLING_STATE};
+    if std::env::var("RAVA_POWER_THROTTLING").is_ok_and(|v| v == "1") {
+        return;
+    }
+    // Execution speed controlled, and not throttled.
+    let state = PROCESS_POWER_THROTTLING_STATE { Version: PROCESS_POWER_THROTTLING_CURRENT_VERSION, ControlMask: PROCESS_POWER_THROTTLING_EXECUTION_SPEED, StateMask: 0 };
+    // SAFETY: the process's own pseudo-handle and a valid state of the size given.
+    unsafe { SetProcessInformation(GetCurrentProcess(), ProcessPowerThrottling, &state as *const _ as *const _, std::mem::size_of::<PROCESS_POWER_THROTTLING_STATE>() as u32) };
+}
+
 pub fn lower_priority(_nice: i32) {
     // SAFETY: changes the calling thread's own priority.
     unsafe { SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL) };

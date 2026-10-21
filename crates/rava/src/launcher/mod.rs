@@ -94,6 +94,7 @@ fn run(mut line: CommandLine, java_home: PathBuf) -> ExitCode {
         Ok(vm) => vm,
         Err(e) => return fail(LaunchError::Vm(format!("Could not reserve space for the heap: {e}"))),
     };
+    crate::os::performance_qos();
     crate::patch::discover();
     crate::memlog::start();
     crate::sampler::start();
