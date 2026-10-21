@@ -220,6 +220,7 @@ pub fn allocate(g: &Graph, m: &crate::method::Method) -> Allocation {
     let mut iv = intervals(g, &order, &pos, &range, &loops.depth, &mut reads, false);
     let hints = super::hints::abi_hints(g, m, &pos, &iv.end);
     let (mut loc, spill_slots, home, state_regs) = scan(g, &mut iv, &full, &loops, &hints, &mut reads);
+    phi_share::into_slots(g, &mut loc, &mut reads, &full.start, &full.end);
     // Registers a call clobbers that hold values live across it: restored after it if a later
     // instruction reads them, else only on the way to its deoptimization if its state does,
     // else not kept at all (the interval spans a path the call is not on).

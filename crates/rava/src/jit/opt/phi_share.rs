@@ -6,7 +6,7 @@
 
 use super::ir::*;
 use super::liveness::StateReads;
-use super::regalloc::{phi_input, phis};
+use super::regalloc::{phi_input, phis, Loc};
 
 /// The block of each instruction.
 pub fn blocks_of(g: &Graph) -> Vec<B> {
@@ -71,3 +71,29 @@ pub fn dead_after(g: &Graph, reads: &mut StateReads, block_of: &[B], p: V, v: V)
     true
 }
 
+
+/// A phi read only as a spilled phi's input (a loop body's merge feeding the loop phi, kept in a
+/// register of its own) takes the spilled phi's slot when that phi is dead from it to the
+/// header and its slot is held over all of the phi's interval (`starts`, `ends`: the intervals
+/// including states; a phi of a later merge has no slot yet where its input is defined): the
+/// path keeping the loop's value then moves nothing, where it loaded the slot and stored it
+/// back; the other path stores once.
+pub fn into_slots(g: &Graph, loc: &mut [Loc], reads: &mut StateReads, starts: &[u32], ends: &[u32]) {
+    let counts = super::thread::reads(g);
+    let block_of = blocks_of(g);
+    for p in 0..g.values.len() {
+        let Inst::Phi(ins) = &g.values[p].inst else { continue };
+        if g.resolve(p as V) != p as V || !matches!(loc[p], Loc::Stack(_)) {
+            continue;
+        }
+        for &i in ins {
+            let m = g.resolve(i) as usize;
+            if m == p || !matches!(g.inst(m as V), Inst::Phi(_)) || counts[m] != 1 || !matches!(loc[m], Loc::Reg(_) | Loc::Xmm(_)) || starts[m] < starts[p] || ends[m] > ends[p] {
+                continue;
+            }
+            if dead_after(g, reads, &block_of, p as V, m as V) {
+                loc[m] = loc[p];
+            }
+        }
+    }
+}
