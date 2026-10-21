@@ -264,14 +264,16 @@ impl Heap {
     }
 
     /// How much may be allocated between collections that leave `live` bytes (the young
-    /// generation's size): a third of the live data, at least `RAVA_GC_MB` (128 MiB), within
+    /// generation's size): half the live data (a third took 25% more young collections, each
+    /// with a fixed cost of a few milliseconds), but no more than a third and 256 MiB (a heap of
+    /// gigabytes keeps its young generation near a third), at least `RAVA_GC_MB` (128 MiB), within
     /// the maximum heap size; but no more than a second's allocations at the recent rate (at
     /// least `MIN_YOUNG`), as G1 sizes its eden by its pause and interval: a program that has
     /// gone quiet (a server between bursts) then keeps a small young generation, and what the
     /// next full collection releases leaves its heap near its live data.
     fn young_budget(&self, s: &Space, live: usize) -> usize {
         const MIN_YOUNG: usize = 32 << 20;
-        let full = (live / 3).max(self.min_trigger).min(self.max_heap.saturating_sub(live));
+        let full = (live / 2).min(live / 3 + (256 << 20)).max(self.min_trigger).min(self.max_heap.saturating_sub(live));
         if s.alloc_rate <= 0.0 {
             return full;
         }
@@ -362,7 +364,7 @@ impl Heap {
             // A program gone quiet (its young generation down to under half the full size)
             // allocates little before the next collection: its surplus pages go back after a
             // young collection too, and few fault in again.
-            let quiet_program = self.young_budget(&space, live) * 2 < (live / 3).max(self.min_trigger);
+            let quiet_program = self.young_budget(&space, live) * 2 < (live / 2).min(live / 3 + (256 << 20)).max(self.min_trigger);
             if full || quiet_program {
                 // Committed memory beyond what the next period allocates goes back to the
                 // kernel. Only after a full collection (as G1 shrinks only then): pages
