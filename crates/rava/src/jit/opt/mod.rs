@@ -307,6 +307,9 @@ fn compile_timed(m: &'static Method, osr: Option<u32>) -> Option<CompiledMethod>
     deadstore::eliminate(&mut g);
     verify(&g, m, "deadstore::eliminate");    gvn::number(&mut g);
     verify(&g, m, "gvn::number");
+    // Late value numbering makes loads one that the branches before it still compared.
+    conds::fold_self_compares(&mut g);
+    verify(&g, m, "conds::fold_self_compares (late)");
     guards::dedupe(&mut g);
     verify(&g, m, "guards::dedupe");
     consts::hoist(&mut g);

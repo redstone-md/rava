@@ -166,7 +166,7 @@ pub fn eliminate(g: &mut Graph) {
 /// loads of one field become one (`ArrayList.forEach`'s `modCount == expectedModCount` once
 /// no store between them is left): equal, so `==`, `<=` and `>=` hold. Not for float and
 /// double values, which NaN keeps unequal to themselves.
-fn fold_self_compares(g: &mut Graph) {
+pub(super) fn fold_self_compares(g: &mut Graph) {
     let mut folded = false;
     for b in 0..g.blocks.len() {
         let Term::If { cmp, ty, a, b: y, then, other, .. } = g.blocks[b].term else { continue };
