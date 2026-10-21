@@ -577,6 +577,15 @@ impl Graph {
         self.origins[v as usize] = Some(origin);
     }
 
+    /// Gives `copy` the origin of `v` (a copy made by unrolling or splitting).
+    pub fn copy_origin(&mut self, v: V, copy: V) {
+        if let Some(o) = self.origins.get(v as usize).cloned().flatten() {
+            if self.origins.len() <= copy as usize {
+                self.origins.resize(copy as usize + 1, None);
+            }
+            self.origins[copy as usize] = Some(o);
+        }
+    }
     /// A readable listing (`RAVA_OPT_IR`).
     pub fn dump(&self) -> String {
         let mut out = String::new();

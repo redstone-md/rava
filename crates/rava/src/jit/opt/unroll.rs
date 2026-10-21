@@ -97,6 +97,7 @@ fn expand(g: &mut Graph, h: B, body: B, pre: B, exit: B, trips: i64) {
                 g.ordered.insert(c);
             }
             copy_receiver(g, v, c, &env);
+            g.copy_origin(v, c);
             env.insert(v, c);
         }
         let advanced: Vec<(V, V)> = next.iter().map(|&(p, n)| (p, env.get(&n).copied().unwrap_or(n))).collect();
@@ -266,6 +267,7 @@ fn expand_partially(g: &mut Graph, h: B, body: B, pre: B) {
                 g.ordered.insert(c);
             }
             copy_receiver(g, v, c, &cur);
+            g.copy_origin(v, c);
             cur.insert(v, c);
         }
         let advanced: Vec<(V, V)> = phis.iter().map(|&(p, _, n)| (p, cur.get(&n).copied().unwrap_or(n))).collect();

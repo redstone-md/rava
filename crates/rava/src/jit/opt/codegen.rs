@@ -456,8 +456,16 @@ pub(super) fn generate(g: &Graph, al: &Allocation, m: &'static Method, frame_slo
     let faults = pos[..nfaults].chunks(2).map(|p| (p[0] as usize, p[1] as usize)).collect();
     let mut scopes: Vec<(u32, std::rc::Rc<super::ir::Origin>)> = Vec::new();
     if scoped {
+        // A value later passes made has no origin of its own: its deoptimization state's
+        // scope, else the origin of an input, stands for it (closer than the code before it).
+        let origin_of = |v: V| -> Option<std::rc::Rc<super::ir::Origin>> {
+            let known = |x: V| g.origins.get(g.resolve(x) as usize).cloned().flatten();
+            known(v)
+                .or_else(|| g.inst(v).state().map(|s| std::rc::Rc::new(super::ir::Origin { method: s.method, bci: s.bci, caller: s.caller.clone() })))
+                .or_else(|| g.inst(v).inputs().into_iter().find_map(known))
+        };
         for (&(_, v), &at) in traced.iter().zip(&pos[nfaults..]) {
-            let Some(o) = g.origins.get(v as usize).cloned().flatten() else { continue };
+            let Some(o) = origin_of(v) else { continue };
             match scopes.last_mut() {
                 Some(last) if std::rc::Rc::ptr_eq(&last.1, &o) => {}
                 Some(last) if last.0 == at => last.1 = o,
