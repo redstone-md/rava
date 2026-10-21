@@ -61,7 +61,9 @@ tier miscompiles something. Use `RAVA_OPT_EXCLUDE` to bisect: exclude `net/,org/
 `java/,jdk/,sun/`, then halve whichever set fixed it, until you are down to one class or method
 (`RAVA_OPT_EXCLUDE=net/minecraft/client/renderer/,com/mojang/blaze3d/`). Report that method.
 
-`RAVA_GC_LOG=1` prints a line per collection. `RAVA_TIMING=1` prints how long the JDK took to
+`RAVA_GC_LOG=1` prints a line per collection. A program idle for ten seconds after a collection
+gets one full collection that gives its heap back down to its live data (a server waiting for
+players); `RAVA_IDLE_GC=0` turns that off. `RAVA_TIMING=1` prints how long the JDK took to
 boot and the totals for the run. Both write to standard error, which some launchers do not keep
 (Prism Launcher shows it only in its console window). `RAVA_STDERR=<path>` appends standard
 error to that file instead.

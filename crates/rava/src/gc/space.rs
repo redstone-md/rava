@@ -195,6 +195,14 @@ pub struct Space {
     pub tenure: u8,
     /// Young collections in a row since the last one that promoted much (`Heap::full_due`).
     pub quiet: u32,
+    /// Bytes allocated per second between the last collections (smoothed; 0 until two have
+    /// run), and when the last one ended (`Heap::young_budget`).
+    pub alloc_rate: f64,
+    pub last_gc: Option<std::time::Instant>,
+    /// An idle collection has run since the last one an allocation budget asked for; the next
+    /// collection is one (`Heap::maybe_collect`).
+    pub idle_collected: bool,
+    pub idle_next: bool,
 }
 
 /// The smallest heap reservation `Space::new` falls back to.
@@ -250,6 +258,10 @@ impl Space {
             aging: Vec::new(),
             tenure: super::aging::TENURE,
             quiet: 0,
+            alloc_rate: 0.0,
+            last_gc: None,
+            idle_collected: false,
+            idle_next: false,
         }
     }
 
