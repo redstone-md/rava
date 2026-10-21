@@ -388,6 +388,14 @@ impl Asm {
     }
     pub fn store(&mut self, w: bool, m: M, src: R) {
         let start = self.pos();
+        // A store of a slot's own value back to it (a phi move into the slot a value it read
+        // from there came from) changes nothing: the register still holds the slot, as wide.
+        if let Some((base, disp)) = Self::slot_of(m) {
+            let unbound = !(self.bound_at == start && !self.bound.is_empty());
+            if unbound && self.held_at == start && self.held.iter().any(|&(r, b, d, hw)| (r, b, d) == (src, base, disp) && (hw || !w)) {
+                return;
+            }
+        }
         self.op_rm(w, &[0x89], src as u8, m);
         if Self::stack_slot(m) {
             self.last_spill = Some((self.pos(), m.disp, src, w));
