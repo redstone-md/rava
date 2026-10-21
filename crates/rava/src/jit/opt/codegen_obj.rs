@@ -922,37 +922,66 @@ impl Gen<'_> {
                 self.a.jcc(Cond::B, learn);
             }
             // Megamorphic: the class's last itable hit (a block, its interface in the word
-            // before it: the method loads as the interface compares), else a scan of its itable
-            // in place (`stubs::itable_lookup`).
+            // before it: the method loads as the interface compares), else a probe of its
+            // blocks by interface. The common path runs straight to the call; the probe, the
+            // site cache's hit and its filling are out of line (each taken branch costs the
+            // fetch a redirection, and a site's classes vary call to call).
             let (scan, block) = (self.a.new_label(), self.a.new_label());
-            // This compiled site's own last receiver class and target (C2's inline cache per
-            // call site): an inlined copy of a megamorphic site often sees one class. One word,
-            // the class word low and the method (in low memory) high, so a thread reading it
-            // while another refreshes it never pairs one class with another's method.
+            // This compiled site's own receiver class and target (C2's inline cache per call
+            // site): an inlined copy of a megamorphic site often sees one class. One word, the
+            // class word low and the method (in low memory) high, so a thread reading it while
+            // another fills it never pairs one class with another's method. Filled once: a site
+            // whose classes vary would rewrite it on every call for no hit.
             let slot = megamorphic.then(|| crate::low::leak(std::sync::atomic::AtomicU64::new(0)) as *const std::sync::atomic::AtomicU64 as usize);
+            let (slot_hit, fill) = (self.a.new_label(), self.a.new_label());
             if let Some(slot) = slot {
-                let other = self.a.new_label();
                 let at = self.absolute(slot, R::Rax);
                 self.a.load(true, R::Rax, at);
                 self.a.alu_rr(false, Alu::Cmp, R::Rax, k);
-                self.a.jcc(Cond::Ne, other);
-                self.a.shift_ri(true, Shift::Shr, R::Rax, 32);
-                self.a.mov_rr(true, R::Rdx, R::Rax);
-                self.a.jmp(done);
-                self.a.bind(other);
+                self.a.jcc(Cond::E, slot_hit);
             }
             let hit = offset_of!(Klass, itable_hit) as i32;
             self.a.mov_ri(R::Rsi, m.holder as *const Klass as i64);
             self.a.load(true, R::Rax, mem(k, hit));
             self.a.alu_rm(true, Alu::Cmp, R::Rsi, mem(R::Rax, -8));
-            self.a.jcc(Cond::E, block);
-            // Else the class's blocks by interface (`Klass::itable_set`), probed from the
+            self.a.jcc(Cond::Ne, scan);
+            self.a.bind(block);
+            self.a.load(true, R::Rax, mem(R::Rax, 8 * m.index() as i32));
+            self.a.test_rr(true, R::Rax, R::Rax);
+            self.a.jcc(Cond::E, learn);
+            if let Some(slot) = slot {
+                let at = self.absolute(slot, R::Rsi);
+                self.a.alu_mi(true, Alu::Cmp, at, 0);
+                self.a.jcc(Cond::E, fill);
+            }
+            self.a.mov_rr(true, R::Rdx, R::Rax);
+            self.a.jmp(done);
+            if let Some(slot) = slot {
+                self.a.bind(slot_hit);
+                self.a.shift_ri(true, Shift::Shr, R::Rax, 32);
+                self.a.mov_rr(true, R::Rdx, R::Rax);
+                self.a.jmp(done);
+                self.a.bind(fill);
+                // A method above 4 GiB is not cached.
+                self.a.mov_rr(true, R::R11, R::Rax);
+                self.a.shift_ri(true, Shift::Shr, R::R11, 32);
+                self.a.jcc(Cond::Ne, found);
+                self.a.mov_rr(true, R::R11, R::Rax);
+                self.a.shift_ri(true, Shift::Shl, R::R11, 32);
+                self.a.alu_rr(true, Alu::Or, R::R11, k);
+                let at = self.absolute(slot, R::Rsi);
+                self.a.store(true, at, R::R11);
+                self.a.jmp(found);
+            }
+            // The class's blocks by interface (`Klass::itable_set`), probed from the
             // interface's hash (doubled: two words a slot); an empty slot means no block.
+            self.a.bind(scan);
             self.a.load(true, R::Rax, mem(k, offset_of!(Klass, itable_set) as i32));
             self.a.test_rr(true, R::Rax, R::Rax);
             self.a.jcc(Cond::E, learn);
             self.a.mov_ri(R::R11, 2 * crate::klass::iface_hash(m.holder) as i64);
-            self.a.bind(scan);
+            let probe = self.a.new_label();
+            self.a.bind(probe);
             self.a.alu_rm(true, Alu::And, R::R11, mem(R::Rax, 0));
             self.a.alu_rm(true, Alu::Cmp, R::Rsi, mem_idx(R::Rax, R::R11, 8, 8));
             let probed = self.a.new_label();
@@ -960,29 +989,11 @@ impl Gen<'_> {
             self.a.alu_mi(true, Alu::Cmp, mem_idx(R::Rax, R::R11, 8, 8), 0);
             self.a.jcc(Cond::E, learn);
             self.a.alu_ri(true, Alu::Add, R::R11, 2);
-            self.a.jmp(scan);
+            self.a.jmp(probe);
             self.a.bind(probed);
             self.a.load(true, R::Rax, mem_idx(R::Rax, R::R11, 8, 16));
             self.a.store(true, mem(k, hit), R::Rax);
-            self.a.bind(block);
-            self.a.load(true, R::Rax, mem(R::Rax, 8 * m.index() as i32));
-            self.a.test_rr(true, R::Rax, R::Rax);
-            match slot {
-                Some(slot) => {
-                    self.a.jcc(Cond::E, learn);
-                    // A method above 4 GiB is not cached.
-                    self.a.mov_rr(true, R::R11, R::Rax);
-                    self.a.shift_ri(true, Shift::Shr, R::R11, 32);
-                    self.a.jcc(Cond::Ne, found);
-                    self.a.mov_rr(true, R::R11, R::Rax);
-                    self.a.shift_ri(true, Shift::Shl, R::R11, 32);
-                    self.a.alu_rr(true, Alu::Or, R::R11, k);
-                    let at = self.absolute(slot, R::Rsi);
-                    self.a.store(true, at, R::R11);
-                    self.a.jmp(found);
-                }
-                None => self.a.jcc(Cond::Ne, found),
-            }
+            self.a.jmp(block);
             self.a.bind(learn);
         }
         if reg {
