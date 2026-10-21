@@ -363,13 +363,28 @@ impl Gen<'_> {
     /// `Math.min/max` with Java semantics: NaN wins, and -0.0 is below +0.0 (for equal floats
     /// the bitwise and/or of the operands picks the right zero).
     fn min_max(&mut self, v: V, ty: BasicType, max: bool, x: V, y: V) {
+        use super::regalloc::Loc;
         let wide = matches!(ty, BasicType::Long | BasicType::Double);
+        if matches!(ty, BasicType::Int | BasicType::Long) {
+            // Straight into the result's register: x there, then y where it wins. min and max
+            // commute, so a result in y's register starts from y.
+            let r = self.out(v);
+            let (x, y) = if self.loc[y as usize] == Loc::Reg(r) { (y, x) } else { (x, y) };
+            let ry = match self.loc[y as usize] {
+                Loc::Reg(q) if q != r => q,
+                _ => {
+                    self.load(R::R11, y);
+                    R::R11
+                }
+            };
+            self.load(r, x);
+            self.a.alu_rr(wide, Alu::Cmp, r, ry);
+            self.a.cmov(true, if max { Cond::L } else { Cond::G }, r, ry);
+            return self.put(v, r);
+        }
         self.load(R::Rax, x);
         self.load(R::R11, y);
-        if matches!(ty, BasicType::Int | BasicType::Long) {
-            self.a.alu_rr(wide, Alu::Cmp, R::Rax, R::R11);
-            self.a.cmov(true, if max { Cond::L } else { Cond::G }, R::Rax, R::R11);
-        } else {
+        {
             let (nan, a_above, b_above, done) = (self.a.new_label(), self.a.new_label(), self.a.new_label(), self.a.new_label());
             self.a.mov_xr(wide, X(0), R::Rax);
             self.a.mov_xr(wide, X(1), R::R11);
