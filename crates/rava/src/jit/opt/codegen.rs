@@ -16,6 +16,7 @@ use std::rc::Rc;
 mod divconst;
 mod fastexit;
 mod fold;
+mod low32;
 mod params;
 mod stubs;
 mod switch;
@@ -153,6 +154,8 @@ pub(super) struct Gen<'a> {
     pub(super) fused: std::collections::HashSet<V>,
     /// Loads emitted as the memory operand of the instruction after them (`fold.rs`).
     pub(super) folded: std::collections::HashSet<V>,
+    /// `l2i` results read only as 32-bit values (`low32.rs`).
+    pub(super) low32: std::collections::HashSet<V>,
     /// Casts whose block then branches on the result being null: the cast's own null test
     /// takes the branch's null side (block, null successor, non-null successor), and the branch
     /// tests nothing.
@@ -358,6 +361,7 @@ pub(super) fn generate(g: &Graph, al: &Allocation, m: &'static Method, frame_slo
         faults: Vec::new(),
         fused: fused_type_tests(g),
         folded: fold::folded_loads(g),
+        low32: low32::low_half_only(g),
         cast_branch: cast_branches(g, &al.loc),
         arrays: arrays(g),
         frame_slots,

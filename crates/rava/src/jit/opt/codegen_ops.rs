@@ -414,6 +414,12 @@ impl Gen<'_> {
                     self.a.mov_rr(true, r, src);
                 }
             }
+            // Read only as 32 bits: no sign extension (`codegen/low32.rs`).
+            0x88 if self.low32.contains(&v) => {
+                if src != r {
+                    self.a.mov_rr(false, r, src);
+                }
+            }
             0x88 => self.a.movsxd(r, src),
             0x91 | 0x93 => self.a.movsx_rr(if op == 0x91 { 1 } else { 2 }, r, src),
             0x92 => self.a.movzx16_rr(r, src),
