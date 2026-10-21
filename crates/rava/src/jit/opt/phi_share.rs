@@ -27,7 +27,9 @@ pub fn blocks_of(g: &Graph) -> Vec<B> {
 /// along an edge from there.
 pub fn dead_after(g: &Graph, reads: &mut StateReads, block_of: &[B], p: V, v: V) -> bool {
     let (h, bv) = (block_of[p as usize], block_of[v as usize]);
-    if h == B::MAX || bv == B::MAX || matches!(g.inst(v), Inst::Phi(_)) {
+    // A phi of another block (a merge in the loop body) may share too; two phis of one block
+    // may not (a swap of loop values).
+    if h == B::MAX || bv == B::MAX || matches!(g.inst(v), Inst::Phi(_)) && h == bv {
         return false;
     }
     let mut seen = vec![false; g.blocks.len()];
