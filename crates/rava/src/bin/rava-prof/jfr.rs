@@ -33,7 +33,7 @@ pub fn import(input: &str, output: &str, period_ms: f64) -> Result<(), String> {
     if !p.seek_key("events") || !p.eat(b'[') {
         return Err(format!("{input}: no events array (is it `jfr print --json` output?)"));
     }
-    let (mut first, mut n) = (None, 0u64);
+    let (mut first, mut n, mut truncated) = (None, 0u64, 0u64);
     if !p.eat(b']') {
         loop {
             let ev = p.value()?;
@@ -59,18 +59,28 @@ pub fn import(input: &str, output: &str, period_ms: f64) -> Result<(), String> {
                 let time = ((sample.time - t0).max(0.0) * 1e6) as u64;
                 w.write(&Record::Sample { time, thread: sample.thread, state: sample.state, cycles: 0, stack }).map_err(io)?;
                 n += 1;
+                truncated += sample.truncated as u64;
             }
             if !p.eat(b',') {
                 break;
             }
         }
     }
+    w.write(&Record::Meta { key: "truncated_samples".into(), value: truncated.to_string() }).map_err(io)?;
     w.flush().map_err(io)?;
     eprintln!("imported {n} samples, {} stacks, {} threads", stacks.len(), threads.len());
+    if truncated > 0 {
+        eprintln!(
+            "warning: {truncated} samples ({:.1}%) have stacks JFR cut to their innermost frames: their outer frames' inclusive time is lost (record with -XX:FlightRecorderOptions=stackdepth=2048)",
+            100.0 * truncated as f64 / n.max(1) as f64
+        );
+    }
     Ok(())
 }
 
 struct Sample {
+    /// JFR kept only the innermost frames (its `stackdepth`, 64 by default).
+    truncated: bool,
     time: f64,
     thread: u32,
     thread_name: String,
@@ -90,6 +100,7 @@ fn sample(ev: &Value) -> Option<Sample> {
     let thread_name = th.get("javaName").and_then(Value::str).or_else(|| th.get("osName").and_then(Value::str)).unwrap_or("?").to_string();
     let time = v.get("startTime").and_then(Value::str).and_then(seconds)?;
     let mut frames = Vec::new();
+    let truncated = v.get("stackTrace")?.get("truncated") == Some(&Value::Bool(true));
     for f in v.get("stackTrace")?.get("frames")?.arr() {
         let m = f.get("method")?;
         let holder = m.get("type").and_then(|t| t.get("name")).and_then(Value::str).unwrap_or("?");
@@ -104,7 +115,7 @@ fn sample(ev: &Value) -> Option<Sample> {
         };
         frames.push((format!("{holder}.{name}{desc}"), bci, tier, inlined));
     }
-    Some(Sample { time, thread, thread_name, state, frames })
+    Some(Sample { truncated, time, thread, thread_name, state, frames })
 }
 
 /// Seconds of an ISO 8601 time (`2026-10-21T01:49:18.123456789+03:00`) since the epoch, the
@@ -147,6 +158,7 @@ mod tests {
               {"method": {"type": {"name": "A"}, "name": "run", "descriptor": "()V"}, "bytecodeIndex": 3, "type": "JIT compiled"}]}}}"#;
         let v = Parser::new(ev.as_bytes()).value().unwrap();
         let s = sample(&v).unwrap();
+        assert!(!s.truncated);
         assert_eq!((s.thread, s.thread_name.as_str()), (42, "Worker-1"));
         assert_eq!(s.frames[0], ("java/util/HashMap.hash(Ljava/lang/Object;)I".to_string(), Some(9), Tier::Opt, true));
         assert_eq!(s.frames[1].3, false);

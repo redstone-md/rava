@@ -21,6 +21,7 @@ commands:
   top <file> [--inclusive]       frames by self (or inclusive) CPU seconds
   tree <file> <frame>            callees under a frame, inclusive, as a tree
                                  [--depth <n>] (8) [--min <percent>] (0.5)
+                                 [--callers]: the callers above it instead
   diff <a> <b> [--inclusive]     two recordings' frames side by side, by the difference
   folded <file>                  folded stacks (thread;outermost;...;innermost ms)
   import-jfr <in.json> <out>     HotSpot `jfr print --json --events jdk.ExecutionSample`
@@ -30,6 +31,7 @@ options:
   --thread <prefix>   samples of threads whose name starts with it
   --state <state>     samples in one state: java, vm, syscall, native
   --from <s> --to <s> samples of a time window
+  --within <frame>    (top, diff) samples with that frame on their stack
   --top <n>           rows (default 40)
   --leaf              self time to the innermost frame, inlined or not (default: the
                       innermost frame holding compiled code, comparable across VMs)
@@ -49,6 +51,7 @@ struct Args {
     positional: Vec<String>,
     view: View,
     inclusive: bool,
+    callers: bool,
     no_symbols: bool,
     window: f64,
     depth: usize,
@@ -57,7 +60,7 @@ struct Args {
 }
 
 fn parse(args: Vec<String>) -> Result<Args, String> {
-    let mut a = Args { positional: Vec::new(), view: View { physical: true, top: 40, merge_lambdas: true, ..Default::default() }, inclusive: false, no_symbols: false, window: 10.0, depth: 8, min: 0.5, period: 10.0 };
+    let mut a = Args { positional: Vec::new(), view: View { physical: true, top: 40, merge_lambdas: true, ..Default::default() }, inclusive: false, callers: false, no_symbols: false, window: 10.0, depth: 8, min: 0.5, period: 10.0 };
     let mut it = args.into_iter();
     let num = |it: &mut std::vec::IntoIter<String>, flag: &str| -> Result<f64, String> { it.next().and_then(|v| v.parse().ok()).ok_or_else(|| format!("{flag} needs a number")) };
     while let Some(arg) = it.next() {
@@ -67,11 +70,13 @@ fn parse(args: Vec<String>) -> Result<Args, String> {
             "--from" => a.view.filter.from = Some(num(&mut it, "--from")?),
             "--to" => a.view.filter.to = Some(num(&mut it, "--to")?),
             "--top" => a.view.top = num(&mut it, "--top")? as usize,
+            "--within" => a.view.within = Some(it.next().ok_or("--within needs a frame")?),
             "--window" => a.window = num(&mut it, "--window")?.max(0.1),
             "--depth" => a.depth = num(&mut it, "--depth")? as usize,
             "--min" => a.min = num(&mut it, "--min")?,
             "--period" => a.period = num(&mut it, "--period")?,
             "--inclusive" => a.inclusive = true,
+            "--callers" => a.callers = true,
             "--leaf" => a.view.physical = false,
             "--tiers" => a.view.tiers = true,
             "--keep-lambdas" => a.view.merge_lambdas = false,
@@ -93,7 +98,7 @@ fn run(args: Vec<String>) -> Result<(), String> {
         ["summary", f] => report::summary(&Profile::load(f)?, v),
         ["threads", f] => report::threads(&Profile::load(f)?, v, a.window),
         ["top", f] => report::top(&Profile::load(f)?, v, a.inclusive, &mut sym),
-        ["tree", f, root] => report::tree(&Profile::load(f)?, v, root, a.depth, a.min, &mut sym),
+        ["tree", f, root] => report::tree(&Profile::load(f)?, v, root, a.depth, a.min, a.callers, &mut sym),
         ["diff", x, y] => diff::diff(&Profile::load(x)?, &Profile::load(y)?, v, a.inclusive, &mut sym),
         ["folded", f] => report::folded(&Profile::load(f)?, v, &mut sym),
         ["import-jfr", input, output] => jfr::import(input, output, a.period)?,

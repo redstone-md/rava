@@ -1,7 +1,8 @@
 //! A recording loaded for analysis: its strings, threads, modules and stacks, and its samples,
 //! each weighing CPU seconds. A thread's CPU between two of its `ThreadCpu` records is shared
 //! by its samples in that span; a sample past the last record weighs its own cycles; without
-//! any (an imported recording) a sample weighs the recording's sampling period.
+//! any (an imported recording) a sample weighs the recording's sampling period. In a `wall`
+//! recording every sample weighs its interval instead: thread time, blocked or running.
 
 use rava::profile::format::{Frame, Reader, Record, State, Tier};
 use std::collections::HashMap;
@@ -109,8 +110,12 @@ impl Profile {
                 *counts.entry((s.thread, i)).or_default() += 1;
             }
         }
+        // A wall-clock recording's samples weigh their interval: seconds of the thread's
+        // time, blocked or not.
+        let wall = self.meta.get("mode").is_some_and(|m| m == "wall");
         for (s, &c) in self.samples.iter_mut().zip(raw_cycles) {
             s.weight = match span_of(s.thread, s.time) {
+                _ if wall => period,
                 Some(i) => {
                     let recs = &cpu[&s.thread];
                     let used = recs[i].1.saturating_sub(recs[i - 1].1) as f64 / cps;

@@ -17,6 +17,8 @@ pub struct View {
     /// Lambda and hidden classes' addresses dropped (`A$$Lambda/0x...` as `A$$Lambda`): each
     /// run names them anew.
     pub merge_lambdas: bool,
+    /// Only samples with a frame whose label contains this.
+    pub within: Option<String>,
     pub top: usize,
 }
 
@@ -51,6 +53,9 @@ pub fn totals(p: &Profile, v: &View, sym: &mut Symbols) -> Totals {
             let all = frames.iter().map(|f| label(p, f, v, sym)).filter(|l| seen.insert(l.clone())).collect();
             (own, all)
         });
+        if v.within.as_ref().is_some_and(|w| !all.iter().any(|l| l.contains(w.as_str()))) {
+            continue;
+        }
         *t.own.entry(own.clone()).or_default() += s.weight;
         for l in all.iter() {
             *t.inclusive.entry(l.clone()).or_default() += s.weight;
@@ -66,7 +71,9 @@ fn pct(x: f64, total: f64) -> f64 {
 
 pub fn summary(p: &Profile, v: &View) {
     println!("{} ({})", p.meta.get("vm").map_or("?", |s| s), p.meta.get("command").map_or("", |s| s));
-    println!("duration {:.1} s, {} samples, {} stacks, {} threads", p.duration, p.samples.len(), p.stacks.len(), p.threads.len());
+    println!("duration {:.1} s, {} samples, {} stacks, {} threads", p.duration, p.samples.len(), p.stacks.len(), p.threads.len());    if let Some(n) = p.meta.get("truncated_samples").filter(|n| *n != "0") {
+        println!("warning: {n} samples have truncated stacks (outer frames' inclusive time is understated)");
+    }
     let mut by_state: HashMap<State, f64> = HashMap::new();
     let mut total = 0.0;
     for s in p.samples.iter().filter(|s| p.keeps(&v.filter, s)) {
@@ -155,8 +162,9 @@ pub fn top(p: &Profile, v: &View, inclusive: bool, sym: &mut Symbols) {
 }
 
 /// The callees under `root` (its outermost occurrence in each stack), as a tree of inclusive
-/// seconds down to `depth` levels, branches under `min` percent of the root left out.
-pub fn tree(p: &Profile, v: &View, root: &str, depth: usize, min: f64, sym: &mut Symbols) {
+/// seconds down to `depth` levels, branches under `min` percent of the root left out; with
+/// `callers`, the callers above it instead (from its innermost occurrence outwards).
+pub fn tree(p: &Profile, v: &View, root: &str, depth: usize, min: f64, callers: bool, sym: &mut Symbols) {
     #[derive(Default)]
     struct Node {
         time: f64,
@@ -166,16 +174,20 @@ pub fn tree(p: &Profile, v: &View, root: &str, depth: usize, min: f64, sym: &mut
     for s in p.samples.iter().filter(|s| p.keeps(&v.filter, s)) {
         let frames = p.stacks.get(&s.stack).map_or(&[][..], |f| f.as_slice());
         let labels: Vec<String> = frames.iter().map(|f| label(p, f, v, sym)).collect();
-        let Some(r) = labels.iter().rposition(|l| l.contains(root)) else { continue };
+        let found = if callers { labels.iter().position(|l| l.contains(root)) } else { labels.iter().rposition(|l| l.contains(root)) };
+        let Some(r) = found else { continue };
         top.time += s.weight;
         let mut node = &mut top;
-        for l in labels[..r].iter().rev().take(depth) {
+        let path: Box<dyn Iterator<Item = &String>> = if callers { Box::new(labels[r + 1..].iter()) } else { Box::new(labels[..r].iter().rev()) };
+        for l in path.take(depth) {
             node = node.kids.entry(l.clone()).or_default();
             node.time += s.weight;
         }
     }
-    println!("{:.2} CPU s under {root}", top.time);
-    fn print(n: &Node, total: f64, min: f64, indent: usize) {
+    println!("{:.2} CPU s {} {root}", top.time, if callers { "calling into" } else { "under" });
+    // Time a node has beyond its children: its own (`<self>`), or, at the depth limit, what
+    // lies deeper (`<deeper>`).
+    fn print(n: &Node, total: f64, min: f64, indent: usize, depth: usize) {
         let mut kids: Vec<_> = n.kids.iter().collect();
         kids.sort_by(|a, b| b.1.time.total_cmp(&a.1.time));
         let shown: f64 = kids.iter().map(|k| k.1.time).sum();
@@ -184,14 +196,14 @@ pub fn tree(p: &Profile, v: &View, root: &str, depth: usize, min: f64, sym: &mut
                 continue;
             }
             println!("{:8.2} {:6.2}%  {}{}", k.time, pct(k.time, total), "  ".repeat(indent), name);
-            print(k, total, min, indent + 1);
+            print(k, total, min, indent + 1, depth);
         }
         let own = n.time - shown;
         if indent > 0 && pct(own, total) >= min {
-            println!("{:8.2} {:6.2}%  {}<self>", own, pct(own, total), "  ".repeat(indent));
+            println!("{:8.2} {:6.2}%  {}{}", own, pct(own, total), "  ".repeat(indent), if indent == depth { "<deeper>" } else { "<self>" });
         }
     }
-    print(&top, top.time, min, 0);
+    print(&top, top.time, min, 0, depth);
 }
 
 /// Folded stacks (`thread;outermost;...;innermost milliseconds`), for flame graph tools.
