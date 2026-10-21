@@ -1,9 +1,8 @@
-//! Loads folded into the instruction that reads them (C2's memory operands): a double or float
-//! field or element read only by the arithmetic right after it is that instruction's operand,
-//! `addsd xmm, [obj + off]`; an int one read only by its conversion is `cvtsi2sd xmm, dword
-//! [obj + off]`, and an int or long one read only by integer arithmetic its operand as well
-//! (`add r32, [obj + off]`). The load emits nothing; nothing runs in between that could write
-//! the memory, and no state reads the loaded value.
+//! Loads folded into the floating-point instruction that reads them (C2's memory operands): a
+//! double or float field or element read only by the arithmetic right after it is that
+//! instruction's operand, `addsd xmm, [obj + off]`, and an int one read only by its conversion
+//! is `cvtsi2sd xmm, dword [obj + off]`. The load emits nothing; nothing runs in between that
+//! could write the memory, and no state reads the loaded value.
 
 use super::super::ir::*;
 use super::Gen;
@@ -46,17 +45,10 @@ fn folds_into(g: &Graph, l: V, bt: BasicType, u: V) -> bool {
     match *g.inst(u) {
         Inst::Bin(BinOp::Add | BinOp::Mul, x, y) if matches!(bt, BasicType::Double | BasicType::Float) => is(x) != is(y) && float_of(g, u, bt),
         Inst::Bin(BinOp::Sub | BinOp::Div, x, y) if matches!(bt, BasicType::Double | BasicType::Float) => is(y) && !is(x) && float_of(g, u, bt),
-        Inst::Bin(BinOp::Add | BinOp::Mul | BinOp::And | BinOp::Or | BinOp::Xor, x, y) if int_of(g, u, bt) => is(x) != is(y),
-        Inst::Bin(BinOp::Sub, x, y) if int_of(g, u, bt) => is(y) && !is(x),
         // i2f, i2d.
         Inst::Convert(0x86 | 0x87, x) => bt == BasicType::Int && is(x),
         _ => false,
     }
-}
-
-/// Whether `u` is int or long arithmetic on a load of its own width.
-fn int_of(g: &Graph, u: V, bt: BasicType) -> bool {
-    matches!((g.ty(u), bt), (Ty::I, BasicType::Int) | (Ty::J, BasicType::Long))
 }
 
 /// Whether `u` computes in the load's own precision.
@@ -65,18 +57,6 @@ fn float_of(g: &Graph, u: V, bt: BasicType) -> bool {
 }
 
 impl Gen<'_> {
-    /// Whether folded load `l`'s address needs no register but its object's and index's, none
-    /// of them `r`: code may then fill `r` before the access.
-    pub(in super::super) fn folded_apart(&self, l: V, r: crate::jit::asm::R) -> bool {
-        use super::super::regalloc::Loc;
-        let held = |x: V| matches!(self.loc[self.g.resolve(x) as usize], Loc::Reg(q) if q != r);
-        match *self.g.inst(l) {
-            Inst::LoadField(o, ..) => held(o),
-            Inst::LoadIndexed(a, i, _) => held(a) && (held(i) || matches!(self.loc[self.g.resolve(i) as usize], Loc::Const(_))),
-            _ => false,
-        }
-    }
-
     /// The address folded load `l` reads (its object and index loaded first, through rax and r11).
     pub(in super::super) fn folded_mem(&mut self, l: V) -> M {
         match *self.g.inst(l) {
