@@ -36,6 +36,21 @@ pub(super) fn folded_loads(g: &Graph) -> HashSet<V> {
                 out.insert(l);
             }
         }
+        // The block's last load, read only by its branch (not a loop header's: rotation repeats
+        // that test at the back edges, without the load).
+        let (Some(&l), Term::If { ty, a, b, .. }) = (real.last(), &blk.term) else { continue };
+        let is = |x: V| g.resolve(x) == l;
+        let before = real.len().checked_sub(2).map(|i| real[i]);
+        let ok = match *g.inst(l) {
+            Inst::LoadField(o, _, bt) | Inst::LoadIndexed(o, _, bt) => {
+                matches!((ty, bt), (Ty::I, BasicType::Int) | (Ty::J, BasicType::Long) | (Ty::D, BasicType::Double) | (Ty::F, BasicType::Float))
+                    && !before.is_some_and(|p| matches!(*g.inst(p), Inst::NullCheck(n, _) if g.resolve(n) == g.resolve(o)))
+            }
+            _ => false,
+        };
+        if ok && !blk.loop_header && reads[l as usize] == 1 && is(*a) != is(*b) {
+            out.insert(l);
+        }
     }
     out
 }
@@ -77,6 +92,35 @@ impl Gen<'_> {
         }
     }
 
+    /// Compares int or long (`w`) `a` with `y` for a branch, one of them a folded load (taken
+    /// from memory: `cmp r, [m]`, or `cmp [m], imm` against a constant); returns the condition
+    /// that holds when `a cmp y` does.
+    pub(in super::super) fn folded_compare(&mut self, w: bool, cmp: Cmp, a: V, y: V) -> crate::jit::asm::Cond {
+        use super::super::regalloc::Loc;
+        use crate::jit::asm::{Alu, R};
+        let (a, y) = (self.g.resolve(a), self.g.resolve(y));
+        // The load second.
+        let (a, y, cmp) = if self.folded.contains(&a) { (y, a, swap(cmp)) } else { (a, y, cmp) };
+        let m = self.folded_mem(y);
+        match self.loc[a as usize] {
+            Loc::Const(c) if i32::try_from(c).is_ok() => {
+                self.a.alu_mi(w, Alu::Cmp, m, c as i32);
+                super::cond(swap(cmp))
+            }
+            Loc::Reg(x) => {
+                self.a.alu_rm(w, Alu::Cmp, x, m);
+                super::cond(cmp)
+            }
+            _ => {
+                // The address may have taken rax and r11: the value first.
+                self.a.load(w, R::R11, m);
+                let x = self.reg(a, R::Rax);
+                self.a.alu_rr(w, Alu::Cmp, x, R::R11);
+                super::cond(cmp)
+            }
+        }
+    }
+
     /// The address folded load `l` reads (its object and index loaded first, through rax and r11).
     pub(in super::super) fn folded_mem(&mut self, l: V) -> M {
         match *self.g.inst(l) {
@@ -84,5 +128,16 @@ impl Gen<'_> {
             Inst::LoadIndexed(a, i, bt) => self.element(a, i, bt),
             _ => unreachable!("a folded load"),
         }
+    }
+}
+
+/// The comparison with its operands swapped.
+pub(super) fn swap(c: Cmp) -> Cmp {
+    match c {
+        Cmp::Lt => Cmp::Gt,
+        Cmp::Gt => Cmp::Lt,
+        Cmp::Le => Cmp::Ge,
+        Cmp::Ge => Cmp::Le,
+        c => c,
     }
 }
