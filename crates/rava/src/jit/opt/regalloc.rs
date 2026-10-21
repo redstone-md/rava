@@ -593,6 +593,25 @@ fn scan(g: &Graph, iv: &mut Intervals, full: &Intervals, loops: &LoopMap, hints:
     slotted.sort_by_key(|&(v, _)| full.start[v]);
     let mut slot_end: Vec<u32> = Vec::new();
     for (v, is_home) in slotted {
+        // A spilled copy (`split.rs` cuts a value at a loop) of a value already in a slot takes
+        // that slot: it holds the same value, which nothing rewrites (no phi), and the copy
+        // moves nothing. The source is live where the copy starts, so its slot is not reused
+        // before; it stays taken until the copy ends too.
+        if let (false, Inst::Copy(x)) = (is_home, &g.values[v].inst) {
+            let x = g.resolve(*x) as usize;
+            let held = match (loc[x], home[x]) {
+                (Loc::Stack(s), _) | (_, Some(Loc::Stack(s))) => Some(Loc::Stack(s)),
+                (Loc::Frame(s), _) | (_, Some(Loc::Frame(s))) => Some(Loc::Frame(s)),
+                _ => None,
+            };
+            if let (Some(at), false) = (held, matches!(g.values[x].inst, Inst::Phi(_))) {
+                if let Loc::Stack(s) = at {
+                    slot_end[s as usize] = slot_end[s as usize].max(full.end[v]);
+                }
+                loc[v] = at;
+                continue;
+            }
+        }
         let slot = match slot_end.iter().position(|&e| e < full.start[v]) {
             Some(s) => s,
             None => {

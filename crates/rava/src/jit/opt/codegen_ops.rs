@@ -33,7 +33,8 @@ impl Gen<'_> {
             Inst::Fence => self.a.storeload(),
             Inst::Copy(x) => {
                 let (dst, src) = (self.loc[v as usize], self.loc[x as usize]);
-                if dst != Loc::None && dst != src {
+                // A spilled copy may share its source's home slot, which already holds it.
+                if dst != Loc::None && dst != src && Some(dst) != self.home[self.g.resolve(x) as usize] {
                     super::moves::mov(&mut self.a, dst, src);
                 }
             }
