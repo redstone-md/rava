@@ -53,6 +53,7 @@ mod nullcheck;
 pub(crate) mod osr;
 mod operands;
 mod phis;
+mod maskcheck;
 mod phi_share;
 mod regalloc;
 mod reload;
@@ -307,6 +308,8 @@ fn compile_timed(m: &'static Method, osr: Option<u32>) -> Option<CompiledMethod>
     deadstore::eliminate(&mut g);
     verify(&g, m, "deadstore::eliminate");    gvn::number(&mut g);
     verify(&g, m, "gvn::number");
+    maskcheck::speculate(&mut g);
+    verify(&g, m, "maskcheck::speculate");
     // Late value numbering makes loads one that the branches before it still compared.
     conds::fold_self_compares(&mut g);
     verify(&g, m, "conds::fold_self_compares (late)");
