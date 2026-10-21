@@ -91,6 +91,8 @@ fn queue() -> &'static Queue {
                 } else {
                     crate::os::vm_thread_priority();
                 }
+                // A VM thread, sampled as such by a recording (no Java frames).
+                crate::profile::attach_current(0);
                 work()
             }).expect("spawn a compiler thread");
         }

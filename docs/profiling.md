@@ -24,6 +24,8 @@ RAVA_RECORD=run.rprof java -jar server.jar
 The recorder runs on its own thread. It suspends each Java thread briefly, reads its registers
 and walks its frame headers (inlined frames come from the call sites' inlining records), and
 writes events to the file as it goes, so a crash or a kill loses at most the last second.
+The VM's own threads (the collector's helpers, the compilers) are sampled as well, with native
+frames only.
 
 ### Events
 
