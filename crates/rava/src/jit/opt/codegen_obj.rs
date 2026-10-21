@@ -23,6 +23,8 @@ fn scale(bt: BasicType) -> u8 {
 impl Gen<'_> {
     pub(super) fn memory_inst(&mut self, v: V) {
         match self.g.inst(v).clone() {
+            // Read by the next instruction from memory (`codegen/fold.rs`).
+            Inst::LoadField(..) | Inst::LoadIndexed(..) if self.folded.contains(&v) => {}
             Inst::LoadField(o, off, bt @ (BasicType::Float | BasicType::Double)) => {
                 let at = self.field(o, off as i32);
                 let r = self.xout(v);
@@ -278,7 +280,7 @@ impl Gen<'_> {
             return None;
         }
         let base_of = |w: V| match *self.g.inst(w) {
-            Inst::LoadField(o, ..) => self.g.resolve(o) == v && !self.fused.contains(&w),
+            Inst::LoadField(o, ..) => self.g.resolve(o) == v && !self.fused.contains(&w) && !self.folded.contains(&w),
             Inst::ArrayLength(o) => self.g.resolve(o) == v,
             _ => false,
         };
@@ -301,7 +303,7 @@ impl Gen<'_> {
         }
     }
 
-    fn element(&mut self, arr: V, idx: V, bt: BasicType) -> M {
+    pub(super) fn element(&mut self, arr: V, idx: V, bt: BasicType) -> M {
         let ra = self.reg(arr, R::Rax);
         if let Loc::Const(c) = self.loc[idx as usize] {
             if let Some(d) = c.checked_mul(scale(bt) as i64).and_then(|d| i32::try_from(d + BASE as i64).ok()) {

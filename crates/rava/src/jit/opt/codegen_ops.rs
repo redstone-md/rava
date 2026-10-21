@@ -306,6 +306,16 @@ impl Gen<'_> {
             BinOp::Mul => 0x59,
             _ => 0x5E,
         };
+        // A load folded into this instruction (`codegen/fold.rs`) is its memory operand, the
+        // second (a commutative operation's first swaps).
+        let (x, y) = if self.folded.contains(&x) { (y, x) } else { (x, y) };
+        if self.folded.contains(&y) {
+            let r = self.xout(v);
+            self.xload(r, x);
+            let m = self.folded_mem(y);
+            self.a.farith_m(double, sse, r, m);
+            return self.xput(v, r);
+        }
         // The result register is x's own when x dies here, else not y's (x op x aside) but
         // for a commutative operation, which then combines x into y's register.
         let r = self.xout(v);
@@ -381,7 +391,13 @@ impl Gen<'_> {
                 let from_long = op >= 0x89;
                 let to_double = op == 0x87 || op == 0x8a;
                 let r = self.xout(v);
-                // A spilled or parameter int converts straight from its slot.
+                // A spilled or parameter int converts straight from its slot, a folded load
+                // from its field or element.
+                if self.folded.contains(&x) {
+                    let m = self.folded_mem(x);
+                    self.a.cvt_i2f_m(to_double, from_long, r, m);
+                    return self.xput(v, r);
+                }
                 match self.loc[x as usize] {
                     Loc::Stack(s) => self.a.cvt_i2f_m(to_double, from_long, r, super::moves::spill(s)),
                     Loc::Frame(s) => {
