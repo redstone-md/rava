@@ -357,7 +357,7 @@ fn compile_timed(m: &'static Method, osr: Option<u32>) -> Option<CompiledMethod>
     // `RAVA_PERF_MAP=inline`: name the code of each inlined method after it, so samples are
     // attributed to the innermost method as HotSpot's profilers do.
     let by_leaf = env_once!("RAVA_PERF_MAP").is_some_and(|v| v == "inline");
-    let (code, main, faults, trace, reg_entry) = codegen::generate(&g, &al, m, extent, monitor, osr, dumped || by_leaf);
+    let (code, main, faults, trace, reg_entry, scopes) = codegen::generate(&g, &al, m, extent, monitor, osr, dumped || by_leaf);
     let entry = code_cache::install_in(&code, code_cache::Zone::Optimized);
     if !faults.is_empty() {
         super::fault::register(faults.into_iter().map(|(at, to)| (entry + at, entry + to)));
@@ -367,6 +367,9 @@ fn compile_timed(m: &'static Method, osr: Option<u32>) -> Option<CompiledMethod>
         perf_map_by_leaf(entry, code.len(), m, &trace);
     } else {
         code_cache::perf_map(entry, code.len(), &format!("{m} [opt{}]", if osr.is_some() { " osr" } else { "" }));
+    }    // After the code is named: a recompilation into the same place replaces both.
+    if !scopes.is_empty() {
+        crate::profile::code_scopes(entry, scopes.iter().map(|(at, o)| (*at, ir::frames_of(o))).collect());
     }
     if log {
         static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();

@@ -89,6 +89,22 @@ pub fn detach_current() {
     }
 }
 
+/// Whether a recording is being made (the compilers then keep what it needs).
+pub fn recording() -> bool {
+    ON.load(Relaxed)
+}
+
+/// The methods inlined into optimized code at `start`: from each offset on, the frames there,
+/// innermost first, each a method and bytecode index (the compiled method last).
+pub fn code_scopes(start: usize, scopes: Vec<(u32, Vec<(&'static crate::method::Method, i32)>)>) {
+    #[cfg(windows)]
+    if ON.load(Relaxed) {
+        recorder::code_scopes(start, scopes);
+    }
+    #[cfg(not(windows))]
+    let _ = (start, scopes);
+}
+
 /// Compiled code installed at `start` for `size` bytes, named `method [tier]`.
 pub fn code_installed(start: usize, size: usize, name: &str) {
     if ON.load(Relaxed) {

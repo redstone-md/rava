@@ -27,6 +27,14 @@ pub fn finish() {
     }
 }
 
+/// Inlining maps of optimized code installed since the recorder last looked (`code_scopes`).
+type Scopes = Vec<(u32, Vec<(&'static crate::method::Method, i32)>)>;
+static SCOPED: Mutex<Vec<(usize, Scopes)>> = Mutex::new(Vec::new());
+
+pub fn code_scopes(start: usize, scopes: Scopes) {
+    SCOPED.lock().unwrap().push((start, scopes));
+}
+
 pub fn code_installed(start: usize, size: usize, name: &str) {
     INSTALLED.lock().unwrap().push((start, size, name.to_string()));
 }
@@ -40,7 +48,7 @@ pub fn start(config: Config) -> bool {
         }
     };
     let Ok(writer) = Writer::new(BufWriter::with_capacity(1 << 20, file)) else { return false };
-    let mut r = Recorder { out: writer, strings: HashMap::new(), methods: HashMap::new(), stacks: HashMap::new(), code: BTreeMap::new(), modules: Vec::new(), threads: HashMap::new(), loaded: Vec::new() };
+    let mut r = Recorder { out: writer, strings: HashMap::new(), methods: HashMap::new(), stacks: HashMap::new(), code: BTreeMap::new(), scopes: HashMap::new(), chains: Vec::new(), chain_ids: HashMap::new(), modules: Vec::new(), threads: HashMap::new(), loaded: Vec::new() };
     r.meta("vm", &format!("rava {}", env!("CARGO_PKG_VERSION")));
     r.meta("pid", &std::process::id().to_string());
     r.meta("command", &std::env::args().collect::<Vec<_>>().join(" "));
@@ -70,6 +78,8 @@ struct Module {
     id: u32,
     base: usize,
     end: usize,
+    /// Its executable sections: only an address in one can be a return address.
+    code: Vec<(usize, usize)>,
     /// ntdll's or win32u's: system call stubs.
     stubs: bool,
     /// A system library (whose callers name a wait or an I/O better than it does).
@@ -85,6 +95,12 @@ struct Recorder {
     stacks: HashMap<Vec<Frame>, u32>,
     /// Compiled code by start: end, method string, tier.
     code: BTreeMap<usize, (usize, u32, Tier)>,
+    /// Optimized code's inlining maps by start: from each offset on, a chain of frames.
+    scopes: HashMap<usize, Vec<(u32, u32)>>,
+    /// The chains (innermost first, the compiled method last), and their ids by their methods
+    /// and bytecode indices.
+    chains: Vec<Vec<Frame>>,
+    chain_ids: HashMap<Vec<(usize, i32)>, u32>,
     modules: Vec<Module>,
     /// Thread ids to their name's string.
     threads: HashMap<u32, u32>,
@@ -175,8 +191,30 @@ impl Recorder {
             let m = self.string(method);
             // Code replaced at the same place (a recompilation into freed space) overrides.
             self.code.retain(|&s, &mut (e, ..)| e <= start || s >= start + size);
+            self.scopes.retain(|&s, _| s < start || s >= start + size);
             self.code.insert(start, (start + size, m, tier));
             let _ = self.out.write(&Record::Code { start: start as u64, size: size as u64, method: m, tier });
+        }
+        let scoped = std::mem::take(&mut *SCOPED.lock().unwrap());
+        for (start, scopes) in scoped {
+            let mut map = Vec::with_capacity(scopes.len());
+            for (at, chain) in scopes {
+                let key: Vec<(usize, i32)> = chain.iter().map(|&(m, b)| (m as *const _ as usize, b)).collect();
+                let found = self.chain_ids.get(&key).copied();
+                let id = match found {
+                    Some(id) => id,
+                    None => {
+                        let n = chain.len();
+                        let frames = chain.iter().enumerate().map(|(i, &(m, b))| Frame::Java { method: self.method(m as *const _ as usize), bci: (b >= 0).then_some(b as u32), tier: Tier::Opt, inlined: i + 1 < n }).collect();
+                        self.chains.push(frames);
+                        let id = self.chains.len() as u32 - 1;
+                        self.chain_ids.insert(key, id);
+                        id
+                    }
+                };
+                map.push((at, id));
+            }
+            self.scopes.insert(start, map);
         }
     }
 
@@ -192,7 +230,9 @@ impl Recorder {
             let _ = self.out.write(&Record::Module { id, path: p, base: base as u64, size: (end - base) as u64 });
             let here = crate::profile::start as *const () as usize;
             let vm = here >= base && here < end;
-            self.modules.push(Module { id, base, end, stubs: matches!(file.as_str(), "ntdll.dll" | "win32u.dll"), system, vm });
+            // SAFETY: the module is loaded at `base`; its headers are read in place.
+            let code = unsafe { code_sections(base, end) };
+            self.modules.push(Module { id, base, end, code, stubs: matches!(file.as_str(), "ntdll.dll" | "win32u.dll"), system, vm });
         }
     }
 
@@ -201,10 +241,23 @@ impl Recorder {
     }
 
     fn code_of(&self, a: usize) -> Option<(u32, Tier)> {
+        self.region_of(a).map(|(_, m, tier)| (m, tier))
+    }
+
+    /// The compiled code holding `a`: its start, method and tier.
+    fn region_of(&self, a: usize) -> Option<(usize, u32, Tier)> {
         match self.code.range(..=a).next_back() {
-            Some((_, &(end, m, tier))) if a < end => Some((m, tier)),
+            Some((&start, &(end, m, tier))) if a < end => Some((start, m, tier)),
             _ => None,
         }
+    }
+
+    /// The frames at `pc` in optimized code at `start` with an inlining map (inlined methods
+    /// innermost first, the compiled method last).
+    fn inlined_at(&self, start: usize, pc: usize) -> Option<&[Frame]> {
+        let map = self.scopes.get(&start)?;
+        let i = map.partition_point(|&(at, _)| at as usize <= pc - start);
+        (i > 0).then(|| self.chains[map[i - 1].1 as usize].as_slice())
     }
 
     fn native(&self, a: usize) -> Frame {
@@ -228,8 +281,11 @@ impl Recorder {
     fn resolve(&mut self, raw: &Raw) -> (State, Vec<Frame>) {
         let mut frames = Vec::with_capacity(16);
         let mut leaf = None;
-        let state = if let Some((m, tier)) = self.code_of(raw.pc) {
-            frames.push(Frame::Java { method: m, bci: None, tier, inlined: false });
+        let state = if let Some((start, m, tier)) = self.region_of(raw.pc) {
+            match self.inlined_at(start, raw.pc) {
+                Some(chain) => frames.extend_from_slice(chain),
+                None => frames.push(Frame::Java { method: m, bci: None, tier, inlined: false }),
+            }
             leaf = Some(m);
             State::Java
         } else {
@@ -240,7 +296,7 @@ impl Recorder {
             }
             // Who called into the system library or the VM: the first scanned return address
             // into compiled code or, past system libraries, into another module.
-            let origin = raw.scanned.iter().copied().find(|&a| self.code_of(a).is_some() || self.module_of(a).is_some_and(|m| !m.system && (system || stubs)));
+            let origin = raw.scanned.iter().copied().find(|&a| self.code_of(a).is_some() || self.module_of(a).is_some_and(|m| !m.system && (system || stubs) && m.code.iter().any(|&(b, e)| a >= b && a < e)));
             match origin.map(|a| (a, self.code_of(a))) {
                 Some((_, Some((m, tier)))) => {
                     frames.push(Frame::Java { method: m, bci: None, tier, inlined: false });
@@ -339,4 +395,33 @@ fn modules() -> Vec<(usize, usize, String)> {
             })
             .collect()
     }
+}
+
+/// The executable sections of the PE image loaded at `base` (its section table), clamped to
+/// the image.
+///
+/// # Safety
+/// `base..end` is a loaded module's image.
+unsafe fn code_sections(base: usize, end: usize) -> Vec<(usize, usize)> {
+    const IMAGE_SCN_MEM_EXECUTE: u32 = 0x2000_0000;
+    let rd16 = |a: usize| (a as *const u16).read_unaligned() as usize;
+    let rd32 = |a: usize| (a as *const u32).read_unaligned();
+    if end - base < 0x400 || rd16(base) != 0x5a4d {
+        return Vec::new();
+    }
+    let nt = base + rd32(base + 0x3c) as usize;
+    if nt + 24 > end || rd32(nt) != 0x4550 {
+        return Vec::new();
+    }
+    let sections = rd16(nt + 6);
+    let table = nt + 24 + rd16(nt + 20);
+    (0..sections)
+        .map(|i| table + 40 * i)
+        .take_while(|&s| s + 40 <= end)
+        .filter(|&s| rd32(s + 36) & IMAGE_SCN_MEM_EXECUTE != 0)
+        .map(|s| {
+            let start = base + rd32(s + 12) as usize;
+            (start, (start + rd32(s + 8) as usize).min(end))
+        })
+        .collect()
 }

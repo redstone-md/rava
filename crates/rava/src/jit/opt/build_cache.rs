@@ -113,6 +113,11 @@ impl Builder {
         if let Some(k) = key {
             self.numbered.insert(k, v);
         }
+        if crate::profile::recording() {
+            let (m, bci) = (self.sc.m, self.sc.bci as u32);
+            let caller = self.sc.caller.clone();
+            self.g.note_origin(v, m, bci, &caller);
+        }
         v
     }
 

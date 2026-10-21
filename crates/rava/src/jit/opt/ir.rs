@@ -57,6 +57,27 @@ pub struct State {
     pub frame: i32,
 }
 
+/// Where a value came from (for the profiler's map of optimized code to the methods inlined
+/// into it): the method and bytecode index being built, and the caller's state at the call for
+/// an inlined scope.
+#[derive(Debug)]
+pub struct Origin {
+    pub method: &'static Method,
+    pub bci: u32,
+    pub caller: Option<Rc<State>>,
+}
+
+/// An origin's frames, innermost first: its method at its bci, then each caller at its call.
+pub fn frames_of(o: &Origin) -> Vec<(&'static Method, i32)> {
+    let mut out = vec![(o.method, o.bci as i32)];
+    let mut s = o.caller.clone();
+    while let Some(c) = s {
+        out.push((c.method, c.bci as i32));
+        s = c.caller.clone();
+    }
+    out
+}
+
 /// Arithmetic on two values of the result's type.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum BinOp {
@@ -339,6 +360,9 @@ pub struct Graph {
     /// The classes inlining guards compare class words with, by the constant's value
     /// (`castdispatch.rs`).
     pub klass_consts: std::collections::HashMap<i64, &'static crate::klass::Klass>,
+    /// Each value's origin, while a recording asks for it (`note_origin`); values made by
+    /// later passes have none.
+    pub origins: Vec<Option<Rc<Origin>>>,
     /// The class declaring the field of a field load or store made from bytecode (`loadnum.rs`).
     pub field_holders: std::collections::HashMap<V, &'static crate::klass::Klass>,
     /// The receiver of an instance method, never null.
@@ -537,6 +561,22 @@ impl Graph {
 }
 
 impl Graph {
+    /// Records that `v` was built for `method` at `bci` (in the scope inlined at `caller`),
+    /// sharing the origin of the previous value when it is the same.
+    pub fn note_origin(&mut self, v: V, method: &'static Method, bci: u32, caller: &Option<Rc<State>>) {
+        let same = |o: &Origin| std::ptr::eq(o.method, method) && o.bci == bci && match (&o.caller, caller) {
+            (Some(a), Some(b)) => Rc::ptr_eq(a, b),
+            (None, None) => true,
+            _ => false,
+        };
+        let last = self.origins.iter().rev().flatten().next().filter(|o| same(o)).cloned();
+        let origin = last.unwrap_or_else(|| Rc::new(Origin { method, bci, caller: caller.clone() }));
+        if self.origins.len() <= v as usize {
+            self.origins.resize(v as usize + 1, None);
+        }
+        self.origins[v as usize] = Some(origin);
+    }
+
     /// A readable listing (`RAVA_OPT_IR`).
     pub fn dump(&self) -> String {
         let mut out = String::new();

@@ -297,9 +297,13 @@ fn narrow_refs(g: &Graph, al: &Allocation) -> std::collections::HashSet<V> {
 /// main part (without the out-of-line stubs after it, as C2 sizes code for inlining).
 /// Code, main part's size, implicit null checks' (access, handler) offsets, and with `trace`
 /// (`RAVA_JIT_DUMP`) the offset each value's code starts at, described.
-/// The code, its main part's length, implicit-null-check fault sites, the trace, and the offset
-/// of the register entry (`jit::abi`) when the method has one.
-pub(super) fn generate(g: &Graph, al: &Allocation, m: &'static Method, frame_slots: i32, monitor: Option<Monitor>, osr: Option<u32>, trace: bool) -> (crate::jit::asm::Code, usize, Vec<(usize, usize)>, Vec<(usize, String)>, Option<usize>) {
+/// The code, its main part's length, implicit-null-check fault sites, the trace, the offset
+/// of the register entry (`jit::abi`) when the method has one, and while a recording is made,
+/// where the code of each origin starts (`Graph::origins`; a value without one continues the
+/// previous).
+#[allow(clippy::type_complexity)]
+pub(super) fn generate(g: &Graph, al: &Allocation, m: &'static Method, frame_slots: i32, monitor: Option<Monitor>, osr: Option<u32>, trace: bool) -> (crate::jit::asm::Code, usize, Vec<(usize, usize)>, Vec<(usize, String)>, Option<usize>, Vec<(u32, std::rc::Rc<super::ir::Origin>)>) {
+    let scoped = crate::profile::recording() && !g.origins.is_empty();
     let max_locals = m.code.expect("compiled method has code").max_locals as i32;
     let mut a = Asm::default();
     a.enable_peephole();
@@ -397,7 +401,7 @@ pub(super) fn generate(g: &Graph, al: &Allocation, m: &'static Method, frame_slo
         }
         for (k, &v) in insts.iter().enumerate() {
             gen.next = [insts.get(k + 1).copied(), insts.get(k + 2).copied()];
-            if trace {
+            if trace || scoped {
                 let at = gen.a.new_label();
                 gen.a.bind(at);
                 traced.push((at, v));
@@ -450,9 +454,20 @@ pub(super) fn generate(g: &Graph, al: &Allocation, m: &'static Method, frame_slo
     let reg_entry = reg_entry.map(|_| *pos.last().expect("the register entry's position") as usize);
     let pos = &pos[..pos.len() - reg_entry.is_some() as usize];
     let faults = pos[..nfaults].chunks(2).map(|p| (p[0] as usize, p[1] as usize)).collect();
+    let mut scopes: Vec<(u32, std::rc::Rc<super::ir::Origin>)> = Vec::new();
+    if scoped {
+        for (&(_, v), &at) in traced.iter().zip(&pos[nfaults..]) {
+            let Some(o) = g.origins.get(v as usize).cloned().flatten() else { continue };
+            match scopes.last_mut() {
+                Some(last) if std::rc::Rc::ptr_eq(&last.1, &o) => {}
+                Some(last) if last.0 == at => last.1 = o,
+                _ => scopes.push((at, o)),
+            }
+        }
+    }
     // Each value with the bytecode position of the nearest state at or before it.
     let mut last = String::new();
-    let trace = traced
+    let trace = if !trace { Vec::new() } else { traced
         .iter()
         .zip(&pos[nfaults..])
         .map(|(&(_, v), &at)| {
@@ -462,8 +477,8 @@ pub(super) fn generate(g: &Graph, al: &Allocation, m: &'static Method, frame_slo
             let kind = format!("{:?}", g.inst(v));
             (at as usize, format!("v{v} {} @ {last}", kind.chars().take(60).collect::<String>()))
         })
-        .collect();
-    (code, main as usize, faults, trace, reg_entry)
+        .collect() };
+    (code, main as usize, faults, trace, reg_entry, scopes)
 }
 
 impl Gen<'_> {
