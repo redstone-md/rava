@@ -270,14 +270,18 @@ impl Heap {
     /// the maximum heap size; but no more than a second's allocations at the recent rate (at
     /// least `MIN_YOUNG`), as G1 sizes its eden by its pause and interval: a program that has
     /// gone quiet (a server between bursts) then keeps a small young generation, and what the
-    /// next full collection releases leaves its heap near its live data.
+    /// next full collection releases leaves its heap near its live data. A program allocating
+    /// fast gets up to a quarter second's allocations, no more than its live data: at least
+    /// a quarter second between collections, which each cost about the same for a busy heap
+    /// (their survivors and dirty cards) whatever the young generation's size.
     fn young_budget(&self, s: &Space, live: usize) -> usize {
         const MIN_YOUNG: usize = 32 << 20;
-        let full = (live / 2).min(live / 3 + (256 << 20)).max(self.min_trigger).min(self.max_heap.saturating_sub(live));
+        let full = (live / 2).min(live / 3 + (256 << 20)).max(self.min_trigger);
         if s.alloc_rate <= 0.0 {
-            return full;
+            return full.min(self.max_heap.saturating_sub(live));
         }
-        full.min((s.alloc_rate as usize).max(MIN_YOUNG))
+        let fast = full.max(((s.alloc_rate / 4.0) as usize).min(live));
+        fast.min(self.max_heap.saturating_sub(live)).min((s.alloc_rate as usize).max(MIN_YOUNG))
     }
 
     /// A full collection is due once the old generation has grown by half since the last one
