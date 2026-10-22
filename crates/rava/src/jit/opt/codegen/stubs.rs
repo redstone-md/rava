@@ -190,6 +190,6 @@ impl Gen<'_> {
 
     /// Whether the edge polls: a back edge, unless of a short counted loop.
     pub(super) fn polls_on(&self, from: B, to: B) -> bool {
-        self.back_edge(from, to) && !self.short_loops[to as usize]
+        self.back_edge(from, to) && !self.short_loops[to as usize] && !self.g.strip_latches.contains(&from)
     }
 }

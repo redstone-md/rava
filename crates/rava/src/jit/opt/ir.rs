@@ -399,6 +399,8 @@ pub struct Graph {
     pub copy_stable: std::collections::HashSet<V>,
     /// Primitive arrays allocated without clearing their elements (`allocateUninitializedArray`).
     pub uninit: std::collections::HashSet<V>,
+    /// Latches of strip-mined loops, whose back edges do not poll (`strip.rs`).
+    pub strip_latches: std::collections::HashSet<B>,
 }
 
 impl Graph {

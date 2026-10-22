@@ -60,6 +60,7 @@ mod reload;
 mod scratch;
 mod select;
 mod split;
+mod strip;
 mod thread;
 mod fact_thread;
 mod typecheck;
@@ -321,6 +322,10 @@ fn compile_timed(m: &'static Method, osr: Option<u32>) -> Option<CompiledMethod>
     verify(&g, m, "g.prune_unreachable");
     dce::eliminate(&mut g);
     verify(&g, m, "dce::eliminate");
+    if env_once!("RAVA_NO_STRIP").is_none() {
+        strip::mine(&mut g);
+        verify(&g, m, "strip::mine");
+    }
     if env_once!("RAVA_OPT_SPLIT").map_or(true, |v| v != "0") {
         split::split(&mut g);
         verify(&g, m, "split::split");
