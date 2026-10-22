@@ -193,6 +193,8 @@ pub struct Space {
     pub aging: Vec<(usize, usize, u8)>,
     /// Young collections a promotion stays young again for (`aging::tenure_after`).
     pub tenure: u8,
+    /// Young collections since promotions last got their chance (`aging::age`).
+    pub since_chance: u8,
     /// Young collections in a row since the last one that promoted much (`Heap::full_due`).
     pub quiet: u32,
     /// Bytes allocated per second between the last collections (smoothed; 0 until two have
@@ -257,6 +259,7 @@ impl Space {
             live_after_full: 0,
             aging: Vec::new(),
             tenure: super::aging::TENURE,
+            since_chance: 0,
             quiet: 0,
             alloc_rate: 0.0,
             last_gc: None,
