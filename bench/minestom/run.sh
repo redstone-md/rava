@@ -22,7 +22,15 @@ read -r -a java_extra <<< "${JAVA_EXTRA:-}"
 read -r -a java_fallback_extra <<< "${JAVA_FALLBACK_EXTRA:-}"
 dependency_dir=../../target/minestom-lib
 mkdir -p out "$dependency_dir"
-mvn -q -B dependency:copy-dependencies -DoutputDirectory="$dependency_dir" -DincludeScope=runtime
+minestom_version=$(sed -n 's/.*<artifactId>minestom<\/artifactId><version>\([^<]*\)<\/version>.*/\1/p' pom.xml)
+if command -v mvn >/dev/null 2>&1; then
+  mvn -q -B dependency:copy-dependencies -DoutputDirectory="$dependency_dir" -DincludeScope=runtime
+elif [[ -n $minestom_version && -f "$dependency_dir/minestom-$minestom_version.jar" ]]; then
+  echo "mvn unavailable; reusing cached Minestom dependencies" >&2
+else
+  echo "Maven is required to fetch Minestom $minestom_version runtime dependencies" >&2
+  exit 1
+fi
 case $(uname -s) in
   MINGW*|MSYS*|CYGWIN*) sep=';' ;;
   *) sep=':' ;;
