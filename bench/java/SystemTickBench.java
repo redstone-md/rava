@@ -1,23 +1,29 @@
 import java.util.ArrayList;
 import java.util.IdentityHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.function.BiConsumer;
 import java.util.function.Consumer;
 import java.util.function.Supplier;
 
-/** The shape of a modded server's per-tick event dispatch: an event bus calls one listener
- *  lambda per registered system (each its own class, so every dispatch is megamorphic); each
- *  looks its data up in the level's attachment map (an IdentityHashMap keyed by a lazily bound
- *  type), asks the data whether it is enabled (an interface call), pushes a concatenated name
- *  onto a profiler that ignores it, and runs its tick through a BiConsumer. ns per tick after
- *  warm-up. */
+/** A synthetic per-tick event-dispatch workload: 40 systems register listeners from two lambda
+ *  sites and five system implementation classes. Each listener looks up attachment data, checks
+ *  an interface flag, pushes section names to either an inactive or recording profiler, and runs
+ *  a system callback. Reports ns per tick after warm-up. */
 public class SystemTickBench {
-    interface Profiler { void push(String s); void pop(); }
+    interface Profiler { void push(String s); void pop(); long checksum(); }
     static final class InactiveProfiler implements Profiler {
         static final InactiveProfiler INSTANCE = new InactiveProfiler();
         public void push(String s) {}
         public void pop() {}
+        public long checksum() { return 0; }
+    }
+    static final class RecordingProfiler implements Profiler {
+        long checksum;
+        public void push(String s) { checksum = checksum * 31 + s.hashCode(); }
+        public void pop() {}
+        public long checksum() { return checksum; }
     }
     static final class Key {
         final String namespace, path;
@@ -38,10 +44,12 @@ public class SystemTickBench {
     }
     static class Level {
         final Key dimension = new Key("minecraft", "overworld");
+        final Profiler profiler;
         private Map<AttachmentType, Object> attachments;
         final boolean clientSide = false;
         long gameTime;
-        Profiler getProfiler() { return InactiveProfiler.INSTANCE; }
+        Level(Profiler profiler) { this.profiler = profiler; }
+        Profiler getProfiler() { return profiler; }
         boolean isClientSide() { return clientSide; }
         @SuppressWarnings("unchecked")
         <T> T getData(Supplier<AttachmentType> type, Supplier<T> init) {
@@ -140,18 +148,28 @@ public class SystemTickBench {
     public static void main(String[] args) {
         List<Supplier<Data>> makers = List.of(D0::new, D1::new, D2::new, D3::new, D4::new, D5::new, D6::new, D7::new);
         for (int i = 0; i < SYSTEMS; i++) register(makers.get(i % makers.size()), i, i % 3 == 0);
-        Level level = new Level();
+        Profiler profiler = args.length > 2 && args[2].equals("active")
+                ? new RecordingProfiler() : InactiveProfiler.INSTANCE;
+        Level level = new Level(profiler);
         TickEvent event = new TickEvent(level);
         int ticks = args.length > 1 ? Integer.parseInt(args[1]) : 20_000;
         int rounds = args.length > 0 ? Integer.parseInt(args[0]) : 15;
+        double[] samples = new double[rounds];
         for (int round = 0; round < rounds; round++) {
-            long t0 = System.nanoTime();
-            for (int t = 0; t < ticks; t++) tick(level, event);
-            long t1 = System.nanoTime();
-            System.out.printf("tick %.1f ns%n", (t1 - t0) / (double) ticks);
+            samples[round] = round(level, event, ticks);
         }
         long sum = 0;
         for (LevelSystem<?> s : SYSTEM_LIST) sum += ((Data) level.getData(s.attachmentType(), () -> null)).ticks;
+        for (double sample : samples) System.out.printf(Locale.ROOT, "tick %.1f ns%n", sample);
         System.out.println("check " + sum);
+        System.out.println("profile " + profiler.checksum());
+    }
+
+    /** Keep output and the round loop in separate methods so printing cannot deoptimize work
+     *  before the next sample. */
+    static double round(Level level, TickEvent event, int ticks) {
+        long t0 = System.nanoTime();
+        for (int t = 0; t < ticks; t++) tick(level, event);
+        return (System.nanoTime() - t0) / (double) ticks;
     }
 }
