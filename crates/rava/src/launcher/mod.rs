@@ -207,8 +207,8 @@ fn print_help(t: &mut Thread, to_stderr: bool) -> JResult<()> {
 }
 
 /// The kind of `main` `checkAndLoadMain` validated (`MAIN_NONSTATIC`, `MAIN_WITHOUT_ARGS`):
-/// `getMainType()` through JDK 24; JDK 25's launcher reads the `isStaticMain` and
-/// `noArgMain` statics instead.
+/// some JDKs expose `getMainType()`, others expose `isStaticMain` and `noArgMain`; JDK 22
+/// exposes neither.
 fn main_type(t: &mut Thread, main: &'static Klass) -> JResult<i32> {
     let helper = crate::loader::load(HELPER).expect("LauncherHelper");
     if helper
