@@ -305,6 +305,53 @@ Compare the minimum or median of many runs, never a single run.
    `RAVA_JIT_DUMP` on a stable `mobs` run. No hot Minecraft loop meeting these gates has been
    evidenced so far.
 
+   A current local working-tree candidate (`rava.exe` SHA-256
+   `082494CB68604D82E160410B9BFD3C84729DD95116A93778DEAF1F7DEBEE05F4`; source-manifest SHA-256
+   `2C22B36D69DD0328405ED401DA839BBD485DD71B0296345FD3FFEB5C51A23B1F`) was measured with
+   Temurin 25.0.3+9. Java used `-Xshare:off -Xlog:cds=info`; Rava used its default tiering and a
+   fixed hash seed. On nine rotated fresh-process `MixinBench` triplets, the local candidate
+   measured 3.765 ns/call (3.615–4.015) versus 7.395 on HotSpot (7.235–8.640), winning all nine
+   pairs with checksum `600000`. A saved pre-experiment Rava binary measured 3.840 (3.800–3.920);
+   the candidate beat it in six of nine pairs, so no candidate improvement is established. This
+   is a synthetic callback path, not a Paper tick result. The benchmark source SHA-256 is
+   `E07CE81A23F4D412626186E5DAB38F6B01199C3C84094C894A130BC1E12CFF66`, and its class compiled
+   with `--release 21` has SHA-256 `97D17107CC66CF5E486371F9F7AA1500346E8AEFCB15191790C2D1D8865DF16E`.
+
+   The same local candidate still lost all nine parallel Minestom chunk-generation pairs at
+   radius 24: 1,279 ms (971–3,745) versus 557 ms (533–587) on HotSpot and 634 ms (609–672) on the
+   `-XX:-VMContinuations` fallback. All 36 launches returned `c997420016191634`; the candidate
+   beat the saved Rava binary in six of nine pairs, with heavily overlapping ranges. A serial
+   control that joined each chunk before submitting the next measured 3,318 ms (3,093–3,461) on
+   Rava, 3,400 (3,350–3,642) on HotSpot, and 4,322 (4,075–4,477) on the fallback. All 27 serial
+   runs returned the same chunk hash; Rava won six of nine pairs against HotSpot, with overlapping
+   ranges. A no-op generator control retained the 2,304 chunk tasks but removed block writes. It
+   measured 1,639 ms on Rava (954–5,078), 957 on HotSpot (867–990), and 1,306 on the fallback
+   (1,204–1,535); all 27 checksums were zero, and Rava won only one pair against HotSpot. The
+   no-op run is highly variable and changes the generator workload, so these timings cannot be
+   subtracted to assign an exact scheduling cost. The serial result and no-op result together
+   point to the burst of concurrent virtual-thread tasks as a major part of the parallel gap; they
+   do not measure steady-state ticks or prove automatic loop parallelization would help.
+
+   A separate nine-group virtual-thread burst (`2,304` tasks, 1,000 xorshift iterations each)
+   measured 103 ms on Rava (98–111), 42 on HotSpot (40–45), and 131 on the
+   `-XX:-VMContinuations` fallback (127–138). Checksums matched at `a62ac3522628fe21`; Rava won
+   zero of nine pairs against HotSpot and all nine against the fallback. This synthetic test has
+   no warmup and does not represent a Minecraft tick. Its source SHA-256 is
+   `77584AC2796F850122793387AC02055BAB525229B199E3C80435A80DC83FE198`; the class compiled with
+   `--release 21` has SHA-256 `87D39721ED312F5D86BDFBA42916C564198C6D9C7BE54FB1644B00F745A8D13A`.
+
+   These controls are now available in `bench/minestom/run.sh`: `parallel` remains the default,
+   `serial` joins each chunk before submitting the next, and `noop` skips block generation while
+   retaining chunk creation. The Minestom diagnostic IR for `GeneratorImpl$GenericModifier.fill`
+   contains 343–369 values, 83–94 blocks, and 27–35 spill slots in its captured compilations;
+   its inlined palette path includes `Int2IntOpenHashMap.find`, `handleCache`, and `Palettes.write`.
+   This marks the inlined fill/palette chain as an optimization target for single-thread work.
+   The parallel results are consistent with a substantial task-scheduling cost, though they do
+   not assign the full gap to it. Rava's continuation support is disabled, and each virtual
+   thread currently takes the native-thread path. Replacing that path safely
+   requires runtime work around stacks, safepoints, GC, and Java thread semantics; do not replace
+   it with a simple executor pool or enable automatic loop scheduling without separate proofs.
+
 Measure each with `bench/java/MegaCallBench.java`, `bench/java/MixinBench.java` and the
 `mobs` scenario (`bench/tick_sprint.py -r 3 -s 1200 -c bench/scenarios/mobs.txt`), against
 `java`.
