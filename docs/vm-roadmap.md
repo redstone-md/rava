@@ -317,6 +317,23 @@ Compare the minimum or median of many runs, never a single run.
    `E07CE81A23F4D412626186E5DAB38F6B01199C3C84094C894A130BC1E12CFF66`, and its class compiled
    with `--release 21` has SHA-256 `97D17107CC66CF5E486371F9F7AA1500346E8AEFCB15191790C2D1D8865DF16E`.
 
+   A fresh Temurin 25.0.3+9 comparison of `SystemTickBench` used 30 rounds of 20,000 ticks per
+   process, discarded rounds 1–20, and compared the median of rounds 21–30 across nine rotated
+   process pairs per profiler mode. Java ran with `-Xshare:off` and default tiered compilation;
+   Rava used default compilation and tiering with only the fixed hash seed set. With the no-op
+   profiler, Rava measured 691.45 ns/tick (615.05–755.45) versus 3,691.95 on HotSpot
+   (3,340.85–4,388.85), winning all nine pairs. With the recording profiler, Rava measured
+   2,222.30 (2,024.50–2,317.50) versus 5,451.45 (5,309.35–5,902.40), again winning all nine.
+   All 36 processes matched the 5,700,000 tick sum and the full expected vector of 40 system
+   counters plus `gameTime`; recording-profiler checksums also matched. The benchmark now emits
+   every system counter after timing to prevent compensating state errors from passing the
+   checksum. A separate diagnostic process on the same classes confirmed C2 compilation of the
+   dispatch and round methods during warmup; timed runs discarded 20 rounds. This is still a
+   synthetic dispatch kernel; it does not overturn the Minestom chunk-generation result below,
+   where Rava remains slower than HotSpot. Source
+   SHA-256 is `120A8642A1055F4F51B504946850A570AD17E135F2195FA4610AB9F4EC773314`, and the class
+   compiled with `--release 21` has SHA-256 `AD12FAE782897815BEF2F4B97CC6338910C0BEAAD9A826AE6C688C4B75655BF0`.
+
    The same local candidate still lost all nine parallel Minestom chunk-generation pairs at
    radius 24: 1,279 ms (971–3,745) versus 557 ms (533–587) on HotSpot and 634 ms (609–672) on the
    `-XX:-VMContinuations` fallback. All 36 launches returned `c997420016191634`; the candidate

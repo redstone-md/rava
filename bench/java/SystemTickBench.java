@@ -162,6 +162,7 @@ public class SystemTickBench {
         for (LevelSystem<?> s : SYSTEM_LIST) sum += ((Data) level.getData(s.attachmentType(), () -> null)).ticks;
         for (double sample : samples) System.out.printf(Locale.ROOT, "tick %.1f ns%n", sample);
         System.out.println("check " + sum);
+        System.out.println(stateSummary(level));
         System.out.println("profile " + profiler.checksum());
     }
 
@@ -171,5 +172,16 @@ public class SystemTickBench {
         long t0 = System.nanoTime();
         for (int t = 0; t < ticks; t++) tick(level, event);
         return (System.nanoTime() - t0) / (double) ticks;
+    }
+
+    /** Capture every observable system counter after timing, so compensating errors cannot hide. */
+    static String stateSummary(Level level) {
+        StringBuilder state = new StringBuilder("state ").append(level.gameTime);
+        for (int i = 0; i < SYSTEM_LIST.size(); i++) {
+            LevelSystem<?> system = SYSTEM_LIST.get(i);
+            int ticks = ((Data) level.getData(system.attachmentType(), () -> null)).ticks;
+            state.append(i == 0 ? ' ' : ',').append(ticks);
+        }
+        return state.toString();
     }
 }
