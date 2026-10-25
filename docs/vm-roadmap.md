@@ -94,6 +94,16 @@ left.
   `C028ED4A998C419DBB62648898BD835EFD6CEE863A85244DF4126409145B415B`, and the JDK 25.0.3 class
   hash is `77920C52A45C1ECA45F1F4917011E1152B5868FF7F15398ADA5492CE37C0E77A`. This confirms the
   targeted synthetic-loop win on the current binary; it does not establish a Minecraft tick win.
+- Rebuilt the local working-tree candidate and reran the same JDK 25.0.3 experiment in nine
+  rotated fresh-process triplets. The binary hash was
+  `A588DE34F43D6869CD963D43159AAB1547CB14D6EBA90C6E7B1700A68D80100F`; process medians were
+  10.636 ns/call for default Rava (8.263–13.182), 31.102 with
+  `RAVA_NO_AFFINE_RECURRENCE=1` (27.757–38.060), and 29.726 for HotSpot with `-Xshare:off`
+  (27.916–32.663). Default Rava beat both controls in all nine pairs, and all 27 checksums matched
+  at `-80388026518`. The source and compiled class hashes match the previous JDK 25 run. This
+  result is for the local working-tree build, which also contained uncommitted compiler
+  experiments; it is not a measurement of the committed branch alone and does not establish a
+  Minecraft tick win.
 - The same uncommitted local release candidate also beat HotSpot 21.0.7 (`-Xshare:off`) in three broader
   generic kernels, each over nine rotated fresh-process pairs with matching checksums or output guards and
   default Rava tiering: `RecordHashBench` measured 7.55 vs 10.45 ns/op (process ranges 7.40–8.00
@@ -231,6 +241,29 @@ Compare the minimum or median of many runs, never a single run.
    full slowdown. The rerun did not reproduce the earlier native fault; it does not establish
    that the stack-size experiment fixed that fault. The checksum still covers only sampled blocks,
    and this cold chunk-generation result does not measure steady-state ticks.
+
+   A separate five-group attempt with JDK 22.0.2 set `shared_java_options=none` and used
+   `-XX:+UnlockExperimentalVMOptions -XX:-VMContinuations` for its fallback mode. The first
+   triplet completed with checksum `c997420016191634`: default HotSpot, fallback HotSpot, and
+   Rava reported chunk phases of 757, 1,824, and 1,853 ms. In the second group, fallback HotSpot
+   completed at 1,634 ms, then Rava crashed before the final default-HotSpot run. The native report identifies
+   `VCRUNTIME140.dll+0x1cd46` and contains only native frames, without a Java stack. This attempt
+   provides no usable multi-group JDK 22 comparison and does not identify the crash cause. Across
+   JDK 22 and the earlier JDK 25 runs, the crash remains an unresolved reliability problem.
+
+   The next useful parallelism step is an analysis-only classifier for a counted primitive-array
+   map such as `dst[i] = pure(src[i])`, not a scheduler. It should require a canonical integral
+   induction variable stepping by one, an invariant bound, no wraparound, one latch and exit,
+   bounds validated before the body, no other loop-carried values, and only primitive-array
+   accesses through invariant bases at exactly `i`. Calls, impure intrinsics, ordered or volatile
+   accesses, monitors, allocation, and in-loop checks or throws should reject the candidate with
+   a reason. The report should include each access's base, index expression, and read/write kind.
+   Even an accepted loop proves only iteration independence; report external sharing as unknown
+   and do not schedule it until input immutability and output isolation are separately proven.
+   To establish whether this pattern matters in Minecraft, correlate candidate BCIs with
+   `RAVA_SAMPLE_DETAIL=/` and `RAVA_SAMPLE_STACK=1`, then map them through `RAVA_OPT_IR` and
+   `RAVA_JIT_DUMP` on a stable `mobs` run. No hot Minecraft loop meeting these gates has been
+   evidenced so far.
 
 Measure each with `bench/java/MegaCallBench.java`, `bench/java/MixinBench.java` and the
 `mobs` scenario (`bench/tick_sprint.py -r 3 -s 1200 -c bench/scenarios/mobs.txt`), against
