@@ -19,6 +19,8 @@ mod fold;
 mod low32;
 mod narrow;
 mod params;
+mod shrinkwrap;
+#[cfg(test)] mod shrinkwrap_integration_tests;
 mod stubs;
 mod switch;
 use switch::{dense, JUMP_TABLE_CASES, LINEAR_CASES};
@@ -77,6 +79,8 @@ pub(super) struct Gen<'a> {
     edge_stubs: Vec<(Label, B, B)>,
     /// Callee-saved registers the prologue saves (the frame, and those allocated).
     saved: Vec<R>,
+    /// A callee-saved register preserved only around one bounded return block.
+    shrinkwrap: Option<shrinkwrap::Plan>,
     /// Bytes below them: spill slots and alignment.
     frame_bytes: i32,
     /// The body's rsp is 8 mod 16 (a frameless body, not realigned on entry): a helper call
@@ -231,12 +235,24 @@ fn implicit_null_checks(g: &Graph, loc: &[Loc]) -> std::collections::HashSet<V> 
 /// previous).
 #[allow(clippy::type_complexity)]
 pub(super) fn generate(g: &Graph, al: &Allocation, m: &'static Method, frame_slots: i32, monitor: Option<Monitor>, osr: Option<u32>, trace: bool) -> (crate::jit::asm::Code, usize, Vec<(usize, usize)>, Vec<(usize, String)>, Option<usize>, Vec<(u32, std::rc::Rc<super::ir::Origin>)>) {
+    generate_with_shrinkwrap(g, al, m, frame_slots, monitor, osr, trace, env_once!("RAVA_NO_SHRINKWRAP").is_none())
+}
+
+#[allow(clippy::type_complexity)]
+fn generate_with_shrinkwrap(g: &Graph, al: &Allocation, m: &'static Method, frame_slots: i32, monitor: Option<Monitor>, osr: Option<u32>, trace: bool, enable_shrinkwrap: bool) -> (crate::jit::asm::Code, usize, Vec<(usize, usize)>, Vec<(usize, String)>, Option<usize>, Vec<(u32, std::rc::Rc<super::ir::Origin>)>) {
     let scoped = crate::profile::recording() && !g.origins.is_empty();
     let max_locals = m.code.expect("compiled method has code").max_locals as i32;
     let mut a = Asm::default();
     a.enable_peephole();
     let labels = (0..g.blocks.len()).map(|_| a.new_label()).collect();
     let epilogue = a.new_label();
+    let short_loops = super::polls::short_loops(g);
+    let frameless = monitor.is_none() && osr.is_none() && super::polls::frameless(g);
+    let shrinkwrap = shrinkwrap::analyze(
+        g,
+        al,
+        monitor.is_none() && osr.is_none() && enable_shrinkwrap,
+    );
     let mut gen = Gen {
         a,
         g,
@@ -253,12 +269,13 @@ pub(super) fn generate(g: &Graph, al: &Allocation, m: &'static Method, frame_slo
         live_at_end: &al.live_at_end,
         edge_stubs: Vec::new(),
         saved: Vec::new(),
+        shrinkwrap,
         frame_bytes: 0,
         body_misaligned: false,
         live_gprs: CALLER_SAVED.into_iter().chain(SCRATCH).filter(|r| al.loc.contains(&Loc::Reg(*r))).collect(),
         live_xmms: XMMS.into_iter().filter(|x| al.loc.contains(&Loc::Xmm(*x))).collect(),
         lock: None,
-        frameless: monitor.is_none() && osr.is_none() && super::polls::frameless(g),
+        frameless,
         top_published: false,
         lazy_header: false,
         base: R::R13,
@@ -273,7 +290,7 @@ pub(super) fn generate(g: &Graph, al: &Allocation, m: &'static Method, frame_slo
         inited: super::initstores::covered(g),
         slow_calls: Vec::new(),
         unbarriered: super::barrier::unbarriered(g),
-        short_loops: super::polls::short_loops(g),
+        short_loops,
         implicit: implicit_null_checks(g, &al.loc),
         narrow: narrow::refs(g, al),
         pending_null: None,
@@ -297,8 +314,9 @@ pub(super) fn generate(g: &Graph, al: &Allocation, m: &'static Method, frame_slo
     if leaf {
         gen.base = R::Rsi;
     }
-    gen.saved = (!leaf).then_some(R::R13).into_iter().chain(CALLEE_SAVED.into_iter().filter(|r| al.loc.contains(&Loc::Reg(*r)))).collect();
-    let spill_bytes = 8 * (al.spill_slots + (al.spill_slots & 1));
+    let shrinkwrapped_reg = gen.shrinkwrap.map(|p| p.reg);
+    gen.saved = (!leaf).then_some(R::R13).into_iter().chain(CALLEE_SAVED.into_iter().filter(|r| al.loc.contains(&Loc::Reg(*r)) && Some(*r) != shrinkwrapped_reg)).collect();
+    let spill_bytes = shrinkwrap::spill_bytes(al.spill_slots, gen.shrinkwrap.is_some());
     gen.lock = monitor.map(|mon| (mon, spill_bytes));
     // A frameless body makes no Java call and is not realigned on entry (its hot path stays
     // free), but it may still call a Rust helper (a float remainder's fmod, a saturating float
@@ -323,6 +341,9 @@ pub(super) fn generate(g: &Graph, al: &Allocation, m: &'static Method, frame_slo
     let mut traced: Vec<(Label, V)> = Vec::new();
     for (i, &b) in order.iter().enumerate() {
         gen.a.bind(gen.labels[b as usize]);
+        if let Some(p) = gen.shrinkwrap.filter(|p| p.block == b) {
+            p.save(&mut gen.a);
+        }
         let mut insts = g.blocks[b as usize].insts.clone();
         if leaf && b == 0 {
             // The parameter that lands in rsi is read last: rsi is the frame base until then.
@@ -933,6 +954,9 @@ impl Gen<'_> {
                     if matches!(self.g.ty(v), Ty::F | Ty::D) {
                         self.xload(X(0), v);
                     }
+                }
+                if let Some(p) = self.shrinkwrap.filter(|p| p.block == b) {
+                    p.restore(&mut self.a);
                 }
                 self.a.jmp(self.epilogue);
             }
