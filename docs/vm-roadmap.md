@@ -242,20 +242,42 @@ Compare the minimum or median of many runs, never a single run.
    that the stack-size experiment fixed that fault. The checksum still covers only sampled blocks,
    and this cold chunk-generation result does not measure steady-state ticks.
 
+   Neither JDK 25 comparison above meets the repository's no-snapshot rule. The completed runner
+   header says `java_extra=none`; the aborted run command likewise supplied no common Java flags.
+   A direct `-Xlog:cds=info` check on the installed Temurin 25.0.3 confirms that an ordinary launch
+   maps `bin/server/classes.jsa`. Keep these results for thread-count and crash investigation, but
+   exclude their HotSpot timings from no-snapshot comparisons.
+
    A separate five-group attempt with JDK 22.0.2 set `shared_java_options=none` and used
    `-XX:+UnlockExperimentalVMOptions -XX:-VMContinuations` for its fallback mode. The first
    triplet completed with checksum `c997420016191634`: default HotSpot, fallback HotSpot, and
    Rava reported chunk phases of 757, 1,824, and 1,853 ms. In the second group, fallback HotSpot
    completed at 1,634 ms, then Rava crashed before the final default-HotSpot run. The native report identifies
    `VCRUNTIME140.dll+0x1cd46` and contains only native frames, without a Java stack. This attempt
-   provides no usable multi-group JDK 22 comparison and does not identify the crash cause. Across
-   JDK 22 and the earlier JDK 25 runs, the crash remains an unresolved reliability problem.
+   provides no usable multi-group JDK 22 comparison and does not identify the crash cause. Its
+   record says no Java options were inherited but does not show `-Xshare:off`, so it does not
+   establish a no-snapshot comparison. Across JDK 22 and the earlier JDK 25 runs, the crash remains
+   an unresolved reliability problem.
 
    A symbol-enabled `release-diag` build (`9EB34C2E94B984A650F86640D26AC8F406002EB9B4797E5B2B25397CA1899788`)
    completed a later three-group JDK 22 rerun with the same hash on all nine launches and no crash.
    Its chunk timings varied from 801 to 9,347 ms for Rava and 2,306 to 12,039 ms for fallback
    HotSpot, so this is only a non-reproduction attempt, not timing evidence. No dump was captured;
-   the earlier fault remains unexplained.
+   the earlier fault remains unexplained. The retained run record does not show `-Xshare:off`, so
+   it also does not establish a no-snapshot comparison.
+
+   A controlled no-snapshot rerun on 2026-10-25 used Temurin 25.0.3 with `-Xshare:off`
+   and `-Xlog:cds=info`, the same fallback flags, default Rava settings, and nine rotated process
+   groups at radius 24. All 27 launches completed with the same sampled hash, `c997420016191634`; no
+   crash occurred. Chunk-phase medians were 574 ms for HotSpot (547–587), 644 ms for its
+   `-XX:-VMContinuations` fallback (619–763), and 1,198 ms for Rava (984–8,810). Rava lost all
+   nine paired groups against both HotSpot modes. The full range retains a 6.4 s Rava outlier.
+   This cold Minestom chunk-generation benchmark still does not measure steady-state ticks, and
+   its hash covers only sampled blocks. Rava binary SHA-256 was
+   `B4E891A8F3098EDE8F3E64A0FA073B5427320411E3F9233C9452A9B8A75FD0A8`; benchmark source SHA-256
+   was `DBE33E13BB819A05BB328F707F65ECEC18B8CF5C706B4454A113904B781AED10`; class SHA-256 was
+   `39BAE9BBDEC574640910FFA33F03E71715FC5AD8CC10C7872A177784534E8213`. The raw log is
+   `target/minestom-no-snapshot-9groups-20261025.log`.
 
    The next useful parallelism step is an analysis-only classifier for a counted primitive-array
    map such as `dst[i] = pure(src[i])`, not a scheduler. It should require a canonical integral
