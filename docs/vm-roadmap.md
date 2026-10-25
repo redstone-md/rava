@@ -251,6 +251,12 @@ Compare the minimum or median of many runs, never a single run.
    provides no usable multi-group JDK 22 comparison and does not identify the crash cause. Across
    JDK 22 and the earlier JDK 25 runs, the crash remains an unresolved reliability problem.
 
+   A symbol-enabled `release-diag` build (`9EB34C2E94B984A650F86640D26AC8F406002EB9B4797E5B2B25397CA1899788`)
+   completed a later three-group JDK 22 rerun with the same hash on all nine launches and no crash.
+   Its chunk timings varied from 801 to 9,347 ms for Rava and 2,306 to 12,039 ms for fallback
+   HotSpot, so this is only a non-reproduction attempt, not timing evidence. No dump was captured;
+   the earlier fault remains unexplained.
+
    The next useful parallelism step is an analysis-only classifier for a counted primitive-array
    map such as `dst[i] = pure(src[i])`, not a scheduler. It should require a canonical integral
    induction variable stepping by one, an invariant bound, no wraparound, one latch and exit,
