@@ -85,6 +85,15 @@ left.
   `9B2EE67183136A29E03132955557DE50D714CBB5DDDB27345F651A150330D9BD`; benchmark source SHA-256:
   `C028ED4A998C419DBB62648898BD835EFD6CEE863A85244DF4126409145B415B`; JDK 21 class SHA-256:
   `C0211F761DF55E29F8575273855899782833543D64A127E4D7CFDFC553014205`.
+- Rechecked the same affine recurrence kernel on JDK 25.0.3 with the current local release
+  candidate (`798A342DC6E44914FE0E86C513256F918F98A6CB7C42A1202143DA33C6BD2625`). Nine rotated
+  fresh-process triplets measured 9.606 ns/call on default Rava (8.682–10.870), 30.994 with
+  `RAVA_NO_AFFINE_RECURRENCE=1` (28.415–31.429), and 29.888 on HotSpot with `-Xshare:off`
+  (27.317–30.381). Rava won all nine paired comparisons against both controls; all 27 checksums
+  matched at `-80388026518`. The benchmark source hash is
+  `C028ED4A998C419DBB62648898BD835EFD6CEE863A85244DF4126409145B415B`, and the JDK 25.0.3 class
+  hash is `77920C52A45C1ECA45F1F4917011E1152B5868FF7F15398ADA5492CE37C0E77A`. This confirms the
+  targeted synthetic-loop win on the current binary; it does not establish a Minecraft tick win.
 - The same uncommitted local release candidate also beat HotSpot 21.0.7 (`-Xshare:off`) in three broader
   generic kernels, each over nine rotated fresh-process pairs with matching checksums or output guards and
   default Rava tiering: `RecordHashBench` measured 7.55 vs 10.45 ns/op (process ranges 7.40–8.00
@@ -209,6 +218,19 @@ Compare the minimum or median of many runs, never a single run.
    each such thread on a native worker. The result is consistent with scheduling overhead but
    does not attribute the full gap or prove a loop-splitting benefit. Investigate the native
    crash, and keep loop scheduling serial until dependence proofs and runtime support exist.
+
+   A later 15-group rerun used the local candidate above, whose source sets a 64 MiB native stack
+   reserve per thread. All 45 launches completed and returned the same sampled checksum; no
+   crash occurred. Chunk-phase medians were 545 ms for HotSpot (518–579), 654 ms for the
+   `-XX:-VMContinuations` fallback (613–738), and 1,535 ms for rava (935–58,317). Rava lost all
+   15 paired groups against both modes; the 58.3 s result remains in the range. A separate
+   `RAVA_RECORD` run counted 2,339 threads, including 2,304 unnamed worker threads; 71.8% of
+   sampled CPU was in syscalls and 17.9% in VM code. In source, each `Thread.start0` creates a
+   native thread, while virtual-thread continuation support is disabled. This confirms the
+   execution model and thread count in the run, but the single profile does not apportion the
+   full slowdown. The rerun did not reproduce the earlier native fault; it does not establish
+   that the stack-size experiment fixed that fault. The checksum still covers only sampled blocks,
+   and this cold chunk-generation result does not measure steady-state ticks.
 
 Measure each with `bench/java/MegaCallBench.java`, `bench/java/MixinBench.java` and the
 `mobs` scenario (`bench/tick_sprint.py -r 3 -s 1200 -c bench/scenarios/mobs.txt`), against
