@@ -38,25 +38,39 @@ public final class MsBench {
         if (radius < 1 || radius > 64) {
             throw new IllegalArgumentException("radius must be between 1 and 64");
         }
+        String mode = args.length > 1 ? args[1] : "parallel";
+        if (!mode.equals("parallel") && !mode.equals("serial") && !mode.equals("noop")) {
+            throw new IllegalArgumentException("mode must be parallel, serial, or noop");
+        }
         long t0 = System.nanoTime();
         MinecraftServer server = MinecraftServer.init();
         long t1 = System.nanoTime();
         InstanceContainer world = MinecraftServer.getInstanceManager().createInstanceContainer();
-        world.setGenerator(unit -> {
-            Point start = unit.absoluteStart(), size = unit.size();
-            for (int x = 0; x < size.blockX(); x++) {
-                for (int z = 0; z < size.blockZ(); z++) {
-                    int wx = start.blockX() + x, wz = start.blockZ() + z;
-                    int h = (int) height(wx, wz);
-                    unit.modifier().fill(start.add(x, 0, z).withY(-64), start.add(x + 1, 0, z + 1).withY(h - 4), Block.STONE);
-                    unit.modifier().fill(start.add(x, 0, z).withY(h - 4), start.add(x + 1, 0, z + 1).withY(h - 1), Block.DIRT);
-                    unit.modifier().setBlock(wx, h - 1, wz, h < 62 ? Block.SAND : Block.GRASS_BLOCK);
-                    if (h < 62) unit.modifier().fill(start.add(x, 0, z).withY(h), start.add(x + 1, 0, z + 1).withY(62), Block.WATER);
+        if (mode.equals("noop")) {
+            world.setGenerator(unit -> { });
+        } else {
+            world.setGenerator(unit -> {
+                Point start = unit.absoluteStart(), size = unit.size();
+                for (int x = 0; x < size.blockX(); x++) {
+                    for (int z = 0; z < size.blockZ(); z++) {
+                        int wx = start.blockX() + x, wz = start.blockZ() + z;
+                        int h = (int) height(wx, wz);
+                        unit.modifier().fill(start.add(x, 0, z).withY(-64), start.add(x + 1, 0, z + 1).withY(h - 4), Block.STONE);
+                        unit.modifier().fill(start.add(x, 0, z).withY(h - 4), start.add(x + 1, 0, z + 1).withY(h - 1), Block.DIRT);
+                        unit.modifier().setBlock(wx, h - 1, wz, h < 62 ? Block.SAND : Block.GRASS_BLOCK);
+                        if (h < 62) unit.modifier().fill(start.add(x, 0, z).withY(h), start.add(x + 1, 0, z + 1).withY(62), Block.WATER);
+                    }
                 }
-            }
-        });
+            });
+        }
         List<CompletableFuture<Chunk>> futures = new ArrayList<>();
-        for (int cx = -radius; cx < radius; cx++) for (int cz = -radius; cz < radius; cz++) futures.add(world.loadChunk(cx, cz));
+        for (int cx = -radius; cx < radius; cx++) {
+            for (int cz = -radius; cz < radius; cz++) {
+                CompletableFuture<Chunk> future = world.loadChunk(cx, cz);
+                if (mode.equals("serial")) future.join();
+                futures.add(future);
+            }
+        }
         long hash = 0;
         for (CompletableFuture<Chunk> f : futures) {
             Chunk c = f.join();
@@ -65,9 +79,10 @@ public final class MsBench {
         long t2 = System.nanoTime();
         server.start("127.0.0.1", 0);
         long t3 = System.nanoTime();
-        System.out.printf("MSBENCH radius=%d chunk_count=%d init_ms=%d chunk_ms=%d start_ms=%d total_ms=%d hash=%x%n",
+        String modeTag = mode.equals("parallel") ? "" : " mode=" + mode;
+        System.out.printf("MSBENCH radius=%d chunk_count=%d init_ms=%d chunk_ms=%d start_ms=%d total_ms=%d%s hash=%x%n",
                 radius, futures.size(), (t1 - t0) / 1_000_000, (t2 - t1) / 1_000_000,
-                (t3 - t2) / 1_000_000, (t3 - t0) / 1_000_000, hash);
+                (t3 - t2) / 1_000_000, (t3 - t0) / 1_000_000, modeTag, hash);
         MinecraftServer.stopCleanly();
         System.exit(0);
     }

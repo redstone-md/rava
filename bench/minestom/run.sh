@@ -1,7 +1,7 @@
 #!/bin/bash
 # Boots Minestom (an open-source Minecraft server) on HotSpot and on rava and prints each
 # phase: registry bootstrap, parallel chunk generation, network start.
-# Usage: bench/minestom/run.sh [runs] [radius]
+# Usage: bench/minestom/run.sh [runs] [radius] [parallel|serial|noop]
 # Set JAVA_EXTRA for common HotSpot flags and JAVA_FALLBACK_EXTRA for a second HotSpot mode.
 # The latter enables a three-way, order-rotated comparison with Rava.
 # Needs Maven Central for the first dependency fetch.
@@ -10,8 +10,13 @@ cd "$(dirname "$0")"
 R=${R:-../../target/release/rava}
 runs=${1:-3}
 radius=${2:-8}
+mode=${3:-parallel}
 if ! [[ $runs =~ ^[1-9][0-9]*$ && $radius =~ ^[1-9][0-9]*$ ]]; then
   echo "runs and radius must be positive integers" >&2
+  exit 2
+fi
+if [[ ! $mode =~ ^(parallel|serial|noop)$ ]]; then
+  echo "mode must be parallel, serial, or noop" >&2
   exit 2
 fi
 if (( radius > 64 )); then
@@ -48,11 +53,11 @@ expected_hash=
 run() {
   local vm=$1 output
   if [ "$vm" = java ]; then
-    output=$(java "${java_extra[@]}" -cp "$CP" MsBench "$radius" | grep '^MSBENCH ')
+    output=$(java "${java_extra[@]}" -cp "$CP" MsBench "$radius" "$mode" | grep '^MSBENCH ')
   elif [ "$vm" = java-fallback ]; then
-    output=$(java "${java_extra[@]}" "${java_fallback_extra[@]}" -cp "$CP" MsBench "$radius" | grep '^MSBENCH ')
+    output=$(java "${java_extra[@]}" "${java_fallback_extra[@]}" -cp "$CP" MsBench "$radius" "$mode" | grep '^MSBENCH ')
   else
-    output=$("$R" -cp "$CP" MsBench "$radius" | grep '^MSBENCH ')
+    output=$("$R" -cp "$CP" MsBench "$radius" "$mode" | grep '^MSBENCH ')
   fi
   if [[ $output != *"radius=$radius chunk_count=$expected_chunk_count "* ]]; then
     echo "$vm produced unexpected radius or chunk count: $output" >&2
@@ -76,7 +81,7 @@ shared_java_options=none
 if [[ -n ${JAVA_TOOL_OPTIONS:-}${JDK_JAVA_OPTIONS:-}${_JAVA_OPTIONS:-} ]]; then
   shared_java_options=present
 fi
-echo "runs=$runs radius=$radius java_extra=${JAVA_EXTRA:-none} java_fallback_extra=${JAVA_FALLBACK_EXTRA:-none} shared_java_options=$shared_java_options"
+echo "runs=$runs radius=$radius mode=$mode java_extra=${JAVA_EXTRA:-none} java_fallback_extra=${JAVA_FALLBACK_EXTRA:-none} shared_java_options=$shared_java_options"
 for i in $(seq "$runs"); do
   if (( ${#java_fallback_extra[@]} > 0 )); then
     case $(( (i - 1) % 5 )) in
