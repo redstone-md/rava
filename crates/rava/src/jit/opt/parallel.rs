@@ -9,7 +9,7 @@
 //! workload without the variable to measure production performance.
 
 use super::dom::Dom;
-use super::ir::{B, Graph, Inst, Term};
+use super::ir::{Graph, Inst, Term, B};
 use crate::method::Method;
 
 #[derive(Default)]
@@ -28,7 +28,7 @@ struct Effects {
 /// any loop can be parallelized; even a read-only loop may have scalar
 /// loop-carried dependencies or observe concurrently modified Java state.
 pub(super) fn report(g: &Graph, m: &Method) {
-    let Some(filter) = std::env::var_os("RAVA_PAR_REPORT") else {
+    let Some(filter) = env_once!("RAVA_PAR_REPORT") else {
         return;
     };
     let filter = filter.to_string_lossy();
@@ -52,15 +52,14 @@ pub(super) fn report(g: &Graph, m: &Method) {
                 if g.ordered.contains(&v) {
                     e.ordered += 1;
                 }
+                if reads_mutable(g.inst(v)) {
+                    e.reads += 1;
+                }
                 match g.inst(v) {
                     Inst::Phi(_) if b as B == lp.header => e.header_phis += 1,
-                    Inst::LoadField(..)
-                    | Inst::LoadStatic(..)
-                    | Inst::LoadIndexed(..)
-                    | Inst::ArrayLength(..) => e.reads += 1,
-                    Inst::StoreField(..)
-                    | Inst::StoreStatic(..)
-                    | Inst::StoreIndexed(..) => e.writes += 1,
+                    Inst::StoreField(..) | Inst::StoreStatic(..) | Inst::StoreIndexed(..) => {
+                        e.writes += 1
+                    }
                     Inst::Call(..) => e.calls += 1,
                     Inst::Monitor(..)
                     | Inst::Fence
@@ -86,5 +85,36 @@ pub(super) fn report(g: &Graph, m: &Method) {
             g.blocks[lp.header as usize].bci,
             e.blocks, e.insts, e.header_phis, e.reads, e.writes, e.calls, e.opaque, e.ordered,
         );
+    }
+}
+
+fn reads_mutable(inst: &Inst) -> bool {
+    match inst {
+        Inst::LoadField(..)
+        | Inst::LoadStatic(..)
+        | Inst::LoadIndexed(..)
+        | Inst::ArrayLength(..) => true,
+        Inst::Intrinsic(kind, ..) => kind.reads_mutable(),
+        _ => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::reads_mutable;
+    use crate::jit::opt::ir::Inst;
+    use crate::jit::{intrinsics::Intrinsic, leaf::Leaf};
+    use crate::types::BasicType;
+
+    #[test]
+    fn mutable_intrinsic_reads_are_reported() {
+        let unsafe_read =
+            Inst::Intrinsic(Intrinsic::UnsafeGet(BasicType::Int, false), vec![], None);
+        let leaf_read = Inst::Intrinsic(Intrinsic::Leaf(Leaf::CountPositives), vec![], None);
+        let immutable_query = Inst::Intrinsic(Intrinsic::IsInstance, vec![], None);
+
+        assert!(reads_mutable(&unsafe_read));
+        assert!(reads_mutable(&leaf_read));
+        assert!(!reads_mutable(&immutable_query));
     }
 }
