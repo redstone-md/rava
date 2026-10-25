@@ -101,6 +101,17 @@ left.
   `194EAADD439AB09B43A93EBE8B90E5E7BE0C29B2C531F9475EAC7B2B075F77EF`; `NoiseBench`
   `CD97843FBE03E2E6FF9AC75C51D76D8442C91D90748B12DFC656B685F8CCB6CB` /
   `F9FA1DF311EA159FE6C2D0CA58FED408095A1646C80E80569306C7B8372D5C7B`.
+- A fresh nine-process rotation on the current local release binary (`DA6E8FDBFDCC147C735DEF9DD2E2141FBE607FD20EFBE53BC1356E4F163D9F4A`) measured
+  `SystemTickBench` over 15 rounds of 20,000 ticks per process, using the median of each process's last ten rounds. Default Rava measured
+  1,205.5 ns/tick (process medians 1,159.0–1,254.6), the same binary with global
+  `RAVA_NO_SHRINKWRAP=1` measured 1,236.8 (1,168.8–1,268.2), and HotSpot 21.0.7 with
+  `-Xshare:off` measured 1,482.3 (1,378.5–1,757.5). All 27 checksums were `2850000`; default Rava
+  beat HotSpot in all nine process pairs and beat the shrink-wrap-off control in eight of nine.
+  The control ranges overlap, so the small shrink-wrap difference is directional only. Rava used
+  class library 21.0.12.1+1 and fixed hash seed `1234567`; source SHA-256 is
+  `C2B50027F7DFD8CF6F8E0C2FAE4795AD7DB5385FDEBF9EA9D0A4ACD39AE6BAAB`, and the JDK 21.0.7 class
+  SHA-256 is `194EAADD439AB09B43A93EBE8B90E5E7BE0C29B2C531F9475EAC7B2B075F77EF`. This remains a
+  synthetic listener workload, not a Paper server measurement.
 
 ## Where the time goes (`mobs`, all optimized code dumped, samples by instruction)
 93 % of the server thread's time is in optimized code. Classified by the instruction a sample
