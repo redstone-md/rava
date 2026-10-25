@@ -279,6 +279,18 @@ Compare the minimum or median of many runs, never a single run.
    `39BAE9BBDEC574640910FFA33F03E71715FC5AD8CC10C7872A177784534E8213`. The raw log is
    `target/minestom-no-snapshot-9groups-20261025.log`.
 
+   A follow-up three-group no-snapshot check used the same JDK 25 Minestom harness, first with
+   the 16 MiB candidate (Rava SHA-256 `89A6AF62C25ACB3C1443DBCE11166E7D045CFA68FA476B2F544847DF84A05A8F`),
+   then with the saved 64 MiB binary (`B4E891A8F3098EDE8F3E64A0FA073B5427320411E3F9233C9452A9B8A75FD0A8`).
+   All 18 launches completed with the same sampled hash and no crash. Rava chunk-phase medians
+   were 6,047 ms at 16 MiB (2,365–6,850) and 1,511 ms at 64 MiB (1,411–1,947). The corresponding
+   HotSpot medians were 575 and 569 ms; fallback medians were 635 and 667 ms. This short,
+   sequential comparison favors the saved 64 MiB run but cannot isolate a causal stack-size effect.
+   Treat it as a reliability check and directional signal, not as a speedup claim. Raw logs:
+   `target/minestom-no-snapshot-stack16-3groups-20261025.log` (SHA-256
+   `D3FD97AD2A96B374F6F1A1549E12B15521FC68B534A981AC300AC7711A124E14`) and
+   `target/minestom-no-snapshot-stack64-control-3groups-20261025.log` (SHA-256
+   `777C9DB6D55656EC16B52F6EB2FE74B819A3706613CCC4685BFBB696F310423F`).
    The next useful parallelism step is an analysis-only classifier for a counted primitive-array
    map such as `dst[i] = pure(src[i])`, not a scheduler. It should require a canonical integral
    induction variable stepping by one, an invariant bound, no wraparound, one latch and exit,
