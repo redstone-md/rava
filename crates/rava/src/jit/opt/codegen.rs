@@ -17,6 +17,7 @@ mod divconst;
 mod fastexit;
 mod fold;
 mod low32;
+mod narrow;
 mod params;
 mod stubs;
 mod switch;
@@ -219,85 +220,6 @@ fn implicit_null_checks(g: &Graph, loc: &[Loc]) -> std::collections::HashSet<V> 
     out
 }
 
-/// Compressed references kept compressed in their register (C2 decodes them in the address of
-/// their use): a reference loaded from the heap whose every use follows it in its block as the
-/// object of a field load or array length, the value of a reference field store (stored as it
-/// is), a null check of it or its block's branch on it being null (a compressed null is 0),
-/// with no call, allocation or deoptimization state in between (no collection can see the
-/// register, no state reads it).
-fn narrow_refs(g: &Graph, al: &Allocation) -> std::collections::HashSet<V> {
-    use crate::types::BasicType::Reference;
-    let mut out = std::collections::HashSet::new();
-    if !crate::heap::COMPRESSED {
-        return out;
-    }
-    // Uses of every value outside instructions (terminators, phi inputs): never narrow.
-    let mut escapes = vec![false; g.values.len()];
-    // The value a block's branch tests for null, compressed or not alike.
-    let null_test = |b: &Block| match b.term {
-        Term::If { cmp: Cmp::Eq | Cmp::Ne, ty: Ty::A, a, b: y, .. } => match (g.constant(g.resolve(a)), g.constant(g.resolve(y))) {
-            (None, Some(0)) => Some(g.resolve(a)),
-            (Some(0), None) => Some(g.resolve(y)),
-            _ => None,
-        },
-        _ => None,
-    };
-    for b in g.blocks.iter().filter(|b| !matches!(b.term, Term::None)) {
-        for u in b.term.inputs() {
-            if null_test(b) != Some(g.resolve(u)) {
-                escapes[g.resolve(u) as usize] = true;
-            }
-        }
-        for &v in &b.insts {
-            if let Inst::Phi(ins) = g.inst(v) {
-                ins.iter().for_each(|&u| escapes[g.resolve(u) as usize] = true);
-            }
-        }
-    }
-    let mut users: Vec<Vec<(B, usize)>> = vec![Vec::new(); g.values.len()];
-    for (bi, b) in g.blocks.iter().enumerate().filter(|(_, b)| !matches!(b.term, Term::None)) {
-        for (i, &v) in b.insts.iter().enumerate() {
-            if g.resolve(v) != v || matches!(g.inst(v), Inst::Phi(_)) {
-                continue;
-            }
-            for u in g.inst(v).inputs() {
-                users[g.resolve(u) as usize].push((bi as B, i));
-            }
-        }
-        // The branch reads after the last instruction.
-        if let Some(t) = null_test(b) {
-            users[t as usize].push((bi as B, b.insts.len()));
-        }
-    }
-    for (bi, b) in g.blocks.iter().enumerate().filter(|(_, b)| !matches!(b.term, Term::None)) {
-        for (i, &v) in b.insts.iter().enumerate() {
-            if !matches!(g.inst(v), Inst::LoadField(_, _, Reference) | Inst::LoadIndexed(_, _, Reference)) || g.resolve(v) != v || escapes[v as usize] {
-                continue;
-            }
-            if !matches!(al.loc[v as usize], Loc::Reg(_)) || al.home[v as usize].is_some() || al.state_regs[v as usize] || users[v as usize].is_empty() {
-                continue;
-            }
-            let Some(last) = users[v as usize].iter().map(|&(ub, ui)| (ub == bi as B).then_some(ui)).try_fold(0, |m, u| u.map(|u| m.max(u))) else { continue };
-            let base_use = |w: V| match g.inst(w) {
-                Inst::LoadField(o, ..) | Inst::ArrayLength(o) | Inst::NullCheck(o, _) => g.resolve(*o) == v,
-                Inst::StoreField(o, _, Reference, x) => g.resolve(*x) == v && g.resolve(*o) != v,
-                _ => false,
-            };
-            let quiet = |w: V| {
-                let inst = g.inst(w);
-                inst.state().is_none() && !matches!(inst, Inst::Call(..) | Inst::Intrinsic(..) | Inst::Monitor(..) | Inst::Phi(_))
-            };
-            let window = &b.insts[i + 1..last.min(b.insts.len() - 1) + 1];
-            let uses_ok = users[v as usize].iter().all(|&(_, ui)| ui == b.insts.len() || base_use(b.insts[ui]));
-            let quiet_ok = window.iter().all(|&w| quiet(w) || matches!(g.inst(w), Inst::NullCheck(o, _) if g.resolve(*o) == v));
-            if uses_ok && quiet_ok {
-                out.insert(v);
-            }
-        }
-    }
-    out
-}
-
 /// Emits `g` for `m`, whose frame (inlined frames included) takes `frame_slots` value-stack slots;
 /// a synchronized method holds `monitor` while it runs. Returns the code and the size of its
 /// main part (without the out-of-line stubs after it, as C2 sizes code for inlining).
@@ -353,7 +275,7 @@ pub(super) fn generate(g: &Graph, al: &Allocation, m: &'static Method, frame_slo
         unbarriered: super::barrier::unbarriered(g),
         short_loops: super::polls::short_loops(g),
         implicit: implicit_null_checks(g, &al.loc),
-        narrow: narrow_refs(g, al),
+        narrow: narrow::refs(g, al),
         pending_null: None,
         next: [None; 2],
         deferred_decode: Vec::new(),
@@ -945,7 +867,9 @@ impl Gen<'_> {
                     Inst::LoadField(o, 0, _) => Some((v, o)),
                     _ => None,
                 });
-                let c = if let Some((v, o)) = class_word {
+                let c = if let Some(c) = narrow::compare(self, cmp, ty, a, y) {
+                    c
+                } else if let Some((v, o)) = class_word {
                     // A class guard on the header in place (`fused_type_tests`).
                     let k = [a, y].into_iter().map(|x| self.g.resolve(x)).find(|&x| x != v).and_then(|x| self.g.constant(x)).expect("a class constant");
                     let at = self.field(o, 0);
