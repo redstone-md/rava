@@ -57,43 +57,50 @@ left.
   are proven simple. `UnrollEarlyExitSem` matches HotSpot with CFG-edge checks enabled, including
   a side-exit store, a late null fault, and eight eligible loops in one method. Before each
   expansion, the pass reserves fresh block-order gaps while preserving ties between existing
-  live blocks. An earlier seven-process comparison measured 5.80 ns/call on the PR's clean
-  `HEAD`, 3.85 with only this pass, 3.83 on the current candidate, and 3.99 on Java. A 21-pair
-  same-binary comparison in default hot-method mode (no `RAVA_OPT` override, default codegen)
-  measured 3.77 ns/call with the pass, 4.545 with
-  `RAVA_NO_EARLY_EXIT_UNROLL=MixinBench.round`, and 3.96 on HotSpot 25.0.3. Checksums were
-  `600000` in every process; the pass beat its disabled variant in all 21 pairs and Java in 16.
-  Candidate and Java process ranges overlap (3.47–4.09 and 3.785–4.145), so this is a narrow
-  `MixinBench` median advantage, not a general speed claim. The candidate binary SHA-256 was
-  `8FFFAEC646A5294A84706E16971CCD72F3BAAB9255C8AFEBD018F205839B6357`; the benchmark source
-  SHA-256 was `E07CE81A23F4D412626186E5DAB38F6B01199C3C84094C894A130BC1E12CFF66`, and its class
-  SHA-256 was `592FFD8ABD313DECBCCC754A8A3589BADF80C046EE0C84185925A84D1D02027E`. On
-  `early90`, the candidate measured 1.292 ns/node against 1.260 on Java; on recursion it measured
-  0.669 against 1.138, while clean `HEAD` was already at 0.686. These are microbenchmarks; the
-  current candidate has not been measured on Paper.
-  Two more independent 21-pair runs compared the same pass against HotSpot 21.0.7 using ordinary
-  default compilation (Rava read the JDK 21.0.12.1 runtime image). Across 42 process medians,
-  Rava with the pass measured 3.87 ns/call (3.775–4.28), with the pass disabled 4.79
-  (4.34–5.90), and HotSpot 3.9425 (3.51–4.165). All 126 checksums were `600000`; the pass beat
-  its disabled variant in 42/42 pairs and HotSpot in 31/42, with a median paired difference of
-  −2.66 %. The ranges overlap widely, so this is near parity on one synthetic callback path,
-  not evidence of a general Java advantage. The Rava binary SHA-256 was
-  `43D10E17FCEC9990BAC2D7B0BCC22D7C109B685B7B70378F64B0DF05D0432644`; the benchmark source
-  hash is above, and the JDK 21-compiled class SHA-256 was
-  `BD94D62D6243409F299F699402D74D762576B7028FC34F6A766970FA12BC172F`.
+  live blocks. Older seven-process and 21-pair comparisons used HotSpot 25.0.3 without
+  `-Xshare:off`; that JDK loaded `classes.jsa`, so those timings are excluded from no-snapshot
+  evidence. Their Rava pass-off control also selected `MixinBench.round`, so it is not a valid
+  no-adapt control. Two later 21-pair runs used HotSpot 21.0.7; a CDS log check confirmed that
+  runtime loaded no shared archive. Across those 42 process medians, default Rava measured
+  3.87 ns/call (3.775–4.28) and HotSpot 3.9425 (3.51–4.165), with `600000` checksums. Rava beat
+  Java in 31/42 pairs, but their ranges overlap widely, so this is near parity on one synthetic
+  callback path, not evidence of a general Java advantage. The old pass-off control was still
+  method-specific, so it does not attribute this result under no-adapt. Current controls are
+  global, and current Java benchmark runs explicitly use `-Xshare:off`. The Rava binary
+  SHA-256 was `43D10E17FCEC9990BAC2D7B0BCC22D7C109B685B7B70378F64B0DF05D0432644`; the benchmark
+  source SHA-256 was `E07CE81A23F4D412626186E5DAB38F6B01199C3C84094C894A130BC1E12CFF66`, and the JDK
+  21-compiled class SHA-256 was `BD94D62D6243409F299F699402D74D762576B7028FC34F6A766970FA12BC172F`.
+  Separate historical `early90` and recursion figures used JDK 25 without `-Xshare:off`; that
+  runtime loaded CDS, so those timings are excluded from no-snapshot evidence. The current
+  candidate has not been measured on Paper.
 - Four-step affine recurrence folding (`opt/affine.rs`) wins on the arithmetic kernel it
-  targets. Nine rotated processes on JDK 21, each with seven timed rounds of
-  `CountedEntryBench.counted` (64 `value * 33 + i` updates), measured 9.941 ns/call on the
-  default Rava candidate, 31.092 with the same binary and
-  `RAVA_NO_AFFINE_RECURRENCE=1`, and 29.839 on HotSpot 21.0.7. Across the nine process medians,
-  ranges were 8.528–10.880, 28.820–31.399, and 27.076–30.202 respectively. Checksums matched at
-  `-80388026518`; default Rava beat affine-off and HotSpot in all nine rotated pairs, with a
-  median paired difference of −66.88 % vs Java. This establishes a win on this counted
-  arithmetic loop, not on Minecraft ticks. Rava ran with its default optimization mode (fixed
-  hash seed); the baseline disabled only affine folding. Rava binary SHA-256:
-  `43D10E17FCEC9990BAC2D7B0BCC22D7C109B685B7B70378F64B0DF05D0432644`;
-  benchmark source SHA-256: `C028ED4A998C419DBB62648898BD835EFD6CEE863A85244DF4126409145B415B`;
-  JDK 21-compiled class SHA-256: `C0211F761DF55E29F8575273855899782833543D64A127E4D7CFDFC553014205`.
+  targets. Nine rotated fresh-process triplets on JDK 21 measured `CountedEntryBench.counted`
+  (64 `value * 33 + i` updates) at 10.092 ns/call on default Rava, 30.935 with the same binary
+  and the global `RAVA_NO_AFFINE_RECURRENCE=1` control, and 29.731 on HotSpot 21.0.7 with
+  `-Xshare:off`. Across process medians the ranges were 8.659–11.597, 28.277–31.428, and
+  27.484–30.267 respectively. All 27 checksums matched at `-80388026518`; default Rava beat
+  affine-off and HotSpot in all nine pairs. Rava used its default optimization mode and a fixed
+  hash seed; it read the JDK 21.0.12.1 runtime image. This establishes a win on this arithmetic
+  loop, not on Minecraft ticks. Rava binary SHA-256:
+  `9B2EE67183136A29E03132955557DE50D714CBB5DDDB27345F651A150330D9BD`; benchmark source SHA-256:
+  `C028ED4A998C419DBB62648898BD835EFD6CEE863A85244DF4126409145B415B`; JDK 21 class SHA-256:
+  `C0211F761DF55E29F8575273855899782833543D64A127E4D7CFDFC553014205`.
+- The same uncommitted local release candidate also beat HotSpot 21.0.7 (`-Xshare:off`) in three broader
+  generic kernels, each over nine rotated fresh-process pairs with matching checksums or output guards and
+  default Rava tiering: `RecordHashBench` measured 7.55 vs 10.45 ns/op (process ranges 7.40–8.00
+  vs 9.50–10.75; checksum `33546240000`); `SystemTickBench`, with 40 distinct listeners,
+  measured 1,256.75 vs 1,703.10 ns/tick (1,186.55–1,306.45 vs 1,625.60–1,747.50; checksum
+  `760000`); and `NoiseBench` measured 12 vs 17 ms per sweep (11–12 vs 16–17; output guard
+  `525558`).
+  `NoiseBench` reports the best of ten timed sweeps per process and has millisecond resolution,
+  so treat it as a coarse signal. These are synthetic kernels, not a Paper server result. The
+  Rava binary SHA-256 is the one above. JDK 21 source/class SHA-256 pairs: `RecordHashBench`
+  `64004A4101B5C6ECA37335FDF03116253A8ADD432B662D6EAAFC4355806CD3B5` /
+  `1BBD46554787C61425A7325409CB09B06DBDF6786533815020595DFC59FE8F85`;
+  `SystemTickBench` `C2B50027F7DFD8CF6F8E0C2FAE4795AD7DB5385FDEBF9EA9D0A4ACD39AE6BAAB` /
+  `194EAADD439AB09B43A93EBE8B90E5E7BE0C29B2C531F9475EAC7B2B075F77EF`; `NoiseBench`
+  `CD97843FBE03E2E6FF9AC75C51D76D8442C91D90748B12DFC656B685F8CCB6CB` /
+  `F9FA1DF311EA159FE6C2D0CA58FED408095A1646C80E80569306C7B8372D5C7B`.
 
 ## Where the time goes (`mobs`, all optimized code dumped, samples by instruction)
 93 % of the server thread's time is in optimized code. Classified by the instruction a sample
