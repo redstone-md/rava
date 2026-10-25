@@ -225,55 +225,6 @@ impl Gen<'_> {
         }
     }
 
-    /// `mirror.isInstance(o)` for a non-null mirror: null → false, a primitive mirror → false,
-    /// the exact class → true, else the subtype check.
-    /// An Unsafe access's address: base `base` (in its register, else `rb`) plus offset `off`
-    /// (a displacement when constant, else in its register or `ro`), or with a folded scale and
-    /// displacement (`algebra::fold_unsafe_addresses`), plus index `off` scaled.
-    /// `a[from..to] = x` for elements of `1 << shift` bytes (4 or 8), `from < to`: xmm0 holds
-    /// the value in every lane, rax walks the range sixteen bytes at a time and a last store
-    /// ending at the range's end covers the rest; a range under sixteen bytes is stored an
-    /// element at a time.
-    fn fill_range(&mut self, shift: u8, args: &[V]) {
-        let wide = shift == 3;
-        let lanes = if wide { 0x44 } else { 0 };
-        if matches!(self.g.ty(args[3]), Ty::F | Ty::D) {
-            let x = self.xreg(args[3], X(0));
-            self.a.pshufd(X(0), x, lanes);
-        } else {
-            let r = self.reg(args[3], R::Rdx);
-            self.a.mov_xr(wide, X(0), r);
-            self.a.pshufd(X(0), X(0), lanes);
-        }
-        let ra = self.reg(args[0], R::Rax);
-        let rf = self.reg(args[1], R::Rcx);
-        self.a.movsxd(R::Rcx, rf);
-        let rt = self.reg(args[2], R::Rdx);
-        self.a.movsxd(R::Rdx, rt);
-        let base = crate::heap::ARRAY_BASE_OFFSET as i32;
-        self.a.lea(R::R11, mem_idx(ra, R::Rdx, 1 << shift, base));
-        self.a.lea(R::Rax, mem_idx(ra, R::Rcx, 1 << shift, base));
-        self.a.mov_rr(true, R::Rcx, R::R11);
-        self.a.alu_rr(true, Alu::Sub, R::Rcx, R::Rax);
-        let (small, vector, done) = (self.a.new_label(), self.a.new_label(), self.a.new_label());
-        self.a.alu_ri(true, Alu::Cmp, R::Rcx, 16);
-        self.a.jcc(Cond::B, small);
-        self.a.alu_ri(true, Alu::Sub, R::R11, 16);
-        self.a.bind(vector);
-        self.a.store_x128(mem(R::Rax, 0), X(0));
-        self.a.alu_ri(true, Alu::Add, R::Rax, 16);
-        self.a.alu_rr(true, Alu::Cmp, R::Rax, R::R11);
-        self.a.jcc(Cond::B, vector);
-        self.a.store_x128(mem(R::R11, 0), X(0));
-        self.a.jmp(done);
-        self.a.bind(small);
-        self.a.fstore(wide, mem(R::Rax, 0), X(0));
-        self.a.alu_ri(true, Alu::Add, R::Rax, 1 << shift);
-        self.a.alu_rr(true, Alu::Cmp, R::Rax, R::R11);
-        self.a.jcc(Cond::B, small);
-        self.a.bind(done);
-    }
-
     /// `init + a[from..to]` (`reduce.rs`): a range under sixteen elements adds an element at a
     /// time in place, a longer one calls the vectorized sum.
     fn sum_range(&mut self, v: V, l: crate::jit::leaf::Leaf, kind: crate::jit::leaf::SumKind, args: &[V]) {

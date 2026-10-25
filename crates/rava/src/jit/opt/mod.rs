@@ -19,6 +19,7 @@ pub(crate) mod cha;
 mod codegen;
 mod codegen_cmp;
 mod codegen_copy;
+mod codegen_fill;
 mod codegen_intr;
 mod codegen_obj;
 mod codegen_ops;
