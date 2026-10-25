@@ -9,6 +9,7 @@ use crate::thread::{JResult, Thread};
 const C: &str = "java/nio/MappedMemoryUtils";
 
 pub(super) fn register(r: &mut NativeRegistry) {
+    r.add(C, "registerNatives", "()V", |_, _| ret_void());
     r.add(C, "isLoaded0", "(JJJ)Z", |t, a| ret_bool(is_loaded(t, a[0] as usize, a[2] as usize, a[4] as usize)?));
     r.add(C, "load0", "(JJ)V", |t, a| {
         advise(t, a[0] as usize, a[2] as usize, true)?;
