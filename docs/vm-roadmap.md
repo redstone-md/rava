@@ -52,6 +52,48 @@ left.
   nothing overrides and that was not inlined (too large, recursive) went through the vtable.
   It now calls the target directly, behind its class-hierarchy dependency. `mobs` warm sprints
   103.6 → 101.1 ms per tick (two rounds won, one even).
+- Ordered early exits in short counted loops (`opt/unroll_early_exit.rs`). The JIT now clones up
+  to eight ordered checks and their deoptimization states when the loop shape and side effects
+  are proven simple. `UnrollEarlyExitSem` matches HotSpot with CFG-edge checks enabled, including
+  a side-exit store, a late null fault, and eight eligible loops in one method. Before each
+  expansion, the pass reserves fresh block-order gaps while preserving ties between existing
+  live blocks. An earlier seven-process comparison measured 5.80 ns/call on the PR's clean
+  `HEAD`, 3.85 with only this pass, 3.83 on the current candidate, and 3.99 on Java. A 21-pair
+  same-binary comparison in default hot-method mode (no `RAVA_OPT` override, default codegen)
+  measured 3.77 ns/call with the pass, 4.545 with
+  `RAVA_NO_EARLY_EXIT_UNROLL=MixinBench.round`, and 3.96 on HotSpot 25.0.3. Checksums were
+  `600000` in every process; the pass beat its disabled variant in all 21 pairs and Java in 16.
+  Candidate and Java process ranges overlap (3.47–4.09 and 3.785–4.145), so this is a narrow
+  `MixinBench` median advantage, not a general speed claim. The candidate binary SHA-256 was
+  `8FFFAEC646A5294A84706E16971CCD72F3BAAB9255C8AFEBD018F205839B6357`; the benchmark source
+  SHA-256 was `E07CE81A23F4D412626186E5DAB38F6B01199C3C84094C894A130BC1E12CFF66`, and its class
+  SHA-256 was `592FFD8ABD313DECBCCC754A8A3589BADF80C046EE0C84185925A84D1D02027E`. On
+  `early90`, the candidate measured 1.292 ns/node against 1.260 on Java; on recursion it measured
+  0.669 against 1.138, while clean `HEAD` was already at 0.686. These are microbenchmarks; the
+  current candidate has not been measured on Paper.
+  Two more independent 21-pair runs compared the same pass against HotSpot 21.0.7 using ordinary
+  default compilation (Rava read the JDK 21.0.12.1 runtime image). Across 42 process medians,
+  Rava with the pass measured 3.87 ns/call (3.775–4.28), with the pass disabled 4.79
+  (4.34–5.90), and HotSpot 3.9425 (3.51–4.165). All 126 checksums were `600000`; the pass beat
+  its disabled variant in 42/42 pairs and HotSpot in 31/42, with a median paired difference of
+  −2.66 %. The ranges overlap widely, so this is near parity on one synthetic callback path,
+  not evidence of a general Java advantage. The Rava binary SHA-256 was
+  `43D10E17FCEC9990BAC2D7B0BCC22D7C109B685B7B70378F64B0DF05D0432644`; the benchmark source
+  hash is above, and the JDK 21-compiled class SHA-256 was
+  `BD94D62D6243409F299F699402D74D762576B7028FC34F6A766970FA12BC172F`.
+- Four-step affine recurrence folding (`opt/affine.rs`) wins on the arithmetic kernel it
+  targets. Nine rotated processes on JDK 21, each with seven timed rounds of
+  `CountedEntryBench.counted` (64 `value * 33 + i` updates), measured 9.941 ns/call on the
+  default Rava candidate, 31.092 with the same binary and
+  `RAVA_NO_AFFINE_RECURRENCE=1`, and 29.839 on HotSpot 21.0.7. Across the nine process medians,
+  ranges were 8.528–10.880, 28.820–31.399, and 27.076–30.202 respectively. Checksums matched at
+  `-80388026518`; default Rava beat affine-off and HotSpot in all nine rotated pairs, with a
+  median paired difference of −66.88 % vs Java. This establishes a win on this counted
+  arithmetic loop, not on Minecraft ticks. Rava ran with its default optimization mode (fixed
+  hash seed); the baseline disabled only affine folding. Rava binary SHA-256:
+  `43D10E17FCEC9990BAC2D7B0BCC22D7C109B685B7B70378F64B0DF05D0432644`;
+  benchmark source SHA-256: `C028ED4A998C419DBB62648898BD835EFD6CEE863A85244DF4126409145B415B`;
+  JDK 21-compiled class SHA-256: `C0211F761DF55E29F8575273855899782833543D64A127E4D7CFDFC553014205`.
 
 ## Where the time goes (`mobs`, all optimized code dumped, samples by instruction)
 93 % of the server thread's time is in optimized code. Classified by the instruction a sample
@@ -86,11 +128,32 @@ Compare the minimum or median of many runs, never a single run.
    fib 2.4 → 1.85 ns and the four-int recursion 4.0 → 2.3 ns per call (HotSpot 1.4 and 1.9),
    `mobs` sprints about 3 % faster (noisy). Every other entry still checks the value-stack
    limit, links the frame and pushes callee-saved registers before its first block (10–14 % of
-   optimized-code samples fell in the first bytes of methods). Next is wider shrink-wrapping,
-   which saves registers only on the paths that use them.
+   optimized-code samples fell in the first bytes of methods). The isolated floating-fast-exit
+   variant measured 1.323 vs 1.305 ns/node on `early90` and 0.710 vs 0.686 on recursion; Java
+   measured 1.260 and 1.138 respectively. Checksums matched in seven rotated fresh processes per
+   VM. The variant did not beat clean `HEAD` or Java on these cases and is dropped; existing
+   integer fast exits remain. Next is wider shrink-wrapping, which saves registers only on paths
+   that use them.
 3. **Register allocation quality.** Values are spilled around calls and reloaded at block
    starts (`mov %rax,0x50(%rsp); mov 0x50(%rsp),%rax` across a label), and loop-carried values
-   are kept in stack slots across calls.
+   are kept in stack slots across calls. An isolated CFG-aware call-cost variant measured 5.45
+   vs 5.80 ns/call on `MixinBench`, 1.287 vs 1.305 ns/node on `early90`, and 0.646 vs 0.686 on
+   recursion against clean `HEAD`; it remained slower than Java on `MixinBench` and is not in the
+   current candidate. Combined with unrolling, it moved medians 3.88 → 3.84 on `MixinBench`,
+   1.282 → 1.219 on `early90`, and 0.647 → 0.665 on recursion; only 4/7, 6/7, and 0/7 paired
+   processes improved, respectively, with overlapping ranges. It is not a consistent gain.
+   Compile-time cost and a focused liveness allocator test remain open before revisiting it.
+4. **Automatic loop parallelism.** `RAVA_PAR_REPORT` counts SSA effects after optimization; it
+   does not prove array-base/index disjointness, scalar recurrences, or preservation of
+   exceptions and deoptimization order. A worker scheduler must also coordinate Java memory
+   visibility with GC and safepoints. A five-pair, fresh-process Minestom 1.21.8 A/B (radius 24,
+   2,304 generated chunks, JDK 25.0.3) had the same block hash on both VMs, but the chunk-phase
+   median was 1,381 ms on rava and 529 ms on `java`; rava won zero pairs, with one 3,813 ms
+   outlier. The Minestom path starts each generation task with `Thread.startVirtualThread`; rava
+   currently reports continuation support as false and runs each such thread on a native worker.
+   This result points to virtual-thread scheduling, not same-thread loop splitting. An idle
+   worker cache would not help this overlapping burst. Keep loop scheduling serial until
+   dependence proofs and runtime support exist.
 
 Measure each with `bench/java/MegaCallBench.java`, `bench/java/MixinBench.java` and the
 `mobs` scenario (`bench/tick_sprint.py -r 3 -s 1200 -c bench/scenarios/mobs.txt`), against
