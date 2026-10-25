@@ -30,6 +30,9 @@ pub fn eliminate(g: &mut Graph) {
                 }
             }
         }
+        for state in g.loop_entry.values() {
+            reads.of(g, state).iter().for_each(|&v| mark(v, &mut used));
+        }
         let mut removed = false;
         for b in 0..g.blocks.len() {
             let before = g.blocks[b].insts.len();
@@ -48,9 +51,78 @@ pub fn eliminate(g: &mut Graph) {
 fn removable(g: &Graph, v: V) -> bool {
     match g.inst(v) {
         Inst::Const(_) | Inst::Copy(_) | Inst::Neg(_) | Inst::Convert(..) | Inst::Compare(..) | Inst::Select(..) => true,
-        Inst::Bin(..) | Inst::ArrayLength(_) | Inst::LoadIndexed(..) | Inst::LoadStatic(..) => true,
+        Inst::Bin(..) | Inst::ArrayLength(_) | Inst::LoadIndexed(..) => true,
+        Inst::LoadStatic(..) => !g.ordered.contains(&v),
         Inst::LoadField(..) => !g.ordered.contains(&v),
         Inst::Intrinsic(k, _, None) => k.is_pure(),
         _ => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::eliminate;
+    use crate::jit::opt::ir::{Graph, Inst, State, Term, Ty};
+    use crate::klass::{Klass, KlassKind, KlassParts, ACC_STATIC};
+    use crate::method::Method;
+    use crate::symbol::Symbol;
+    use crate::types::BasicType;
+    use std::rc::Rc;
+
+    fn test_method() -> &'static Method {
+        let holder = crate::klass::leak(Klass::new(KlassParts {
+            name: Symbol::intern("DceTest"),
+            kind: KlassKind::Instance,
+            access: 0,
+            super_klass: None,
+            interfaces: Vec::new(),
+            cf: None,
+            fields: Vec::new(),
+            instance_size: 0,
+            ref_offsets: Vec::new(),
+            static_slots: 0,
+            initialized: true,
+            hidden: false,
+        }));
+        crate::low::leak(Method::new(holder, Symbol::intern("test"), Symbol::intern("()V"), ACC_STATIC, None, false))
+    }
+
+    #[test]
+    fn dce_keeps_ordered_static_reads_and_removes_plain_reads() {
+        let mut g = Graph::default();
+        let block = g.new_block(0);
+        let ordered = g.add(block, Inst::LoadStatic(0, BasicType::Int), Ty::I);
+        let plain = g.add(block, Inst::LoadStatic(8, BasicType::Int), Ty::I);
+        g.ordered.insert(ordered);
+        g.blocks[block as usize].term = Term::Return(None);
+
+        eliminate(&mut g);
+
+        assert!(g.blocks[block as usize].insts.contains(&ordered));
+        assert!(!g.blocks[block as usize].insts.contains(&plain));
+    }
+
+    #[test]
+    fn dce_keeps_value_used_by_loop_entry_state() {
+        let mut g = Graph::default();
+        let block = g.new_block(0);
+        let method = test_method();
+        let value = g.add(block, Inst::Const(42), Ty::I);
+        g.loop_entry.insert(
+            block,
+            Rc::new(State {
+                method,
+                bci: 1,
+                locals: vec![Some(value)],
+                stack: Vec::new(),
+                caller: None,
+                frame: 0,
+            }),
+        );
+        g.blocks[block as usize].term = Term::Return(None);
+
+        eliminate(&mut g);
+
+        assert!(g.blocks[block as usize].insts.contains(&value));
     }
 }
