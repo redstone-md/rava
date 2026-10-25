@@ -190,14 +190,25 @@ Compare the minimum or median of many runs, never a single run.
 4. **Automatic loop parallelism.** `RAVA_PAR_REPORT` counts SSA effects after optimization; it
    does not prove array-base/index disjointness, scalar recurrences, or preservation of
    exceptions and deoptimization order. A worker scheduler must also coordinate Java memory
-   visibility with GC and safepoints. A five-pair, fresh-process Minestom 1.21.8 A/B (radius 24,
-   2,304 generated chunks, JDK 25.0.3) had the same block hash on both VMs, but the chunk-phase
-   median was 1,381 ms on rava and 529 ms on `java`; rava won zero pairs, with one 3,813 ms
-   outlier. The Minestom path starts each generation task with `Thread.startVirtualThread`; rava
-   currently reports continuation support as false and runs each such thread on a native worker.
-   This result points to virtual-thread scheduling, not same-thread loop splitting. An idle
-   worker cache would not help this overlapping burst. Keep loop scheduling serial until
-   dependence proofs and runtime support exist.
+   visibility with GC and safepoints. The Minestom harness accepts a run count and radius,
+   prints and checks the chunk count and sampled result hash, and rotates launch order for
+   three-way comparisons. A 15-group attempt on Minestom 1.21.8, radius 24 (2,304 chunks),
+   JDK 25.0.3 completed five groups before the sixth rava process crashed with a native memory
+   fault in `VCRUNTIME140.dll`; the runner returned failure and did not count the partial sixth
+   group in its comparison. In those five complete groups, default HotSpot had a 532 ms
+   chunk-phase median (508–551), HotSpot with
+   `-XX:+UnlockExperimentalVMOptions -XX:-VMContinuations` had 645 ms (608–674), and rava had
+   1,673 ms (974–2,886). All successful runs had the same sampled checksum
+   `c997420016191634`; rava was slower in all five groups against both HotSpot modes. The paired
+   median gaps were 1,141 ms against default HotSpot and 1,065 ms against flagged HotSpot; the
+   paired median slowdown from the fallback flags was 116 ms for HotSpot. These five groups are
+   exploratory performance data, conditional on successful completion, and do not establish
+   reliability or steady-state tick throughput. The checksum covers 55 sampled block states in
+   one local column per chunk, not the full world. Minestom starts each generation task with
+   `Thread.startVirtualThread`; rava currently reports continuation support as false and runs
+   each such thread on a native worker. The result is consistent with scheduling overhead but
+   does not attribute the full gap or prove a loop-splitting benefit. Investigate the native
+   crash, and keep loop scheduling serial until dependence proofs and runtime support exist.
 
 Measure each with `bench/java/MegaCallBench.java`, `bench/java/MixinBench.java` and the
 `mobs` scenario (`bench/tick_sprint.py -r 3 -s 1200 -c bench/scenarios/mobs.txt`), against
