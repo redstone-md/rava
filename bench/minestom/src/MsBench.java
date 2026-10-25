@@ -10,7 +10,7 @@ import java.util.concurrent.CompletableFuture;
 /**
  * A real open-source Minecraft server (Minestom) booting: registry bootstrap from the game's
  * data, a noise-generated world whose chunks load in parallel, and the network server bound.
- * Prints per-phase times and a hash of every generated block state.
+ * Prints per-phase times and a hash of 55 sampled block states at local column (7, 9) per chunk.
  */
 public final class MsBench {
     static double noise(long seed, int x, int z) {
@@ -35,6 +35,9 @@ public final class MsBench {
 
     public static void main(String[] args) throws Exception {
         int radius = args.length > 0 ? Integer.parseInt(args[0]) : 8;
+        if (radius < 1 || radius > 64) {
+            throw new IllegalArgumentException("radius must be between 1 and 64");
+        }
         long t0 = System.nanoTime();
         MinecraftServer server = MinecraftServer.init();
         long t1 = System.nanoTime();
@@ -62,8 +65,9 @@ public final class MsBench {
         long t2 = System.nanoTime();
         server.start("127.0.0.1", 0);
         long t3 = System.nanoTime();
-        System.out.printf("MSBENCH init=%d chunks=%d start=%d total=%d hash=%x%n",
-                (t1 - t0) / 1_000_000, (t2 - t1) / 1_000_000, (t3 - t2) / 1_000_000, (t3 - t0) / 1_000_000, hash);
+        System.out.printf("MSBENCH radius=%d chunk_count=%d init_ms=%d chunk_ms=%d start_ms=%d total_ms=%d hash=%x%n",
+                radius, futures.size(), (t1 - t0) / 1_000_000, (t2 - t1) / 1_000_000,
+                (t3 - t2) / 1_000_000, (t3 - t0) / 1_000_000, hash);
         MinecraftServer.stopCleanly();
         System.exit(0);
     }
