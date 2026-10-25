@@ -88,13 +88,16 @@ left.
 - The same uncommitted local release candidate also beat HotSpot 21.0.7 (`-Xshare:off`) in three broader
   generic kernels, each over nine rotated fresh-process pairs with matching checksums or output guards and
   default Rava tiering: `RecordHashBench` measured 7.55 vs 10.45 ns/op (process ranges 7.40–8.00
-  vs 9.50–10.75; checksum `33546240000`); `SystemTickBench`, with 40 distinct listeners,
-  measured 1,256.75 vs 1,703.10 ns/tick (1,186.55–1,306.45 vs 1,625.60–1,747.50; checksum
-  `760000`); and `NoiseBench` measured 12 vs 17 ms per sweep (11–12 vs 16–17; output guard
+  vs 9.50–10.75; checksum `33546240000`); `SystemTickBench`, with 40 systems and 80 listener
+  calls per tick, measured 1,256.75 vs 1,703.10 ns/tick, with ranges 1,186.55–1,306.45 vs
+  1,625.60–1,747.50 and checksum `760000`; and `NoiseBench` measured 12 vs 17 ms per sweep
+  (11–12 vs 16–17; output guard
   `525558`).
   `NoiseBench` reports the best of ten timed sweeps per process and has millisecond resolution,
   so treat it as a coarse signal. These are synthetic kernels, not a Paper server result. The
-  Rava binary SHA-256 is the one above. JDK 21 source/class SHA-256 pairs: `RecordHashBench`
+  Rava binary SHA-256 is the one above. These early `SystemTickBench` figures used an inactive
+  profiler and predate the active-profiler control below. JDK 21 source/class SHA-256 pairs:
+  `RecordHashBench`
   `64004A4101B5C6ECA37335FDF03116253A8ADD432B662D6EAAFC4355806CD3B5` /
   `1BBD46554787C61425A7325409CB09B06DBDF6786533815020595DFC59FE8F85`;
   `SystemTickBench` `C2B50027F7DFD8CF6F8E0C2FAE4795AD7DB5385FDEBF9EA9D0A4ACD39AE6BAAB` /
@@ -112,6 +115,29 @@ left.
   `C2B50027F7DFD8CF6F8E0C2FAE4795AD7DB5385FDEBF9EA9D0A4ACD39AE6BAAB`, and the JDK 21.0.7 class
   SHA-256 is `194EAADD439AB09B43A93EBE8B90E5E7BE0C29B2C531F9475EAC7B2B075F77EF`. This remains a
   synthetic listener workload, not a Paper server measurement.
+- A refreshed `SystemTickBench` run compares three conditions in nine interleaved fresh-process
+  pair groups on the current release binary (`CF01190DFB57502E7E503481CB45972F24492A7F45B75760A7DF21FC31834D2A`)
+  and HotSpot 21.0.11 (`-Xshare:off`): default Rava with a no-op profiler measured 654.45 ns/tick
+  (process medians 642.45–691.4) versus 1,459.1 for HotSpot (1,415.6–1,551.3), a 2.23× ratio
+  and 9/9 Rava wins. With `RAVA_NO_DEAD_CONCAT=1`, Rava measured 1,253.15
+  (1,193.6–1,338.95) versus 1,514.95 (1,447.25–1,611.45), a 1.209× ratio and 9/9 wins.
+  With a recording profiler that consumes each pushed string using `hashCode()`, Rava measured
+  2,067.2 (2,034.6–2,252.05) versus 2,079.1 (2,013.15–2,275.3), a 1.006× ratio and 6/9 wins;
+  process ranges overlap. The mode order rotates across pair groups, and Rava/HotSpot order
+  alternates within each mode. All 54 tick checksums matched at `2850000`; all recording-profiler
+  checksums matched at `6878236459927801088`, and no-op checksums were zero. The pass-off control
+  and paired Java shifts support dead string elimination as the main source of the no-op
+  advantage on this kernel; the active-profiler case remains near parity. Source SHA-256 is
+  `ED07615AC432E7D8C4BF618004DE20A1CB65A1CF0E091AFBF0FBBEAF2D68E771`, and the JDK 21 class
+  SHA-256 is `A9C977B364CE121312C393C0B4115B58A3628D9076FEE4F0C00609752959ECB8`. This remains a
+  synthetic dispatch benchmark, not a full Paper server result.
+- On the same binary and JDK, nine alternating pairs of `RecordHashBench` measured the median
+  of the last four of six timed rounds per fresh process: 7.6 ns/op on Rava (process medians
+  7.3–7.85) and 9.4 on HotSpot (8.75–9.8), with Rava ahead in all nine pairs. HotSpot again
+  used `-Xshare:off`; all 18 checksums were `33546240000`. Source SHA-256 is
+  `64004A4101B5C6ECA37335FDF03116253A8ADD432B662D6EAAFC4355806CD3B5`, and the JDK 21 class
+  SHA-256 is `BB51A029F7AACE5005FEC243300541767F172DDBE419F3B71AEBA5B509C6F680`. This is a
+  separate generic kernel, not evidence of end-to-end Minecraft performance.
 
 ## Where the time goes (`mobs`, all optimized code dumped, samples by instruction)
 93 % of the server thread's time is in optimized code. Classified by the instruction a sample
