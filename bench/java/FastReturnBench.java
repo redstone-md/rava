@@ -15,6 +15,20 @@ public class FastReturnBench {
         return result;
     }
 
+    static int multiply(int depth, int bias) {
+        int result;
+        if (depth <= 0) result = bias * 31;
+        else result = multiply(depth - 1, bias + 1) + multiply(depth - 1, bias - 1);
+        return result;
+    }
+
+    static long multiplyLong(int depth, long bias) {
+        long result;
+        if (depth <= 0) result = bias * 31L;
+        else result = multiplyLong(depth - 1, bias + 1) + multiplyLong(depth - 1, bias - 1);
+        return result;
+    }
+
     static int linear(int depth) {
         if (depth <= 0) return 1;
         return linear(depth - 1) + 1;
@@ -26,6 +40,8 @@ public class FastReturnBench {
         long calls = (1L << (depth + 1)) - 1;
         double bestMerged = Double.POSITIVE_INFINITY;
         double bestConstant = Double.POSITIVE_INFINITY;
+        double bestMultiply = Double.POSITIVE_INFINITY;
+        double bestMultiplyLong = Double.POSITIVE_INFINITY;
         double bestLinear = Double.POSITIVE_INFINITY;
         long linearCalls = 0;
         for (int i = 0; i < 4096; i++) linearCalls += 225 + (i & 63);
@@ -36,14 +52,20 @@ public class FastReturnBench {
             long middle = System.nanoTime();
             sink += constant(depth);
             long end = System.nanoTime();
+            sink += multiply(depth, r);
+            long multiplyEnd = System.nanoTime();
+            sink += multiplyLong(depth, r);
+            long multiplyLongEnd = System.nanoTime();
             for (int i = 0; i < 4096; i++) sink += linear(224 + (i & 63));
             long linearEnd = System.nanoTime();
             if (r >= 3) {
                 bestMerged = Math.min(bestMerged, (middle - start) / (double) calls);
                 bestConstant = Math.min(bestConstant, (end - middle) / (double) calls);
-                bestLinear = Math.min(bestLinear, (linearEnd - end) / (double) linearCalls);
+                bestMultiply = Math.min(bestMultiply, (multiplyEnd - end) / (double) calls);
+                bestMultiplyLong = Math.min(bestMultiplyLong, (multiplyLongEnd - multiplyEnd) / (double) calls);
+                bestLinear = Math.min(bestLinear, (linearEnd - multiplyLongEnd) / (double) linearCalls);
             }
         }
-        System.out.printf("merged %.2f ns/call, constant %.2f ns/call, linear %.3f ns/call, checksum %d%n", bestMerged, bestConstant, bestLinear, sink);
+        System.out.printf("merged %.2f ns/call, constant %.2f ns/call, multiply-int %.2f ns/call, multiply-long %.2f ns/call, linear %.3f ns/call, checksum %d%n", bestMerged, bestConstant, bestMultiply, bestMultiplyLong, bestLinear, sink);
     }
 }

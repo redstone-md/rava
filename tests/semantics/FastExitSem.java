@@ -36,6 +36,31 @@ public class FastExitSem {
         return r;
     }
 
+    static int multiplyInt(int n, int x, int y) {
+        if (n <= 0) return x * y;
+        return multiplyInt(n - 1, x + 1, y - 3);
+    }
+
+    static int multiplyIntConstant(int n, int x) {
+        if (n <= 0) return x * 31;
+        return multiplyIntConstant(n - 1, -x);
+    }
+
+    static long multiplyLong(int n, long x, long y) {
+        if (n <= 0) return x * y;
+        return multiplyLong(n - 1, x + 1, y - 3);
+    }
+
+    static long multiplyLongConstant(int n, long x) {
+        if (n <= 0) return x * 31L;
+        return multiplyLongConstant(n - 1, -x);
+    }
+
+    static long multiplyLongWideConstant(int n, long x) {
+        if (n <= 0) return x * 0x1_0000_0001L;
+        return multiplyLongWideConstant(n - 1, x + 1);
+    }
+
     static Object mergedRef(Object o, int n) {
         Object r;
         if (n <= 0) r = o;
@@ -111,9 +136,19 @@ public class FastExitSem {
             check += refs(i % 5 == 0 ? null : "x", i % 4);
             effect(i % 10);
             check += negative(i % 6, i - 2000);
+            check += multiplyInt(i % 3, i * 31 - 17, i * 101 + 1);
+            check += multiplyIntConstant(i % 3, i * 997 - 2000);
+            check += multiplyLong(i % 3, i * 12345678901L - 17, i * 0x1_0000_0001L + 1);
+            check += multiplyLongConstant(i % 3, i * 0x1_0000_0001L - 2000);
+            check += multiplyLongWideConstant(i % 3, i * 31L - 17);
         }
         System.out.println("check " + check + " sum " + sum);
         System.out.println("merged " + merged(0, Integer.MAX_VALUE) + " " + merged(-1, Integer.MIN_VALUE) + " " + merged(7, -3) + " " + mergedConstant(7));
         System.out.println(down(7, 5, 9) + " " + longs(5, Long.MAX_VALUE) + " " + shared(15) + " " + constant(0) + " " + refs("y", 0) + " " + negative(4, -9));
+        System.out.println("int mul " + multiplyInt(0, 123, 456) + " " + multiplyInt(0, -123, 456) + " " + multiplyInt(0, Integer.MAX_VALUE, 17) + " " + multiplyInt(0, Integer.MIN_VALUE, -1) + " " + multiplyInt(1, Integer.MAX_VALUE, 17));
+        System.out.println("int mul const " + multiplyIntConstant(0, 12345) + " " + multiplyIntConstant(0, -12345) + " " + multiplyIntConstant(0, Integer.MAX_VALUE) + " " + multiplyIntConstant(1, Integer.MIN_VALUE));
+        System.out.println("long mul " + multiplyLong(0, 123456789L, 987654321L) + " " + multiplyLong(0, -123456789L, 987654321L) + " " + multiplyLong(0, Long.MAX_VALUE, 17) + " " + multiplyLong(0, Long.MIN_VALUE, -1) + " " + multiplyLong(1, Long.MAX_VALUE, 17));
+        System.out.println("long mul const " + multiplyLongConstant(0, 1234567890123L) + " " + multiplyLongConstant(0, -1234567890123L) + " " + multiplyLongConstant(0, Long.MAX_VALUE) + " " + multiplyLongConstant(1, Long.MIN_VALUE));
+        System.out.println("long mul wide const " + multiplyLongWideConstant(0, 7) + " " + multiplyLongWideConstant(0, Long.MAX_VALUE));
     }
 }
