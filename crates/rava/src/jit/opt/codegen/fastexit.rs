@@ -181,6 +181,26 @@ impl Gen<'_> {
                 let Place::Reg(base) = get(o) else { unreachable!("the receiver is in a register") };
                 load_typed_to(&mut self.a, dst, bt, mem(base, off as i32));
             }
+            // `simple`/`place_of` admit only immediates fitting the signed 32-bit `imul` form.
+            Inst::Bin(BinOp::Mul, x, y) => match (get(x), get(y)) {
+                (Place::Reg(x), Place::Reg(y)) => {
+                    self.fast_mov(w, dst, Place::Reg(x));
+                    self.a.imul_rr(w, dst, y);
+                }
+                (Place::Reg(x), Place::Imm(y)) => {
+                    self.fast_mov(w, dst, Place::Reg(x));
+                    self.a.imul_rri(w, dst, dst, y as i32);
+                }
+                (Place::Imm(x), Place::Reg(y)) => {
+                    self.fast_mov(w, dst, Place::Reg(y));
+                    self.a.imul_rri(w, dst, dst, x as i32);
+                }
+                (Place::Imm(x), Place::Imm(y)) => {
+                    self.fast_mov(w, dst, Place::Imm(x));
+                    self.a.imul_rri(w, dst, dst, y as i32);
+                }
+                _ => unreachable!("`simple` admits integer multiply operands only"),
+            },
             Inst::Bin(op, x, y) => {
                 let alu = match op {
                     BinOp::Add => Alu::Add,
@@ -276,7 +296,10 @@ fn simple(g: &Graph, v: V) -> bool {
         Inst::Param(_) | Inst::Copy(_) => true,
         Inst::Const(_) if matches!(g.ty(v), Ty::F | Ty::D) => true,
         Inst::Const(c) => i32::try_from(c).is_ok(),
-        Inst::Bin(BinOp::Add | BinOp::Sub | BinOp::And | BinOp::Or | BinOp::Xor, ..) if matches!(g.ty(v), Ty::I | Ty::J) => true,
+        Inst::Bin(
+            BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::And | BinOp::Or | BinOp::Xor,
+            ..,
+        ) if matches!(g.ty(v), Ty::I | Ty::J) => true,
         // Floating-point arithmetic cannot fault.
         Inst::Bin(BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div, ..) => matches!(g.ty(v), Ty::F | Ty::D),
         // Integer to float or double, and float to double and back.

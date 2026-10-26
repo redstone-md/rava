@@ -56,12 +56,48 @@ const TIER2_BUDGET: usize = 8000;
 /// smaller than the call's, and a large method full of them (a renderer's frame method) paid a
 /// call for each once its budget was spent.
 const TINY_SIZE: usize = 10;
-/// Levels of a method inlined into itself in the optimizing tier (`RAVA_RECURSIVE_INLINE`): two,
-/// one more than C2, halve again the calls a recursion makes (a tree walk, a recursive
-/// descent) at no measured cost elsewhere.
-fn max_recursive() -> usize {
-    static N: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
-    *N.get_or_init(|| std::env::var("RAVA_RECURSIVE_INLINE").ok().and_then(|v| v.parse().ok()).unwrap_or(2))
+/// Levels of a method inlined into itself in the optimizing tier. Short, single-call-site
+/// recursion grows linearly as it is inlined; branching recursion can grow exponentially and
+/// keeps the conservative limit. `RAVA_RECURSIVE_INLINE` overrides both limits for experiments.
+fn max_recursive(target: &'static Method) -> usize {
+    static N: std::sync::OnceLock<Option<usize>> = std::sync::OnceLock::new();
+    if let Some(n) = *N.get_or_init(|| std::env::var("RAVA_RECURSIVE_INLINE").ok().map(|v| v.parse().unwrap_or(2))) {
+        return n;
+    }
+    let Some(info) = target.code else { return 2 };
+    recursive_inline_limit(target, info.code, !info.handlers.is_empty())
+}
+
+/// Allows deeper recursion only for a small body with one statically bound self-call and no loop.
+fn recursive_inline_limit(target: &'static Method, code: &[u8], has_handlers: bool) -> usize {
+    recursive_inline_shape_limit(code, has_handlers, |pc| bound_target(target, code, pc).is_some_and(|callee| std::ptr::eq(callee, target)))
+}
+
+fn recursive_inline_shape_limit(code: &[u8], has_handlers: bool, mut is_self_call: impl FnMut(usize) -> bool) -> usize {
+    if has_handlers || code.len() > MAX_INLINE_SIZE {
+        return 2;
+    }
+    let mut pc = 0;
+    let mut call = false;
+    while pc < code.len() {
+        let backward = match code[pc] {
+            0x99..=0xa7 | 0xc6 | 0xc7 => i2(code, pc + 1) <= 0,
+            0xc8 => i4(code, pc + 1) <= 0,
+            0xaa | 0xab => switch_targets(code, pc).iter().any(|&t| t <= pc),
+            _ => false,
+        };
+        if backward {
+            return 2;
+        }
+        if matches!(code[pc], 0xb6..=0xba) {
+            if call || !is_self_call(pc) {
+                return 2;
+            }
+            call = true;
+        }
+        pc += insn_len(code, pc);
+    }
+    if call { 8 } else { 2 }
 }
 
 /// A callee whose optimized code is larger than this is called rather than inlined again
@@ -135,8 +171,8 @@ pub(super) fn over_large(target: &'static Method, freq: f32) -> bool {
     freq >= LOOP_SITE && target.code.is_some_and(|c| c.code.len() <= OVER_LARGE_SIZE) && compiled_too_large(target, freq)
 }
 const LOOP_SITE: f32 = 2.0;
-/// Bytecode of a callee `over_large` takes: a node test of a pattern matcher (37) and the like.
-const OVER_LARGE_SIZE: usize = 64;
+/// Short loop bodies can still be worth inlining shallowly when the caller site is hot.
+const OVER_LARGE_SIZE: usize = 128;
 
 /// Why `decide` refuses `target` (for `RAVA_INLINE_LOG`).
 pub(super) fn refusal(target: &'static Method, chain: &Chain, tier: u8, spent: usize, freq: f32) -> &'static str {
@@ -157,7 +193,7 @@ pub(super) fn refusal(target: &'static Method, chain: &Chain, tier: u8, spent: u
     if depth(target, chain) > max_depth(target, tier >= 3) {
         return "too deep";
     }
-    if recursive(target, None, chain, if tier >= 3 { max_recursive() } else { 0 }) {
+    if recursive(target, None, chain, if tier >= 3 { max_recursive(target) } else { 0 }) {
         return "recursive";
     }
     if target.is_synchronized() && (tier < 3 || target.is_static() && target.holder.mirror().is_null()) {
@@ -222,7 +258,7 @@ fn framed_ok(t: &'static Method, first: Option<i64>, chain: &Chain, hot: bool, o
     let max = max_depth(t, opt);
     // The optimizing tier inlines synchronized methods with their monitor (`opt::inline`).
     let monitor_ok = !t.is_synchronized() || opt && !(t.is_static() && t.holder.mirror().is_null());
-    if depth(t, chain) > max || recursive(t, first, chain, if opt { max_recursive() } else { 0 }) || !monitor_ok || (!opt && !info.handlers.is_empty()) {
+    if depth(t, chain) > max || recursive(t, first, chain, if opt { max_recursive(t) } else { 0 }) || !monitor_ok || (!opt && !info.handlers.is_empty()) {
         return false;
     }
     if t.has_annotation("Ljdk/internal/vm/annotation/DontInline;") {
@@ -322,6 +358,33 @@ fn switch_targets(code: &[u8], pc: usize) -> Vec<usize> {
         out.extend((0..i4(code, p + 4) as usize).map(|i| rel(i4(code, p + 12 + 8 * i))));
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::recursive_inline_shape_limit;
+
+    #[test]
+    fn deeper_recursion_requires_one_small_self_call_without_control_flow_cycles() {
+        let one_call = [0xb8, 0, 1, 0xb1];
+        let two_calls = [0xb8, 0, 1, 0xb8, 0, 2, 0xb1];
+        let no_calls = [0x03, 0xac];
+        let backward_loop = [0xa7, 0, 0, 0xb8, 0, 1, 0xb1];
+        let too_large = [0x00; 36];
+
+        assert_eq!(recursive_inline_shape_limit(&one_call, false, |pc| pc == 0), 8);
+        assert_eq!(recursive_inline_shape_limit(&one_call, false, |_| false), 2);
+        assert_eq!(recursive_inline_shape_limit(&two_calls, false, |_| true), 2);
+        assert_eq!(recursive_inline_shape_limit(&no_calls, false, |_| false), 2);
+        assert_eq!(recursive_inline_shape_limit(&backward_loop, false, |_| true), 2);
+        assert_eq!(recursive_inline_shape_limit(&[0x99, 0, 0, 0xb1], false, |_| true), 2);
+        assert_eq!(recursive_inline_shape_limit(&[0xc8, 0, 0, 0, 0, 0xb1], false, |_| true), 2);
+        let mut backward_switch = [0; 20];
+        backward_switch[0] = 0xaa;
+        assert_eq!(recursive_inline_shape_limit(&backward_switch, false, |_| true), 2);
+        assert_eq!(recursive_inline_shape_limit(&one_call, true, |pc| pc == 0), 2);
+        assert_eq!(recursive_inline_shape_limit(&too_large, false, |_| true), 2);
+    }
 }
 
 /// `RAVA_INLINE_LOG`: whether inlining decisions are logged at all, and prints `line` when it

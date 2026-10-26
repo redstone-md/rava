@@ -89,6 +89,8 @@ fn candidate(g: &Graph, l: &super::dom::Loop, def: &[B]) -> Option<Fill> {
             _ if v == next => {}
             Inst::StoreIndexed(arr, idx, bt, x) if store.is_none() && g.resolve(idx) == i && !g.ordered.contains(&v) => {
                 let shift = match bt {
+                    BasicType::Byte => 0,
+                    BasicType::Char | BasicType::Short => 1,
                     BasicType::Int | BasicType::Float => 2,
                     BasicType::Long | BasicType::Double => 3,
                     _ => return None,

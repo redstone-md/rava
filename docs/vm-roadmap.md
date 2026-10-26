@@ -52,6 +52,111 @@ left.
   nothing overrides and that was not inlined (too large, recursive) went through the vtable.
   It now calls the target directly, behind its class-hierarchy dependency. `mobs` warm sprints
   103.6 → 101.1 ms per tick (two rounds won, one even).
+- Ordered early exits in short counted loops (`opt/unroll_early_exit.rs`). The JIT now clones up
+  to eight ordered checks and their deoptimization states when the loop shape and side effects
+  are proven simple. `UnrollEarlyExitSem` matches HotSpot with CFG-edge checks enabled, including
+  a side-exit store, a late null fault, and eight eligible loops in one method. Before each
+  expansion, the pass reserves fresh block-order gaps while preserving ties between existing
+  live blocks. Older seven-process and 21-pair comparisons used HotSpot 25.0.3 without
+  `-Xshare:off`; that JDK loaded `classes.jsa`, so those timings are excluded from no-snapshot
+  evidence. Their Rava pass-off control also selected `MixinBench.round`, so it is not a valid
+  no-adapt control. Two later 21-pair runs used HotSpot 21.0.7; a CDS log check confirmed that
+  runtime loaded no shared archive. Across those 42 process medians, default Rava measured
+  3.87 ns/call (3.775–4.28) and HotSpot 3.9425 (3.51–4.165), with `600000` checksums. Rava beat
+  Java in 31/42 pairs, but their ranges overlap widely, so this is near parity on one synthetic
+  callback path, not evidence of a general Java advantage. The old pass-off control was still
+  method-specific, so it does not attribute this result under no-adapt. Current controls are
+  global, and current Java benchmark runs explicitly use `-Xshare:off`. The Rava binary
+  SHA-256 was `43D10E17FCEC9990BAC2D7B0BCC22D7C109B685B7B70378F64B0DF05D0432644`; the benchmark
+  source SHA-256 was `E07CE81A23F4D412626186E5DAB38F6B01199C3C84094C894A130BC1E12CFF66`, and the JDK
+  21-compiled class SHA-256 was `BD94D62D6243409F299F699402D74D762576B7028FC34F6A766970FA12BC172F`.
+  Separate historical `early90` and recursion figures used JDK 25 without `-Xshare:off`; that
+  runtime loaded CDS, so those timings are excluded from no-snapshot evidence. The current
+  candidate has not been measured on Paper.
+- Four-step affine recurrence folding (`opt/affine.rs`) wins on the arithmetic kernel it
+  targets. Nine rotated fresh-process triplets on JDK 21 measured `CountedEntryBench.counted`
+  (64 `value * 33 + i` updates) at 10.092 ns/call on default Rava, 30.935 with the same binary
+  and the global `RAVA_NO_AFFINE_RECURRENCE=1` control, and 29.731 on HotSpot 21.0.7 with
+  `-Xshare:off`. Across process medians the ranges were 8.659–11.597, 28.277–31.428, and
+  27.484–30.267 respectively. All 27 checksums matched at `-80388026518`; default Rava beat
+  affine-off and HotSpot in all nine pairs. Rava used its default optimization mode and a fixed
+  hash seed; it read the JDK 21.0.12.1 runtime image. This establishes a win on this arithmetic
+  loop, not on Minecraft ticks. Rava binary SHA-256:
+  `9B2EE67183136A29E03132955557DE50D714CBB5DDDB27345F651A150330D9BD`; benchmark source SHA-256:
+  `C028ED4A998C419DBB62648898BD835EFD6CEE863A85244DF4126409145B415B`; JDK 21 class SHA-256:
+  `C0211F761DF55E29F8575273855899782833543D64A127E4D7CFDFC553014205`.
+- Rechecked the same affine recurrence kernel on JDK 25.0.3 with the current local release
+  candidate (`798A342DC6E44914FE0E86C513256F918F98A6CB7C42A1202143DA33C6BD2625`). Nine rotated
+  fresh-process triplets measured 9.606 ns/call on default Rava (8.682–10.870), 30.994 with
+  `RAVA_NO_AFFINE_RECURRENCE=1` (28.415–31.429), and 29.888 on HotSpot with `-Xshare:off`
+  (27.317–30.381). Rava won all nine paired comparisons against both controls; all 27 checksums
+  matched at `-80388026518`. The benchmark source hash is
+  `C028ED4A998C419DBB62648898BD835EFD6CEE863A85244DF4126409145B415B`, and the JDK 25.0.3 class
+  hash is `77920C52A45C1ECA45F1F4917011E1152B5868FF7F15398ADA5492CE37C0E77A`. This confirms the
+  targeted synthetic-loop win on the current binary; it does not establish a Minecraft tick win.
+- Rebuilt the local working-tree candidate and reran the same JDK 25.0.3 experiment in nine
+  rotated fresh-process triplets. The binary hash was
+  `A588DE34F43D6869CD963D43159AAB1547CB14D6EBA90C6E7B1700A68D80100F`; process medians were
+  10.636 ns/call for default Rava (8.263–13.182), 31.102 with
+  `RAVA_NO_AFFINE_RECURRENCE=1` (27.757–38.060), and 29.726 for HotSpot with `-Xshare:off`
+  (27.916–32.663). Default Rava beat both controls in all nine pairs, and all 27 checksums matched
+  at `-80388026518`. The source and compiled class hashes match the previous JDK 25 run. This
+  result is for the local working-tree build, which also contained uncommitted compiler
+  experiments; it is not a measurement of the committed branch alone and does not establish a
+  Minecraft tick win.
+- The same uncommitted local release candidate also beat HotSpot 21.0.7 (`-Xshare:off`) in three broader
+  generic kernels, each over nine rotated fresh-process pairs with matching checksums or output guards and
+  default Rava tiering: `RecordHashBench` measured 7.55 vs 10.45 ns/op (process ranges 7.40–8.00
+  vs 9.50–10.75; checksum `33546240000`); `SystemTickBench`, with 40 systems and 80 listener
+  calls per tick, measured 1,256.75 vs 1,703.10 ns/tick, with ranges 1,186.55–1,306.45 vs
+  1,625.60–1,747.50 and checksum `760000`; and `NoiseBench` measured 12 vs 17 ms per sweep
+  (11–12 vs 16–17; output guard
+  `525558`).
+  `NoiseBench` reports the best of ten timed sweeps per process and has millisecond resolution,
+  so treat it as a coarse signal. These are synthetic kernels, not a Paper server result. The
+  Rava binary SHA-256 is the one above. These early `SystemTickBench` figures used an inactive
+  profiler and predate the active-profiler control below. JDK 21 source/class SHA-256 pairs:
+  `RecordHashBench`
+  `64004A4101B5C6ECA37335FDF03116253A8ADD432B662D6EAAFC4355806CD3B5` /
+  `1BBD46554787C61425A7325409CB09B06DBDF6786533815020595DFC59FE8F85`;
+  `SystemTickBench` `C2B50027F7DFD8CF6F8E0C2FAE4795AD7DB5385FDEBF9EA9D0A4ACD39AE6BAAB` /
+  `194EAADD439AB09B43A93EBE8B90E5E7BE0C29B2C531F9475EAC7B2B075F77EF`; `NoiseBench`
+  `CD97843FBE03E2E6FF9AC75C51D76D8442C91D90748B12DFC656B685F8CCB6CB` /
+  `F9FA1DF311EA159FE6C2D0CA58FED408095A1646C80E80569306C7B8372D5C7B`.
+- A fresh nine-process rotation on the current local release binary (`DA6E8FDBFDCC147C735DEF9DD2E2141FBE607FD20EFBE53BC1356E4F163D9F4A`) measured
+  `SystemTickBench` over 15 rounds of 20,000 ticks per process, using the median of each process's last ten rounds. Default Rava measured
+  1,205.5 ns/tick (process medians 1,159.0–1,254.6), the same binary with global
+  `RAVA_NO_SHRINKWRAP=1` measured 1,236.8 (1,168.8–1,268.2), and HotSpot 21.0.7 with
+  `-Xshare:off` measured 1,482.3 (1,378.5–1,757.5). All 27 checksums were `2850000`; default Rava
+  beat HotSpot in all nine process pairs and beat the shrink-wrap-off control in eight of nine.
+  The control ranges overlap, so the small shrink-wrap difference is directional only. Rava used
+  class library 21.0.12.1+1 and fixed hash seed `1234567`; source SHA-256 is
+  `C2B50027F7DFD8CF6F8E0C2FAE4795AD7DB5385FDEBF9EA9D0A4ACD39AE6BAAB`, and the JDK 21.0.7 class
+  SHA-256 is `194EAADD439AB09B43A93EBE8B90E5E7BE0C29B2C531F9475EAC7B2B075F77EF`. This remains a
+  synthetic listener workload, not a Paper server measurement.
+- A refreshed `SystemTickBench` run compares three conditions in nine interleaved fresh-process
+  pair groups on the current release binary (`CF01190DFB57502E7E503481CB45972F24492A7F45B75760A7DF21FC31834D2A`)
+  and HotSpot 21.0.11 (`-Xshare:off`): default Rava with a no-op profiler measured 654.45 ns/tick
+  (process medians 642.45–691.4) versus 1,459.1 for HotSpot (1,415.6–1,551.3), a 2.23× ratio
+  and 9/9 Rava wins. With `RAVA_NO_DEAD_CONCAT=1`, Rava measured 1,253.15
+  (1,193.6–1,338.95) versus 1,514.95 (1,447.25–1,611.45), a 1.209× ratio and 9/9 wins.
+  With a recording profiler that consumes each pushed string using `hashCode()`, Rava measured
+  2,067.2 (2,034.6–2,252.05) versus 2,079.1 (2,013.15–2,275.3), a 1.006× ratio and 6/9 wins;
+  process ranges overlap. The mode order rotates across pair groups, and Rava/HotSpot order
+  alternates within each mode. All 54 tick checksums matched at `2850000`; all recording-profiler
+  checksums matched at `6878236459927801088`, and no-op checksums were zero. The pass-off control
+  and paired Java shifts support dead string elimination as the main source of the no-op
+  advantage on this kernel; the active-profiler case remains near parity. Source SHA-256 is
+  `ED07615AC432E7D8C4BF618004DE20A1CB65A1CF0E091AFBF0FBBEAF2D68E771`, and the JDK 21 class
+  SHA-256 is `A9C977B364CE121312C393C0B4115B58A3628D9076FEE4F0C00609752959ECB8`. This remains a
+  synthetic dispatch benchmark, not a full Paper server result.
+- On the same binary and JDK, nine alternating pairs of `RecordHashBench` measured the median
+  of the last four of six timed rounds per fresh process: 7.6 ns/op on Rava (process medians
+  7.3–7.85) and 9.4 on HotSpot (8.75–9.8), with Rava ahead in all nine pairs. HotSpot again
+  used `-Xshare:off`; all 18 checksums were `33546240000`. Source SHA-256 is
+  `64004A4101B5C6ECA37335FDF03116253A8ADD432B662D6EAAFC4355806CD3B5`, and the JDK 21 class
+  SHA-256 is `BB51A029F7AACE5005FEC243300541767F172DDBE419F3B71AEBA5B509C6F680`. This is a
+  separate generic kernel, not evidence of end-to-end Minecraft performance.
 
 ## Where the time goes (`mobs`, all optimized code dumped, samples by instruction)
 93 % of the server thread's time is in optimized code. Classified by the instruction a sample
@@ -86,11 +191,183 @@ Compare the minimum or median of many runs, never a single run.
    fib 2.4 → 1.85 ns and the four-int recursion 4.0 → 2.3 ns per call (HotSpot 1.4 and 1.9),
    `mobs` sprints about 3 % faster (noisy). Every other entry still checks the value-stack
    limit, links the frame and pushes callee-saved registers before its first block (10–14 % of
-   optimized-code samples fell in the first bytes of methods). Next is wider shrink-wrapping,
-   which saves registers only on the paths that use them.
+   optimized-code samples fell in the first bytes of methods). The isolated floating-fast-exit
+   variant measured 1.323 vs 1.305 ns/node on `early90` and 0.710 vs 0.686 on recursion; Java
+   measured 1.260 and 1.138 respectively. Checksums matched in seven rotated fresh processes per
+   VM. The variant did not beat clean `HEAD` or Java on these cases and is dropped; existing
+   integer fast exits remain. Next is wider shrink-wrapping, which saves registers only on paths
+   that use them.
 3. **Register allocation quality.** Values are spilled around calls and reloaded at block
    starts (`mov %rax,0x50(%rsp); mov 0x50(%rsp),%rax` across a label), and loop-carried values
-   are kept in stack slots across calls.
+   are kept in stack slots across calls. An isolated CFG-aware call-cost variant measured 5.45
+   vs 5.80 ns/call on `MixinBench`, 1.287 vs 1.305 ns/node on `early90`, and 0.646 vs 0.686 on
+   recursion against clean `HEAD`; it remained slower than Java on `MixinBench` and is not in the
+   current candidate. Combined with unrolling, it moved medians 3.88 → 3.84 on `MixinBench`,
+   1.282 → 1.219 on `early90`, and 0.647 → 0.665 on recursion; only 4/7, 6/7, and 0/7 paired
+   processes improved, respectively, with overlapping ranges. It is not a consistent gain.
+   Compile-time cost and a focused liveness allocator test remain open before revisiting it.
+4. **Automatic loop parallelism.** `RAVA_PAR_REPORT` counts SSA effects after optimization; it
+   does not prove array-base/index disjointness, scalar recurrences, or preservation of
+   exceptions and deoptimization order. A worker scheduler must also coordinate Java memory
+   visibility with GC and safepoints. The Minestom harness accepts a run count and radius,
+   prints and checks the chunk count and sampled result hash, and rotates launch order for
+   three-way comparisons. A 15-group attempt on Minestom 1.21.8, radius 24 (2,304 chunks),
+   JDK 25.0.3 completed five groups before the sixth rava process crashed with a native memory
+   fault in `VCRUNTIME140.dll`; the runner returned failure and did not count the partial sixth
+   group in its comparison. In those five complete groups, default HotSpot had a 532 ms
+   chunk-phase median (508–551), HotSpot with
+   `-XX:+UnlockExperimentalVMOptions -XX:-VMContinuations` had 645 ms (608–674), and rava had
+   1,673 ms (974–2,886). All successful runs had the same sampled checksum
+   `c997420016191634`; rava was slower in all five groups against both HotSpot modes. The paired
+   median gaps were 1,141 ms against default HotSpot and 1,065 ms against flagged HotSpot; the
+   paired median slowdown from the fallback flags was 116 ms for HotSpot. These five groups are
+   exploratory performance data, conditional on successful completion, and do not establish
+   reliability or steady-state tick throughput. The checksum covers 55 sampled block states in
+   one local column per chunk, not the full world. Minestom starts each generation task with
+   `Thread.startVirtualThread`; rava currently reports continuation support as false and runs
+   each such thread on a native worker. The result is consistent with scheduling overhead but
+   does not attribute the full gap or prove a loop-splitting benefit. Investigate the native
+   crash, and keep loop scheduling serial until dependence proofs and runtime support exist.
+
+   A later 15-group rerun used the local candidate above, whose source sets a 64 MiB native stack
+   reserve per thread. All 45 launches completed and returned the same sampled checksum; no
+   crash occurred. Chunk-phase medians were 545 ms for HotSpot (518–579), 654 ms for the
+   `-XX:-VMContinuations` fallback (613–738), and 1,535 ms for rava (935–58,317). Rava lost all
+   15 paired groups against both modes; the 58.3 s result remains in the range. A separate
+   `RAVA_RECORD` run counted 2,339 threads, including 2,304 unnamed worker threads; 71.8% of
+   sampled CPU was in syscalls and 17.9% in VM code. In source, each `Thread.start0` creates a
+   native thread, while virtual-thread continuation support is disabled. This confirms the
+   execution model and thread count in the run, but the single profile does not apportion the
+   full slowdown. The rerun did not reproduce the earlier native fault; it does not establish
+   that the stack-size experiment fixed that fault. The checksum still covers only sampled blocks,
+   and this cold chunk-generation result does not measure steady-state ticks.
+
+   Neither JDK 25 comparison above meets the repository's no-snapshot rule. The completed runner
+   header says `java_extra=none`; the aborted run command likewise supplied no common Java flags.
+   A direct `-Xlog:cds=info` check on the installed Temurin 25.0.3 confirms that an ordinary launch
+   maps `bin/server/classes.jsa`. Keep these results for thread-count and crash investigation, but
+   exclude their HotSpot timings from no-snapshot comparisons.
+
+   A separate five-group attempt with JDK 22.0.2 set `shared_java_options=none` and used
+   `-XX:+UnlockExperimentalVMOptions -XX:-VMContinuations` for its fallback mode. The first
+   triplet completed with checksum `c997420016191634`: default HotSpot, fallback HotSpot, and
+   Rava reported chunk phases of 757, 1,824, and 1,853 ms. In the second group, fallback HotSpot
+   completed at 1,634 ms, then Rava crashed before the final default-HotSpot run. The native report identifies
+   `VCRUNTIME140.dll+0x1cd46` and contains only native frames, without a Java stack. This attempt
+   provides no usable multi-group JDK 22 comparison and does not identify the crash cause. Its
+   record says no Java options were inherited but does not show `-Xshare:off`, so it does not
+   establish a no-snapshot comparison. Across JDK 22 and the earlier JDK 25 runs, the crash remains
+   an unresolved reliability problem.
+
+   A symbol-enabled `release-diag` build (`9EB34C2E94B984A650F86640D26AC8F406002EB9B4797E5B2B25397CA1899788`)
+   completed a later three-group JDK 22 rerun with the same hash on all nine launches and no crash.
+   Its chunk timings varied from 801 to 9,347 ms for Rava and 2,306 to 12,039 ms for fallback
+   HotSpot, so this is only a non-reproduction attempt, not timing evidence. No dump was captured;
+   the earlier fault remains unexplained. The retained run record does not show `-Xshare:off`, so
+   it also does not establish a no-snapshot comparison.
+
+   A controlled no-snapshot rerun on 2026-10-25 used Temurin 25.0.3 with `-Xshare:off`
+   and `-Xlog:cds=info`, the same fallback flags, default Rava settings, and nine rotated process
+   groups at radius 24. All 27 launches completed with the same sampled hash, `c997420016191634`; no
+   crash occurred. Chunk-phase medians were 574 ms for HotSpot (547–587), 644 ms for its
+   `-XX:-VMContinuations` fallback (619–763), and 1,198 ms for Rava (984–8,810). Rava lost all
+   nine paired groups against both HotSpot modes. The full range retains a 6.4 s Rava outlier.
+   This cold Minestom chunk-generation benchmark still does not measure steady-state ticks, and
+   its hash covers only sampled blocks. Rava binary SHA-256 was
+   `B4E891A8F3098EDE8F3E64A0FA073B5427320411E3F9233C9452A9B8A75FD0A8`; benchmark source SHA-256
+   was `DBE33E13BB819A05BB328F707F65ECEC18B8CF5C706B4454A113904B781AED10`; class SHA-256 was
+   `39BAE9BBDEC574640910FFA33F03E71715FC5AD8CC10C7872A177784534E8213`. The raw log is
+   `target/minestom-no-snapshot-9groups-20261025.log`.
+
+   A follow-up three-group no-snapshot check used the same JDK 25 Minestom harness, first with
+   the 16 MiB candidate (Rava SHA-256 `89A6AF62C25ACB3C1443DBCE11166E7D045CFA68FA476B2F544847DF84A05A8F`),
+   then with the saved 64 MiB binary (`B4E891A8F3098EDE8F3E64A0FA073B5427320411E3F9233C9452A9B8A75FD0A8`).
+   All 18 launches completed with the same sampled hash and no crash. Rava chunk-phase medians
+   were 6,047 ms at 16 MiB (2,365–6,850) and 1,511 ms at 64 MiB (1,411–1,947). The corresponding
+   HotSpot medians were 575 and 569 ms; fallback medians were 635 and 667 ms. This short,
+   sequential comparison favors the saved 64 MiB run but cannot isolate a causal stack-size effect.
+   Treat it as a reliability check and directional signal, not as a speedup claim. Raw logs:
+   `target/minestom-no-snapshot-stack16-3groups-20261025.log` (SHA-256
+   `D3FD97AD2A96B374F6F1A1549E12B15521FC68B534A981AC300AC7711A124E14`) and
+   `target/minestom-no-snapshot-stack64-control-3groups-20261025.log` (SHA-256
+   `777C9DB6D55656EC16B52F6EB2FE74B819A3706613CCC4685BFBB696F310423F`).
+   The next useful parallelism step is an analysis-only classifier for a counted primitive-array
+   map such as `dst[i] = pure(src[i])`, not a scheduler. It should require a canonical integral
+   induction variable stepping by one, an invariant bound, no wraparound, one latch and exit,
+   bounds validated before the body, no other loop-carried values, and only primitive-array
+   accesses through invariant bases at exactly `i`. Calls, impure intrinsics, ordered or volatile
+   accesses, monitors, allocation, and in-loop checks or throws should reject the candidate with
+   a reason. The report should include each access's base, index expression, and read/write kind.
+   Even an accepted loop proves only iteration independence; report external sharing as unknown
+   and do not schedule it until input immutability and output isolation are separately proven.
+   To establish whether this pattern matters in Minecraft, correlate candidate BCIs with
+   `RAVA_SAMPLE_DETAIL=/` and `RAVA_SAMPLE_STACK=1`, then map them through `RAVA_OPT_IR` and
+   `RAVA_JIT_DUMP` on a stable `mobs` run. No hot Minecraft loop meeting these gates has been
+   evidenced so far.
+
+   A current local working-tree candidate (`rava.exe` SHA-256
+   `082494CB68604D82E160410B9BFD3C84729DD95116A93778DEAF1F7DEBEE05F4`; source-manifest SHA-256
+   `2C22B36D69DD0328405ED401DA839BBD485DD71B0296345FD3FFEB5C51A23B1F`) was measured with
+   Temurin 25.0.3+9. Java used `-Xshare:off -Xlog:cds=info`; Rava used its default tiering and a
+   fixed hash seed. On nine rotated fresh-process `MixinBench` triplets, the local candidate
+   measured 3.765 ns/call (3.615–4.015) versus 7.395 on HotSpot (7.235–8.640), winning all nine
+   pairs with checksum `600000`. A saved pre-experiment Rava binary measured 3.840 (3.800–3.920);
+   the candidate beat it in six of nine pairs, so no candidate improvement is established. This
+   is a synthetic callback path, not a Paper tick result. The benchmark source SHA-256 is
+   `E07CE81A23F4D412626186E5DAB38F6B01199C3C84094C894A130BC1E12CFF66`, and its class compiled
+   with `--release 21` has SHA-256 `97D17107CC66CF5E486371F9F7AA1500346E8AEFCB15191790C2D1D8865DF16E`.
+
+   A fresh Temurin 25.0.3+9 comparison of `SystemTickBench` used 30 rounds of 20,000 ticks per
+   process, discarded rounds 1–20, and compared the median of rounds 21–30 across nine rotated
+   process pairs per profiler mode. Java ran with `-Xshare:off` and default tiered compilation;
+   Rava used default compilation and tiering with only the fixed hash seed set. With the no-op
+   profiler, Rava measured 691.45 ns/tick (615.05–755.45) versus 3,691.95 on HotSpot
+   (3,340.85–4,388.85), winning all nine pairs. With the recording profiler, Rava measured
+   2,222.30 (2,024.50–2,317.50) versus 5,451.45 (5,309.35–5,902.40), again winning all nine.
+   All 36 processes matched the 5,700,000 tick sum and the full expected vector of 40 system
+   counters plus `gameTime`; recording-profiler checksums also matched. The benchmark now emits
+   every system counter after timing to prevent compensating state errors from passing the
+   checksum. A separate diagnostic process on the same classes confirmed C2 compilation of the
+   dispatch and round methods during warmup; timed runs discarded 20 rounds. This is still a
+   synthetic dispatch kernel; it does not overturn the Minestom chunk-generation result below,
+   where Rava remains slower than HotSpot. Source
+   SHA-256 is `120A8642A1055F4F51B504946850A570AD17E135F2195FA4610AB9F4EC773314`, and the class
+   compiled with `--release 21` has SHA-256 `AD12FAE782897815BEF2F4B97CC6338910C0BEAAD9A826AE6C688C4B75655BF0`.
+
+   The same local candidate still lost all nine parallel Minestom chunk-generation pairs at
+   radius 24: 1,279 ms (971–3,745) versus 557 ms (533–587) on HotSpot and 634 ms (609–672) on the
+   `-XX:-VMContinuations` fallback. All 36 launches returned `c997420016191634`; the candidate
+   beat the saved Rava binary in six of nine pairs, with heavily overlapping ranges. A serial
+   control that joined each chunk before submitting the next measured 3,318 ms (3,093–3,461) on
+   Rava, 3,400 (3,350–3,642) on HotSpot, and 4,322 (4,075–4,477) on the fallback. All 27 serial
+   runs returned the same chunk hash; Rava won six of nine pairs against HotSpot, with overlapping
+   ranges. A no-op generator control retained the 2,304 chunk tasks but removed block writes. It
+   measured 1,639 ms on Rava (954–5,078), 957 on HotSpot (867–990), and 1,306 on the fallback
+   (1,204–1,535); all 27 checksums were zero, and Rava won only one pair against HotSpot. The
+   no-op run is highly variable and changes the generator workload, so these timings cannot be
+   subtracted to assign an exact scheduling cost. The serial result and no-op result together
+   point to the burst of concurrent virtual-thread tasks as a major part of the parallel gap; they
+   do not measure steady-state ticks or prove automatic loop parallelization would help.
+
+   A separate nine-group virtual-thread burst (`2,304` tasks, 1,000 xorshift iterations each)
+   measured 103 ms on Rava (98–111), 42 on HotSpot (40–45), and 131 on the
+   `-XX:-VMContinuations` fallback (127–138). Checksums matched at `a62ac3522628fe21`; Rava won
+   zero of nine pairs against HotSpot and all nine against the fallback. This synthetic test has
+   no warmup and does not represent a Minecraft tick. Its source SHA-256 is
+   `77584AC2796F850122793387AC02055BAB525229B199E3C80435A80DC83FE198`; the class compiled with
+   `--release 21` has SHA-256 `87D39721ED312F5D86BDFBA42916C564198C6D9C7BE54FB1644B00F745A8D13A`.
+
+   These controls are now available in `bench/minestom/run.sh`: `parallel` remains the default,
+   `serial` joins each chunk before submitting the next, and `noop` skips block generation while
+   retaining chunk creation. The Minestom diagnostic IR for `GeneratorImpl$GenericModifier.fill`
+   contains 343–369 values, 83–94 blocks, and 27–35 spill slots in its captured compilations;
+   its inlined palette path includes `Int2IntOpenHashMap.find`, `handleCache`, and `Palettes.write`.
+   This marks the inlined fill/palette chain as an optimization target for single-thread work.
+   The parallel results are consistent with a substantial task-scheduling cost, though they do
+   not assign the full gap to it. Rava's continuation support is disabled, and each virtual
+   thread currently takes the native-thread path. Replacing that path safely
+   requires runtime work around stacks, safepoints, GC, and Java thread semantics; do not replace
+   it with a simple executor pool or enable automatic loop scheduling without separate proofs.
 
 Measure each with `bench/java/MegaCallBench.java`, `bench/java/MixinBench.java` and the
 `mobs` scenario (`bench/tick_sprint.py -r 3 -s 1200 -c bench/scenarios/mobs.txt`), against

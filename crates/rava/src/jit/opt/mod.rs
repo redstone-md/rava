@@ -19,6 +19,7 @@ pub(crate) mod cha;
 mod codegen;
 mod codegen_cmp;
 mod codegen_copy;
+mod codegen_fill;
 mod codegen_intr;
 mod codegen_obj;
 mod codegen_ops;
@@ -51,6 +52,7 @@ mod locals;
 mod moves;
 mod nullcheck;
 pub(crate) mod osr;
+mod parallel;
 mod operands;
 mod phis;
 mod maskcheck;
@@ -322,6 +324,7 @@ fn compile_timed(m: &'static Method, osr: Option<u32>) -> Option<CompiledMethod>
     verify(&g, m, "g.prune_unreachable");
     dce::eliminate(&mut g);
     verify(&g, m, "dce::eliminate");
+    parallel::report(&g, m);
     if env_once!("RAVA_NO_STRIP").is_none() {
         strip::mine(&mut g);
         verify(&g, m, "strip::mine");

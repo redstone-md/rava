@@ -272,7 +272,10 @@ fn start0(t: &mut Thread, a: &[u64]) -> JResult<u64> {
     }
     let addr = jt as usize;
     starting().lock().unwrap().push(addr);
-    let spawned = std::thread::Builder::new().stack_size(512 << 20).spawn(move || run_thread(addr as Oop, daemon));
+    // Java frames live on Rava's separate value stack; this native stack holds VM and JNI frames.
+    // Keep a 64 MiB native reserve for constructing StackOverflowError while avoiding the former
+    // 512 MiB virtual-address reservation per Java thread.
+    let spawned = std::thread::Builder::new().stack_size(64 << 20).spawn(move || run_thread(addr as Oop, daemon));
     if spawned.is_err() {
         if !daemon {
             non_daemon_ended();

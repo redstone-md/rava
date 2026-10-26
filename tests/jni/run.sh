@@ -6,6 +6,14 @@ R=$(realpath "${R:-$(dirname "$0")/../../target/release/rava}")
 T=$(realpath "$(dirname "$0")")
 W=${1:-$(mktemp -d)}
 J=${JAVA_HOME:-$(dirname "$(dirname "$(readlink -f "$(which javac)")")")}
+filter() {
+  grep -v "Picked up" | tr -d '\r' | awk '
+    /^WARNING: A restricted method in java\.lang\.System has been called$/ { warning = 1; next }
+    warning && /^$/ { warning = 0; next }
+    warning { next }
+    { print }
+  '
+}
 case $(uname -s) in
   Darwin) lib=libjnitest.dylib; inc=darwin ;;
   MINGW*|MSYS*|CYGWIN*) lib=jnitest.dll; inc=win32 ;;
@@ -15,6 +23,6 @@ set -e
 javac -nowarn -d "$W" "$T/JniTest.java" 2>/dev/null
 ${CC:-cc} -shared -fPIC -O2 -I"$J/include" -I"$J/include/$inc" -o "$W/$lib" "$T/jnitest.c"
 set +e
-want=$(cd "$W" && java --enable-native-access=ALL-UNNAMED -Djava.library.path=. -cp . JniTest 2>&1 | grep -v "Picked up")
-got=$(cd "$W" && "$R" -Djava.library.path=. -cp . JniTest 2>&1 | grep -v "Picked up")
+want=$(cd "$W" && java --enable-native-access=ALL-UNNAMED -Djava.library.path=. -cp . JniTest 2>&1 | filter)
+got=$(cd "$W" && "$R" -Djava.library.path=. -cp . JniTest 2>&1 | filter)
 if [ "$got" == "$want" ]; then echo "jni: pass"; else echo "jni: FAIL"; diff <(echo "$got") <(echo "$want"); exit 1; fi
